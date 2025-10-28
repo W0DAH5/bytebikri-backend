@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ByteBikri</string>
+    <string name="security_alert_title">Security Alert</string>
+    <string name="security_alert_message">Suspicious activity detected.</string>
+    <string name="blocked_title">App Blocked</string>
+    <string name="blocked_message">Contact administrator.</string>
+    <string name="upload_success">Upload successful!</string>
+    <string name="upload_failed">Upload failed.</string>
+    <string name="purchase_success">Purchase successful!</string>
+    <string name="purchase_failed">Purchase failed.</string>
+    <string name="insufficient_funds">Insufficient coins</string>
+    <string name="network_error">Network error.</string>
+</resources>
