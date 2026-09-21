@@ -17,7 +17,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { store, storage, SLOT_DEFS, slugify, PLANS } from './src/store.js';
+import { store, storage, SLOT_DEFS, slugify, PLANS, nextPlan } from './src/store.js';
 import { assertProductionConfig, readSecret, checkConfig, formatConfigReport, isProd } from './src/config.js';
 import { query, many, scalar, health as dbHealth, close as closeDb } from './src/db.js';
 import { allocateSlots, estimateRentSlotValue, POLICY } from './src/slots.js';
@@ -38,7 +38,7 @@ import {
   connectionHealth, unconnectableNote,
 } from './src/connections.js';
 import {
-  railDetails, railsReady, payeeName, upgradeExplanation, planBenefits, NOT_CHARGED,
+  railDetails, railsReady, payeeName, upgradeExplanation, planBenefits, planUsage, planDrift, NOT_CHARGED,
 } from './src/billing.js';
 import { earningsSummary, MONEY_MAP, payoutChecklist, periodStatus, calibrationVerdict, calibrationRowState as calibrationState } from './src/earnings.js';
 import { SANDBOX_PROVIDER_IDS } from './src/providers/index.js';
@@ -793,10 +793,20 @@ APP.get('/dashboard/:slug', async (req, res, next) => {
       unlocks: unlocks.filter((u) => !u.revoked_at).length,
     };
 
+    // How full the plan is, from the same helper the operator's pages use. The
+    // file count is the LIVE file list this route already fetched, so the number
+    // on the dashboard is the number the upload check counts.
+    const plan = store.plan(channel);
+    const assets = await store.assetsOf(channel.id);
+    const usage = planUsage({ plan, files: assets.length, slots });
+
     // Flash messages travel as short codes and are mapped to sentences here.
     // Never echo a query parameter into HTML: `?error=<script>` is the oldest
     // reflected-XSS there is, and escaping is not a substitute for not doing it.
-    const flash = flashFor(req.query);
+    // `usage` is passed as context only so the refusal at the wall can name the
+    // count and the plan that lifts it: a bare "your limit is reached" leaves a
+    // person to guess what the limit is and what fixing it costs.
+    const flash = flashFor(req.query, { usage, plan, next: nextPlan(plan.code) });
 
     res.send(views.dashboard({
       // Only when the state is not the default. A banner that says "nothing is
@@ -810,9 +820,10 @@ APP.get('/dashboard/:slug', async (req, res, next) => {
       connections: await store.connectionsOf(channel.id),
       providers: await selectableProviders(),
       plan: store.plan(channel),
-      estimate, pageviews,
+      estimate, pageviews, usage,
+      nextPlan: nextPlan(plan.code),
       adViews: await store.adViews({ channelId: channel.id }),
-      assets: await store.assetsOf(channel.id),
+      assets,
       assetStats: await store.assetStats(channel.id),
       traffic: await store.trafficSeries(channel.id, { days: 30 }),
       adViewSeries: await store.assetAdViewSeries(channel.id, { days: 30 }),
@@ -1653,7 +1664,15 @@ const ERROR_FLASH = {
   unlock: 'Only someone who has unlocked this file can review it.',
   rating: 'Pick a rating from one to five.',
   media: 'Attach the file people are unlocking. Nothing was published.',
-  limit: "Your plan's file limit is reached. Existing files stay live; upgrade to publish more.",
+  // Context-aware: the refusal adds the count and names the tier that lifts it.
+  // Falls back to the plain sentence when the state is not known (a link on an
+  // old page, a bookmarked URL), because the fallback must never be worse than
+  // what was there before.
+  limit: ({ usage, plan, next } = {}) => (usage && plan && usage.files.level !== 'unlimited'
+    ? `${usage.files.used} of ${usage.files.limit} published files on ${plan.name}. `
+      + `${next ? `${next.name} raises that to ${next.capabilities.max_assets === -1 ? 'unlimited' : next.capabilities.max_assets}` : 'Upgrade to publish more'}. `
+      + 'Nothing already published has changed.'
+    : "Your plan's file limit is reached. Existing files stay live; upgrade to publish more."),
   cover: 'The cover must be an image under 5 MB.',
   size: 'That file is larger than the 25 MB upload limit.',
   toobig: 'That file is larger than the 25 MB upload limit.',
@@ -1699,14 +1718,20 @@ async function moderationBrief(channel) {
   };
 }
 
-function flashFor(query = {}) {
+function flashFor(query = {}, context = {}) {
   for (const [key, build] of Object.entries(SUCCESS_FLASH)) {
     if (query[key]) return { kind: 'success', message: build(query[key]) };
   }
   if (query.error) {
+    // A message may be a function of the state the person was in when they hit
+    // it. The file limit is the case that matters: "your plan's file limit is
+    // reached" is true and useless, because it does not say how many, or which
+    // plan lifts it, at the one moment the answer is worth money.
+    const entry = ERROR_FLASH[String(query.error)];
+    const message = typeof entry === 'function' ? entry(context) : entry;
     // An unmatched code still says something. An empty red box is a worse
     // answer than a vague sentence.
-    return { kind: 'danger', message: ERROR_FLASH[String(query.error)] || 'That did not work. Nothing was changed.' };
+    return { kind: 'danger', message: message || 'That did not work. Nothing was changed.' };
   }
   return null;
 }
@@ -2872,6 +2897,34 @@ APP.post('/admin/moderation/:slug', async (req, res, next) => {
  * stores and its files all stay, the sessions are revoked, and reinstating gives
  * everything back.
  */
+APP.get('/admin/plans', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    const [data, near] = await Promise.all([store.plansOverview(), store.storesNearCap({ limit: 50 })]);
+    const drift = planDrift(data.plans, PLANS);
+
+    if (req.query.format === 'csv') {
+      const head = ['plan', 'price_npr', 'period_months', 'stores', 'active', 'in_grace', 'lapsed', 'offered'];
+      const body = data.plans.map((p) => {
+        const m = data.mix.find((x) => x.plan_code === p.code) || {};
+        return [p.name, p.price_npr, p.period_months, m.stores || 0, m.active || 0,
+          m.in_grace || 0, m.lapsed || 0, p.active ? 'yes' : 'no'];
+      });
+      await store.audit('plans.exported', { plans: data.plans.length, drift: drift.length }, { actorId: req.user.id });
+      res.setHeader('content-type', 'text/csv; charset=utf-8');
+      res.setHeader('content-disposition', 'attachment; filename="bytebikri-plans.csv"');
+      // Drift travels with the file too: an export that leaves the warning behind
+      // is how a wrong number ends up in somebody's spreadsheet, alone.
+      const note = drift.length ? `\n# note,${drift.length} drift warning(s): ${drift.join(' | ').replace(/"/g, "'")}\n` : '';
+      return res.send(`${csvDocument(head, body)}${note}`);
+    }
+
+    res.send(views.adminPlans({
+      user: req.user, consent: req.consent, flash: flashFor(req.query), data, near, drift,
+    }));
+  } catch (err) { next(err); }
+});
+
 APP.get('/admin/users', async (req, res, next) => {
   try {
     if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
@@ -3276,6 +3329,29 @@ async function seed({ force = false } = {}) {
     if (err.code !== 'ENOENT') throw err;
   }
   await store.setAdMinSeconds(bobAsset.id, 5);
+
+  // Bob is deliberately near his ceiling: a free store at 17 of 20 files.
+  //
+  // The demo used to show every seller comfortably inside their allowance, which
+  // meant the two surfaces built for the moment a plan fills up — the seller's
+  // meter and the operator's "close to a ceiling" list — were empty in every
+  // screenshot and untested by every run. 85% is over the 80% warning threshold
+  // and under the wall, which is the state worth designing for: still publishing,
+  // and able to see it coming. Free-plan limits are not a trial expiring; a seller
+  // who fills one should be told the count, not ambushed at upload.
+  for (let i = 1; i <= 16; i += 1) {
+    const body = Buffer.from(`ByteBikri demo file ${i} (Bob's studio).\n`);
+    const asset = await store.createAsset({
+      channelId: bob.id, title: `Studio print ${String(i).padStart(2, '0')}`,
+      slug: `studio-print-${String(i).padStart(2, '0')}`,
+      description: 'Part of a deliberately full free plan.', unlockMode: 'ad_gated',
+    });
+    await store.addFile({
+      assetId: asset.id, storageKey: await storage.put(body, `bob-print-${i}.txt`),
+      filename: `studio-print-${i}.txt`, mimeType: 'text/plain', sizeBytes: body.length,
+      checksum: crypto.createHash('sha256').update(body).digest('hex'),
+    });
+  }
 
   // ---------------------------------------------------------------------
   // Demo earnings, so the earnings page shows its own arithmetic instead of

@@ -111,6 +111,22 @@ export const PLANS = {
   },
 };
 
+/**
+ * The next tier up, by price. Null when there is nothing above.
+ *
+ * The dashboard used to hand the seller `PLANS.pro` as "the plan that lifts your
+ * limit" regardless of which plan they were on, so a Free store at 17 of 20 files
+ * was told Pro raises it to unlimited — skipping over the tier that actually
+ * solves the problem for NPR 999. The researched advice is one recommended plan
+ * tied to the wall the person just hit, not the top of the price list.
+ */
+export function nextPlan(code) {
+  const cur = PLANS[code] ?? PLANS.free;
+  return Object.values(PLANS)
+    .filter((p) => p.priceNpr > cur.priceNpr)
+    .sort((a, b) => a.priceNpr - b.priceNpr)[0] ?? null;
+}
+
 export const SLOT_DEFS = [
   { key: 'top_leaderboard', label: 'Top of store', rank: 1, formats: ['display'], max_height_px: 250, surfaces: ['web', 'app'], active: true },
   { key: 'in_content_1', label: 'In content (first)', rank: 2, formats: ['display', 'native'], max_height_px: 280, surfaces: ['web'], active: true },
@@ -344,6 +360,86 @@ export const store = {
         order by m.created_at desc, m.id desc
         limit $2`,
       [userId, limit],
+    );
+  },
+
+  /**
+   * The plan surface: what each tier grants, who is on it, and who is about to
+   * hit a wall.
+   *
+   * `plans` has existed since the first migration with a capabilities blob, and
+   * the app has never read it — `store.plan()` resolves from the PLANS constant
+   * in JS. That is a real trap: editing the table looks like it changes what the
+   * platform enforces and changes nothing. So this query returns BOTH, and the
+   * page shows the disagreement when there is one. A console that silently
+   * agrees with the runtime is a console that cannot report the day they diverge.
+   */
+  plansOverview() {
+    return withTransaction(async (c) => {
+      const plans = await c.query(
+        `select code, name, price_npr, period_months, capabilities, sort_order, active
+           from plans order by sort_order, code`,
+      );
+      const mix = await c.query(
+        `select coalesce(s.plan_code, 'free') as plan_code,
+                count(*)::int as stores,
+                count(*) filter (where s.status = 'active')::int as active,
+                count(*) filter (where s.status = 'grace')::int as in_grace,
+                count(*) filter (where s.status in ('expired','cancelled'))::int as lapsed
+           from channels c
+           left join subscriptions s on s.channel_id = c.id and s.status in ('active','grace','pending_payment')
+          where c.moderation_state <> 'removed'
+          group by 1 order by 2 desc`,
+      );
+      // What the plans bill this cycle, from the records rather than from
+      // arithmetic on the price list: an invoice is money somebody was asked for.
+      const money = await c.query(
+        `select
+           coalesce((select sum(amount_npr) from rent_invoices where status in ('issued','unpaid','overdue')), 0)::int as rent_outstanding,
+           coalesce((select sum(amount_npr) from rent_invoices where status = 'paid'), 0)::int as rent_collected,
+           coalesce((select sum(amount_npr) from plan_payments where status = 'matched'), 0)::int as upgrades_collected,
+           coalesce((select sum(amount_npr) from plan_payments where status = 'pending'), 0)::int as upgrades_pending`,
+      );
+      return {
+        plans: plans.rows,
+        mix: mix.rows,
+        money: money.rows[0],
+      };
+    });
+  },
+
+  /**
+   * The stores closest to their plan's ceiling.
+   *
+   * Ordered by how full they are, not by size: a free store with 19 of 20 files
+   * is a more urgent conversation than a pro store with 400 of unlimited, and it
+   * is the one where the platform is about to start refusing somebody's work.
+   *
+   * The cap comes from the plans table, which is exactly the copy the runtime may
+   * disagree with — so this list is a convenience, and the page labels it as
+   * such. `planUsage` (JS) is what actually refuses an upload.
+   */
+  storesNearCap({ limit = 25 } = {}) {
+    return many(
+      `with live as (
+         select c.id, c.slug, c.name, c.owner_id,
+                coalesce(s.plan_code, 'free') as plan_code,
+                (select count(*)::int from assets a where a.channel_id = c.id and a.status = 'live') as files
+           from channels c
+           left join subscriptions s on s.channel_id = c.id and s.status in ('active','grace')
+          where c.moderation_state <> 'removed'
+       )
+       select l.*, p.name as plan_name, (p.capabilities ->> 'max_assets')::int as cap,
+              u.email as owner_email,
+              round(100.0 * l.files / nullif((p.capabilities ->> 'max_assets')::int, 0))::int as pct_full
+         from live l
+         join plans p on p.code = l.plan_code
+         left join profiles u on u.id = l.owner_id
+        where (p.capabilities ->> 'max_assets')::int <> -1
+          and l.files >= floor((p.capabilities ->> 'max_assets')::int * 0.6)
+        order by pct_full desc, l.files desc
+        limit $1`,
+      [limit],
     );
   },
 

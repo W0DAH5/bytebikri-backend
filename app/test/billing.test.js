@@ -20,12 +20,13 @@
  */
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 process.env.DATABASE_URL ||= 'postgres://postgres:postgres@127.0.0.1:55432/bytebikri_test';
 
-const { store, PLANS } = await import('../src/store.js');
+const { store, PLANS, nextPlan } = await import('../src/store.js');
 const { close, query, scalar } = await import('../src/db.js');
-const { annualRentNpr, rentPeriod, upgradeExplanation, planBenefits, NOT_CHARGED } = await import('../src/billing.js');
+const { annualRentNpr, rentPeriod, upgradeExplanation, planBenefits, planDrift, NOT_CHARGED } = await import('../src/billing.js');
 
 after(async () => { await close(); });
 
@@ -429,4 +430,105 @@ test('plan benefits read as sentences, with no negative sentinel showing through
   assert.ok(planBenefits(PLANS.pro).some((l) => /Unlimited published files/.test(l)));
   assert.ok(planBenefits(PLANS.free).some((l) => /own address only/i.test(l)));
   assert.ok(planBenefits(PLANS.store).some((l) => /Explore/i.test(l)));
+});
+
+// ---------------------------------------------------------------------------
+// Plan usage
+// ---------------------------------------------------------------------------
+
+test('plan usage has three states, and the warning arrives before the wall', async () => {
+  const { planUsage } = await import('../src/billing.js');
+  const level = (files, plan = PLANS.free) => planUsage({ plan, files }).files.level;
+
+  assert.equal(level(0), 'ok');
+  assert.equal(level(15), 'ok', '75% is comfortable: a bar here is decoration, not information');
+  assert.equal(level(16), 'near', '80% is where a person can still act on it');
+  assert.equal(level(19), 'near');
+  assert.equal(level(20), 'at', 'at the allowance the next upload is refused');
+  assert.equal(level(35), 'at', 'and over it (a downgrade) is still "at", never a negative number');
+
+  // The researched failure this prevents: nobody is told the count until an
+  // upload is refused, so the refusal reads as the product breaking.
+  const near = planUsage({ plan: PLANS.free, files: 17 });
+  assert.equal(near.files.remaining, 3);
+  assert.match(near.sentence, /17 of 20 published files — 3 left on Free/);
+  assert.match(planUsage({ plan: PLANS.free, files: 20 }).sentence, /this plan is full/);
+
+  // Unlimited never reports a level: "0% of unlimited" helps nobody, and a bar
+  // drawn against -1 would be a full bar on an empty store.
+  const unlimited = planUsage({ plan: PLANS.pro, files: 4321 });
+  assert.equal(unlimited.files.level, 'unlimited');
+  assert.equal(unlimited.files.ratio, null);
+  assert.match(unlimited.sentence, /no file limit/);
+});
+
+test('the same usage drives the dashboard, the refusal and the operator list', async () => {
+  const { planUsage } = await import('../src/billing.js');
+  const { dashboard } = await import('../src/views.js');
+  const storeRow = {
+    id: '00000000-0000-0000-0000-000000000002', slug: 'shop', name: 'Shop', tagline: '',
+    listing_mode: 'storefront', moderation_state: 'approved', created_at: new Date(),
+  };
+  const base = {
+    channel: storeRow, slots: [], connections: [], providers: [], plan: PLANS.free,
+    estimate: {}, pageviews: 0, adViews: [], upgrade: null, user: null,
+  };
+  const plain = dashboard({ ...base, assets: Array.from({ length: 5 }, (_, i) => ({ id: i, status: 'live' })) });
+  assert.match(plain, /5 of 20 published files/, 'the count is on the panel');
+  assert.ok(!/class="meter/.test(plain), 'and no bar while the plan is comfortable');
+
+  // The tier named must be the NEXT one, not the top of the price list: a Free
+  // store is told about Store (NPR 999, 200 files), not Pro.
+  const nearDoc = dashboard({
+    ...base, nextPlan: nextPlan('free'),
+    assets: Array.from({ length: 17 }, (_, i) => ({ id: i, status: 'live' })),
+  });
+  assert.match(nearDoc, /17 of 20 published files — 3 left on Free/);
+  assert.match(nearDoc, /class="meter meter-near"/, 'the bar appears at 80%');
+  assert.match(nearDoc, /Store allows 200 files/, 'and names the next tier, not the dearest one');
+  assert.ok(!/Pro allows/.test(nearDoc), 'never the top of the list by default');
+  assert.equal(nextPlan('pro'), null, 'and the dearest tier has nothing above it');
+
+  const fullDoc = dashboard({ ...base, assets: Array.from({ length: 20 }, (_, i) => ({ id: i, status: 'live' })) });
+  assert.match(fullDoc, /class="meter meter-at"/);
+  assert.match(fullDoc, /publishing another file will be refused/i, 'the wall is stated before it is hit');
+
+  // The refusal itself must carry the same numbers: the seller who arrives from a
+  // failed upload sees the count, not a sentence about "your plan's limit".
+  const src = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
+  assert.match(src, /limit: \(\{ usage, plan, next \} = \{\}\) =>/, 'the limit flash takes the state as context');
+  assert.match(src, /raises that to/, 'and names what the next tier allows');
+});
+
+test('the plans table and the running app cannot drift apart unnoticed', async () => {
+  // The table is the natural place to edit a limit, and editing it changes
+  // NOTHING — the app enforces the JS copy. Two sources of truth with no alarm is
+  // how a console ends up showing a capability list that is quietly wrong.
+  const { store: s } = await import('../src/store.js');
+  const dbPlans = (await s.plansOverview()).plans;
+  assert.ok(dbPlans.length >= 3, 'the table has the tiers');
+  // Compare directly here as well as through the server helper, so this test
+  // fails even if the route is refactored away.
+  for (const row of dbPlans) {
+    const code = PLANS[row.code];
+    assert.ok(code, `the app knows the plan "${row.code}"`);
+    assert.equal(Number(row.price_npr), code.priceNpr, `${row.code} price: table and app agree`);
+    for (const [key, value] of Object.entries(row.capabilities)) {
+      assert.equal(code.capabilities[key], value,
+        `${row.code}.${key}: the table says ${JSON.stringify(value)} and the app enforces `
+        + `${JSON.stringify(code.capabilities[key])}. Change BOTH, or the console and the product disagree.`);
+    }
+  }
+  assert.deepEqual(planDrift(dbPlans, PLANS), [], 'and the helper the page uses reports no drift');
+  // A deliberately wrong row must be reported, in a sentence somebody can act on.
+  // The row is mutated inside a COMPLETE table so the only complaints are the two
+  // deliberate ones — an incomplete table is itself reported, which is correct
+  // and would otherwise drown the assertion.
+  const mutated = dbPlans.map((row) => (row.code === 'store'
+    ? { ...row, price_npr: 1, capabilities: { ...row.capabilities, max_assets: 5 } } : row));
+  const wrong = planDrift(mutated, PLANS);
+  assert.equal(wrong.length, 2, `a wrong price and a wrong capability are both reported: ${wrong.join(' | ')}`);
+  assert.match(wrong.join(' '), /NPR 1.*NPR 999/);
+  assert.match(wrong.join(' '), /max_assets.*5.*200/);
+  assert.match(planDrift([], PLANS).join(' '), /not in the table/, 'a missing tier is reported too');
 });

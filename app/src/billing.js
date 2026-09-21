@@ -189,6 +189,96 @@ export function planBenefits(plan, { availableSlots = null } = {}) {
   return out;
 }
 
+/**
+ * How full a plan is — one function, three surfaces.
+ *
+ * The seller's Plan panel, the operator's plans page and the message a seller
+ * reads when an upload is refused all need to say the same thing about the same
+ * account, and the only way to guarantee that is for all three to ask the same
+ * function. Two of them deriving "14 of 20" independently is how one ends up
+ * counting drafts and the other counting live files, and the seller gets told
+ * they have room when the next upload will bounce.
+ *
+ * Three states, because each has a different next action: nothing, prepare, and
+ * act. The researched shape is a running count shown BEFORE the wall — a person
+ * who is cut off with no warning reads it as the product failing rather than
+ * their usage filling up.
+ *
+ * `null` limit means unlimited and never reports a level, because "0% of
+ * unlimited" is a sentence that helps nobody.
+ */
+export function planUsage({ plan, files = 0, slots = null }) {
+  const limit = plan?.capabilities?.max_assets;
+  const slotLimit = plan?.capabilities?.slot_count ?? null;
+  const used = Math.max(Number(files) || 0, 0);
+
+  const filesState = (limit === undefined || limit === null || limit === -1)
+    ? { limit: null, used, remaining: null, ratio: null, level: 'unlimited', label: `${used} published — unlimited on ${plan?.name || 'this plan'}` }
+    : (() => {
+      const remaining = Math.max(limit - used, 0);
+      const ratio = limit ? used / limit : 1;
+      // 80% is where a person can still do something about it. Below that, a
+      // progress bar is noise on a dashboard; at 100% it is an instruction.
+      const level = used >= limit ? 'at' : ratio >= 0.8 ? 'near' : 'ok';
+      return { limit, used, remaining, ratio, level, label: `${used} of ${limit} published` };
+    })();
+
+  return {
+    files: filesState,
+    slots: (slotLimit === null || slots === null)
+      ? null
+      : { limit: slotLimit, used: Math.max(Number(slots) || 0, 0), remaining: Math.max(slotLimit - (Number(slots) || 0), 0), level: (Number(slots) || 0) >= slotLimit ? 'at' : 'ok' },
+    // The single sentence a surface should print. Kept here so the dashboard, the
+    // operator page and the refusal message cannot drift apart in wording either.
+    sentence: filesState.level === 'unlimited'
+      ? `${filesState.used} published files. ${plan?.name || 'This plan'} has no file limit.`
+      : filesState.level === 'at'
+        ? `${filesState.used} of ${filesState.limit} published files — this plan is full.`
+        : filesState.level === 'near'
+          ? `${filesState.used} of ${filesState.limit} published files — ${filesState.remaining} left on ${plan?.name}.`
+          : `${filesState.used} of ${filesState.limit} published files.`,
+  };
+}
+
+/**
+ * Where the database and the running app disagree about a plan.
+ *
+ * `plans` in the database and the PLANS constant in code are two descriptions of
+ * the same thing, and only the constant is enforced: `store.plan()` resolves from
+ * JS, and the table is read by nothing but an existence check. Editing the table
+ * therefore looks like it changes a limit and changes nothing — a trap with no
+ * symptom, which is the worst kind.
+ *
+ * Both catalogs are passed in rather than imported, so this is testable without
+ * booting a server and so there is exactly one caller-side decision about which
+ * copy is authoritative (the code is; the table is what a person will try to
+ * edit).
+ *
+ * Returns sentences, not codes: this list is shown to an operator, and
+ * "store.marketplace_listed: table says false, the app enforces true" is the
+ * sentence that lets somebody fix it in one edit.
+ */
+export function planDrift(dbPlans = [], appPlans = {}) {
+  const out = [];
+  for (const row of dbPlans) {
+    const app = appPlans[row.code];
+    if (!app) { out.push(`the table has a plan "${row.code}" that the running app does not know about`); continue; }
+    if (Number(row.price_npr) !== app.priceNpr) {
+      out.push(`${row.code}: the table says NPR ${row.price_npr}, the app charges NPR ${app.priceNpr}`);
+    }
+    for (const [key, tableValue] of Object.entries(row.capabilities || {})) {
+      const appValue = app.capabilities[key];
+      if (appValue !== tableValue) {
+        out.push(`${row.code}.${key}: the table says ${JSON.stringify(tableValue)}, the app enforces ${JSON.stringify(appValue)}`);
+      }
+    }
+  }
+  for (const code of Object.keys(appPlans)) {
+    if (!dbPlans.some((p) => p.code === code)) out.push(`the app has a plan "${code}" that is not in the table`);
+  }
+  return out;
+}
+
 /** The four things the seller is NOT being charged for. Stated, not implied. */
 export const NOT_CHARGED = [
   'Your ad earnings. The networks pay your own account directly — bytebikri takes 0% and never holds it.',

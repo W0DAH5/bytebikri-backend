@@ -712,6 +712,18 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
 .console-nav a:hover { background: var(--surface-hover); color: var(--text-primary); text-decoration: none; }
 .console-nav a[aria-current="page"] { background: var(--surface-overlay); color: var(--text-primary); }
 
+/* A plan meter: how full the file allowance is.
+   Shown only from 80% up (see the dashboard), so it is a warning rather than
+   dashboard decoration — which is also why it is allowed to be this loud. The
+   colours are the platform's own warning/danger tones, never a third accent. */
+.meter {
+  height: 6px; border-radius: var(--radius-full);
+  background: var(--surface-overlay); overflow: hidden;
+  margin-top: var(--space-3); max-width: 320px;
+}
+.meter > span { display: block; height: 100%; background: var(--warning-text); }
+.meter-at > span { background: var(--danger-text); }
+
 /* Segment links — the filters on a directory.
    Deliberately lighter than .console-nav: the console tabs move you between pages
    of the console, these three-hundred-pixel chips re-cut the table underneath

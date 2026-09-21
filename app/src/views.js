@@ -19,6 +19,10 @@ import { REPORT_REASONS, REPORT_HONESTY, NOTE_LIMIT, reporterMessage, reportVerd
 // The calibration judgement lives in the domain file next to gapVerdict, so the
 // operator's page and the seller's page can never disagree about what a gap means.
 import { calibrationRowState } from './earnings.js';
+// Dependency-free, so a view can call it directly: `planUsage` is the one
+// definition of "how full is this plan", used by the dashboard, the operator's
+// plans page and the message at the upload wall.
+import { planUsage } from './billing.js';
 
 const esc = (s) =>
   String(s ?? '')
@@ -1834,6 +1838,10 @@ export function dashboard({
   channel, slots, connections, providers, plan, estimate, pageviews, adViews,
   upgrade, user, pendingPayments = [], flash = null, consent = null,
   assets = [], assetStats = [], moderation = null,
+  // How full this seller's plan is, and what the next tier would give them.
+  // Both come from `planUsage` so this panel, the refusal message and the
+  // operator's pages cannot disagree about the same account.
+  usage = null, nextPlan = null,
   // The day-by-day series behind the totals. Optional so every existing caller
   // and test keeps working, and so a page that has no series simply draws no
   // chart instead of drawing an empty one.
@@ -1841,6 +1849,35 @@ export function dashboard({
 }) {
   const conn = connections[0] || null;
   const provider = conn ? providers.find((p) => p.id === conn.provider_id) : null;
+
+  // A file meter: the running count, drawn as a bar only once it is worth
+  // looking at. Below 80% the sentence carries it and a bar is decoration; at
+  // 80% it is a warning; at the limit it is the reason the next upload will
+  // bounce, and the next tier's allowance is named right there rather than
+  // behind another click.
+  //
+  // `usage` is optional, with the same contract as `traffic`: a caller that does
+  // not pass it gets the count derived from the files it already passed, not a
+  // blank panel and not a second implementation. Three tests failed on the first
+  // version of this for exactly that reason — the view assumed a caller had
+  // remembered to pass state the view can compute itself.
+  const planState = usage || planUsage({ plan, files: (assets || []).length, slots });
+  const meter = (() => {
+    if (!planState || planState.files.level === 'unlimited' || planState.files.level === 'ok') return '';
+    const { used, limit, level } = planState.files;
+    const pct = Math.min(Math.round((used / limit) * 100), 100);
+    const next = nextPlan && nextPlan.capabilities.max_assets !== limit
+      ? `<div class="fine" style="margin-top:var(--space-2)">${esc(nextPlan.name)} allows ${
+        nextPlan.capabilities.max_assets === -1 ? 'unlimited files' : `${nextPlan.capabilities.max_assets} files`}.</div>`
+      : '';
+    return `
+      <div class="meter meter-${level}" role="img" aria-label="${esc(`${used} of ${limit} published files`)}">
+        <span style="width:${pct}%"></span>
+      </div>
+      ${level === 'at'
+    ? `<div class="note note-warning" style="margin-top:var(--space-3)">This plan is full: publishing another file will be refused until you upgrade. Nothing already published is affected.</div>${next}`
+    : next}`;
+  })();
 
   const slotRows = slots.map((s) => `
     <tr>
@@ -2112,7 +2149,7 @@ ${conn ? `
   <div class="panel"><div class="panel-body">
     <dl class="kv">
       <dt>Current</dt><dd>${esc(plan.name)} · ${npr(plan.priceNpr)}/year</dd>
-      <dt>Files</dt><dd>${plan.capabilities.max_assets === -1 ? 'Unlimited' : plan.capabilities.max_assets}</dd>
+      <dt>Files</dt><dd>${esc(planState.sentence)}${meter}</dd>
       <dt>Slots</dt><dd>${plan.capabilities.slot_count}</dd>
       <dt>Earnings</dt><dd><a href="/dashboard/${esc(channel.slug)}/earnings">Who pays you, and how much →</a></dd>
       <dt>Billing</dt><dd><a href="/dashboard/${esc(channel.slug)}/billing">Plans, rent and payments →</a></dd>
@@ -3380,7 +3417,7 @@ export function adminShell({ user, consent, current, title, lede = '', actions =
     ${actions}
   </div>
 </div>
-<nav class="console-nav" aria-label="Console">${tab('/admin', 'Overview', 'overview')}${tab('/admin/payments', 'Payments', 'payments', user.adminBadges?.payments)}${tab('/admin/stores', 'Stores', 'stores')}${tab('/admin/users', 'People', 'people')}${tab('/admin/earnings', 'Earnings', 'earnings')}${tab('/admin/connections', 'Connections', 'connections')}${tab('/admin/reports', 'Reports', 'reports', user.adminBadges?.reports)}${tab('/admin/moderation', 'Moderation', 'moderation', user.adminBadges?.moderation)}${tab('/admin/audit', 'Audit log', 'audit')}</nav>
+<nav class="console-nav" aria-label="Console">${tab('/admin', 'Overview', 'overview')}${tab('/admin/payments', 'Payments', 'payments', user.adminBadges?.payments)}${tab('/admin/stores', 'Stores', 'stores')}${tab('/admin/users', 'People', 'people')}${tab('/admin/plans', 'Plans', 'plans')}${tab('/admin/earnings', 'Earnings', 'earnings')}${tab('/admin/connections', 'Connections', 'connections')}${tab('/admin/reports', 'Reports', 'reports', user.adminBadges?.reports)}${tab('/admin/moderation', 'Moderation', 'moderation', user.adminBadges?.moderation)}${tab('/admin/audit', 'Audit log', 'audit')}</nav>
 ${body}`,
   });
 }
@@ -3971,6 +4008,205 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
       </tbody>
     </table>
   </div></div>
+</section>`,
+  });
+}
+
+/**
+ * The plans page: what each tier grants, who is on it, and who is near a wall.
+ *
+ * Three things it is careful about.
+ *
+ * It reads the capability matrix from the DATABASE, because that is the copy a
+ * person would edit if they wanted to change a limit — and it compares that
+ * against what the running app actually enforces (`drift`), because those are two
+ * different things today and the difference is invisible from either side alone.
+ *
+ * It shows usage against the ceiling for the stores closest to it. The researched
+ * reason is blunt: a person who is cut off with no warning reads the refusal as
+ * the product failing rather than their allowance filling up, so the count is
+ * surfaced before the wall — on their own dashboard, and here so the operator can
+ * see it coming too.
+ *
+ * And it refuses the vocabulary of a subscription business. There is no MRR, no
+ * ARR and no churn figure, because the platform's income is two charges that a
+ * person matches by hand against a bank statement, and a "monthly recurring
+ * revenue" line computed from a plan mix would be a number nobody could reconcile
+ * with the money that actually arrived.
+ */
+export function adminPlans({
+  user, consent = null, flash = null, data = null, near = [], drift = [], canExport = false,
+}) {
+  const plans = data?.plans || [];
+  const mix = data?.mix || [];
+  const money = data?.money || {};
+  const byCode = Object.fromEntries(mix.map((m) => [m.plan_code, m]));
+  const totalStores = mix.reduce((sum, m) => sum + m.stores, 0);
+  const paying = mix.filter((m) => m.plan_code !== 'free').reduce((sum, m) => sum + m.stores, 0);
+
+  // Every capability either copy knows about, so the matrix cannot omit a key
+  // that exists in one and not the other — that omission is exactly the drift a
+  // person would miss.
+  const capKeys = [...new Set(plans.flatMap((p) => Object.keys(p.capabilities || {})))].sort();
+  const show = (value) => {
+    if (value === -1) return pill('unlimited', 'accent');
+    if (value === true) return 'yes';
+    if (value === false) return '<span class="fine">no</span>';
+    if (value === null || value === undefined) return '<span class="fine">—</span>';
+    return String(value);
+  };
+
+  const capMeter = (row) => {
+    const pct = Math.min(Number(row.pct_full) || 0, 100);
+    const level = pct >= 100 ? 'at' : pct >= 80 ? 'near' : '';
+    return `<div class="meter${level ? ` meter-${level}` : ''}" role="img"
+      aria-label="${esc(`${row.files} of ${row.cap} files`)}"><span style="width:${pct}%"></span></div>`;
+  };
+
+  return adminShell({
+    user, consent, current: 'plans', title: 'Plans & usage',
+    lede: 'What each tier grants, who is on it, and who is close to a ceiling. Two charges — an upgrade and '
+      + 'annual rent — and no share of what creators earn from ads.',
+    actions: canExport ? '<a class="btn btn-sm" href="/admin/plans?format=csv">Download CSV</a>' : '',
+    body: `
+${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)" role="status">${esc(flash.message)}</div>` : ''}
+
+${drift.length ? `<section class="section">
+  <div class="note note-warning">
+    <strong>The plans table and the running app disagree.</strong>
+    ${drift.map((d) => `<div class="fine" style="margin-top:var(--space-2)">${esc(d)}</div>`).join('')}
+    The app enforces the values compiled into it, so <em>editing the table changes nothing</em> until the same
+    change is made in code. This box exists so that trap is visible on the day somebody falls into it.
+  </div>
+</section>` : ''}
+
+<section class="section">
+  <div class="kpi-row">
+    <div class="kpi kpi-hero">
+      <div class="kpi-value">${num(paying)}</div>
+      <div class="kpi-label">Stores on a paid plan</div>
+      <div class="kpi-note">${totalStores ? `Of ${num(totalStores)} live stores — the rest are free, and free is not a trial.` : 'No stores yet.'}</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-value">NPR ${Number(money.rent_outstanding || 0).toLocaleString('en-IN')}</div>
+      <div class="kpi-label">Rent invoiced, not collected</div>
+      <div class="kpi-note">Issued and unpaid. Every payment is matched by hand on the payments page.</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-value">NPR ${Number(money.upgrades_pending || 0).toLocaleString('en-IN')}</div>
+      <div class="kpi-label">Upgrades awaiting a match</div>
+      <div class="kpi-note">A reference was submitted; nobody has matched it against the statement yet.</div>
+    </div>
+    <div class="kpi${near.some((n) => Number(n.pct_full) >= 100) ? ' kpi-bad' : near.length ? ' kpi-warn' : ''}">
+      <div class="kpi-value">${near.length ? `${Math.max(...near.map((n) => Number(n.pct_full) || 0))}%` : '—'}</div>
+      <div class="kpi-label">Fullest store</div>
+      <div class="kpi-note">${near.length
+    ? `${esc(near[0].name)} at ${num(near[0].files)} of ${num(near[0].cap)} files.`
+    : 'No store is near its file allowance.'}</div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Close to a ceiling</h2>
+    <p>${near.length
+    ? 'Stores at 60% or more of their allowance, fullest first. The count is shown to the seller on their own dashboard too, before an upload can be refused.'
+    : 'Nothing is close. The list is empty, which is the answer.'}</p>
+  </div>
+  ${near.length ? `<div class="panel"><div class="panel-body panel-body-flush">
+    <table class="table">
+      <thead><tr>
+        <th>Store</th><th>Plan</th><th class="num">Published</th><th class="num">Allowance</th><th>Fill</th><th>Owner</th>
+      </tr></thead>
+      <tbody>${near.map((n) => `<tr>
+        <td><a href="/admin/stores/${esc(n.slug)}"><strong>${esc(n.name)}</strong></a><div class="fine">/s/${esc(n.slug)}</div></td>
+        <td>${pill(n.plan_name, n.plan_code === 'free' ? '' : 'accent')}</td>
+        <td class="num">${num(n.files)}</td>
+        <td class="num">${num(n.cap)}</td>
+        <td style="min-width:120px">${capMeter(n)}<div class="fine">${num(n.pct_full)}% full</div></td>
+        <td class="fine">${esc(n.owner_email || 'no owner on file')}</td>
+      </tr>`).join('')}
+      </tbody>
+    </table>
+  </div></div>` : '<div class="empty">Every store has plenty of room. Nothing to do here.</div>'}
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>The plans</h2>
+    <p>Prices are per ${plans[0]?.period_months || 12} months, read from the plans table.</p>
+  </div>
+  <div class="panel"><div class="panel-body panel-body-flush">
+    <table class="table table-directory">
+      <thead><tr>
+        <th>Plan</th><th class="num">Price</th><th class="num">Stores</th>
+        <th class="num">Active</th><th class="num">In grace</th><th class="num">Lapsed</th><th>Status</th>
+      </tr></thead>
+      <tbody>${plans.map((p) => {
+    const m = byCode[p.code] || { stores: 0, active: 0, in_grace: 0, lapsed: 0 };
+    return `<tr>
+        <td><strong>${esc(p.name)}</strong><div class="fine mono">${esc(p.code)}</div></td>
+        <td class="num">${p.price_npr ? `NPR ${Number(p.price_npr).toLocaleString('en-IN')}` : 'free'}</td>
+        <td class="num">${num(m.stores)}</td>
+        <td class="num">${num(m.active)}</td>
+        <td class="num">${m.in_grace ? `${num(m.in_grace)}<div class="fine">features retained</div>` : num(m.in_grace)}</td>
+        <td class="num">${num(m.lapsed)}</td>
+        <td>${p.active ? pill('offered', 'success') : pill('not offered', '')}</td>
+      </tr>`;
+  }).join('')}
+      </tbody>
+    </table>
+  </div></div>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>What each plan grants</h2>
+    <p>Read from the plans table, which is where a limit would be edited. Never gate the ability to sell — these gate scale, surface and polish.</p>
+  </div>
+  <div class="panel"><div class="panel-body panel-body-flush table-scroll">
+    <table class="table">
+      <thead><tr><th>Capability</th>${plans.map((p) => `<th>${esc(p.name)}</th>`).join('')}</tr></thead>
+      <tbody>${capKeys.map((key) => `<tr>
+        <td class="mono small">${esc(key)}</td>
+        ${plans.map((p) => `<td>${show((p.capabilities || {})[key])}</td>`).join('')}
+      </tr>`).join('')}
+      </tbody>
+    </table>
+  </div></div>
+  <p class="fine" style="margin-top:var(--space-4)">
+    ${drift.length
+    ? 'The two copies of this table disagree; the warning at the top of the page says where.'
+    : 'The running app and this table agree on every value, and a test fails the moment they stop.'}
+  </p>
+</section>
+
+<section class="section">
+  <div class="cols-2">
+    <div class="panel"><div class="panel-body">
+      <h2 style="font-size:var(--text-md)">Why there is no revenue figure here</h2>
+      <p class="small" style="margin-top:var(--space-3)">
+        The platform's income is two charges — an upgrade, and annual rent on a slot — and both arrive as a
+        bank transfer that a person matches by hand. A monthly-recurring-revenue number derived from a plan
+        mix would not reconcile with the money in the account, and a number that cannot be reconciled is
+        worse than no number.
+      </p>
+      <p class="small">
+        What is here instead is what was actually invoiced and what is still unmatched, which is a
+        description of work waiting rather than a projection.
+      </p>
+    </div></div>
+
+    <div class="panel"><div class="panel-body">
+      <h2 style="font-size:var(--text-md)">What a plan never gates</h2>
+      <dl class="kv" style="margin-top:var(--space-4)">
+        <dt>Earning</dt><dd>Any plan can connect a network and earn. The plans gate capacity, surface and polish — never the ability to make money.</dd>
+        <dt>Existing files</dt><dd>A store that is over its allowance keeps everything. Nothing is deleted on downgrade or expiry.</dd>
+        <dt>Ad share</dt><dd>No plan takes a percentage of what a creator earns from ads. There is no such charge at any tier.</dd>
+      </dl>
+    </div></div>
+  </div>
 </section>`,
   });
 }
