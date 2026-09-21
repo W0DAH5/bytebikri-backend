@@ -1157,6 +1157,220 @@ function consentControls({ consent, next }) {
 }
 
 /**
+ * Ad networks — connecting a store to the network that pays it.
+ *
+ * Every other product in this category shows a Connect button that opens OAuth
+ * and a green tick that means nothing to anybody. This page has to do three
+ * things instead, and all three are consequences of the money model:
+ *
+ *   1. Be explicit that the account is the CREATOR'S. We never ask for a
+ *      network login. What we hold is the value their network signs callbacks
+ *      with — it authorises nothing but the verification of an event.
+ *   2. Hand over the exact callback URL, with the network's own macros left
+ *      intact, and say which macro maps to what. This is the step that fails in
+ *      real life, and the page has to make it copy-pastable.
+ *   3. Show evidence rather than a colour: has this network ever called us, when
+ *      last, and how many times in thirty days. "Connected" with no callbacks
+ *      ever is the support ticket, and the page should answer it before it is
+ *      opened.
+ */
+export function networksPage({
+  channel, user, consent = null, flash = null, connections = [], available = [],
+  base = '', unusableBase = false, slotDefs = [],
+}) {
+  const card = ({ connection: c, provider, onboarding, url, health, sandbox, secretHint, events }) => {
+    const kind = { live: 'success', working: 'success', sandbox: 'info', quiet: 'warning', silent: 'warning', unverified: 'warning', off: '' }[health.level] || '';
+    const connector = onboarding.credentials[0] || null;
+    const slotPicker = !sandbox && c.status !== 'revoked';
+
+    return `
+  <div class="card card-pad-lg network-card">
+    <div class="row">
+      <div>
+        <h3 style="font-size:var(--text-lg)">${esc(provider.name)}</h3>
+        <div class="fine">${esc(provider.slotModel || 'network')}${provider.formats?.length ? ` · ${esc(provider.formats.join(' / '))}` : ''}</div>
+      </div>
+      <span class="spacer"></span>
+      ${pill(health.label, kind)}
+    </div>
+
+    <p class="small" style="margin-top:var(--space-3)">${esc(health.detail)}</p>
+
+    ${url ? `
+    <div class="field" style="margin-top:var(--space-5)">
+      <label for="url-${esc(c.id)}">Callback URL — paste this into ${esc(provider.name)}</label>
+      <input class="input mono" id="url-${esc(c.id)}" value="${esc(url)}" readonly
+             onclick="this.select()" spellcheck="false">
+      <span class="hint">${esc(onboarding.postback?.method || 'GET')} request.
+        The braces are macros ${esc(provider.name)} substitutes — leave them exactly as they are.</span>
+    </div>
+
+    ${(onboarding.postback?.params || []).length ? `
+    <table class="table" style="margin-top:var(--space-4)">
+      <thead><tr><th>Parameter</th><th>Their macro</th><th>What it carries</th></tr></thead>
+      <tbody>${onboarding.postback.params.map((p) => `<tr>
+        <td class="mono">${esc(p.ours)}</td>
+        <td class="mono">${esc(p.theirs || p.value || '—')}</td>
+        <td class="small">${esc(p.note || '')}</td>
+      </tr>`).join('')}</tbody>
+    </table>` : ''}
+
+    ${onboarding.postback?.signature ? `
+    <div class="note" style="margin-top:var(--space-4)">
+      <strong>How they sign it: ${esc(onboarding.postback.signature.algo)}</strong>
+      <p class="small" style="margin-top:var(--space-2)">
+        Over ${esc(onboarding.postback.signature.covers)}, keyed by ${esc(onboarding.postback.signature.key)}.
+        ${esc(onboarding.postback.signature.detail || '')}
+      </p>
+    </div>` : ''}` : `
+    <p class="small" style="margin-top:var(--space-4)">
+      This network needs no callback URL and no secret. There is nothing to configure.
+    </p>`}
+
+    ${connector ? `
+    <form method="post" action="/dashboard/${esc(channel.slug)}/networks/${esc(c.id)}/secret"
+          style="margin-top:var(--space-5)">
+      <div class="field">
+        <label for="sec-${esc(c.id)}">${esc(connector.label)}</label>
+        <input class="input mono" id="sec-${esc(c.id)}" name="${esc(connector.key)}" type="password"
+               autocomplete="off" spellcheck="false"
+               placeholder="${secretHint ? esc(secretHint) : 'paste it here'}">
+        <span class="hint">${esc(connector.help || '')}</span>
+      </div>
+      <div class="row">
+        <button class="btn btn-primary btn-sm" type="submit">
+          ${c.callback_secret ? 'Replace the secret' : `Save and verify`}
+        </button>
+        ${c.callback_secret ? `<span class="fine">Saved: <span class="mono">${esc(secretHint)}</span> — never shown in full again.</span>` : ''}
+      </div>
+    </form>` : ''}
+
+    ${slotPicker ? `
+    <form method="post" action="/dashboard/${esc(channel.slug)}/networks/${esc(c.id)}/slots"
+          style="margin-top:var(--space-5)">
+      <div class="field">
+        <label>Slots this network may serve</label>
+        <span class="hint">Leave all unticked and it fills nothing — a slot it cannot serve is a blank
+          space you are paying rent for.</span>
+        <div class="check-grid">
+          ${slotDefs.filter((d) => d.active).map((d) => `
+          <label class="check">
+            <input type="checkbox" name="slotKeys" value="${esc(d.key)}"
+                   ${(c.slot_keys || []).includes(d.key) ? 'checked' : ''}>
+            <span>${esc(d.label)} <span class="fine">· ${esc((d.formats || []).join('/'))}</span></span>
+          </label>`).join('')}
+        </div>
+      </div>
+      <button class="btn btn-sm" type="submit">Save slots</button>
+    </form>` : ''}
+
+    ${events.length ? `
+    <details style="margin-top:var(--space-5)">
+      <summary class="fine">History (${num(events.length)})</summary>
+      <ul class="list-steps" style="margin-top:var(--space-3)">
+        ${events.map((e) => `<li>${esc(day(e.created_at))} — ${esc(e.from_status || 'new')} → ${esc(e.to_status)}${e.detail ? ` · ${esc(e.detail)}` : ''}</li>`).join('')}
+      </ul>
+    </details>` : ''}
+
+    ${c.status === 'revoked' ? '' : `
+    <form method="post" action="/dashboard/${esc(channel.slug)}/networks/${esc(c.id)}/revoke"
+          style="margin-top:var(--space-6)">
+      <button class="btn btn-sm btn-danger" type="submit">Disconnect</button>
+      <span class="fine">Callbacks from it stop being accepted immediately.</span>
+    </form>`}
+  </div>`;
+  };
+
+  const offer = ({ provider, onboarding, verdict, note }) => {
+    const ok = landingUrlFor(provider, onboarding);
+    return `
+  <tr>
+    <td>
+      <strong>${esc(provider.name)}</strong>
+      ${provider.enabled ? '' : '<div class="fine">not enabled on this deployment</div>'}
+    </td>
+    <td>${pill(verdict?.level || 'unknown', verdict?.level === 'ok' ? 'success' : verdict?.level === 'caution' ? 'warning' : '')}</td>
+    <td class="num">${verdict?.thresholdLabel ? esc(verdict.thresholdLabel) : '—'}</td>
+    <td class="small">${esc(note || provider._note || '')}</td>
+    <td class="num">${ok
+    ? `<form method="post" action="/dashboard/${esc(channel.slug)}/networks">
+         <input type="hidden" name="providerId" value="${esc(provider.id)}">
+         <button class="btn btn-sm btn-primary" type="submit">Connect</button>
+       </form>`
+    : ok === '' ? '' : '<span class="fine">no adapter yet</span>'}</td>
+  </tr>`;
+  };
+
+  // A network we cannot verify is not connectable, so it gets no button — and
+  // the table says why rather than leaving a dash to be interpreted.
+  function landingUrlFor(provider, onboarding) {
+    if (provider.enabled === false && provider.blockedReason) return null;
+    if (onboarding.mode === 'paste_credentials' || onboarding.mode === 'none') return 'connect';
+    return null;
+  }
+
+  return layout({
+    title: 'Ad networks', user, activeChannel: channel, consent, current: 'dashboard',
+    body: `
+${pageHead(channel, 'networks', 'Ad networks',
+    'Where the ad money comes from, whose account it lands in, and the one URL that makes it work.')}
+
+${flash ? `<div class="note note-${flash.kind}" role="status">${esc(flash.message)}</div>` : ''}
+
+<div class="note">
+  <strong>The account is yours, and so is the payment.</strong>
+  <p class="small" style="margin-top:var(--space-2)">
+    We never ask for a network login and we never hold a publisher id. What you save here is the value
+    your network signs its callbacks with, and it authorises nothing except the verification of an event
+    we were told about. The network pays your account; we are not a party to it and cannot see the balance.
+  </p>
+</div>
+
+${unusableBase ? `
+<div class="note note-warning">
+  <strong>This deployment has no public address configured.</strong>
+  <p class="small" style="margin-top:var(--space-2)">
+    The callback URLs below are built from the address this browser used, which is
+    <span class="mono">${esc(base)}</span>. If that is not reachable from the internet, a network cannot call
+    it — set <span class="mono">PUBLIC_BASE_URL</span> and reload this page.
+  </p>
+</div>` : ''}
+
+<section class="section">
+  <div class="section-head">
+    <h2>Connected</h2>
+    <p>${connections.length ? plural(connections.length, 'network') : 'Nothing connected yet'}.</p>
+  </div>
+  ${connections.length ? connections.map(card).join('') : `
+  <div class="empty">
+    No network is connected. Until one is, your ad slots show the platform's own house ad — and that is
+    what rent buys, so nothing is broken. Connect a network only when you want the space to earn you money.
+  </div>`}
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Networks you could add</h2>
+    <p>Sorted by what a creator in Nepal can actually use today. The threshold column is the network's
+      own advertised minimum, which is not always the threshold an individual publisher gets.</p>
+  </div>
+  <div class="panel"><div class="panel-body panel-body-flush">
+    <table class="table">
+      <thead><tr><th>Network</th><th>Nepal payout</th><th class="num">Minimum</th><th>What you should know</th><th class="num">Action</th></tr></thead>
+      <tbody>${available.map(offer).join('')}</tbody>
+    </table>
+  </div></div>
+  <p class="fine" style="margin-top:var(--space-4)">
+    A network with no adapter is listed so you know it exists and what it pays, not because we can
+    connect it. You can still open an account there in your own name and record what it reports on your
+    earnings page — that is what keeps our estimate honest, and it works without any of this.
+  </p>
+</section>
+`,
+  });
+}
+
+/**
  * Ad slots — where a creator decides what goes in the space they own, and sees
  * what the space they rented out looks like.
  *
@@ -1311,6 +1525,7 @@ function storeSectionNav(channel, current) {
     ['earnings', 'Earnings'],
     ['billing', 'Billing'],
     ['slots', 'Ad slots'],
+    ['networks', 'Ad networks'],
     ['settings', 'Store settings'],
     ['reviews', 'Reviews'],
   ];

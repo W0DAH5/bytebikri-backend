@@ -403,6 +403,76 @@ export const store = {
     if (!UUID_RE.test(String(cid || ''))) return null;
     return one('select * from ad_connections where id = $1', [cid]);
   },
+  /**
+   * Change a connection's state, secret or slot assignment.
+   *
+   * Built from a whitelist rather than a spread of the caller's object: this row
+   * holds the secret used to verify money, and a route that forwards `req.body`
+   * into it would let a form decide what the column means.
+   */
+  async updateConnection(cid, patch = {}) {
+    if (!UUID_RE.test(String(cid || ''))) return null;
+    const sets = [];
+    const values = [cid];
+    const allow = {
+      status: (v) => String(v).slice(0, 20),
+      status_reason: (v) => String(v).slice(0, 200),
+      callback_secret: (v) => String(v),
+      credential_label: (v) => String(v).slice(0, 60),
+      slot_keys: (v) => (Array.isArray(v) ? v.map(String).slice(0, 12) : []),
+    };
+    for (const [key, cast] of Object.entries(allow)) {
+      if (!(key in patch)) continue;
+      values.push(cast(patch[key]));
+      sets.push(`${key} = $${values.length}`);
+    }
+    if (!sets.length) return this.connectionById(cid);
+    return one(`update ad_connections set ${sets.join(', ')} where id = $1 returning *`, values);
+  },
+
+  /**
+   * The state-machine history. The table exists because onboarding leaves the
+   * app and can fail halfway; without it a support question has no answer.
+   */
+  async logConnectionEvent({ connectionId, from = null, to, detail = null }) {
+    if (!UUID_RE.test(String(connectionId || ''))) return null;
+    return one(
+      `insert into ad_connection_events (connection_id, from_status, to_status, detail)
+       values ($1, $2, $3, $4) returning *`,
+      [connectionId, from, String(to).slice(0, 20), detail ? String(detail).slice(0, 300) : null],
+    );
+  },
+
+  connectionEvents(connectionId, { limit = 20 } = {}) {
+    if (!UUID_RE.test(String(connectionId || ''))) return Promise.resolve([]);
+    return many(
+      `select * from ad_connection_events where connection_id = $1
+        order by created_at desc limit $2`,
+      [connectionId, limit],
+    );
+  },
+
+  /**
+   * When each of this channel's networks last called us, and how often.
+   *
+   * This is the evidence the connections page needs to answer "why is nothing
+   * unlocking": a connection that has never received a callback is a URL that
+   * was not saved in the network's dashboard, and that is a different problem
+   * from a network that takes three days to reconcile an offerwall.
+   */
+  postbackEvidence(channelId, { days = 30 } = {}) {
+    return many(
+      `select provider_id, connection_id,
+              max(created_at) as last_at,
+              count(*) filter (where created_at > now() - ($2 || ' days')::interval) as in_window,
+              count(*) as total
+         from ad_view_events
+        where channel_id = $1
+        group by provider_id, connection_id`,
+      [channelId, String(days)],
+    );
+  },
+
   /** The active connection a postback belongs to. Revoked connections refuse. */
   async activeConnection(connectionId, providerId) {
     if (!connectionId) return null;

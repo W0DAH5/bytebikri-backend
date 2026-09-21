@@ -732,6 +732,19 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
 }
 .store-meta .dot { opacity: 0.6; }
 
+/* ── ad networks ─────────────────────────────────────────────────────────── */
+/* A connection is a card with three jobs in it: the callback URL to copy, the
+   secret to paste, and the evidence that it works. Wider measure than a card,
+   because a callback URL is long and wrapping it makes it uncopyable. */
+.network-card { margin-bottom: var(--space-6); }
+.network-card .mono { font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: var(--text-xs); }
+.network-card .table { margin-top: var(--space-2); }
+.check-grid {
+  display: grid; gap: var(--space-2); margin-top: var(--space-2);
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+.check { display: flex; align-items: flex-start; gap: var(--space-2); font-size: var(--text-sm); }
+
 /* ── forms ───────────────────────────────────────────────────────────────── */
 .field { display: grid; gap: var(--space-2); margin-bottom: var(--space-4); }
 .field label { font-size: var(--text-sm); font-weight: 550; color: var(--text-secondary); }

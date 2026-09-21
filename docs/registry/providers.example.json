@@ -11,6 +11,254 @@
   ],
   "providers": [
     {
+      "id": "bitlabs",
+      "name": "BitLabs",
+      "slotModel": "offerwall",
+      "formats": [
+        "rewarded",
+        "offerwall",
+        "survey"
+      ],
+      "environments": [
+        "web",
+        "app"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": false,
+      "requiresAdsTxt": false,
+      "requiresCmp": true,
+      "reportingApi": false,
+      "referral": null,
+      "payoutMethods": [
+        {
+          "method": "Payoneer",
+          "minUsd": null,
+          "nepalUsable": "VERIFY",
+          "reason": "VERIFY — confirm the current minimum and Nepal reachability in their publisher dashboard before telling a creator anything."
+        }
+      ],
+      "minPayoutUsd": null,
+      "minPayoutNote": "VERIFY in their dashboard. We do not print a number we have not checked, because the advertised platform minimum is not the threshold an individual publisher gets.",
+      "enabled": true,
+      "priority": 10,
+      "_note": "Offerwall and survey rewards. Verified postback dialect (HMAC-SHA1 over the URL, hash appended last) with a vector in test/media-or-provider tests; this is the first network a Nepal creator can actually connect.",
+      "onboarding": {
+        "mode": "paste_credentials",
+        "signupUrl": "https://www.bitlabs.ai/",
+        "credentials": [
+          {
+            "key": "appSecret",
+            "label": "App secret",
+            "secret": true,
+            "help": "BitLabs dashboard → your app → Settings → App secret. We verify the hash on every postback with it, and never show it again after you save."
+          }
+        ],
+        "steps": [
+          "Sign up at BitLabs in your own name — the publisher account has to be yours, because the money is paid to you and not to us.",
+          "Create an app for this store there, and set its payout method and country. Their minimum applies to you, not to us.",
+          "In the app settings, set the postback URL below. The macros in it are theirs; leave the braces exactly as they are.",
+          "Paste the app secret here and save. Until then the connection stays unverified and no postback from them is accepted."
+        ],
+        "postback": {
+          "method": "GET",
+          "params": [
+            {
+              "ours": "uid",
+              "theirs": "{uid}",
+              "note": "Our reference for the viewer, which is what the unlock is tied to."
+            },
+            {
+              "ours": "tx",
+              "theirs": "{tx}",
+              "note": "Their transaction id. A repeat is ignored, so their retry cannot unlock twice."
+            },
+            {
+              "ours": "val",
+              "theirs": "{val}",
+              "note": "Points, as they send them. Informational."
+            },
+            {
+              "ours": "raw",
+              "theirs": "{raw}",
+              "note": "Currency value where their macro provides one. Informational: it is never blended into your statement figure."
+            },
+            {
+              "ours": "s1",
+              "theirs": "{s1}",
+              "note": "Which unlock this callback satisfies. Without it the callback is verified and then discarded."
+            },
+            {
+              "ours": "offer_state",
+              "value": "COMPLETED",
+              "note": "Fixed. Abandoned offers unlock nothing."
+            },
+            {
+              "ours": "country",
+              "theirs": "{country}",
+              "note": "Optional."
+            }
+          ],
+          "signature": {
+            "algo": "HMAC-SHA1",
+            "key": "the app secret above",
+            "covers": "the complete callback URL",
+            "detail": "Hex digest appended last as &hash=. Nothing may be URL-encoded before hashing: the hash covers the URI as sent, and a re-encoded macro changes it."
+          }
+        }
+      }
+    },
+    {
+      "id": "pubscale",
+      "name": "PubScale",
+      "slotModel": "offerwall",
+      "formats": [
+        "rewarded",
+        "offerwall"
+      ],
+      "environments": [
+        "web",
+        "app"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": false,
+      "requiresAdsTxt": false,
+      "requiresCmp": true,
+      "reportingApi": false,
+      "referral": null,
+      "payoutMethods": [
+        {
+          "method": "Payoneer",
+          "minUsd": null,
+          "nepalUsable": "VERIFY",
+          "reason": "VERIFY — their publisher terms list the available rails; confirm before promising a payout."
+        }
+      ],
+      "minPayoutUsd": null,
+      "minPayoutNote": "VERIFY. Returns non-2xx as \"retry\": six attempts, so our endpoint answers 200 to a duplicate.",
+      "enabled": true,
+      "priority": 20,
+      "_note": "Offerwall with an MD5 signature over secret.user_id.int(value).token. Value is truncated before hashing, which is the rule that breaks naive implementations.",
+      "onboarding": {
+        "mode": "paste_credentials",
+        "signupUrl": "https://pubscale.com/",
+        "credentials": [
+          {
+            "key": "appSecret",
+            "label": "App secret",
+            "secret": true,
+            "help": "PubScale dashboard → your app → Settings → secret. Used to verify the MD5 signature on every callback."
+          }
+        ],
+        "steps": [
+          "Sign up at PubScale in your own name and add this store as an app.",
+          "Set the callback URL below in their dashboard, with the macros as written.",
+          "Paste the app secret here and save.",
+          "Their server retries six times when it does not get a 2xx. We answer 200 to a callback we have already processed, so a retry is never a second unlock and never a second payment."
+        ],
+        "postback": {
+          "method": "GET",
+          "params": [
+            {
+              "ours": "user_id",
+              "theirs": "{user_id}",
+              "note": "Our reference for the viewer."
+            },
+            {
+              "ours": "value",
+              "theirs": "{value}",
+              "note": "Their reward value. Truncated to an integer before the signature — their rule, not ours."
+            },
+            {
+              "ours": "token",
+              "theirs": "{token}",
+              "note": "Their transaction id, and what makes their retries idempotent."
+            }
+          ],
+          "signature": {
+            "algo": "MD5",
+            "key": "the app secret above",
+            "covers": "secret, a dot, user_id, a dot, int(value), a dot, token",
+            "detail": "In that order, concatenated literally. Value is truncated, not rounded."
+          }
+        }
+      }
+    },
+    {
+      "id": "applixir",
+      "name": "AppLixir",
+      "slotModel": "rewarded_video",
+      "formats": [
+        "rewarded"
+      ],
+      "environments": [
+        "web",
+        "app"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": "VERIFY",
+      "requiresAdsTxt": false,
+      "requiresCmp": true,
+      "reportingApi": false,
+      "referral": null,
+      "payoutMethods": [
+        {
+          "method": "Payoneer",
+          "minUsd": null,
+          "nepalUsable": "VERIFY",
+          "reason": "VERIFY."
+        }
+      ],
+      "minPayoutUsd": null,
+      "minPayoutNote": "VERIFY. Rewarded video clears several times a display impression in the same slot, which is why the unlock loop is worth building before the display panels.",
+      "enabled": true,
+      "priority": 30,
+      "_note": "Rewarded video. Our adapter ships unconfirmed and fails closed: it refuses every callback rather than guessing a signature.",
+      "onboarding": {
+        "mode": "paste_credentials",
+        "signupUrl": "https://applixir.com/",
+        "credentials": [
+          {
+            "key": "appSecret",
+            "label": "Reward secret",
+            "secret": true,
+            "help": "Applixir dashboard → app → reward settings. The adapter fails closed today: it will refuse every callback until the signature template is confirmed against a live account."
+          }
+        ],
+        "steps": [
+          "Sign up at Applixir in your own name and register this store.",
+          "Set the reward callback URL below.",
+          "Paste the reward secret here.",
+          "Expect nothing to unlock until that verifier is confirmed against a live account. That is deliberate: a guessed signature is worse than no unlock at all."
+        ],
+        "postback": {
+          "method": "GET",
+          "params": [
+            {
+              "ours": "userId",
+              "theirs": "{userId}",
+              "note": "Our reference for the viewer."
+            },
+            {
+              "ours": "custom",
+              "theirs": "{custom}",
+              "note": "The unlock id has to travel here."
+            },
+            {
+              "ours": "revenue",
+              "theirs": "{revenue}",
+              "note": "Informational."
+            }
+          ],
+          "signature": {
+            "algo": "MD5",
+            "key": "the reward secret above",
+            "covers": "their documented concatenation",
+            "detail": "Unconfirmed. The adapter refuses rather than guesses."
+          }
+        }
+      }
+    },
+    {
       "id": "house",
       "name": "bytebikri House Ads",
       "slotModel": "per_slot",
@@ -31,7 +279,37 @@
       "minPayoutUsd": null,
       "enabled": true,
       "priority": 1000,
-      "_note": "The floor of every slot. Ship this first. Never leaves a slot blank."
+      "_note": "The floor of every slot. Ship this first. Never leaves a slot blank.",
+      "onboarding": {
+        "mode": "none",
+        "steps": [
+          "Our own network, and the floor of every slot. It needs no account, no secret and no approval, and it pays nobody — it exists so a slot is never blank and so the unlock loop runs with nothing configured."
+        ],
+        "postback": {
+          "method": "POST",
+          "params": [
+            {
+              "ours": "viewId",
+              "note": "The unlock this callback satisfies."
+            },
+            {
+              "ours": "externalId",
+              "note": "Our transaction id, for idempotency."
+            },
+            {
+              "ours": "completed",
+              "value": "true",
+              "note": "Fixed."
+            }
+          ],
+          "signature": {
+            "algo": "HMAC-SHA256",
+            "key": "a per-connection secret we generate",
+            "covers": "the raw request body",
+            "detail": "Headers x-bb-timestamp and x-bb-signature. A timestamp outside the window is refused, so a captured callback cannot be replayed later."
+          }
+        }
+      }
     },
     {
       "id": "affiliate_generic",

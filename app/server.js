@@ -23,6 +23,10 @@ import { query, many, scalar, health as dbHealth, close as closeDb } from './src
 import { allocateSlots, estimateRentSlotValue, POLICY } from './src/slots.js';
 import { composeSlots, HOUSE_CREATIVE, sanitizeUrl } from './src/creatives.js';
 import {
+  onboardingFor, connectable, postbackUrl, validateCredential, maskSecret,
+  connectionHealth, unconnectableNote,
+} from './src/connections.js';
+import {
   railDetails, railsReady, payeeName, upgradeExplanation, planBenefits, NOT_CHARGED,
 } from './src/billing.js';
 import { earningsSummary, MONEY_MAP, payoutChecklist, periodStatus } from './src/earnings.js';
@@ -659,6 +663,69 @@ APP.get('/dashboard/:slug', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * The public base URL, for a callback URL a network has to reach.
+ *
+ * `PUBLIC_BASE_URL` first, then whatever the request itself says — a seller
+ * setting this up on a deployed instance gets a URL that works without an env
+ * var, and one behind a proxy gets the host the proxy forwarded. The value is
+ * shown to a human to paste, so a wrong one is visible rather than silent.
+ */
+function publicBase(req) {
+  const configured = process.env.PUBLIC_BASE_URL;
+  if (configured) return String(configured).replace(/\/+$/, '');
+  const proto = req.get('x-forwarded-proto') || req.protocol || 'http';
+  return `${proto}://${req.get('host')}`;
+}
+
+/** Everything the ad-networks page needs, assembled in one place. */
+async function networksState(req, channel) {
+  const registry = await loadRegistry();
+  const connections = await store.connectionsOf(channel.id);
+  const evidence = await store.postbackEvidence(channel.id);
+  const base = publicBase(req);
+
+  const evidenceFor = (providerId, connectionId) => {
+    const exact = evidence.find((e) => e.connection_id === connectionId);
+    const byProvider = evidence.find((e) => e.provider_id === providerId);
+    const chosen = exact || byProvider || null;
+    return {
+      lastPostbackAt: chosen?.last_at || null,
+      postbacks30d: Number(chosen?.in_window || 0),
+    };
+  };
+
+  const connected = await Promise.all(connections.map(async (c) => {
+    const provider = registry.providers.find((p) => p.id === c.provider_id) || { id: c.provider_id, name: c.provider_id };
+    const onboarding = onboardingFor(provider);
+    const sandbox = SANDBOX_PROVIDER_IDS.has(c.provider_id);
+    return {
+      connection: c,
+      provider,
+      onboarding,
+      sandbox,
+      // The URL as the network needs it, macros intact.
+      url: postbackUrl({ provider, connectionId: c.id, baseUrl: base }),
+      secretHint: maskSecret(c.callback_secret),
+      health: connectionHealth({ connection: c, sandbox, ...evidenceFor(c.provider_id, c.id) }),
+      events: await store.connectionEvents(c.id, { limit: 6 }),
+    };
+  }));
+
+  const providerNames = new Set(connections.map((c) => c.provider_id));
+  const available = registry.providers
+    .filter((p) => !providerNames.has(p.id) && p.id !== 'house')
+    .map((p) => ({ provider: p, onboarding: onboardingFor(p), verdict: payoutVerdict(p), note: unconnectableNote(p) }))
+    .sort((a, b) => {
+      // Connectable first, then by the registry's own priority: what a Nepali
+      // creator can actually use today should be at the top of the page.
+      const rank = (x) => (connectable(x.provider) ? 0 : 1);
+      return rank(a) - rank(b) || (a.provider.priority ?? 500) - (b.provider.priority ?? 500);
+    });
+
+  return { connections: connected, available, base, unusableBase: !process.env.PUBLIC_BASE_URL };
+}
+
 // ---------------------------------------------------------------------------
 // Ad slots — the creator's own space
 // ---------------------------------------------------------------------------
@@ -714,6 +781,140 @@ APP.post('/dashboard/:slug/slots/clear', async (req, res, next) => {
     await store.audit('creative.cleared', { channelId: channel.id, slotKey: req.body?.slotKey });
     res.redirect(`/dashboard/${channel.slug}/slots?saved_slot=1`);
   } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// Ad networks — connecting a store to a network that pays it directly
+// ---------------------------------------------------------------------------
+APP.get('/dashboard/:slug/networks', async (req, res, next) => {
+  try {
+    const channel = await requireOwnChannel(req, res);
+    if (!channel) return;
+    const state = await networksState(req, channel);
+    res.send(views.networksPage({
+      channel, user: req.user, consent: req.consent, slotDefs: SLOT_DEFS,
+      ...state, flash: flashFor(req.query),
+    }));
+  } catch (err) { next(err); }
+});
+
+/**
+ * Start a connection.
+ *
+ * The status is the honest part: a network whose callbacks we verify with a
+ * secret they issue starts `verifying`, not `active`, because until the secret
+ * arrives nothing it sends can be trusted. Claiming "connected" before that
+ * would be a green tick over a connection that refuses every callback.
+ */
+APP.post('/dashboard/:slug/networks', async (req, res, next) => {
+  try {
+    const channel = await requireOwnChannel(req, res);
+    if (!channel) return;
+    const back = `/dashboard/${channel.slug}/networks`;
+    const provider = await providerById(String(req.body?.providerId || ''));
+    if (!provider) return res.redirect(`${back}?error=provider`);
+    if (!connectable(provider)) return res.redirect(`${back}?error=noadapter`);
+
+    const already = (await store.connectionsOf(channel.id)).find((c) => c.provider_id === provider.id);
+    if (already) return res.redirect(`${back}?error=already`);
+
+    const onboarding = onboardingFor(provider);
+    // No slots on connect. Which positions a network fills is a separate
+    // decision, made on the page once the seller can see what each one is for —
+    // and a network assigned to a slot it cannot serve is a blank space the
+    // seller is already paying rent for.
+    const slots = [];
+
+    const conn = await store.createConnection({
+      channelId: channel.id,
+      providerId: provider.id,
+      onboarding: onboarding.mode === 'paste_credentials' ? 'paste_credentials' : 'signup_redirect',
+      payoutVerdict: payoutVerdict(provider)?.level || null,
+      // Slots a rewarded/offerwall network can serve. It cannot fill a display
+      // slot, and a network assigned to a slot it cannot fill is a blank space
+      // the seller already paid rent for.
+      slotKeys: onboarding.mode === 'paste_credentials' ? [] : slots,
+      // Ours, generated per connection, and only for providers we sign for. A
+      // network that signs with a secret WE generated would be verifiable by
+      // anyone who has read this repository.
+      secret: provider.id === 'house' ? readSecret('AD_POSTBACK_SECRET') : null,
+      callbackBaseUrl: publicBase(req),
+    });
+    // createConnection starts a connection active so the sandbox works out of
+    // the box; a network we must verify is held back until its secret arrives.
+    if (onboarding.needsSecret) {
+      await store.updateConnection(conn.id, { status: 'verifying' });
+      await store.logConnectionEvent({ connectionId: conn.id, to: 'verifying', detail: 'waiting for the network secret' });
+    } else {
+      await store.logConnectionEvent({ connectionId: conn.id, to: 'active', detail: 'no credentials needed' });
+    }
+
+    await store.audit('ad_connection.started', { channelId: channel.id, providerId: provider.id, connectionId: conn.id });
+    return res.redirect(`${back}?started=${encodeURIComponent(provider.id)}`);
+  } catch (err) { return next(err); }
+});
+
+/** The secret their network signs with. The only credential we ever hold. */
+APP.post('/dashboard/:slug/networks/:connectionId/secret', async (req, res, next) => {
+  try {
+    const channel = await requireOwnChannel(req, res);
+    if (!channel) return;
+    const back = `/dashboard/${channel.slug}/networks`;
+    const conn = await store.connectionById(req.params.connectionId);
+    if (!conn || conn.channel_id !== channel.id) return res.redirect(`${back}?error=nope`);
+
+    const provider = await providerById(conn.provider_id);
+    const field = onboardingFor(provider).credentials[0];
+    if (!field) return res.redirect(`${back}?error=noadapter`);
+
+    const checked = validateCredential(field, req.body?.[field.key]);
+    if (!checked.ok) return res.redirect(`${back}?error=secret`);
+
+    await store.updateConnection(conn.id, {
+      callback_secret: checked.value,
+      credential_label: field.label,
+      status: 'active',
+      status_reason: null,
+    });
+    await store.logConnectionEvent({
+      connectionId: conn.id, from: conn.status, to: 'active',
+      detail: `${field.label} saved`,
+    });
+    await store.audit('ad_connection.verified', { channelId: channel.id, providerId: conn.provider_id, connectionId: conn.id });
+    return res.redirect(`${back}?saved_connection=1`);
+  } catch (err) { return next(err); }
+});
+
+/** Which slots this network may serve. */
+APP.post('/dashboard/:slug/networks/:connectionId/slots', async (req, res, next) => {
+  try {
+    const channel = await requireOwnChannel(req, res);
+    if (!channel) return;
+    const back = `/dashboard/${channel.slug}/networks`;
+    const conn = await store.connectionById(req.params.connectionId);
+    if (!conn || conn.channel_id !== channel.id) return res.redirect(`${back}?error=nope`);
+
+    const offered = new Set(SLOT_DEFS.filter((d) => d.active).map((d) => d.key));
+    const picked = [].concat(req.body?.slotKeys || []).filter((k) => offered.has(k));
+    await store.updateConnection(conn.id, { slot_keys: picked });
+    await store.audit('ad_connection.slots', { channelId: channel.id, connectionId: conn.id, picked });
+    return res.redirect(`${back}?saved_connection=1`);
+  } catch (err) { return next(err); }
+});
+
+APP.post('/dashboard/:slug/networks/:connectionId/revoke', async (req, res, next) => {
+  try {
+    const channel = await requireOwnChannel(req, res);
+    if (!channel) return;
+    const back = `/dashboard/${channel.slug}/networks`;
+    const conn = await store.connectionById(req.params.connectionId);
+    if (!conn || conn.channel_id !== channel.id) return res.redirect(`${back}?error=nope`);
+
+    await store.updateConnection(conn.id, { status: 'revoked', status_reason: 'disconnected by the store' });
+    await store.logConnectionEvent({ connectionId: conn.id, from: conn.status, to: 'revoked', detail: 'disconnected by the store' });
+    await store.audit('ad_connection.revoked', { channelId: channel.id, connectionId: conn.id, providerId: conn.provider_id });
+    return res.redirect(`${back}?revoked=1`);
+  } catch (err) { return next(err); }
 });
 
 // ---------------------------------------------------------------------------
@@ -1247,6 +1448,8 @@ const SUCCESS_FLASH = {
   requested: () => 'Upgrade requested. Send the amount to the account shown, then submit the transfer reference.',
   reviewed: () => 'Thank you — your review is on the page.',
   saved_slot: () => 'Saved. It is on your pages now.',
+  saved_connection: () => 'Saved.',
+  revoked: () => 'Disconnected. Its callbacks are refused from now on, and anything it gated stops unlocking.',
   responded: () => 'Reply posted.',
 };
 
@@ -1261,6 +1464,11 @@ const ERROR_FLASH = {
   empty: 'A slot message needs a headline.',
   slot: 'That is not a position on your pages.',
   link: 'That link cannot be used. A full https:// address or a path on this store (/s/you) will work.',
+  provider: 'That is not a network we know.',
+  noadapter: 'We have no adapter for that network, so connecting it would produce a connection that can never verify a callback.',
+  already: 'That network is already connected to this store.',
+  secret: 'That secret did not look right — copy it again from the network dashboard, with no spaces at either end.',
+  nope: 'That connection is not yours.',
   unlock: 'Only someone who has unlocked this file can review it.',
   rating: 'Pick a rating from one to five.',
   media: 'Attach the file people are unlocking. Nothing was published.',
