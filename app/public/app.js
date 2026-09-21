@@ -169,6 +169,34 @@
     });
   }
 
+  // ── protected media ──────────────────────────────────────────────────────
+  //
+  // Deterrence, and nothing more. The honest statement is in the markup above
+  // the player: the overlay mark is what makes a copy traceable, and hiding the
+  // right-click menu is what stops the casual two-click grab. It does not stop
+  // devtools, it cannot stop a screen recorder, and this comment exists so that
+  // nobody later mistakes it for a control and removes the watermark on the
+  // grounds that "the JS already handles it".
+  document.querySelectorAll('[data-protect]').forEach((el) => {
+    el.addEventListener('contextmenu', (e) => e.preventDefault());
+    el.addEventListener('dragstart', (e) => e.preventDefault());
+  });
+
+  // A media element that fails is almost always an expired link (four hours) or
+  // a revoked unlock. Saying which beats a black rectangle.
+  document.querySelectorAll('video[src], audio[src]').forEach((el) => {
+    el.addEventListener('error', () => {
+      const stage = el.closest('.stage');
+      if (!stage || stage.querySelector('.stage-error')) return;
+      const note = document.createElement('p');
+      note.className = 'fine stage-error';
+      note.style.cssText = 'position:absolute;inset:auto 0 0 0;z-index:3;margin:0;'
+        + 'padding:var(--space-3) var(--space-4);background:var(--danger-soft);color:var(--danger-text)';
+      note.textContent = el.dataset.expiredHint || 'This file could not be loaded. Reload the page for a fresh link.';
+      stage.appendChild(note);
+    });
+  });
+
   // ── dashboard actions ────────────────────────────────────────────────────
   document.querySelectorAll('[data-connect]').forEach((btn) => {
     btn.addEventListener('click', async () => {

@@ -268,7 +268,7 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
 .section { margin-block: var(--space-12); }
 .section-head {
   display: flex; align-items: baseline; gap: var(--space-4);
-  margin-bottom: var(--space-5); flex-wrap: wrap;
+  margin-bottom: var(--space-6); flex-wrap: wrap;
 }
 .section-head p { color: var(--text-muted); font-size: var(--text-sm); margin: 0; }
 
@@ -445,9 +445,16 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
 }
 
 /* ── asset grid ──────────────────────────────────────────────────────────── */
+/* Cards sit 24px apart and are at least 280px wide.
+ *
+ * Both numbers come from the layout research and both were different here: a
+ * 20px gutter and a 260px floor. Below about 12px cards visually merge, which
+ * was not the problem — the problem was that at 260px the title column was one
+ * word wide on a laptop, so every card broke over four lines and the grid read
+ * as uneven even though every card was the same height. */
 .grid-assets {
-  display: grid; gap: var(--space-5);
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+  display: grid; gap: var(--space-6);
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
 }
 
 .asset {
@@ -480,7 +487,16 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
 .thumb-badge-r { position: absolute; top: var(--space-3); right: var(--space-3); }
 
 .asset-body { padding: var(--space-4) var(--space-5) var(--space-5); display: flex; flex-direction: column; gap: var(--space-2); flex: 1; }
-.asset-body h3 { font-size: var(--text-md); font-weight: 620; }
+.asset-body h3 {
+  font-size: var(--text-md); font-weight: 620; line-height: 1.3;
+  /* Two lines, always. A one-line title next to a two-line one pushes everything
+     below it out of alignment, and the usual fix — a min-height tweaked per row
+     — is a fix that has to be redone every time somebody types a longer name.
+     Reserving exactly two lines and clamping the rest keeps every card's
+     description, price row and footer on the same line as its neighbours'. */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; min-height: 2.6em;
+}
 .asset-desc {
   font-size: var(--text-sm); color: var(--text-muted); line-height: var(--leading-snug);
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
@@ -493,7 +509,7 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
 }
 
 /* Channel cards on the marketplace */
-.grid-channels { display: grid; gap: var(--space-5); grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
+.grid-channels { display: grid; gap: var(--space-6); grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
 .channel-card { display: flex; flex-direction: column; gap: var(--space-3); }
 .channel-banner-img { object-fit: cover; width: 100%; display: block; }
 .channel-banner {
@@ -505,25 +521,84 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
 }
 
 /* ── asset detail ────────────────────────────────────────────────────────── */
-.asset-hero {
-  border-radius: var(--radius-xl); overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  background: var(--surface-raised);
-}
-.asset-hero-visual {
-  aspect-ratio: 16 / 9;
-  background:
-    radial-gradient(90% 120% at 20% 0%, color-mix(in srgb, var(--indigo-500) 42%, transparent), transparent 58%),
-    radial-gradient(90% 120% at 80% 100%, color-mix(in srgb, var(--violet-500) 38%, transparent), transparent 58%),
-    var(--surface-overlay);
+
+/* The stage: whatever the page is showing, in one frame with one radius.
+ *
+ * It replaces the old fixed 16:9 header. A video needs to keep its own aspect
+ * ratio (letterboxing a vertical phone clip into 16:9 wastes most of the width)
+ * and an image needs to be seen whole rather than cropped by `object-fit: cover`
+ * — which is what the previous version did to every cover, and is why covers
+ * looked fine on the storefront and wrong here. */
+.stage {
+  position: relative; border-radius: var(--radius-xl); overflow: hidden;
+  border: 1px solid var(--border-subtle); background: var(--surface-raised);
   display: grid; place-items: center;
 }
-.asset-hero-visual .thumb-glyph { font-size: clamp(2rem, 7vw, 3.25rem); }
+.stage > img { display: block; width: 100%; height: auto; object-fit: contain; }
+
+/* Covers and locked states keep a reserved ratio: the space is claimed before
+   the image arrives, so the text below does not jump when it loads. */
+.stage-locked, .stage > .thumb-glyph { aspect-ratio: 16 / 9; }
+.stage-locked { display: grid; place-items: center; }
+.stage-locked > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.stage-veil {
+  position: relative; z-index: 1; inset: 0;
+  display: grid; place-items: center; gap: var(--space-2);
+  padding: var(--space-6); text-align: center;
+  background: color-mix(in srgb, var(--surface-base) 72%, transparent);
+  backdrop-filter: blur(3px);
+}
+.stage-veil .small { margin: 0; }
+.stage-locked .stage-veil { position: absolute; }
+
+.stage video {
+  display: block; width: 100%; height: auto; max-height: 72vh;
+  background: #000; aspect-ratio: 16 / 9;
+}
+/* The dark letterbox behind a video is the one place a literal black is right:
+   it is the absence of picture, not a surface of ours. */
+.stage-audio { padding: var(--space-6); }
+
+/* The on-screen watermark for video and audio. Not decoration: it is the only
+   mark those two formats can carry without re-encoding every file, and it
+   composites into any screenshot or recording of the page. `pointer-events:
+   none` matters — an overlay that swallows clicks into the scrubber turns a
+   protection feature into a broken player. */
+.stage-mark {
+  position: absolute; inset: 0; z-index: 2; pointer-events: none;
+  background-repeat: repeat; background-size: 360px 150px;
+  mix-blend-mode: overlay; opacity: 0.9;
+}
+
+.audio-shell { display: flex; align-items: center; gap: var(--space-5); width: 100%; }
+.audio-glyph {
+  flex: none; width: 56px; height: 56px; border-radius: var(--radius-full);
+  display: grid; place-items: center; font-size: 24px;
+  background: linear-gradient(140deg, var(--indigo-500), var(--violet-500)); color: #fff;
+}
+.audio-body { flex: 1; min-width: 0; }
+.audio-name { margin: 0 0 var(--space-3); font-size: var(--text-sm); font-weight: 600; overflow-wrap: anywhere; }
+.audio-body audio { width: 100%; display: block; }
+
+.back-link { display: inline-block; margin-block: var(--space-6) var(--space-5); font-size: var(--text-sm); }
+.asset-head { display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap; }
+.asset-head h1 { font-size: var(--text-2xl); margin: 0; }
+
+/* The detail column is a stack with one rhythm — 32px between blocks, on the
+   8-point scale — so the eye meets the same gap down the whole page. */
+.stack-8 > * + * { margin-top: var(--space-8); }
+.mark-note {
+  margin: 0; padding: var(--space-4) var(--space-5);
+  border-left: 3px solid var(--accent);
+  background: var(--surface-sunken); border-radius: var(--radius-sm);
+  color: var(--text-muted);
+}
 
 .asset-layout { display: grid; gap: var(--space-8); grid-template-columns: 1fr; align-items: start; }
 @media (min-width: 900px) { .asset-layout { grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr); } }
 
 .unlock-card { position: sticky; top: calc(var(--header-h) + var(--space-5)); }
+@media (max-width: 899px) { .unlock-card { position: static; } }
 
 /* Checkbox row. Clickable across the whole label, not just the box — a 16px
    target is a poor thing to ask a thumb to hit. */
@@ -549,13 +624,29 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
 
 .dl-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3); }
 .dl-item {
-  display: flex; align-items: center; gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
+  display: flex; align-items: center; gap: var(--space-4);
+  padding: var(--space-4); min-height: 64px;
   border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
   background: var(--surface-base);
 }
-.dl-item .dl-name { font-size: var(--text-sm); font-weight: 550; }
+.dl-item .dl-name { font-size: var(--text-sm); font-weight: 550; overflow-wrap: anywhere; }
 .dl-item .dl-meta { font-size: var(--text-xs); color: var(--text-faint); }
+
+/* What kind of file this is, at a glance. A fixed 44px box so the names in a
+   list all start at the same x, whether the file is a video, a zip or a jpeg. */
+.file-badge {
+  flex: none; width: 44px; height: 44px; border-radius: var(--radius-sm);
+  display: grid; place-items: center;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+  background: var(--surface-overlay); color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+}
+.dl-body { min-width: 0; display: grid; gap: 2px; }
+
+/* One full-width primary action in the unlock card. On a phone the aside stacks
+   under the content, so the button is the last thing before the fold and needs
+   to look like the one thing to press. */
+.btn-block { width: 100%; }
 
 /* ── ad slots ────────────────────────────────────────────────────────────── */
 /* Height is reserved whether or not an ad fills it. Without that the page

@@ -354,75 +354,170 @@ ${slotHtml}
 // Asset page
 // ---------------------------------------------------------------------------
 
-export function assetPage({ channel, asset, files, unlocked, user, policy, slots, consent = null }) {
+/**
+ * The player, and the honest note that goes under it.
+ *
+ * A video that is offered as a download link is a video that will be on a file
+ * host by the evening. A player is not a protection either — a screen recorder
+ * records a browser as easily as anything else — but it changes what the page
+ * IS: content you watch, not a file you take. What the mark underneath does is
+ * make a copy traceable, and the note says exactly that, because a product that
+ * claims to be un-copyable and is not is worse than one that never claimed it.
+ */
+function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, slug, assetSlug }) {
+  const frame = (inner, kind) => `
+    <figure class="stage stage-${kind}"${kind === 'image' ? '' : ' data-protect'}>
+      ${inner}
+      ${kind === 'image' ? '' : `<div class="stage-mark" style="background-image:url('${esc(markUri)}')" aria-hidden="true"></div>`}
+    </figure>`;
+
+  if (!unlocked) {
+    const cover = coverUrl
+      ? `<img src="${esc(coverUrl)}" alt="" decoding="async">`
+      : `<span class="thumb-glyph" aria-hidden="true">${esc(glyph(title))}</span>`;
+    return `
+    <div class="stage stage-locked">
+      ${cover}
+      <div class="stage-veil">
+        <span class="locked-glyph" aria-hidden="true">🔒</span>
+        <p class="small">${needsAd ? 'Unlocks after the ad' : 'Not unlocked yet'}</p>
+      </div>
+    </div>`;
+  }
+
+  if (previewFile?.playable && previewFile.streamUrl) {
+    const poster = coverUrl ? ` poster="${esc(coverUrl)}"` : '';
+    const src = esc(previewFile.streamUrl);
+    return previewFile.kind === 'audio'
+      ? frame(`
+        <div class="audio-shell">
+          <span class="audio-glyph" aria-hidden="true">♪</span>
+          <div class="audio-body">
+            <p class="audio-name">${esc(previewFile.filename)}</p>
+            <audio controls preload="metadata" controlslist="nodownload noplaybackrate" src="${src}"></audio>
+          </div>
+        </div>`, 'audio')
+      : frame(`
+        <video controls playsinline preload="metadata"${poster}
+               controlslist="nodownload noplaybackrate noremoteplayback"
+               disablepictureinpicture disableremoteplayback
+               src="${src}"></video>`, 'video');
+  }
+
+  if (previewFile?.marked && previewFile.streamUrl) {
+    return frame(`<img src="${esc(previewFile.streamUrl)}" alt="" decoding="async">`, 'image');
+  }
+
+  const cover = coverUrl
+    ? `<img src="${esc(coverUrl)}" alt="" decoding="async">`
+    : `<span class="thumb-glyph" aria-hidden="true">${esc(glyph(title))}</span>`;
+  return `<div class="stage">${cover}</div>`;
+}
+
+/** One line per file, saying what actually happens to it — no blanket promise. */
+function fileTreatment(f) {
+  if (f.playable) return { action: 'Plays here', note: 'no download offered' };
+  if (f.kind === 'image') return { action: 'Download', note: 'your reference burned in' };
+  return { action: 'Download', note: 'shown as a download' };
+}
+
+export function assetPage({
+  channel, asset, files, unlocked, user, policy, slots, previewFile = null,
+  markUri = '', consent = null,
+}) {
   const open = asset.unlock_mode === 'open';
   const needsAd = !open && !unlocked;
+  const media = Boolean(previewFile?.playable);
 
-  const downloads = unlocked
-    ? `<ul class="dl-list">${files.map((f) => `
+  const rows = files.map((f) => {
+    const t = fileTreatment(f);
+    return `
         <li class="dl-item">
-          <span class="thumb" style="width:38px;height:38px;flex:none;border-radius:var(--radius-sm)" aria-hidden="true">
-            <span class="thumb-glyph" style="font-size:14px">${esc((f.filename || '').split('.').pop().toUpperCase().slice(0, 4))}</span>
-          </span>
-          <span style="min-width:0">
-            <span class="dl-name" style="display:block">${esc(f.filename)}</span>
-            <span class="dl-meta">${(f.size_bytes / 1024).toFixed(1)} KB · ${esc(f.mime_type || 'file')}</span>
+          <span class="file-badge" aria-hidden="true">${esc((f.kind || 'file').slice(0, 4).toUpperCase())}</span>
+          <span class="dl-body">
+            <span class="dl-name">${esc(f.filename)}</span>
+            <span class="dl-meta">${(f.size_bytes / 1024).toFixed(1)} KB · ${esc(f.mime_type || 'file')} · ${esc(t.note)}</span>
           </span>
           <span class="spacer"></span>
-          <a class="btn btn-sm btn-primary" href="${esc(f.downloadUrl)}" download>Download</a>
-        </li>`).join('')}</ul>
-      <p class="fine" style="margin-top:var(--space-3)">Links were minted for you and expire in 10 minutes.
-      They cannot be forwarded — the file is re-checked against your unlock on every request.</p>`
+          ${f.downloadUrl
+            ? `<a class="btn btn-sm${f.playable ? '' : ' btn-primary'}" href="${esc(f.downloadUrl)}" download>${esc(t.action)}</a>`
+            : `<span class="pill pill-locked">${esc(t.action)}</span>`}
+        </li>`;
+  }).join('');
+
+  const filesPanel = unlocked
+    ? `<ul class="dl-list">${rows}</ul>
+       <p class="fine" style="margin-top:var(--space-4)">
+         Links are minted for your account, carry your reference, and expire.
+         ${media ? 'Playback links stay valid for four hours so seeking works; a download link expires in ten minutes.' : ''}
+         The file itself is re-checked against your unlock on every request, so a forwarded link is useless to anyone else.
+       </p>`
     : `<div class="locked-panel">
-        <div class="locked-glyph" aria-hidden="true">🔒</div>
-        <p class="small" style="margin:var(--space-3) 0 0">The download link appears here once you unlock.</p>
-      </div>`;
+         <div class="locked-glyph" aria-hidden="true">🔒</div>
+         <p class="small" style="margin:var(--space-3) 0 0">
+           ${media ? 'The player starts here once you unlock.' : 'The download appears here once you unlock.'}
+         </p>
+       </div>`;
+
+  const markNote = !unlocked ? '' : media
+    ? `<p class="fine mark-note">
+         <strong>Watermark: on.</strong> Frames carry <span class="mono">${esc(markUri ? 'BYTEBIKRI · your reference' : '')}</span>
+         overlaid from your account — so a recording can be traced back to it.
+         No website can stop a screen recording, and this one does not pretend to:
+         the app is where the operating system blocks it.
+       </p>`
+    : previewFile?.marked
+      ? `<p class="fine mark-note">
+           <strong>Watermark: burned in.</strong> The image is re-encoded with your account reference
+           before it is sent, so a copy that turns up elsewhere still points back here.
+         </p>`
+      : '';
 
   const actionBlock = open
-    ? `<div class="note note-success">Free — no ad needed.</div>${downloads}`
+    ? `<div class="note note-success">Free — no ad needed.</div>${filesPanel}`
     : unlocked
       ? `<div class="note note-success"><strong>Unlocked.</strong>
-           ${assetUnlockExpiry(asset)}</div>${downloads}`
-      : `<button class="btn btn-primary btn-lg" style="width:100%" id="unlock-btn"
+           ${assetUnlockExpiry(asset)}</div>${filesPanel}`
+      : `<button class="btn btn-primary btn-lg btn-block" id="unlock-btn"
                  data-asset="${esc(asset.id)}">
-           Watch ${policy?.ads_required || 1} ad${(policy?.ads_required || 1) === 1 ? '' : 's'} to unlock
+           Watch ${plural(policy?.ads_required || 1, 'ad')} to unlock
          </button>
          <p class="fine" style="margin-top:var(--space-3);text-align:center">
-           About ${policy?.ad_min_seconds || 15} seconds. The unlock is granted only when the ad network
+           About ${plural(policy?.ad_min_seconds || 15, 'second')}. The unlock is granted only when the ad network
            confirms server-to-server that the view completed.
          </p>
-         <div id="unlock-status" class="fine" role="status" aria-live="polite" style="margin-top:var(--space-3);text-align:center"></div>`;
+         <div id="unlock-status" class="fine" role="status" aria-live="polite"
+              style="margin-top:var(--space-3);text-align:center"></div>`;
+
+  const kindLabel = { video: 'Video', audio: 'Audio', image: 'Image', file: 'File' }[previewFile?.kind] || null;
 
   return layout({
     title: asset.title, user, activeChannel: channel, consent,
     body: `
-<a class="fine" href="/s/${esc(channel.slug)}" style="display:inline-block;margin-block:var(--space-6) var(--space-5)">← ${esc(channel.name)}</a>
+<a class="back-link" href="/s/${esc(channel.slug)}">← ${esc(channel.name)}</a>
 
 <div class="asset-layout">
-  <div class="stack">
-    <div class="asset-hero">
-      <div class="asset-hero-visual">
-        ${asset.cover_url
-          ? `<img src="${esc(asset.cover_url)}" alt="" style="width:100%;height:100%;object-fit:cover">`
-          : `<span class="thumb-glyph" aria-hidden="true">${esc(glyph(asset.title))}</span>`}
-      </div>
-    </div>
+  <div class="stack stack-8">
+    ${mediaStage({
+      previewFile, markUri, coverUrl: asset.cover_url, title: asset.title, unlocked, needsAd,
+      slug: channel.slug, assetSlug: asset.slug,
+    })}
 
-    <div>
-      <div class="row">
-        <h1 style="font-size:var(--text-2xl)">${esc(asset.title)}</h1>
-        ${open ? pill('Free', 'success') : unlocked ? pill('Unlocked', 'success') : pill('Ad-gated', 'locked')}
-      </div>
-      <p class="lede" style="margin-top:var(--space-4)">${esc(asset.description || 'No description yet.')}</p>
+    <div class="asset-head">
+      <h1>${esc(asset.title)}</h1>
+      ${open ? pill('Free', 'success') : unlocked ? pill('Unlocked', 'success') : pill('Ad-gated', 'locked')}
     </div>
+    <p class="lede">${esc(asset.description || 'No description yet.')}</p>
+    ${markNote}
 
     <div class="panel">
       <div class="panel-head"><h2>What you get</h2></div>
       <div class="panel-body">
         <dl class="kv">
-          <dt>Files</dt><dd>${files.length}</dd>
-          <dt>Access</dt><dd>${open ? 'Free' : `${policy?.ads_required || 1} rewarded ad`}</dd>
-          <dt>Unlock lasts</dt><dd>${policy?.unlock_hours || 24} hours</dd>
+          <dt>Files</dt><dd>${plural(files.length, 'file')}</dd>
+          ${kindLabel ? `<dt>Format</dt><dd>${esc(kindLabel)}${media ? ' — plays in the page' : ''}</dd>` : ''}
+          <dt>Access</dt><dd>${open ? 'Free' : unlocked ? 'Unlocked' : `${plural(policy?.ads_required || 1, 'rewarded ad')}`}</dd>
+          <dt>Unlock lasts</dt><dd>${plural(policy?.unlock_hours || 24, 'hour')}</dd>
           <dt>Store</dt><dd><a href="/s/${esc(channel.slug)}">${esc(channel.name)}</a></dd>
         </dl>
       </div>
@@ -433,7 +528,7 @@ export function assetPage({ channel, asset, files, unlocked, user, policy, slots
 
   <aside class="unlock-card">
     <div class="panel">
-      <div class="panel-head"><h2 style="font-size:var(--text-md)">${unlocked ? 'Your download' : 'Unlock this file'}</h2></div>
+      <div class="panel-head"><h2 style="font-size:var(--text-md)">${unlocked ? 'Your access' : 'Unlock this file'}</h2></div>
       <div class="panel-body">${actionBlock}</div>
     </div>
     <p class="fine" style="margin-top:var(--space-4)">
@@ -460,7 +555,7 @@ export function assetPage({ channel, asset, files, unlocked, user, policy, slots
     </div>
     <p class="fine" style="margin-top:var(--space-4)" id="ad-note">
       The unlock is not granted by this screen. It arrives from the provider's server,
-      signed, and is verified on our side before the download link appears.
+      signed, and is verified on our side before your access appears.
     </p>
   </div>
 </div>`,

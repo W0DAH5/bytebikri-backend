@@ -124,3 +124,73 @@ test('the consent banner offers a real refusal', () => {
   assert.match(views, /name="choice" value="none"/);
   assert.match(views, /If you refuse personalised ads|Reject all/);
 });
+
+// ---------------------------------------------------------------------------
+// The player
+// ---------------------------------------------------------------------------
+
+test('the player is a player, not a download with extra steps', () => {
+  // Three attributes do the work, and all three are the kind that get dropped
+  // in a refactor without anything failing:
+  //   controlslist="nodownload"  — removes the download item from the menu
+  //   disablepictureinpicture    — removes the floating always-on-top window,
+  //                                which is a screen recorder's easiest target
+  //   data-protect               — the hook app.js uses to block right-click
+  //                                and drag, which is deterrence and is labelled
+  //                                as such in the markup
+  assert.match(views, /controlslist="nodownload/, 'the player offers its own download button');
+  assert.match(views, /disablepictureinpicture/, 'picture-in-picture is left on');
+  assert.match(views, /data-protect/, 'nothing marks the protected region for the client');
+  assert.match(client, /data-protect/, 'app.js does not act on the protected region');
+
+  // The playable file is served from the stream route, and the view must not
+  // fall back to the download URL for it — the whole point is that a video is
+  // played rather than handed over.
+  assert.match(views, /previewFile\.streamUrl/);
+  assert.ok(!/previewFile\.downloadUrl/.test(views), 'the player uses the download URL as its source');
+  assert.match(views, /Plays here/, 'the file list does not say what actually happens to a video');
+});
+
+test('the page never claims the web can stop a screenshot', () => {
+  // The claim that matters. On Android, FLAG_SECURE genuinely blocks capture; in
+  // a browser nothing does, and a page that says "protected" is selling a
+  // protection that does not exist. This test exists so that copy cannot drift
+  // into the lie later — it is the one thing here that is not a mechanical fix.
+  const page = views.slice(views.indexOf('export function assetPage'), views.indexOf('function assetUnlockExpiry'));
+  assert.match(page, /Watermark/, 'the media note does not mention the watermark at all');
+  assert.match(page, /No website can stop a screen recording|does not pretend/,
+    'the note does not admit what it cannot do');
+  assert.ok(!/\b(uncopyable|un-copyable|cannot be copied|screenshot-proof|fully protected|DRM)\b/i.test(page),
+    'the page promises a protection the browser cannot provide');
+});
+
+test('the client only selects elements the views render', () => {
+  // The same class of bug as a missing id: a selector that matches nothing is
+  // silent. `[data-protect]` matching nothing would leave right-click enabled
+  // and no watermark overlay, and every test would still pass.
+  const selectors = new Set(
+    [...client.matchAll(/querySelectorAll\(\s*'([^']+)'/g)].map((m) => m[1]),
+  );
+  for (const sel of selectors) {
+    for (const token of sel.match(/\[data-[a-z-]+\]|\.[a-z][a-z0-9-]*/g) || []) {
+      const needle = token.startsWith('[') ? token.slice(1, -1) : token.slice(1);
+      assert.ok(views.includes(needle), `app.js selects ${sel} but no view renders ${needle}`);
+    }
+  }
+  assert.ok(selectors.size >= 2, `expected several selectors, saw ${selectors.size}`);
+});
+
+test('every class the views emit has a rule in the stylesheet', () => {
+  // An undefined class is the same failure as an undefined token: the browser
+  // renders an unstyled element, nothing logs, and the page just looks wrong.
+  const defined = new Set([...withoutComments(css).matchAll(/\.([a-zA-Z0-9_-]+)/g)].map((m) => m[1]));
+  const used = new Set();
+  for (const m of views.matchAll(/class="([^"]*)"/g)) {
+    // Skip interpolated class attributes: they are not literal names.
+    if (m[1].includes('${')) continue;
+    for (const c of m[1].split(/\s+/)) if (c) used.add(c);
+  }
+  const missing = [...used].filter((c) => !defined.has(c)).sort();
+  assert.deepEqual(missing, [], `views.js uses classes with no CSS rule: ${missing.join(', ')}`);
+  assert.ok(used.size >= 40, `expected the views to use several classes, saw ${used.size}`);
+});

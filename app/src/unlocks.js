@@ -300,3 +300,23 @@ export function issueDownloadUrl({ assetId, file, userId, basePath }) {
   const token = signAccessToken({ assetId, fileId: file.id, userId });
   return `${basePath}/api/content/${assetId}/file/${file.id}?t=${encodeURIComponent(token)}`;
 }
+
+/**
+ * A stream URL for a player.
+ *
+ * Ten minutes is right for a download — the request is one round trip. It is
+ * WRONG for playback: a video seeks, and every seek is another request, so a
+ * twenty-minute file would start 403-ing halfway through and look like a broken
+ * player rather than an expired token. Streaming gets hours instead.
+ *
+ * That is not the weakening it looks like. The token was never the control: the
+ * route also requires a session and checks that the token's `u` is the signed-in
+ * account, so a forwarded URL is inert even while it is valid. Expiry is the
+ * second lock, not the first.
+ */
+export const STREAM_TTL_MS = 4 * 60 * 60 * 1000;
+
+export function issueStreamUrl({ assetId, file, userId, basePath }) {
+  const token = signAccessToken({ assetId, fileId: file.id, userId, ttlMs: STREAM_TTL_MS });
+  return `${basePath}/api/content/${assetId}/file/${file.id}/stream?t=${encodeURIComponent(token)}`;
+}

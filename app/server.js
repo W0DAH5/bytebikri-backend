@@ -13,6 +13,7 @@ import express from 'express';
 import helmet from 'helmet';
 import multer from 'multer';
 import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -23,8 +24,13 @@ import { allocateSlots, estimateRentSlotValue, POLICY } from './src/slots.js';
 import { selectableProviders, providerById, loadRegistry } from './src/registry.js';
 import {
   startUnlock, unlockStatus, handlePostback, signHousePostback,
-  verifyAccessToken, issueDownloadUrl,
+  verifyAccessToken, issueDownloadUrl, issueStreamUrl,
 } from './src/unlocks.js';
+import {
+  mediaKind, isPlayable, isWatermarkable, hasImageMagick, watermarkImage,
+  watermarkLabel, watermarkSvgDataUri, derivativeKey, cachedDerivative, cacheDerivative,
+  rangeFor,
+} from './src/media.js';
 import { selfTest as adapterSelfTest, advisories as adapterAdvisories, ADAPTERS } from './src/providers/index.js';
 import * as views from './src/views.js';
 import * as auth from './src/auth.js';
@@ -429,17 +435,47 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
     const unlocked = asset.unlock_mode === 'open'
       || (req.user ? await store.isUnlocked(asset.id, req.user.id) : false);
 
-    // Download URLs are minted per request, per user, and expire. They are only
+    // Content URLs are minted per request, per user, and expire. They are only
     // produced when an unlock actually exists — never baked into the HTML.
-    const files = (await store.filesOf(asset.id)).map((f) => ({
-      ...f,
-      downloadUrl: unlocked && req.user
-        ? issueDownloadUrl({ assetId: asset.id, file: f, userId: req.user.id, basePath: '' })
-        : null,
-    }));
+    //
+    // The view is told what each file IS, not what to do with it: a video is
+    // played, an image is watermarked and shown, a zip is downloaded, and only
+    // the page decides how that reads. That keeps the decision in one place
+    // instead of a filename suffix check inside a template string.
+    const files = (await store.filesOf(asset.id)).map((f) => {
+      const kind = mediaKind(f.mime_type, f.filename);
+      // Images get a stream URL too: they are shown on the page through the
+      // same signed, ranged route, so there is exactly one way bytes leave this
+      // server and exactly one place the watermark is applied.
+      const inline = isPlayable(f.mime_type, f.filename) || kind === 'image';
+      const minted = unlocked && req.user
+        ? {
+          downloadUrl: issueDownloadUrl({ assetId: asset.id, file: f, userId: req.user.id, basePath: '' }),
+          streamUrl: inline
+            ? issueStreamUrl({ assetId: asset.id, file: f, userId: req.user.id, basePath: '' })
+            : null,
+        }
+        : { downloadUrl: null, streamUrl: null };
+      return {
+        ...f, ...minted, kind,
+        playable: isPlayable(f.mime_type, f.filename),
+        // Watermarking covers images only. Saying so here, per file, is what
+        // lets the page be accurate instead of claiming a blanket protection.
+        marked: kind === 'image',
+      };
+    });
+    const previewFile = files.find((f) => f.playable) || files.find((f) => f.kind === 'image') || null;
+
+    // The on-screen mark for video and audio, which cannot be burned in without
+    // a transcoder. It is the same reference that goes into the pixels of an
+    // image, drawn in the DOM instead — and the page says which of the two it is.
+    const markUri = unlocked && req.user
+      ? watermarkSvgDataUri(watermarkLabel({ ref: req.user.id, assetId: asset.id }))
+      : '';
 
     res.send(views.assetPage({
       channel, asset, files, unlocked, user: req.user, consent: req.consent,
+      previewFile, markUri,
       policy: await store.unlockPolicy(asset.id),
       slots: (await buildSlots(channel)).filter((s) => s.serving && s.surface === 'webview'),
     }));
@@ -674,88 +710,210 @@ APP.post('/dev/forge-postback/:providerId', devOnly, async (req, res, next) => {
 
 // ---------------------------------------------------------------------------
 // Content delivery — signed, expiring, per-user
+//
+// ONE trust boundary for both routes below. Playback and download differ in what
+// they send (inline vs attachment, ranged vs whole, watermarked vs not) and must
+// never differ in who is allowed: two copies of an authorisation check is how a
+// hole gets opened in one and forgotten in the other.
 // ---------------------------------------------------------------------------
+
+/**
+ * Check the token, the session, the matching account, the unlock and the file.
+ *
+ * Returns `{ asset, file, userId }`, or `null` after having already written the
+ * refusal — callers only have to handle the success path.
+ */
+async function resolveContentRequest(req, res, { event }) {
+  // The token is necessary but NOT sufficient.
+  //
+  // Alone it is a bearer credential: anyone the link reaches can use it inside
+  // its window, which directly contradicts what the page promises ("They cannot
+  // be forwarded"). So the session has to match the account the link was minted
+  // for. Now forwarding a link is useless — the recipient is not signed in as
+  // the buyer, and signing in as them requires their password.
+  if (!req.user) {
+    await store.audit('content.denied', { reason: 'not signed in', assetId: req.params.assetId });
+    res.status(401).json({ ok: false, error: 'sign in to view this file' });
+    return null;
+  }
+
+  const check = verifyAccessToken(req.query.t);
+  if (!check.ok) {
+    await store.audit('content.denied', { reason: check.reason, assetId: req.params.assetId });
+    res.status(403).json({ ok: false, error: check.reason });
+    return null;
+  }
+  const { a, f, u } = check.payload;
+  if (u !== req.user.id) {
+    await store.audit('content.denied', {
+      reason: 'token belongs to another account', assetId: a, userId: req.user.id,
+    });
+    res.status(403).json({ ok: false, error: 'this link was issued to a different account' });
+    return null;
+  }
+
+  /**
+   * Free files get an unlock row on first fetch, rather than a special case here.
+   *
+   * The asset page mints a link for an `open` asset without an ad, so no unlock
+   * row existed and this check refused every free file with "unlock no longer
+   * valid" — the free half of the product was broken while the paid half worked,
+   * which is the kind of bug that survives a demo.
+   *
+   * The alternative was a flag in the signed token saying "this one is open",
+   * which would put a permission decision inside a credential the holder can
+   * replay, and would need re-checking against the asset anyway. Writing the
+   * entitlement instead keeps ONE rule at the trust boundary: the row exists or
+   * it does not. It also means someone who played a free file can review it,
+   * because reviews hang off unlocks.
+   */
+  const asset = await store.assetById(a);
+  if (!asset) { res.status(404).json({ ok: false, error: 'file not found' }); return null; }
+  if (asset.unlock_mode === 'open' && !await store.isUnlocked(a, u)) {
+    await store.grantUnlock({
+      assetId: a, channelId: asset.channel_id, userId: u, method: 'open', adsCompleted: 0,
+      policy: { unlock_hours: 0 },   // free access does not expire
+    });
+    await store.audit('content.free_grant', { assetId: a, userId: u });
+  }
+  if (a !== req.params.assetId || f !== req.params.fileId) {
+    res.status(403).json({ ok: false, error: 'token does not match this file' });
+    return null;
+  }
+  // Re-check the unlock: a token minted before a revoke must not keep working.
+  if (!await store.isUnlocked(a, u)) {
+    res.status(403).json({ ok: false, error: 'unlock no longer valid' });
+    return null;
+  }
+
+  const file = await store.fileById(f);
+  if (!file) { res.status(404).json({ ok: false, error: 'file not found' }); return null; }
+
+  await store.audit(event, { assetId: a, fileId: f, userId: u });
+  return { asset, file, userId: u };
+}
+
+/**
+ * Serve bytes with HTTP Range support.
+ *
+ * A player with no `206` cannot seek: it has to fetch from zero every time the
+ * user drags the scrubber, which on a long video is the difference between a
+ * product and a toy. `bytes=start-end`, open-ended `bytes=start-` and suffix
+ * `bytes=-n` are all handled, and an unsatisfiable range answers `416` with the
+ * size — which is what makes Safari's first probe behave.
+ */
+function sendRanged(req, res, buf, { type, filename, disposition = 'inline' }) {
+  const total = buf.length;
+  res.setHeader('accept-ranges', 'bytes');
+  res.setHeader('content-type', type);
+  res.setHeader('content-disposition', `${disposition}; filename="${String(filename).replace(/["\\]/g, '')}"`);
+  // Private and unstorable: this URL is minted for one account and must never
+  // sit in a shared cache or a disk cache the next user can read.
+  res.setHeader('cache-control', 'private, no-store');
+
+  const r = rangeFor(req.headers.range, total);
+  const wantsBody = req.method !== 'HEAD';
+
+  if (r.kind === 'unsatisfiable') {
+    res.setHeader('content-range', `bytes */${total}`);
+    return res.status(416).end();
+  }
+  if (r.kind === 'full') {
+    res.setHeader('content-length', String(total));
+    return res.status(200).end(wantsBody ? buf : undefined);
+  }
+
+  const slice = buf.subarray(r.start, r.end + 1);
+  res.setHeader('content-range', `bytes ${r.start}-${r.end}/${total}`);
+  res.setHeader('content-length', String(slice.length));
+  return res.status(206).end(wantsBody ? slice : undefined);
+}
+
 APP.get('/api/content/:assetId/file/:fileId', async (req, res, next) => {
   try {
-    // The token is necessary but NOT sufficient.
-    //
-    // Alone it is a bearer credential: anyone the link reaches can download
-    // inside its ten-minute window, which directly contradicts what the page
-    // promises ("They cannot be forwarded"). So the session has to match the
-    // account the link was minted for. Now forwarding a link is useless — the
-    // recipient is not signed in as the buyer, and signing in as them requires
-    // their password.
-    if (!req.user) {
-      await store.audit('content.denied', { reason: 'not signed in', assetId: req.params.assetId });
-      return res.status(401).json({ ok: false, error: 'sign in to download' });
-    }
+    const access = await resolveContentRequest(req, res, { event: 'content.served' });
+    if (!access) return undefined;
+    const { file, userId } = access;
 
-    const check = verifyAccessToken(req.query.t);
-    if (!check.ok) {
-      await store.audit('content.denied', { reason: check.reason, assetId: req.params.assetId });
-      return res.status(403).json({ ok: false, error: check.reason });
-    }
-    const { a, f, u } = check.payload;
-    if (u !== req.user.id) {
-      await store.audit('content.denied', {
-        reason: 'token belongs to another account', assetId: a, userId: req.user.id,
-      });
-      return res.status(403).json({ ok: false, error: 'this link was issued to a different account' });
-    }
-
-    /**
-     * Free files get an unlock row on download, rather than a special case here.
-     *
-     * The asset page mints a link for an `open` asset without an ad, so no unlock
-     * row existed and this check refused every free download with "unlock no
-     * longer valid" — the free half of the product was broken while the paid half
-     * worked, which is the kind of bug that survives a demo.
-     *
-     * The alternative was a flag in the signed token saying "this one is open",
-     * which would put a permission decision inside a credential the holder can
-     * replay, and would need re-checking against the asset anyway. Writing the
-     * entitlement instead keeps ONE rule at the trust boundary: the row exists or
-     * it does not. It also means someone who downloaded a free file can review
-     * it, because reviews hang off unlocks.
-     */
-    const asset = await store.assetById(a);
-    if (!asset) return res.status(404).json({ ok: false, error: 'file not found' });
-    if (asset.unlock_mode === 'open' && !await store.isUnlocked(a, u)) {
-      await store.grantUnlock({
-        assetId: a, channelId: asset.channel_id, userId: u, method: 'open', adsCompleted: 0,
-        policy: { unlock_hours: 0 },   // free access does not expire
-      });
-      await store.audit('content.free_grant', { assetId: a, userId: u });
-    }
-    if (a !== req.params.assetId || f !== req.params.fileId) {
-      return res.status(403).json({ ok: false, error: 'token does not match this file' });
-    }
-    // Re-check the unlock: a token minted before a revoke must not keep working.
-    if (!await store.isUnlocked(a, u)) {
-      return res.status(403).json({ ok: false, error: 'unlock no longer valid' });
-    }
-
-    const file = await store.fileById(f);
-    if (!file) return res.status(404).json({ ok: false, error: 'file not found' });
-
-    await store.audit('content.served', { assetId: a, fileId: f, userId: u });
     // Atomic increment in SQL — not read-modify-write in JS.
     await store.query(
       `update unlocks set download_count = download_count + 1
         where asset_id = $1 and user_id = $2 and revoked_at is null`,
-      [a, u],
+      [req.params.assetId, userId],
     );
 
-    const buf = await storage.get(file.storage_key);
-    res.setHeader('content-type', file.mime_type || 'application/octet-stream');
-    res.setHeader('content-disposition', `attachment; filename="${file.filename}"`);
-    res.setHeader('cache-control', 'no-store');
+    let buf = await storage.get(file.storage_key);
+    let type = file.mime_type || 'application/octet-stream';
+
+    // An image download carries the same mark as the on-page view. One rule
+    // instead of two: anything served as pixels can be traced back, so there is
+    // no path that quietly hands over an unmarked copy.
+    if (isWatermarkable(file.mime_type, file.filename) && await hasImageMagick()) {
+      const marked = await watermarked(file, userId, buf);
+      if (marked) { buf = marked; type = 'image/jpeg'; }
+    }
+
+    res.setHeader('content-type', type);
+    res.setHeader('content-disposition', `attachment; filename="${String(file.filename).replace(/["\\]/g, '')}"`);
+    res.setHeader('cache-control', 'private, no-store');
     res.send(buf);
   } catch (err) {
     if (err.code === 'ENOENT') return res.status(410).json({ ok: false, error: 'file missing from storage' });
-    next(err);
+    return next(err);
   }
 });
+
+/**
+ * The player's source. Same authorisation, different presentation.
+ *
+ * `inline`, not `attachment`, and ranged — a `<video>` element cannot use a
+ * response that is announced as a download.
+ */
+APP.get('/api/content/:assetId/file/:fileId/stream', async (req, res, next) => {
+  try {
+    const access = await resolveContentRequest(req, res, { event: 'content.streamed' });
+    if (!access) return undefined;
+    const { file, userId } = access;
+
+    let buf = await storage.get(file.storage_key);
+    let type = file.mime_type || 'application/octet-stream';
+
+    if (isWatermarkable(file.mime_type, file.filename) && await hasImageMagick()) {
+      const marked = await watermarked(file, userId, buf);
+      if (marked) { buf = marked; type = 'image/jpeg'; }
+    }
+
+    // No download_count increment here. A seek is not a download, and counting
+    // one would make the creator's own numbers nonsense the moment anyone
+    // scrubbed through a video.
+    return sendRanged(req, res, buf, { type, filename: file.filename });
+  } catch (err) {
+    if (err.code === 'ENOENT') return res.status(410).json({ ok: false, error: 'file missing from storage' });
+    return next(err);
+  }
+});
+
+/**
+ * The watermarked derivative for one file and one viewer, cached for the day.
+ *
+ * Returned as `null` rather than thrown when ImageMagick is missing or a file is
+ * not a decodable image: traceability is worth having, but a viewer who has
+ * legitimately unlocked something must still get their file.
+ */
+async function watermarked(file, userId, source) {
+  const now = new Date();
+  const label = watermarkLabel({ ref: userId, assetId: file.asset_id, at: now });
+  const key = derivativeKey({ fileId: file.id, ref: userId, at: now });
+  const hit = cachedDerivative(key);
+  if (hit) return hit;
+  try {
+    const buf = await watermarkImage(source ?? await storage.get(file.storage_key), { label });
+    return cacheDerivative(key, buf);
+  } catch (err) {
+    await store.audit('content.watermark_failed', { fileId: file.id, error: String(err.message).slice(0, 160) });
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Public media
@@ -1087,6 +1245,34 @@ async function seed({ force = false } = {}) {
   // Demo-friendly: 5 seconds rather than the real 15.
   await store.setAdMinSeconds(asset.id, 5);
 
+  /**
+   * A video asset, so the player has something to play.
+   *
+   * Generated by `scripts/make-demo-media.mjs` and stored in PRIVATE storage
+   * like any other unlockable file — not under `public/`, where it would be
+   * downloadable by URL and would make a liar of the page that says the video
+   * plays but does not download.
+   *
+   * Skipped silently if the file is missing: a deployment that did not ship the
+   * demo clip should still come up.
+   */
+  try {
+    const clip = await fs.readFile(path.resolve(__dirname, 'seed-assets/store-walkthrough.mp4'));
+    const videoAsset = await store.createAsset({
+      channelId: alice.id, title: 'Poster kit walkthrough', slug: 'poster-kit-walkthrough',
+      coverUrl: '/img/demo/devanagari-poster-kit.jpg',
+      description: 'Five minutes through the kit — layers, type pairings, and how to export for print.',
+    });
+    await store.addFile({
+      assetId: videoAsset.id, storageKey: await storage.put(clip, 'store-walkthrough.mp4'),
+      filename: 'store-walkthrough.mp4', mimeType: 'video/mp4', sizeBytes: clip.length,
+      checksum: crypto.createHash('sha256').update(clip).digest('hex'),
+    });
+    await store.setAdMinSeconds(videoAsset.id, 5);
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+
   const sampleAsset = await store.createAsset({
     channelId: alice.id, title: 'Free sample pack', slug: 'free-sample-pack',
     coverUrl: '/img/demo/sample-pack.jpg',
@@ -1109,6 +1295,7 @@ async function seed({ force = false } = {}) {
   // provider routing.
   const bobAsset = await store.createAsset({
     channelId: bob.id, title: 'Kathmandu Street Set', slug: 'kathmandu-street-set',
+    coverUrl: '/img/demo/kathmandu-street.jpg',
     description: '40 edited street frames from Kathmandu. Unlock with one ad.',
   });
   const bobBody = Buffer.from('ByteBikri demo file (Bob).\n\nServed over a GET-dialect postback.\n');
@@ -1118,6 +1305,18 @@ async function seed({ force = false } = {}) {
     sizeBytes: bobBody.length,
     checksum: crypto.createHash('sha256').update(bobBody).digest('hex'),
   });
+  // One real image in private storage, so the watermarked derivative is produced
+  // on a live request instead of only inside a test that stubs ImageMagick.
+  try {
+    const photo = await fs.readFile(path.resolve(__dirname, 'public/img/demo/kathmandu-street.jpg'));
+    await store.addFile({
+      assetId: bobAsset.id, storageKey: await storage.put(photo, 'kathmandu-street.jpg'),
+      filename: 'kathmandu-street.jpg', mimeType: 'image/jpeg', sizeBytes: photo.length,
+      checksum: crypto.createHash('sha256').update(photo).digest('hex'),
+    });
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
   await store.setAdMinSeconds(bobAsset.id, 5);
 
   return { seeded: true, alice: alice.slug, bob: bob.slug };
