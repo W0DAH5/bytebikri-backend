@@ -149,6 +149,22 @@ test('the player is a player, not a download with extra steps', () => {
   assert.match(views, /previewFile\.streamUrl/);
   assert.ok(!/previewFile\.downloadUrl/.test(views), 'the player uses the download URL as its source');
   assert.match(views, /Plays here/, 'the file list does not say what actually happens to a video');
+
+  // And the file row must not undo it. The version that shipped the player
+  // rendered `<a href="downloadUrl" download>Plays here</a>` — a download button
+  // with a reassuring label on it, which is the exact failure this test exists
+  // for. The playable branch is checked by position: it has to come before the
+  // download link in the row template.
+  const rows = views.slice(views.indexOf('const rows = files.map'), views.indexOf('const filesPanel'));
+  const playableAt = rows.indexOf('f.playable');
+  const downloadAt = rows.indexOf('href="${esc(f.downloadUrl)}"');
+  assert.ok(playableAt >= 0, 'the file row does not branch on whether a file plays');
+  assert.ok(downloadAt > playableAt, 'a playable file still renders a download link');
+
+  // The reference printed on the page is the real one the server minted, not a
+  // sentence that describes a watermark without naming it.
+  assert.match(views, /esc\(markLabel/);
+  assert.ok(!/BYTEBIKRI · your reference/.test(views), 'the placeholder mark copy is back');
 });
 
 test('the page never claims the web can stop a screenshot', () => {

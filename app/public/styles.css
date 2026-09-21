@@ -664,8 +664,20 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
   text-align: center; padding: var(--space-3);
   margin-block: var(--space-5);
 }
+.slot { display: grid; place-items: center; text-align: center; }
+.slot-inner { padding: var(--space-4); }
 .slot-label { letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; }
 .slot-sub { opacity: 0.75; margin-top: 2px; }
+
+/* The line under a store's name: counts and traffic, in one quiet row.
+   `tabular-nums` so two stores read the same width for the same number. */
+.store-meta {
+  display: flex; align-items: center; gap: var(--space-2);
+  margin-top: var(--space-5);
+  font-size: var(--text-xs); color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.store-meta .dot { opacity: 0.6; }
 .slot-serving { border-style: solid; border-color: color-mix(in srgb, var(--emerald-500) 30%, transparent); }
 .slot-platform { border-style: solid; border-color: color-mix(in srgb, var(--amber-500) 30%, transparent); }
 

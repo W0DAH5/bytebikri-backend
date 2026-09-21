@@ -518,13 +518,20 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
     // The on-screen mark for video and audio, which cannot be burned in without
     // a transcoder. It is the same reference that goes into the pixels of an
     // image, drawn in the DOM instead — and the page says which of the two it is.
-    const markUri = unlocked && req.user
-      ? watermarkSvgDataUri(watermarkLabel({ ref: req.user.id, assetId: asset.id }))
+    const markLabel = unlocked && req.user
+      ? watermarkLabel({ ref: req.user.id, assetId: asset.id })
       : '';
+    const markUri = markLabel ? watermarkSvgDataUri(markLabel) : '';
+
+    // The expiry that matters is the VIEWER's entitlement, not a column on the
+    // asset. The old copy read `asset.expires_at`, which is not where an unlock
+    // lives, so every 24-hour unlock was described as "permanent access".
+    const unlock = unlocked && req.user ? await store.unlockFor(asset.id, req.user.id) : null;
 
     res.send(views.assetPage({
       channel, asset, files, unlocked, user: req.user, consent: req.consent,
-      previewFile, markUri,
+      accessUntil: unlock?.expires_at ?? null,
+      previewFile, markUri, markLabel,
       policy: await store.unlockPolicy(asset.id),
       slots: (await buildSlots(channel)).filter((s) => s.serving && s.surface === 'webview'),
     }));

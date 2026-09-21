@@ -261,31 +261,40 @@ function channelCard(c) {
 </a>`;
 }
 
+/**
+ * Explore — stores that chose to be listed.
+ *
+ * There used to be a second section here, "Own address only", fed by channels
+ * the caller had already filtered to `listing_mode = 'marketplace'`. It was
+ * therefore empty on every request: a whole column of the page that could never
+ * have content, above a promise that these stores "exist at their link".
+ *
+ * It should not come back. A store that chose its own address is not published
+ * in a directory — that is what the choice MEANS — and listing it here would
+ * quietly overrule the seller's decision. The empty state now says what the
+ * page is for instead of apologising for a section that should not exist.
+ */
 export function marketplace({ channels, user, consent = null }) {
   const listed = channels.filter((c) => c.listing_mode === 'marketplace');
-  const rest = channels.filter((c) => c.listing_mode !== 'marketplace');
-
-  const section = (title, sub, items) => `
-  <section class="section">
-    <div class="section-head">
-      <h2>${esc(title)}</h2>
-      ${sub ? `<p>${esc(sub)}</p>` : ''}
-    </div>
-    ${items.length
-      ? `<div class="grid-channels">${items.map(channelCard).join('')}</div>`
-      : `<div class="empty">Nothing here yet.</div>`}
-  </section>`;
 
   return layout({
     title: 'Explore', user, current: 'marketplace', consent,
     body: `
 <div class="section" style="margin-bottom:0">
   <h1>Explore</h1>
-  <p class="lede" style="margin-top:var(--space-3)">Stores that chose to be listed in the marketplace,
-  and the ones keeping to their own address.</p>
+  <p class="lede" style="margin-top:var(--space-3)">Stores that opted in to being listed here.
+  Plenty of sellers keep to their own address and are found by link — those are not listed, on purpose.</p>
 </div>
-${section('Listed stores', 'Paid tiers can appear here.', listed)}
-${section('Own address only', 'These stores exist at their link but are not listed.', rest)}`,
+<section class="section">
+  <div class="section-head">
+    <h2>Listed stores</h2>
+    <p>${plural(listed.length, 'store')}</p>
+  </div>
+  ${listed.length
+    ? `<div class="grid-channels">${listed.map(channelCard).join('')}</div>`
+    : `<div class="empty">No store has listed itself yet. Every store still works at its own address —
+        asking the creator you follow for theirs is the way in.</div>`}
+</section>`,
   });
 }
 
@@ -296,12 +305,10 @@ export function storefront({ channel, assets, slots, user, estimate, pageviews, 
     const badge = open
       ? pill('Free', 'success')
       : unlocked ? pill('Unlocked', 'success') : pill('Ad-gated', 'locked');
-    const glyphBadge = open ? '○' : unlocked ? '✓' : '🔒';
     return `<a class="asset" href="/s/${esc(channel.slug)}/a/${esc(a.slug)}">
   <div style="position:relative">
     ${thumb({ title: a.title, coverUrl: a.cover_url })}
     <span class="thumb-badge">${badge}</span>
-    <span class="thumb-badge-r pill" title="${open ? 'Free' : unlocked ? 'Unlocked' : 'Locked'}">${glyphBadge}</span>
   </div>
   <div class="asset-body">
     <h3>${esc(a.title)}</h3>
@@ -327,13 +334,15 @@ ${channel.banner_url
 <div class="section" style="margin-bottom:0">
   <div class="row">
     <h1>${esc(channel.name)}</h1>
-    ${channel.listing_mode === 'marketplace' ? pill('Listed', 'accent') : pill('Own address')}
+    ${channel.listing_mode === 'marketplace'
+      ? pill('In Explore', 'accent')
+      : pill('Shared by link')}
   </div>
   <p class="lede" style="margin-top:var(--space-3)">${esc(channel.tagline || 'A store on ByteBikri.')}</p>
-  <div class="row" style="margin-top:var(--space-5);font-size:var(--text-xs);color:var(--text-faint)">
-    <span>${plural(pageviews, 'view')} in 30 days</span>
-    <span>·</span>
-    <span>${plural(assets.length, 'file')}</span>
+  <div class="store-meta">
+    <span>${plural(assets.length, 'item')} published</span>
+    <span class="dot" aria-hidden="true">·</span>
+    <span>${plural(pageviews, 'view')} in the last 30 days</span>
   </div>
 </div>
 
@@ -341,8 +350,8 @@ ${slotHtml}
 
 <section class="section">
   <div class="section-head">
-    <h2>Files</h2>
-    <p>${plural(assets.length, 'file')} in this store</p>
+    <h2>Content</h2>
+    <p>One ad each. The network pays the creator directly.</p>
   </div>
   ${assets.length ? `<div class="grid-assets">${cards}</div>`
     : '<div class="empty">This store has not published anything yet.</div>'}
@@ -423,7 +432,7 @@ function fileTreatment(f) {
 
 export function assetPage({
   channel, asset, files, unlocked, user, policy, slots, previewFile = null,
-  markUri = '', consent = null,
+  markUri = '', markLabel = '', accessUntil = null, consent = null,
 }) {
   const open = asset.unlock_mode === 'open';
   const needsAd = !open && !unlocked;
@@ -439,9 +448,14 @@ export function assetPage({
             <span class="dl-meta">${(f.size_bytes / 1024).toFixed(1)} KB · ${esc(f.mime_type || 'file')} · ${esc(t.note)}</span>
           </span>
           <span class="spacer"></span>
-          ${f.downloadUrl
-            ? `<a class="btn btn-sm${f.playable ? '' : ' btn-primary'}" href="${esc(f.downloadUrl)}" download>${esc(t.action)}</a>`
-            : `<span class="pill pill-locked">${esc(t.action)}</span>`}
+          ${f.playable
+            // No download link for something that plays. This is the one line
+            // that decides whether "it plays here" is true or a sentence with a
+            // download button next to it.
+            ? `<span class="pill pill-success">Plays above</span>`
+            : f.downloadUrl
+              ? `<a class="btn btn-sm btn-primary" href="${esc(f.downloadUrl)}" download>${esc(t.action)}</a>`
+              : `<span class="pill pill-locked">${esc(t.action)}</span>`}
         </li>`;
   }).join('');
 
@@ -461,8 +475,9 @@ export function assetPage({
 
   const markNote = !unlocked ? '' : media
     ? `<p class="fine mark-note">
-         <strong>Watermark: on.</strong> Frames carry <span class="mono">${esc(markUri ? 'BYTEBIKRI · your reference' : '')}</span>
-         overlaid from your account — so a recording can be traced back to it.
+         <strong>Watermark: on.</strong> Frames carry
+         <span class="mono">${esc(markLabel || 'your account reference')}</span> overlaid while it plays,
+         so a recording can be traced back to the account that watched it.
          No website can stop a screen recording, and this one does not pretend to:
          the app is where the operating system blocks it.
        </p>`
@@ -477,7 +492,7 @@ export function assetPage({
     ? `<div class="note note-success">Free — no ad needed.</div>${filesPanel}`
     : unlocked
       ? `<div class="note note-success"><strong>Unlocked.</strong>
-           ${assetUnlockExpiry(asset)}</div>${filesPanel}`
+           ${accessExpiry(open ? null : accessUntil)}</div>${filesPanel}`
       : `<button class="btn btn-primary btn-lg btn-block" id="unlock-btn"
                  data-asset="${esc(asset.id)}">
            Watch ${plural(policy?.ads_required || 1, 'ad')} to unlock
@@ -562,10 +577,19 @@ export function assetPage({
   });
 }
 
-function assetUnlockExpiry(asset) {
-  return asset.expires_at
-    ? ` Access until ${new Date(asset.expires_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}.`
-    : ' Permanent access.';
+/**
+ * How long this viewer's access lasts.
+ *
+ * A sentence about the entitlement, not about the asset: a free file has no
+ * expiry at all, and an ad-unlocked one expires in the number of hours the
+ * seller set. The old version read a column off the asset, which is a different
+ * thing, and announced "permanent access" on 24-hour unlocks.
+ */
+function accessExpiry(until) {
+  if (!until) return ' No expiry — this one is free.';
+  return ` Access until ${new Date(until).toLocaleString('en-GB', {
+    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+  })}.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -846,19 +870,36 @@ ${conn ? `
  * tag finally loads and everything below it jumps — a layout shift counts
  * against the page in search ranking and against the reader in annoyance.
  */
+/**
+ * An ad slot.
+ *
+ * What this looks like when no network is connected matters: it is on every
+ * storefront and every asset page, and the previous version printed "rank 3 ·
+ * reserved" at the visitor — internal billing vocabulary, on the shop floor.
+ * Nobody looking at a shop should be told about slot rank.
+ *
+ * The space still has to be reserved, because that is the layout commitment the
+ * seller is buying, so it stays the same height and says what it is for. When a
+ * slot is serving, the render layer is what fills it.
+ */
 export function renderSlot(slot) {
   const h = Math.min(slot.max_height_px || 250, 280);
   const owner = slot.owner === 'platform' ? 'platform' : 'channel';
-  const cls = slot.serving ? `slot slot-serving slot-${owner === 'platform' ? 'platform' : 'channel'}` : 'slot';
-  const label = owner === 'platform'
-    ? `${slot.label} · ByteBikri rent slot`
-    : `${slot.label} · ${owner === 'platform' ? '' : "this store's own ad"}`;
+  const cls = slot.serving ? `slot slot-serving slot-${owner}` : 'slot';
+
+  // The platform slot is rent; the channel slot belongs to the store. Two
+  // different things, and each says so in the visitor's terms.
+  const label = owner === 'platform' ? 'Advertisement' : 'From this store';
+  const sub = owner === 'platform'
+    ? 'This space pays for the servers.'
+    : (slot.serving ? 'A message from the creator.' : 'Reserved for a message from the creator.');
+
   return `<div class="${cls}" data-slot="${esc(slot.key)}" data-owner="${esc(owner)}"
        data-serving="${slot.serving ? 'true' : 'false'}"
-       style="min-height:${h}px" role="complementary" aria-label="${esc(slot.label)} slot">
-  <div>
+       style="min-height:${h}px" role="complementary" aria-label="${esc(label)}">
+  <div class="slot-inner">
     <div class="slot-label">${esc(label)}</div>
-    <div class="slot-sub">rank ${slot.rank}${slot.serving ? ' · serving' : ' · reserved'}</div>
+    <div class="slot-sub">${esc(sub)}</div>
   </div>
 </div>`;
 }
