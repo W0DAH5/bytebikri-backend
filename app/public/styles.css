@@ -185,14 +185,20 @@
 
 @media (prefers-color-scheme: light) {
   :root {
-    --surface-base: #fbfbfd;
+    /* The page sits a little below the cards, and the cards are pure white. The
+       gap between them is what makes a card read as raised without a shadow. */
+    --surface-base: #f4f5f9;
     --surface-raised: #fff;
     --surface-overlay: #fff;
     --surface-hover: #f3f4f8;
     --surface-sunken: #f1f2f6;
 
-    --border-subtle: #e2e5ec;
-    --border-strong: #cfd4de;
+    /* Light mode earns its depth from borders, not shadows: a shadow on white
+       has almost nothing to darken. These are a step stronger than they were,
+       because #e2e5ec on #fff is a 1.09:1 edge — present in the source, invisible
+       on the screen, which is exactly how a card grid comes out looking flat. */
+    --border-subtle: #dcdfe8;
+    --border-strong: #c3c9d6;
 
     --text-primary: #12151c;
     --text-secondary: #333b48;
@@ -649,6 +655,113 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
     var(--surface-overlay);
 }
 
+/* ── the operator console ────────────────────────────────────────────────── */
+/* Density follows expertise: an operator reads this page daily and wants the
+   numbers close together, where a seller's dashboard wants air. Same design
+   system, different spacing decisions — which is what a scale is for.
+
+   The layout is the inverted pyramid the research describes: KPI tiles answer
+   "is anything on fire" without a click, the queues come next with their counts,
+   and the detail sits underneath for whoever wants it. */
+.console-head h1 { font-size: var(--text-2xl); }
+.console-head .lede { margin-top: var(--space-2); }
+
+.console-nav {
+  display: flex; gap: var(--space-1); flex-wrap: wrap;
+  margin-top: var(--space-6); padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.console-nav a {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm); font-weight: 550; color: var(--text-muted);
+  transition: background var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
+}
+.console-nav a:hover { background: var(--surface-hover); color: var(--text-primary); text-decoration: none; }
+.console-nav a[aria-current="page"] { background: var(--surface-overlay); color: var(--text-primary); }
+
+/* A count on a tab. The number is the reason to click, so it is a shape and a
+   value, not a decorative dot. */
+.nav-count {
+  min-width: 20px; padding: 1px 6px; border-radius: var(--radius-full);
+  background: var(--danger-text); color: #fff;
+  font-size: var(--text-2xs); font-weight: 700; font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+/* KPIs: equal tiles on one row, and a whole row's worth of meaning in three
+   lines. `align-items: stretch` is the default and is load-bearing — unequal
+   tiles in a row read as a mistake before they read as design. */
+.kpi-row {
+  display: grid; gap: var(--space-4);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+}
+.kpi {
+  display: grid; gap: var(--space-1); align-content: start;
+  padding: var(--space-5);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  color: inherit;
+}
+a.kpi:hover { border-color: var(--border-strong); text-decoration: none; box-shadow: var(--shadow-sm); }
+.kpi-label {
+  font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: 0.07em;
+  color: var(--text-faint); font-weight: 620;
+}
+.kpi-value {
+  font-size: var(--text-2xl); font-weight: 660; letter-spacing: var(--tracking-tight);
+  font-variant-numeric: tabular-nums; line-height: 1.1;
+}
+.kpi-context { font-size: var(--text-xs); color: var(--text-muted); }
+/* Tone is a left edge plus the words already in the tile. Status is never
+   carried by colour alone: roughly one man in twelve cannot use the difference. */
+.kpi-warn { border-left: 3px solid var(--warning-text); }
+.kpi-bad { border-left: 3px solid var(--danger-text); }
+.kpi-good { border-left: 3px solid var(--success-text); }
+
+/* The queues. A row is a link, a count, a sentence and an arrow. */
+.queue-list { display: grid; gap: var(--space-3); }
+.queue-row {
+  display: flex; align-items: center; gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+  color: inherit;
+  transition: border-color var(--motion-fast) var(--ease-standard);
+}
+.queue-row:hover { border-color: var(--border-strong); text-decoration: none; }
+.queue-count {
+  flex: none; min-width: 44px; height: 44px; border-radius: var(--radius-md);
+  display: grid; place-items: center;
+  background: var(--surface-sunken); border: 1px solid var(--border-subtle);
+  font-size: var(--text-lg); font-weight: 680; font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+.queue-count-live { background: var(--danger-soft); border-color: transparent; color: var(--danger-text); }
+.queue-body { display: grid; gap: 2px; min-width: 0; }
+.queue-go { color: var(--text-faint); }
+
+/* The report queue. One row per file, risk first. */
+.report-row { margin-bottom: var(--space-4); }
+.report-row .panel-head { gap: var(--space-3); }
+
+/* "Something wrong with this file?" — a disclosure, not a form sitting open. */
+.report-block {
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+  background: var(--surface-raised); padding: var(--space-4) var(--space-5);
+}
+.report-summary {
+  cursor: pointer; font-size: var(--text-sm); font-weight: 550; color: var(--text-muted);
+  display: flex; align-items: center; gap: var(--space-3);
+}
+.report-summary:hover { color: var(--text-primary); }
+.report-form { margin-top: var(--space-5); max-width: 560px; }
+
+/* A search box that sits in a page header rather than on its own line. */
+.search-inline { margin-top: 0; max-width: 380px; }
+
 /* ── moderation ──────────────────────────────────────────────────────────── */
 /* A notice about the seller's own store. It sits above everything because it is
    the first thing they need to know, and it is deliberately not styled like an
@@ -961,7 +1074,11 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
   color: var(--text-faint); font-weight: 620;
 }
 .money-leg dd { margin: var(--space-2) 0 0; font-size: var(--text-md); font-weight: 600; }
-.money-leg-primary dd { color: var(--emerald-300); }
+/* The money map's positive figures. It used to say `--emerald-300`, a raw
+   palette token: correct on the dark theme, 1.47:1 on the light one, because a
+   primitive cannot know what it is sitting on. Semantic tokens exist for
+   exactly this and the assertion below in test/design.test.js now enforces it. */
+.money-leg-primary dd { color: var(--success-text); }
 
 /* Proof strip: the numbers that already exist, on tabs. */
 .proof-strip {
@@ -994,40 +1111,54 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
   to { opacity: 1; transform: none; }
 }
 
-@supports (animation-timeline: view()) {
-  @media (prefers-reduced-motion: no-preference) {
-    .section, .preview-window, .stat-row, .proof-strip {
-      animation: rise-in linear both;
-      animation-timeline: view();
-      animation-range: entry 8% cover 26%;
-    }
-    .card, .asset, .panel {
-      animation: settle-in linear both;
-      animation-timeline: view();
-      animation-range: entry 4% cover 22%;
-    }
-  }
+/* Scroll reveals, and the bug that removed the first version of them.
+ *
+ * The first attempt used `animation-timeline: view()` with
+ * `animation-fill-mode: both`. That holds the keyframe's `from` state — opacity
+ * 0 — for every element whose scroll range has not been reached yet, and Chrome
+ * resolves the timeline late enough that it applies on load. The result: a page
+ * whose layout was full height and whose content was invisible below the fold.
+ * `/dashboard/<store>` measured 3588px tall with 2900px of blank space. Every
+ * test passed, because every test checked the CSS text rather than the render.
+ *
+ * So the reveal is driven by the client instead, and the default state is
+ * VISIBLE:
+ *
+ *   - the `reveal-ready` class is added by one inline script in <head>, and only
+ *     when the visitor has not asked for reduced motion. No JavaScript, no
+ *     hiding — the page is simply already there.
+ *   - an IntersectionObserver makes the transition, and a timer un-hides
+ *     everything after two seconds no matter what. A stuck invisible section is
+ *     the one failure this file must not be able to produce.
+ */
+.reveal-ready .reveal {
+  opacity: 0; transform: translateY(10px);
+  transition: opacity var(--motion-slow) var(--ease-decelerate),
+              transform var(--motion-slow) var(--ease-decelerate);
 }
+.reveal-ready .reveal.is-in { opacity: 1; transform: none; }
 
 /* Feedback after an action. A flash note only exists once something has
    happened, so its entrance is information rather than decoration — it says
    "the page changed, here is what changed". */
 @media (prefers-reduced-motion: no-preference) {
   .note[role="status"], .note[role="alert"] {
-    animation: rise-in var(--motion-slow) var(--ease-decelerate) both;
+    animation: rise-in var(--motion-slow) var(--ease-decelerate) backwards;
   }
 }
 
 /* A one-shot entrance for the elements above the fold, which never "enter" the
    viewport because they are already in it. */
 @media (prefers-reduced-motion: no-preference) {
-  .hero > * { animation: rise-in var(--motion-slower) var(--ease-decelerate) both; }
+  /* `backwards` and not `both`: the element must never be held in a hidden
+     state after the animation has finished. */
+  .hero > * { animation: rise-in var(--motion-slower) var(--ease-decelerate) backwards; }
   .hero > *:nth-child(1) { animation-delay: 0ms; }
   .hero > *:nth-child(2) { animation-delay: 60ms; }
   .hero > *:nth-child(3) { animation-delay: 120ms; }
   .hero > *:nth-child(4) { animation-delay: 180ms; }
   .hero > *:nth-child(5) { animation-delay: 240ms; }
-  .preview-window { animation: settle-in var(--motion-slower) var(--ease-emphasized) both; animation-delay: 200ms; }
+  .preview-window { animation: settle-in var(--motion-slower) var(--ease-emphasized) backwards; animation-delay: 160ms; }
 }
 
 /* The unlock flow's one moment of emphasis: the button is the thing that

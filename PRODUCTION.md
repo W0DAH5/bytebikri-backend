@@ -271,6 +271,20 @@ transaction. The operator page is `/admin/moderation`, deliberately plain.
 Still missing: a seller-facing report button, an asset-level queue, and country
 rules.
 
+**A browser, finally.** Chromium was not obtainable in this environment until
+this round: `storage.googleapis.com` and `deb.debian.org` are unreachable and
+`playwright install --with-deps` cannot apt anything. `@sparticuz/chromium` ships
+its payload inside the npm package, so `/tmp/chromium` plus
+`LD_LIBRARY_PATH=/tmp/al2023/lib` gives a working headless browser with zero `ldd`
+misses. Every design change in this phase now gets screenshotted and measured
+before it is called done. The first run found the reveal bug in §15 of the audit.
+
+**Reports and the console.** Buyers can report a file (three **distinct**
+reporters hide it, one never does; the count is a unique index, not arithmetic),
+and operators have a real surface at `/admin`: overview KPIs, the transfer queue,
+the report queue, the moderation queue, and the audit log. The operator never
+sees who reported — asserted against the payload.
+
 **The phone pass.** The navigation was `display: none` below 640px for several
 rounds — on a phone the header offered no route to Explore at all, and nothing in
 the suite noticed because every page still rendered. It is now a scrolling strip:

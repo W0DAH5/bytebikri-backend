@@ -323,10 +323,10 @@ chore.
 
 ## 9. Tests
 
-`npm test` → **279 pass, 0 fail** (133 seven rounds ago; 152 after the player
+`npm test` → **295 pass, 0 fail** (133 eight rounds ago; 152 after the player
 round; 184 after the revenue round; 214 after the slot round; 232 after the
 connection round; 242 after the design pass; 256 after the Explore round; 272
-after the moderation round).
+after the moderation round; 280 after the console round; 293 after reports).
 
 | New | What it holds still |
 |---|---|
@@ -338,6 +338,7 @@ after the moderation round).
 | `test/earnings.test.js` (15) | an open period is shown but never compared; the estimate and the statement are never blended; rent is annualised against annualised statements; a blank payout label is not a label; **and `payout_accounts` is asserted to hold no column that could move money** |
 | `test/design.test.js` (10) | motion lives in tokens and nowhere else; no `transition: all`; no hover that animates layout; reduced motion collapses to 0.01 ms so `animationend` still fires; scroll-driven reveals sit inside their `no-preference` guard; touch targets reach 44 px where the pointer is a finger; the hero has exactly one primary call to action; and **the landing page's money facts are the same strings the earnings page renders**, from the same structure |
 | `test/networks.test.js` (18) | a network with no adapter has no Connect button and says what still works; the callback URL keeps the network's macros verbatim (a percent-encoded macro is a postback that never arrives); no secret means not verified; "never called back" names the likeliest cause; **and the only field the flow may ever ask for is the verification secret** — asserted against the rendered form, not the code |
+| `test/reports.test.js` (15) | **one report never hides a file, and three distinct reporters do** — asserted as arithmetic and against the store, with the repeat attempt visible as `filed: false` rather than a second vote; the queue is one row per file and carries no reporter identity at all; resolving closes every open report while keeping the record; and the auto-hide is reversible *only* for a file the threshold hid, so a seller's own pause survives an operator dismissing a report |
 | `test/mobile.test.js` (7) | the navigation is never `display: none` at any small width; the phone header keeps one row and scrolls its links instead; tables scroll rather than crush; the hero's spacing is halved and definitions stack; headings are fluid at the token level; nothing is revealed on hover, because a phone cannot hover |
 | `test/moderation.test.js` (16) | **the code's vocabulary is read out of `pg_constraint` and compared with the schema's CHECK constraints** — a state the code can write but the database rejects fails here rather than at runtime; every state has behaviour and no state hides a store without telling its owner; a restriction must cite a real rule and `moderation_actions.rule_code` refuses a made-up one with 23503; the state change and the record are one transaction, so a failed decision leaves nothing behind; the remedy is the only free text, capped and flattened; the notice is escaped and rendered to the owner only |
 | `test/ranking.test.js` (14) | the earned rail cannot read a plan — a Pro store with no traffic stays off it while a free store with traffic leads it; the paid rail is labelled as paid everywhere and never borrows the word "earned"; the score weights an unlock above a pageview; below 20 views a store is not "popular" at all; the rails are disjoint, a store that both earns and buys keeps one card and carries a pill instead of a second; and a store with no rows at all still gets a row from `channelStats`, because a store missing from the page is a store nobody can find |
@@ -645,3 +646,124 @@ a stranger, 200 to its owner**, disappeared from Explore, showed the owner the
 rule and the remedy on both the storefront and the dashboard, refused a slot
 write with `?error=moderated`, and still served the earnings page. A reinstate
 put it back, and the queue returned to "Nothing is waiting".
+
+---
+
+## 15. What a real browser said (and how this got caught)
+
+The reveal animation added in §4 shipped broken, and the failure is worth
+recording because of *how* it passed every check.
+
+`animation-timeline: view()` with `animation-fill-mode: both` holds the
+keyframe's `from` state — `opacity: 0` — for every element whose scroll range has
+not been reached yet, and Chrome resolves the timeline late enough that it applies
+on load. `/dashboard/alice` rendered **3588px tall with ~2900px of blank space**:
+the layout was there, the content was invisible. Every test passed, because every
+test read the CSS text.
+
+There is now a headless browser in this workspace (see below), and the first
+thing it produced was the measurement above. The fix is structural rather than a
+tuned range:
+
+- **the default state is visible.** Nothing in the stylesheet hides anything on
+  its own. One inline script in `<head>` adds `reveal-ready` to `<html>`, and only
+  when the visitor has not asked for reduced motion. No JavaScript, no hiding.
+- **an IntersectionObserver** makes the transition, and **a two-second timer
+  un-hides everything regardless** of what the observer did. A stuck invisible
+  section is the one failure this must not be able to produce, so it is not left
+  to a callback.
+- **the hero still animates on load** — that is finite and time-based — but with
+  `backwards` rather than `both`, so nothing is held in a hidden final state.
+
+`test/design.test.js` now asserts the bug rather than the feature three ways: no
+`animation-timeline: view()` anywhere, no `animation: … both` on a regular
+element (`::view-transition-*` excepted, since those are removed from the tree
+after the cross-fade), and a safety timer in the client.
+
+### Two more things the browser found
+
+**A money figure you could not read.** `--emerald-300` on the hero's money map is
+1.47:1 on the light theme — a dark-theme primitive used on a white surface. The
+light theme already had the right token (`--success-text: #047857`); the new CSS
+had reached past the semantic layer. `test/design.test.js` now fails on any
+`var(--gray|indigo|violet|emerald|amber|rose|sky|slate-NNN)` in component CSS,
+and asserts that every themed token is defined in **both** themes.
+
+**The light theme earned its depth from nothing.** `--border-subtle: #e2e5ec` on
+`#fff` is a 1.09:1 edge: present in the source, invisible on the screen. The page
+now sits at `#f4f5f9` and the borders are a step stronger, which is what makes a
+card read as raised without a heavy shadow.
+
+### The browser, and why it matters for the next round
+
+Chromium cannot be downloaded in this sandbox (`storage.googleapis.com` and
+`deb.debian.org` are both unreachable, and `playwright install --with-deps` cannot
+apt anything). `@sparticuz/chromium` **does** download from the npm registry, and
+its brotli payloads decompress to a working binary plus a bundled `lib/` — zero
+`ldd` misses against Debian 12. So:
+
+```
+/tmp/chromium                     the browser
+LD_LIBRARY_PATH=/tmp/al2023/lib   its libraries
+/tmp/pw/shot.mjs                  full-page screenshot + overflow/opacity diagnostics
+/tmp/pw/probe.mjs                 three scroll positions, light and dark
+/tmp/pw/contrast.mjs              computed-contrast audit per text node
+/tmp/pw/console.mjs               signed in as the operator, console pages
+```
+
+Every future design change gets run through these before it is called done.
+Reading the CSS is not evidence.
+
+---
+
+## 16. The console: an operator surface, and the report flow that feeds it
+
+There was no operator surface. `/admin/billing` was a page with two tables on it,
+linked from the navigation as "Billing queue", and that was the whole of it —
+while the schema carried `audit_logs`, `moderation_actions` and nine policy
+rules, and the **Android app carried `flagged_assets`, a ban action and an audit
+endpoint** that the web had never had. (`admin.js` + `PROJECT_ANALYSIS.md` in the
+old Supabase prototype: `flagged`, `banned`, `flagged_assets`, `audit_logs`.)
+That is the reference this round was built against, and it was expanded well past
+what the app had.
+
+### The console
+
+`/admin` — five KPI tiles, then the queues with their counts, then how the
+platform earns, then the audit feed. The layout is the research: **inverted
+pyramid**, an equal-tile row, and — on this surface more than anywhere —
+**status never carried by colour alone**. Every tile has a word in it.
+
+Four pages, one shell, four counts that come from `consoleCounts()` so a badge on
+the navigation can never disagree with the number on the page it points at:
+
+| Page | What it is |
+|---|---|
+| `/admin` | the overview: matched money, reports waiting, stores not public, paying stores, reach |
+| `/admin/payments` | the transfer queue (was `/admin/billing`, which redirects; the old POST paths answer 307) |
+| `/admin/reports` | the report queue, one row per file, ordered by risk |
+| `/admin/moderation` | the state queue from §14 |
+| `/admin/audit` | the log with an action filter |
+
+`store.platformMoney()` reads the same tables the seller's billing page reads, so
+the console cannot claim money the ledger does not show.
+
+### The report flow
+
+| Rule | Why |
+|---|---|
+| **One report never hides a file. Three distinct reporters do.** | A single-report takedown is a competitor weapon. `AUTO_HIDE_AFTER = 3`, from the trust-and-safety literature |
+| **Distinct, because the unique index says so** — `(asset_id, reporter_id)` | Otherwise the threshold is three clicks from anyone with three accounts |
+| **2 distinct escalates, 3 hides** | The queue is ordered by risk, so two gets a person sooner without touching the file |
+| **The reason is a `policy_rules` code** | Same rule as moderation; the reporter's words are a hint in `note`, capped at 400, never the charge |
+| **The operator never sees who reported** | A queue that names complainants is a harassment tool. Asserted against the payload, not just the view |
+| **Hiding is reversible, and only for what the threshold hid** | `assets.hidden_by_reports` (0018). Dismissing the reports gives the file back; a file its *seller* paused stays paused |
+
+Verified live end to end: three accounts (bob, dave, erin) reported alice's
+`Free sample pack` → after the third, the asset went `live → paused`, the queue
+showed **3** with the reporter's notes and no names, and the nav badge read 3.
+
+**Still missing:** a seller appeal surface (the operator can dismiss, the seller
+cannot ask), a report on a whole store rather than a file, rate limiting on the
+report endpoint, and country rules (`policy_rules.scope = 'country'` is modelled
+and unused).

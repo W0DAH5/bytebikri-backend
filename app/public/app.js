@@ -270,6 +270,34 @@
     }
   }
 
+  /**
+   * Scroll reveals.
+   *
+   * The elements are visible in the markup and in the CSS by default; the
+   * `reveal-ready` class (set by the inline script in <head>, before paint) is
+   * the only thing that lets this hide anything. Then:
+   *
+   *   - anything already on screen is revealed on the next frame, not observed;
+   *   - everything else is revealed as it arrives;
+   *   - and after two seconds, everything is revealed regardless. A section that
+   *     stays invisible because a callback did not fire is the one failure this
+   *     must not be able to produce, so it is not left to a callback.
+   */
+  if (document.documentElement.classList.contains('reveal-ready')) {
+    const targets = document.querySelectorAll('.section, .card, .asset, .panel, .preview-window, .stat-row, .proof-strip, .rail-card');
+    const show = (el) => el.classList.add('is-in');
+    if ('IntersectionObserver' in window) {
+      const io = new IntersectionObserver((entries) => {
+        for (const e of entries) if (e.isIntersecting) { show(e.target); io.unobserve(e.target); }
+      }, { rootMargin: '0px 0px -8% 0px' });
+      targets.forEach((el) => io.observe(el));
+      // The safety net. Not a fallback for old browsers — a fallback for us.
+      setTimeout(() => targets.forEach(show), 2000);
+    } else {
+      targets.forEach(show);
+    }
+  }
+
   // ── dashboard actions ────────────────────────────────────────────────────
   /*
    * No handlers for `[data-connect]` or `[data-revoke]` any more.

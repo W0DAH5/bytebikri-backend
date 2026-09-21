@@ -307,6 +307,150 @@ export const store = {
     );
   },
 
+  // ---- reports ------------------------------------------------------------
+  /**
+   * File a report. Idempotent per person per file, by the unique index.
+   *
+   * Returns the state of the file's queue AFTER the attempt, so the route can say
+   * something true: `filed: false` means this person had already reported it, and
+   * the count is the same either way because a second report is not a vote.
+   */
+  async fileReport({ assetId, channelId, reporterId, reason, note = '' }) {
+    let filed = true;
+    try {
+      await query(
+        `insert into asset_reports (asset_id, channel_id, reporter_id, reason, note)
+         values ($1, $2, $3, $4, $5)`,
+        [assetId, channelId, reporterId, reason, note || null],
+      );
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      filed = false;
+    }
+    const verdict = await this.reportVerdictFor(assetId);
+    return { filed, ...verdict };
+  },
+
+  reportVerdictFor(assetId) {
+    return one(
+      `select count(distinct reporter_id)::int as reporters,
+              jsonb_object_agg(reason, c) as by_reason,
+              max(created_at) as latest
+         from (select reporter_id, reason, created_at, count(*) over (partition by reason) as c
+                 from asset_reports where asset_id = $1 and status = 'open') t`,
+      [assetId],
+    ).then((r) => ({
+      reporters: r?.reporters ?? 0,
+      byReason: Object.fromEntries(Object.entries(r?.by_reason || {}).map(([k, v]) => [k, Number(v)])),
+      latest: r?.latest ?? null,
+    }));
+  },
+
+  /** Has this person already reported this file? */
+  hasReported(assetId, reporterId) {
+    return scalar(
+      'select count(*)::int from asset_reports where asset_id = $1 and reporter_id = $2',
+      [assetId, reporterId],
+    ).then((v) => Number(v) > 0);
+  },
+
+  /**
+   * The operator queue: one row per FILE, not per report.
+   *
+   * "Deduplication so moderators don't see the same report dozens of times." A
+   * file with four reports is one decision, and the operators' time is the
+   * scarcest thing in this system.
+   */
+  openReports() {
+    return many(
+      `select a.id as asset_id, a.title, a.slug as asset_slug, a.status as asset_status,
+              c.id as channel_id, c.slug as channel_slug, c.name as channel_name,
+              count(distinct r.reporter_id)::int as reporters,
+              jsonb_object_agg(r.reason, r2.n) as by_reason,
+              max(r.created_at) as latest,
+              min(r.created_at) as first_at,
+              count(*) filter (where r.note is not null)::int as with_notes
+         from asset_reports r
+         join assets a   on a.id = r.asset_id
+         join channels c on c.id = r.channel_id
+         -- How many reports of THIS reason, so the operator page can rank them
+         -- without a second query per row.
+         join lateral (select count(*) as n from asset_reports x
+                        where x.asset_id = r.asset_id and x.reason = r.reason and x.status = 'open') r2 on true
+        where r.status = 'open'
+        group by a.id, a.title, a.slug, a.status, c.id, c.slug, c.name
+        order by max(r.created_at) desc`,
+    ).then((rows) => rows.map((r) => ({
+      ...r,
+      byReason: Object.fromEntries(Object.entries(r.by_reason || {}).map(([k, v]) => [k, Number(v)])),
+    })));
+  },
+
+  /** The individual reports behind one queue row, with the reporter hidden. */
+  reportsForAsset(assetId) {
+    return many(
+      // No reporter identity in the result: an operator deciding about a FILE does
+      // not need to know who complained, and a queue that names reporters is how
+      // a moderation tool becomes a harassment tool.
+      `select id, reason, note, status, created_at, resolved_at
+         from asset_reports where asset_id = $1 order by created_at desc`,
+      [assetId],
+    );
+  },
+
+  /**
+   * Hide a file because the report threshold was reached.
+   *
+   * Sets the flag as well as the status, so the decision is reversible by the
+   * only person who can reverse it — an operator who reads the reports and
+   * disagrees with them.
+   */
+  hideByReports(assetId) {
+    return one(
+      `update assets set status = 'paused', hidden_by_reports = true, updated_at = now()
+        where id = $1 returning *`,
+      [assetId],
+    );
+  },
+
+  /**
+   * Put a file back after the reports against it were dismissed.
+   *
+   * ONLY a file the threshold hid. A file its seller paused stays paused, which
+   * is the whole reason `hidden_by_reports` exists as a column rather than as an
+   * inference from `status`.
+   */
+  restoreFromReports(assetId) {
+    return one(
+      `update assets set status = 'live', hidden_by_reports = false, updated_at = now()
+        where id = $1 and hidden_by_reports = true returning *`,
+      [assetId],
+    );
+  },
+
+  /** Resolve every open report on a file, in one transaction with the decision. */
+  async resolveReports({ assetId, status, resolution, actorId }) {
+    return withTransaction(async (client) => {
+      const res = await client.query(
+        `update asset_reports
+            set status = $2, resolution = $3, resolved_by = $4, resolved_at = now()
+          where asset_id = $1 and status = 'open'
+          returning id`,
+        [assetId, status, resolution || null, actorId || null],
+      );
+      return res.rowCount;
+    });
+  },
+
+  reportCounts() {
+    return one(
+      `select count(*) filter (where status = 'open')::int as open,
+              count(distinct asset_id) filter (where status = 'open')::int as files,
+              count(*)::int as total
+         from asset_reports`,
+    );
+  },
+
   /** Stores an operator may need to look at: everything not in the default state. */
   channelsNeedingModeration() {
     return many(
@@ -1030,6 +1174,35 @@ export const store = {
     return many('select * from plan_payments order by created_at desc');
   },
 
+  /**
+   * What the platform has actually been paid, and by how many stores.
+   *
+   * Read from the same tables the seller's billing page reads, so the console
+   * cannot claim money the ledger does not show. `matched` is what a person has
+   * confirmed against the statement; anything else is a request, not revenue.
+   */
+  platformMoney() {
+    return one(
+      `select
+         coalesce((select sum(amount_npr) from plan_payments
+                    where status = 'matched'
+                      and matched_at >= date_trunc('month', now())), 0)::int as matched_this_month,
+         coalesce((select sum(amount_npr) from rent_invoices
+                    where status = 'paid'
+                      and paid_at >= date_trunc('month', now())), 0)::int as rent_this_month,
+         (select count(distinct channel_id) from subscriptions
+           where status in ('active','grace') and plan_code <> 'free')::int as paying_stores,
+         (select count(*) from channels where moderation_state <> 'removed')::int as stores,
+         (select count(*) from subscriptions where status = 'active' and plan_code <> 'free')::int as active_subs`,
+    ).then((r) => ({
+      matchedThisMonthNpr: Number(r?.matched_this_month || 0),
+      rentThisMonthNpr: Number(r?.rent_this_month || 0),
+      payingStores: Number(r?.paying_stores || 0),
+      stores: Number(r?.stores || 0),
+      activeSubs: Number(r?.active_subs || 0),
+    }));
+  },
+
   // ---- channel settings ---------------------------------------------------
   /**
    * Update what a seller controls about their store.
@@ -1122,6 +1295,11 @@ export const store = {
       sets.push(`${key} = $${values.length}`);
     }
     if (!sets.length) return this.assetById(assetId);
+    // A seller setting the status is the seller taking the decision back: the
+    // file stops being "hidden by reports" from that moment, whichever way they
+    // set it. Without this, dismissing an old report would later un-pause a file
+    // its owner had deliberately taken down.
+    if ('status' in patch) sets.push('hidden_by_reports = false');
     return one(
       `update assets set ${sets.join(', ')}, updated_at = now() where id = $1 returning *`,
       values,
@@ -1582,11 +1760,29 @@ export const store = {
     return many("select * from slot_creatives where owner = 'platform' and active order by rank");
   },
 
-  async audit(action, meta = {}) {
-    await query('insert into audit_logs (action, meta) values ($1, $2)', [action, JSON.stringify(meta)]);
+  /**
+   * One audit row.
+   *
+   * `actorId` and the subject are optional because most of the thirty existing
+   * callers do not pass them, and an audit trail that required every call site to
+   * be rewritten would not have been written at all. The operator console reads
+   * the ones that do.
+   */
+  async audit(action, meta = {}, { actorId = null, subjectType = null, subjectId = null } = {}) {
+    await query(
+      `insert into audit_logs (action, actor_id, subject_type, subject_id, meta)
+       values ($1, $2, $3, $4, $5)`,
+      [action, actorId, subjectType, subjectId, JSON.stringify(meta)],
+    );
   },
-  async recentAudit(limit = 200) {
-    return many('select * from audit_logs order by created_at desc limit $1', [limit]);
+
+  recentAudit(limit = 200) {
+    return many(
+      `select l.*, p.display_name as actor_name, p.email as actor_email
+         from audit_logs l left join profiles p on p.id = l.actor_id
+        order by l.created_at desc, l.id desc limit $1`,
+      [Math.min(Number(limit) || 200, 500)],
+    );
   },
 };
 

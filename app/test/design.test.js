@@ -106,13 +106,40 @@ test('reduced motion is honoured, and animations still complete', () => {
   // Scroll-driven reveals must be inside a no-preference guard: they hide
   // content until the timeline runs, and a timeline that never runs is a blank
   // section.
-  const supports = CSS.indexOf('@supports (animation-timeline: view())');
-  assert.ok(supports !== -1, 'there is a scroll-driven reveal at all');
-  const scrollDriven = CSS.slice(supports + '@supports (animation-timeline: view())'.length);
-  const guard = scrollDriven.indexOf('prefers-reduced-motion: no-preference');
-  const reveal = scrollDriven.indexOf('animation-timeline: view()');
-  assert.ok(guard !== -1, 'scroll-driven animation needs the no-preference guard');
-  assert.ok(reveal > guard, 'and the timeline must sit inside it, not beside it');
+  // THE BUG THIS REPLACES, stated as an assertion.
+  //
+  // `animation-timeline: view()` with `animation-fill-mode: both` holds the
+  // keyframe's `from` state — opacity 0 — for every element whose scroll range
+  // has not been reached, and Chrome resolves the timeline late enough that it
+  // applies on load. `/dashboard/<store>` rendered 3588px tall with 2900px of
+  // blank space, and every test passed because every test read the CSS text.
+  //
+  // So: nothing may be hidden by a scroll timeline, and no animation may hold a
+  // hidden final state.
+  assert.ok(!/animation-timeline:\s*view\(\)/.test(CSS),
+    'a view() timeline can hold content invisible; the reveal is client-driven now');
+  // `::view-transition-*` pseudo-elements are exempt and only they: they exist
+  // for the duration of a navigation cross-fade and are removed from the tree
+  // afterwards, so `both` cannot strand anything. A regular element can be
+  // stranded, which is the whole point of this assertion.
+  const withoutViewTransitions = CSS.replace(/::view-transition-[a-z-]+[^{]*\{[^}]*\}/g, '');
+  const fills = [...withoutViewTransitions.matchAll(/animation:[^;]*\bboth\b/g)].map((m) => m[0].trim());
+  assert.deepEqual(fills, [], `an animation fills forwards from a hidden keyframe: ${fills.join(' | ')}`);
+
+  // Hiding is opt-in and gated on one class the inline script adds, and only
+  // when motion is welcome. No JavaScript, no hiding.
+  for (const m of CSS.matchAll(/\.reveal-ready[^{]*\{([^}]*)\}/g)) {
+    assert.ok(!/display:\s*none/.test(m[1]), 'a reveal must not remove content from the page');
+  }
+  const inline = /<script>([\s\S]*?)<\/script>/.exec(views)?.[1] || '';
+  assert.ok(/reveal-ready/.test(inline), 'the head script is what turns reveals on');
+  assert.ok(/prefers-reduced-motion: reduce/.test(inline),
+    'and it must refuse to add the class when reduced motion is requested');
+
+  // Belt and braces: a reveal that never fires is a blank section, so the client
+  // reveals everything after a timeout regardless of what the observer did.
+  assert.ok(/setTimeout\(\(\) => targets\.forEach\(show\)/.test(client),
+    'there must be a safety timer that un-hides everything');
 });
 
 test('the client only decorates what the server already rendered', () => {
@@ -193,6 +220,44 @@ test('the proof strip animates numbers that are already in the markup', () => {
   assert.ok(/class="proof-value"[^>]*>2</.test(hero), 'and it is the text the visitor sees before any script runs');
   assert.ok(/>0%</.test(hero), 'a literal (the 0% cut) is never animated from a wrong value');
   assert.ok(!/data-count="0%"/.test(hero));
+});
+
+test('components use semantic tokens, never the raw palette', () => {
+  // This is the bug that caused a 1.47:1 money figure on the light theme: a
+  // component written against `--emerald-300`, a dark-theme primitive, on a
+  // white surface. A primitive cannot know what it is sitting on; a semantic
+  // token is defined once per theme and measured against that theme's surfaces.
+  const semanticStart = CSS.indexOf('/* ── semantic');
+  const body = CSS.slice(CSS.indexOf('/* ── reset', semanticStart));
+  const primitives = [...body.matchAll(/var\(--(gray|indigo|violet|emerald|amber|rose|sky|slate)-\d+\)/g)]
+    .map((m) => m[0]);
+  assert.deepEqual(primitives, [],
+    `component CSS reaches past the semantic layer: ${[...new Set(primitives)].join(', ')}`);
+
+  // And every semantic token the stylesheet uses must be defined in BOTH themes
+  // — dark in :root, light in the light block — or one of them silently inherits
+  // the other's value.
+  // Brace-match the light block, then take the first :root block outside it as
+  // the dark theme. Comment anchors cannot be used here: this file strips
+  // comments before anything else looks at the CSS.
+  const lightStart = CSS.indexOf('@media (prefers-color-scheme: light)');
+  let depth = 0; let i = CSS.indexOf('{', lightStart); const from = i;
+  for (; i < CSS.length && (depth > 0 || i === from); i++) {
+    if (CSS[i] === '{') depth += 1;
+    else if (CSS[i] === '}') depth -= 1;
+  }
+  const light = CSS.slice(from, i);
+  const withoutLight = CSS.slice(0, lightStart) + CSS.slice(i);
+  // The first :root block is the primitive palette; the semantic theme is the one
+  // that defines `--surface-base`.
+  const root = [...withoutLight.matchAll(/:root\s*\{([\s\S]*?)\n\}/g)].map((m) => m[1])
+    .find((b) => /--surface-base:/.test(b)) || '';
+  const dark = root;
+  const themed = ['--text-primary', '--text-muted', '--text-faint', '--surface-base', '--surface-raised', '--border-subtle', '--success-text', '--danger-text'];
+  for (const t of themed) {
+    assert.ok(new RegExp(`${t}:`).test(dark), `${t} missing from the dark theme`);
+    assert.ok(new RegExp(`${t}:`).test(light), `${t} missing from the light theme — it would inherit the dark value`);
+  }
 });
 
 test('every new class the design pass introduced has a rule', () => {

@@ -15,6 +15,8 @@
  *     unlocked?" would, and would block rendering to do it.
  */
 
+import { REPORT_REASONS, REPORT_HONESTY, NOTE_LIMIT, reporterMessage, reportVerdict, AUTO_HIDE_AFTER } from './reports.js';
+
 const esc = (s) =>
   String(s ?? '')
     .replace(/&/g, '&amp;')
@@ -179,6 +181,11 @@ export function layout({ title, user, body, activeChannel = null, wide = false, 
 <title>${esc(title)} · ByteBikri</title>
 <meta name="description" content="Watch an ad, unlock the file. Creators keep their own ad revenue.">
 <link rel="stylesheet" href="/styles.css">
+<script>
+// Before paint, and only when motion is welcome. With no JavaScript the class is
+// never added, no element is ever hidden, and the page simply renders.
+if (!matchMedia('(prefers-reduced-motion: reduce)').matches) document.documentElement.classList.add('reveal-ready');
+</script>
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
@@ -188,7 +195,7 @@ export function layout({ title, user, body, activeChannel = null, wide = false, 
     <nav class="nav" aria-label="Main">
       ${navLink('/marketplace', 'Explore', 'marketplace')}
       ${activeChannel ? navLink(`/dashboard/${esc(activeChannel.slug)}`, 'Dashboard', 'dashboard') : ''}
-      ${user?.role === 'admin' ? navLink('/admin/billing', 'Billing queue', 'admin') : ''}
+      ${user?.role === 'admin' ? navLink('/admin', 'Console', 'admin') : ''}
     </nav>
     <span class="spacer"></span>
     ${account}
@@ -659,10 +666,65 @@ function reviewSection({ channel, asset, reviews = [], reviewStats = {}, canRevi
   </section>`;
 }
 
+/**
+ * "Something is wrong with this file."
+ *
+ * One link, not a form: the form appears when it is asked for, because a report
+ * box sitting open under every download invites the casual click that the
+ * threshold rule then has to absorb. `details`/`summary` does that with no
+ * JavaScript at all — it works in the Android WebView, in a text browser, and
+ * when the client script has not loaded.
+ *
+ * The reasons are a `<select>` of the codes in `src/reports.js`, and the copy
+ * says out loud that one report does not remove anything. A report button that
+ * implies instant action is a button that gets used to threaten people.
+ *
+ * Hidden from the owner (this is their file) and from signed-out visitors (the
+ * route requires an account, so offering the form would be a lie).
+ */
+function reportBlock({ channel, asset, user, alreadyReported = false, reported = null }) {
+  if (!user || user.id === channel.owner_id) return '';
+  const option = (r, selected = false) =>
+    `<option value="${esc(r.code)}"${selected ? ' selected' : ''}>${esc(r.label)}</option>`;
+
+  if (reported) {
+    return `<section class="section">
+  <div class="note ${reported.hidden ? 'note-warning' : 'note-info'}" role="status">
+    ${esc(reporterMessage({ reporters: reported.reporters, already: !reported.filed }))}
+  </div>
+</section>`;
+  }
+
+  return `<section class="section">
+  <details class="report-block">
+    <summary class="report-summary">
+      Something wrong with this file?
+      ${alreadyReported ? '<span class="pill">You reported it</span>' : ''}
+    </summary>
+    <form method="post" action="/s/${esc(channel.slug)}/a/${esc(asset.slug)}/report" class="report-form">
+      <div class="field">
+        <label for="report-reason">What is wrong</label>
+        <select class="input" id="report-reason" name="reason">
+          ${REPORT_REASONS.map((r) => option(r)).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label for="report-note">Anything that would help <span class="fine">(optional)</span></label>
+        <textarea class="input textarea" id="report-note" name="note" maxlength="${NOTE_LIMIT}"
+                  placeholder="A link, a page number, a line — whatever made you stop and write this."></textarea>
+      </div>
+      <button class="btn" type="submit">Send the report</button>
+      <p class="fine" style="margin-top:var(--space-3)">${esc(REPORT_HONESTY.long)}</p>
+    </form>
+  </details>
+</section>`;
+}
+
 export function assetPage({
   channel, asset, files, unlocked, user, policy, slots, previewFile = null,
   markUri = '', markLabel = '', accessUntil = null, consent = null,
   reviews = [], reviewStats = {}, canReview = false, myReview = null, reviewError = null,
+  reported = null, alreadyReported = false, reportError = null,
 }) {
   const open = asset.unlock_mode === 'open';
   const needsAd = !open && !unlocked;
@@ -789,6 +851,9 @@ export function assetPage({
     </p>
   </aside>
 </div>
+
+${reportError ? `<section class="section"><div class="note note-danger" role="alert">${esc(reportError)}</div></section>` : ''}
+${reportBlock({ channel, asset, user, alreadyReported, reported })}
 
 <div class="modal" id="ad-modal" hidden role="dialog" aria-modal="true" aria-labelledby="ad-title">
   <div class="modal-card">
@@ -2432,7 +2497,226 @@ ${flashNote(flash)}
 // Operator — matching money against the statement
 // ---------------------------------------------------------------------------
 
-export function operatorBilling({ user, consent = null, flash = null, payments = [], invoices = [], payee = null }) {
+/**
+ * The operator console.
+ *
+ * One shell, four pages, and the layout is the research rather than taste:
+ *
+ *   - an inverted pyramid. Four or five KPIs answer "is anything on fire" without
+ *     a click, the queues that need a person come next with their counts, and the
+ *     detail sits underneath for whoever wants it;
+ *   - equally sized KPI tiles on one row, because a row of unequal tiles reads as
+ *     a mistake before it reads as design;
+ *   - status is never carried by colour alone. Every tile and every pill has a
+ *     word in it, which matters on the operator pages more than anywhere else:
+ *     roughly one man in twelve cannot use the red/green difference at all;
+ *   - an operator is an expert, so the density is higher here than anywhere else
+ *     in the product. `Density follows expertise` — the calm version of this
+ *     belongs on the seller's dashboard, not on the console.
+ *
+ * The navigation is a real <nav> of links, so it works without JavaScript and
+ * every page is addressable.
+ */
+export function adminShell({ user, consent, current, title, lede = '', actions = '', body }) {
+  const tab = (href, label, key, badge = 0) => `
+    <a href="${esc(href)}"${current === key ? ' aria-current="page"' : ''}>
+      ${esc(label)}${badge ? `<span class="nav-count">${num(badge)}</span>` : ''}
+    </a>`;
+  return layout({
+    title, user, current: 'admin', consent,
+    body: `
+<div class="section console-head" style="margin-bottom:0">
+  <div class="row" style="align-items:flex-start">
+    <div>
+      <h1>${esc(title)}</h1>
+      ${lede ? `<p class="lede" style="margin-top:var(--space-2)">${lede}</p>` : ''}
+    </div>
+    <span class="spacer"></span>
+    ${actions}
+  </div>
+</div>
+<nav class="console-nav" aria-label="Console">${tab('/admin', 'Overview', 'overview')}${tab('/admin/payments', 'Payments', 'payments', user.adminBadges?.payments)}${tab('/admin/reports', 'Reports', 'reports', user.adminBadges?.reports)}${tab('/admin/moderation', 'Moderation', 'moderation', user.adminBadges?.moderation)}${tab('/admin/audit', 'Audit log', 'audit')}</nav>
+${body}`,
+  });
+}
+
+/** One figure an operator can act on. Label, value, and the context line. */
+function kpi({ label, value, context = null, tone = '', href = null }) {
+  const inner = `
+    <span class="kpi-label">${esc(label)}</span>
+    <span class="kpi-value">${esc(value)}</span>
+    ${context ? `<span class="kpi-context">${esc(context)}</span>` : ''}`;
+  const cls = `kpi${tone ? ` kpi-${tone}` : ''}`;
+  return href
+    ? `<a class="${cls}" href="${esc(href)}">${inner}</a>`
+    : `<div class="${cls}">${inner}</div>`;
+}
+
+/**
+ * The console overview.
+ *
+ * The one question this page answers, in one sentence: is anything waiting for a
+ * person, and is the money moving. Everything on it is a number that changes a
+ * decision, and anything that does not is not on it.
+ */
+export function adminOverview({ user, consent = null, flash = null, kpis = [], queues = [], activity = [], platform = null }) {
+  const queueRow = (q) => `
+    <a class="queue-row" href="${esc(q.href)}">
+      <span class="queue-count${q.count ? ' queue-count-live' : ''}">${num(q.count)}</span>
+      <span class="queue-body">
+        <strong>${esc(q.title)}</strong>
+        <span class="fine">${esc(q.note)}</span>
+      </span>
+      <span class="queue-go" aria-hidden="true">→</span>
+    </a>`;
+
+  const log = activity.map((a) => `
+    <tr>
+      <td class="fine" style="white-space:nowrap">${esc(relTime(a.created_at))}</td>
+      <td><span class="mono">${esc(a.action)}</span></td>
+      <td class="fine">${esc(a.actor_name || a.actor_email || (a.actor_id ? 'a person' : 'the platform'))}</td>
+    </tr>`).join('');
+
+  return adminShell({
+    user, consent, current: 'overview', title: 'Console',
+    lede: 'What the platform owes people, and what is waiting for one of us.',
+    body: `
+${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)" role="status">${esc(flash.message)}</div>` : ''}
+
+<section class="section">
+  <div class="kpi-row">${kpis.map(kpi).join('')}</div>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Waiting for a person</h2>
+    <p>Each one is a queue with a count. A zero here is the point of the page.</p>
+  </div>
+  <div class="queue-list">${queues.map(queueRow).join('')}</div>
+</section>
+
+${platform ? `
+<section class="section">
+  <div class="section-head"><h2>How the platform earns</h2>
+    <p>Two charges, and neither is a share of a creator's ad revenue.</p></div>
+  <div class="panel"><div class="panel-body">
+    <dl class="kv">
+      ${platform.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')}
+    </dl>
+  </div></div>
+</section>` : ''}
+
+<section class="section">
+  <div class="section-head">
+    <h2>Recent activity</h2>
+    <p>Every decision and every payment, newest first. <a href="/admin/audit">The whole log →</a></p>
+  </div>
+  <div class="panel"><div class="panel-body panel-body-flush">
+    <table class="table">
+      <thead><tr><th>When</th><th>Action</th><th>Who</th></tr></thead>
+      <tbody>${log || '<tr><td colspan="3" class="muted">Nothing has happened yet.</td></tr>'}</tbody>
+    </table>
+  </div></div>
+</section>`,
+  });
+}
+
+/**
+ * The report queue.
+ *
+ * One row per FILE, ordered by risk rather than by arrival, and every row says
+ * how many distinct people reported it. Under the auto-hide threshold the file is
+ * still live and the row says so — an operator looking at a queue needs to know
+ * whether they are interrupting a seller or catching up with one.
+ */
+export function adminReports({ user, consent = null, flash = null, rows = [], ruleTitles = {} }) {
+  const row = (r) => {
+    const verdict = reportVerdict({ reporters: r.reporters, byReason: r.byReason });
+    const reasons = Object.entries(r.byReason).sort((a, b) => b[1] - a[1])
+      .map(([code, n]) => `${ruleTitles[code] || code} ×${n}`).join(' · ');
+    return `
+    <div class="report-row panel">
+      <div class="panel-head">
+        <a href="/s/${esc(r.channel_slug)}/a/${esc(r.asset_slug)}" target="_blank" rel="noopener"><strong>${esc(r.title)}</strong></a>
+        <span class="fine">/s/${esc(r.channel_slug)}</span>
+        <span class="spacer"></span>
+        ${verdict.autoHide
+          ? pill('Hidden while it is reviewed', 'warning')
+          : pill(`Live · ${verdict.reporters} of ${AUTO_HIDE_AFTER} to auto-hide`, '')}
+      </div>
+      <div class="panel-body">
+        <p class="small" style="margin:0"><strong>${esc(verdict.summary)}</strong></p>
+        <p class="fine" style="margin:var(--space-2) 0 0">${esc(reasons)}${r.with_notes ? ` · ${r.with_notes} with a note` : ''}
+          · first ${esc(relTime(r.first_at))}, latest ${esc(relTime(r.latest))}</p>
+        ${r.notes && r.notes.length ? `<ul class="list-plain" style="margin-top:var(--space-3)">
+          ${r.notes.map((nt) => `<li class="fine">${esc(nt.note)}</li>`).join('')}
+        </ul>` : ''}
+        <div class="row" style="margin-top:var(--space-4);gap:var(--space-3)">
+          <form method="post" action="/admin/reports/${esc(r.asset_id)}">
+            <input type="hidden" name="action" value="actioned">
+            <button class="btn btn-sm btn-primary" type="submit">Act — remove the file</button>
+          </form>
+          <form method="post" action="/admin/reports/${esc(r.asset_id)}">
+            <input type="hidden" name="action" value="dismissed">
+            <button class="btn btn-sm" type="submit">Dismiss — the file is fine</button>
+          </form>
+          <span class="fine">Removing the file cites the rule and writes nothing to the seller's account.</span>
+        </div>
+      </div>
+    </div>`;
+  };
+
+  return adminShell({
+    user, consent, current: 'reports', title: 'Reports',
+    lede: `A report is a claim, not a verdict. ${AUTO_HIDE_AFTER} distinct reporters hide a file while it waits; one never does.`,
+    body: `
+${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)" role="status">${esc(flash.message)}</div>` : ''}
+<section class="section">
+  <div class="section-head">
+    <h2>Open</h2>
+    <p>${plural(rows.length, 'file')} reported, ordered by how many people said it.</p>
+  </div>
+  ${rows.length ? rows.map(row).join('') : '<div class="empty">Nothing has been reported.</div>'}
+</section>`,
+  });
+}
+
+/** The audit log: a filter and a table, because that is all it is. */
+export function adminAudit({ user, consent = null, rows = [], q = '', total = 0 }) {
+  const filtered = q ? rows.filter((r) => String(r.action).includes(q)) : rows;
+  return adminShell({
+    user, consent, current: 'audit', title: 'Audit log',
+    lede: 'Every state change that mattered, with who did it. Newest first.',
+    actions: `<form class="search search-inline" method="get" action="/admin/audit" role="search">
+      <label class="sr-only" for="q">Filter by action</label>
+      <input class="input" id="q" name="q" type="search" value="${esc(q)}" placeholder="Filter by action, e.g. rent">
+      <button class="btn" type="submit">Filter</button>
+    </form>`,
+    body: `
+<section class="section">
+  <div class="section-head">
+    <h2>${q ? `Matching “${esc(q)}”` : 'Everything'}</h2>
+    <p>${num(filtered.length)} of ${num(total)} rows</p>
+  </div>
+  <div class="panel"><div class="panel-body panel-body-flush">
+    <table class="table">
+      <thead><tr><th>When</th><th>Action</th><th>Who</th><th>Subject</th><th>Detail</th></tr></thead>
+      <tbody>${filtered.map((a) => `
+        <tr>
+          <td class="fine" style="white-space:nowrap">${esc(new Date(a.created_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</td>
+          <td><span class="mono">${esc(a.action)}</span></td>
+          <td class="fine">${esc(a.actor_name || a.actor_email || '—')}</td>
+          <td class="fine mono">${esc(a.subject_type ? `${a.subject_type}` : '—')}</td>
+          <td class="fine">${esc(JSON.stringify(a.meta || {}).slice(0, 120))}</td>
+        </tr>`).join('') || '<tr><td colspan="5" class="muted">No rows.</td></tr>'}
+      </tbody>
+    </table>
+  </div></div>
+</section>`,
+  });
+}
+
+export function operatorBilling({ user, consent = null, flash = null, payments = [], invoices = [], payee = null, console = false }) {
   const payRows = payments.map((p) => `
     <tr>
       <td>
@@ -2444,7 +2728,7 @@ export function operatorBilling({ user, consent = null, flash = null, payments =
       <td class="num">${npr(p.amount_npr)}</td>
       <td class="fine">${relTime(p.created_at)}</td>
       <td>
-        <form class="inline-form" method="post" action="/admin/billing/plan/${esc(p.id)}">
+        <form class="inline-form" method="post" action="/admin/payments/plan/${esc(p.id)}">
           <button class="btn btn-sm btn-primary" name="action" value="match" type="submit">Match</button>
           <button class="btn btn-sm btn-danger" name="action" value="reject" type="submit">Reject</button>
         </form>
@@ -2462,15 +2746,13 @@ export function operatorBilling({ user, consent = null, flash = null, payments =
       <td class="num">${npr(i.amount_npr)}</td>
       <td>${pill(i.status, i.status === 'submitted' ? 'info' : 'warning')}</td>
       <td>
-        <form class="inline-form" method="post" action="/admin/billing/rent/${esc(i.id)}">
+        <form class="inline-form" method="post" action="/admin/payments/rent/${esc(i.id)}">
           <button class="btn btn-sm btn-primary" type="submit">Mark paid</button>
         </form>
       </td>
     </tr>`).join('');
 
-  return layout({
-    title: 'Billing queue', user, consent, current: 'admin',
-    body: `
+  const body = `
 <div class="section" style="margin-block:var(--space-8) var(--space-2)">
   <h1 style="font-size:var(--text-2xl)">Billing queue</h1>
   <p class="lede" style="margin-top:var(--space-4)">
@@ -2503,8 +2785,13 @@ ${flashNote(flash)}
       </table>
     </div></div>`
     : '<div class="empty">Nothing outstanding. Rent invoices are only issued where a page is long enough to spare a slot.</div>'}
-</section>`,
-  });
+</section>`;
+
+  // Rendered inside the console shell now, so the operator keeps one frame of
+  // reference: the same navigation, the same badge counts, the same title style.
+  return console
+    ? adminShell({ user, consent, current: 'payments', title: 'Payments', lede: 'Every transfer a person has to match against the statement.', body, flash })
+    : layout({ title: 'Billing queue', user, consent, current: 'admin', body });
 }
 
 // ---------------------------------------------------------------------------

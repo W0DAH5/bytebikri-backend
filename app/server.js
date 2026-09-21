@@ -27,6 +27,7 @@ import {
   ACTIONS as MOD_ACTIONS, ACTION_LABELS, behaviour, canWrite, changesVisibility,
   decisionNote, isPublic, normaliseState, stateFor, validateDecision,
 } from './src/moderation.js';
+import { AUTO_HIDE_AFTER, orderQueue, reportVerdict, validateReport } from './src/reports.js';
 import {
   onboardingFor, connectable, postbackUrl, validateCredential, maskSecret,
   connectionHealth, unconnectableNote,
@@ -655,6 +656,15 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
     });
     const previewFile = files.find((f) => f.playable) || files.find((f) => f.kind === 'image') || null;
 
+    // The report affordances. `reported` comes from the redirect after a
+    // submission and is read as a flag, never echoed; `alreadyReported` is what
+    // stops the same person filing the same thing twice and being thanked for it.
+    const reportedFlag = req.query.reported === '1';
+    const reportError = req.query.report ? (ERROR_FLASH[`report_${req.query.report}`] || null) : null;
+    const alreadyReported = req.user && req.user.id !== channel.owner_id
+      ? await store.hasReported(asset.id, req.user.id)
+      : false;
+
     // The on-screen mark for video and audio, which cannot be burned in without
     // a transcoder. It is the same reference that goes into the pixels of an
     // image, drawn in the DOM instead — and the page says which of the two it is.
@@ -679,6 +689,9 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
       channel, asset, files, unlocked, user: req.user, consent: req.consent,
       accessUntil: unlock?.expires_at ?? null,
       previewFile, markUri, markLabel,
+      alreadyReported,
+      reported: reportedFlag ? { reporters: await store.reportVerdictFor(asset.id).then((v) => v.reporters), filed: true, hidden: false } : null,
+      reportError,
       reviews, reviewStats,
       canReview: Boolean(unlock) && !myReview,
       myReview,
@@ -1549,6 +1562,7 @@ const SUCCESS_FLASH = {
   revoked: () => 'Disconnected. Its callbacks are refused from now on, and anything it gated stops unlocking.',
   responded: () => 'Reply posted.',
   saved_moderation: () => 'Decision recorded. The seller sees the reason and the note on their dashboard.',
+  saved_report: () => 'Report closed. The file is paused if you removed it, and every report on it is resolved.',
 };
 
 const ERROR_FLASH = {
@@ -1568,6 +1582,8 @@ const ERROR_FLASH = {
   moderated: 'This store is not in a state where it can publish. Nothing was changed, and nothing has been deleted.',
   action: 'That is not a moderation action.',
   rule: 'That reason is not one of our rules. Pick one from the list.',
+  report_reason: 'Pick what is wrong with the file from the list.',
+  report_self: 'That is your own file — there is nothing to report.',
   secret: 'That secret did not look right — copy it again from the network dashboard, with no spaces at either end.',
   nope: 'That connection is not yours.',
   unlock: 'Only someone who has unlocked this file can review it.',
@@ -2060,12 +2076,13 @@ APP.post('/dashboard/:slug/earnings/report', limitUnlock, async (req, res, next)
 // somebody has paid for, so it should be visible, boring, and hard to do by
 // accident. Behind `role = 'admin'`, which no seller account has.
 // ---------------------------------------------------------------------------
-APP.get('/admin/billing', async (req, res, next) => {
+APP.get('/admin/payments', async (req, res, next) => {
   try {
     if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
     if (req.user.role !== 'admin') return res.status(404).send('Not found');
     res.send(views.operatorBilling({
-      user: req.user, consent: req.consent, flash: flashFor(req.query),
+      console: true,
+      user: await withBadges(req.user), consent: req.consent, flash: flashFor(req.query),
       payments: await store.unmatchedPayments(),
       invoices: await store.openRentInvoices(),
       payee: payeeName(),
@@ -2073,7 +2090,16 @@ APP.get('/admin/billing', async (req, res, next) => {
   } catch (err) { return next(err); }
 });
 
-APP.post('/admin/billing/plan/:id', async (req, res, next) => {
+// The old address keeps working: it is in bookmarks, in the audit log, and in
+// whatever the operator typed last week.
+APP.get('/admin/billing', (req, res) => res.redirect('/admin/payments'));
+// The action routes moved with the page. Old paths are kept as aliases rather
+// than deleted: a form left open in a browser tab tomorrow would otherwise POST
+// into a 404, and the operator would reasonably conclude the queue is broken.
+APP.post('/admin/billing/plan/:id', (req, res) => res.redirect(307, `/admin/payments/plan/${encodeURIComponent(req.params.id)}`));
+APP.post('/admin/billing/rent/:id', (req, res) => res.redirect(307, `/admin/payments/rent/${encodeURIComponent(req.params.id)}`));
+
+APP.post('/admin/payments/plan/:id', async (req, res, next) => {
   try {
     if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
     if (req.body.action === 'reject') {
@@ -2086,11 +2112,11 @@ APP.post('/admin/billing/plan/:id', async (req, res, next) => {
       const matched = await store.matchPlanPayment({ paymentId: req.params.id, actorId: req.user.id });
       await store.audit('plan.payment_matched', { paymentId: req.params.id, ok: Boolean(matched) });
     }
-    return res.redirect('/admin/billing');
+    return res.redirect('/admin/payments');
   } catch (err) { return next(err); }
 });
 
-APP.post('/admin/billing/rent/:id', async (req, res, next) => {
+APP.post('/admin/payments/rent/:id', async (req, res, next) => {
   try {
     if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
     await store.matchRentPayment({
@@ -2098,7 +2124,7 @@ APP.post('/admin/billing/rent/:id', async (req, res, next) => {
       note: String(req.body.note || '').trim().slice(0, 300) || null,
     });
     await store.audit('rent.payment_matched', { invoiceId: req.params.id });
-    return res.redirect('/admin/billing');
+    return res.redirect('/admin/payments');
   } catch (err) { return next(err); }
 });
 
@@ -2296,6 +2322,56 @@ APP.post('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
  */
 
 // ---------------------------------------------------------------------------
+// Reports — a buyer says a file is wrong
+// ---------------------------------------------------------------------------
+/**
+ * File a report.
+ *
+ * What this route does NOT do is hide anything, unless the threshold is reached —
+ * and the threshold is the point. One report that could hide a file would hand
+ * every seller a weapon against every other seller, and the check is
+ * `AUTO_HIDE_AFTER` distinct reporters, one per person, enforced by a unique
+ * index rather than by the route counting carefully.
+ */
+APP.post('/s/:slug/a/:assetSlug/report', async (req, res, next) => {
+  const back = `/s/${encodeURIComponent(req.params.slug)}/a/${encodeURIComponent(req.params.assetSlug)}`;
+  try {
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    const channel = await store.channelBySlug(req.params.slug);
+    if (!channel) return res.status(404).send('Channel not found');
+    const asset = await store.assetBySlug(channel.id, req.params.assetSlug);
+    if (!asset) return res.status(404).send('Asset not found');
+
+    const check = validateReport({
+      reason: req.body?.reason, note: req.body?.note,
+      reporterId: req.user.id, ownerId: channel.owner_id,
+    });
+    if (!check.ok) return res.redirect(`${back}?report=${check.error}`);
+
+    const result = await store.fileReport({
+      assetId: asset.id, channelId: channel.id, reporterId: req.user.id,
+      reason: check.reason, note: check.note,
+    });
+
+    await store.audit('asset.reported', {
+      assetId: asset.id, channelId: channel.id, reason: check.reason,
+      reporters: result.reporters, filed: result.filed,
+    }, { actorId: req.user.id, subjectType: 'asset', subjectId: asset.id });
+
+    // The threshold. Reached only by distinct reporters, and it does not touch
+    // the seller's plan, their money or their account — it changes the FILE.
+    if (result.reporters >= AUTO_HIDE_AFTER && asset.status === 'live') {
+      await store.hideByReports(asset.id);
+      await store.audit('asset.hidden_by_reports', {
+        assetId: asset.id, reporters: result.reporters, threshold: AUTO_HIDE_AFTER,
+      }, { subjectType: 'asset', subjectId: asset.id });
+    }
+
+    res.redirect(`${back}?reported=1`);
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // Moderation — the operator side
 // ---------------------------------------------------------------------------
 /**
@@ -2310,6 +2386,148 @@ APP.post('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
  * operator which store to look at, because a seller report button is a separate
  * feature with a separate design.
  */
+/**
+ * Everything the console needs to put a count on a queue.
+ *
+ * One function, called by every console page, so a badge on the navigation and
+ * the number at the top of the page it points at can never disagree — which is
+ * the single most common way an admin console loses an operator's trust.
+ */
+async function consoleCounts() {
+  const [payments, invoices, reports, moderation, payouts, unmatched] = await Promise.all([
+    store.unmatchedPayments(),
+    store.openRentInvoices(),
+    store.reportCounts(),
+    store.channelsNeedingModeration(),
+    Promise.resolve([]),
+    store.planPayments(),
+  ]);
+  return {
+    payments: payments.length,
+    invoices: invoices.length,
+    reports: reports.open,
+    reportedFiles: reports.files,
+    moderation: moderation.length,
+    payouts: Array.isArray(payouts) ? payouts.length : 0,
+    unmatched: Array.isArray(unmatched) ? unmatched.length : 0,
+  };
+}
+
+/** Attach the counts to the operator for the navigation badges. */
+async function withBadges(user) {
+  if (!user || user.role !== 'admin') return user;
+  const c = await consoleCounts();
+  return { ...user, adminBadges: { payments: c.payments + c.invoices, reports: c.reports, moderation: c.moderation } };
+}
+
+APP.get('/admin', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    const counts = await consoleCounts();
+    const money = await store.platformMoney();
+    const reach = await scalar(
+      `select json_build_object(
+         'stores', (select count(*)::int from channels where moderation_state <> 'removed'),
+         'listed', (select count(*)::int from channels where listing_mode = 'marketplace' and moderation_state not in ('removed','suspended')),
+         'files',  (select count(*)::int from assets where status = 'live'),
+         'views',  (select coalesce(sum(views),0)::int from page_view_daily where day > current_date - 30),
+         'unlocks',(select count(*)::int from unlocks where revoked_at is null),
+         'events', (select count(*)::int from ad_view_events where completed = true)
+       ) as r`,
+    );
+
+    res.send(views.adminOverview({
+      user: await withBadges(req.user), consent: req.consent, flash: flashFor(req.query),
+      kpis: [
+        { label: 'Matched this month', value: `NPR ${Number(money.matched_this_month || money.matchedThisMonthNpr || 0).toLocaleString('en-IN')}`, context: `${counts.payments + counts.invoices} transfer${counts.payments + counts.invoices === 1 ? '' : 's'} to match`, tone: (money.matched_this_month || money.matchedThisMonthNpr) ? 'good' : '', href: '/admin/payments' },
+        { label: 'Reports waiting', value: String(counts.reports), context: counts.reports ? `across ${counts.reportedFiles} file${counts.reportedFiles === 1 ? '' : 's'}` : 'nothing reported', tone: counts.reports >= AUTO_HIDE_AFTER ? 'bad' : counts.reports ? 'warn' : '', href: '/admin/reports' },
+        { label: 'Stores not public', value: String(counts.moderation), context: counts.moderation ? 'restricted, suspended or removed' : 'every store is public', tone: counts.moderation ? 'warn' : '', href: '/admin/moderation' },
+        { label: 'Paying stores', value: String(money.paying_stores || money.payingStores || 0), context: 'on any paid plan', href: '/admin/audit' },
+        { label: 'Views · 30d', value: Number(reach.views || 0).toLocaleString('en-IN'), context: `${Number(reach.unlocks || 0).toLocaleString('en-IN')} unlocks · ${Number(reach.events || 0).toLocaleString('en-IN')} ad views` },
+      ],
+      queues: [
+        { title: 'Transfers to match', count: counts.payments + counts.invoices, note: 'A person matches each one against the statement by hand.', href: '/admin/payments' },
+        { title: 'Files reported', count: counts.reports, note: `${AUTO_HIDE_AFTER} distinct reporters hide a file automatically. Below that, it waits.`, href: '/admin/reports' },
+        { title: 'Stores needing a decision', count: counts.moderation, note: 'Restricted, suspended or removed.', href: '/admin/moderation' },
+      ],
+      platform: [
+        ['Charges', '<strong>Two</strong> — a plan upgrade and annual rent'],
+        ['Share of ad earnings', '<strong>0%</strong> — the network pays the creator directly'],
+        ['Held on a creator&#39;s behalf', '<strong>Nothing, ever</strong>'],
+        ['Matched by', 'a person, against the bank or wallet statement'],
+      ],
+      activity: await store.recentAudit(8),
+    }));
+  } catch (err) { next(err); }
+});
+
+APP.get('/admin/reports', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    const queue = orderQueue(await store.openReports());
+    // The notes come from the individual reports, minus who wrote them.
+    const rows = await Promise.all(queue.map(async (r) => ({
+      ...r, notes: (await store.reportsForAsset(r.asset_id)).filter((x) => x.status === 'open' && x.note).slice(0, 4),
+    })));
+    const rules = await store.policyRules();
+    res.send(views.adminReports({
+      user: await withBadges(req.user), consent: req.consent, flash: flashFor(req.query),
+      rows, ruleTitles: Object.fromEntries(rules.map((r) => [r.code, r.title])),
+    }));
+  } catch (err) { next(err); }
+});
+
+APP.post('/admin/reports/:assetId', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    const asset = await store.assetById(req.params.assetId);
+    if (!asset) return res.status(404).send('Asset not found');
+    const action = req.body?.action === 'dismissed' ? 'dismissed' : 'actioned';
+
+    // A decision and the closure of its reports are one transaction: a queue row
+    // that stays open after somebody acted on it is a queue nobody trusts.
+    await store.withTransaction(async (client) => {
+      if (action === 'actioned') {
+        // Removed: the file stays down, and the flag clears so a later dismissal
+        // of some future report cannot bring it back.
+        await client.query(
+          "update assets set status = 'paused', hidden_by_reports = false, updated_at = now() where id = $1",
+          [asset.id],
+        );
+      } else {
+        // Dismissed: if the threshold is what hid it, the threshold is undone.
+        // This is the appeal path — without it, a wrong report hides a file
+        // permanently and the operator's decision means nothing.
+        await client.query(
+          `update assets set status = 'live', hidden_by_reports = false, updated_at = now()
+            where id = $1 and hidden_by_reports = true`,
+          [asset.id],
+        );
+      }
+      await client.query(
+        `update asset_reports set status = $2, resolved_by = $3, resolved_at = now()
+          where asset_id = $1 and status = 'open'`,
+        [asset.id, action, req.user.id],
+      );
+    });
+
+    await store.audit(`report.${action}`, { assetId: asset.id, channelId: asset.channel_id },
+      { actorId: req.user.id, subjectType: 'asset', subjectId: asset.id });
+    res.redirect('/admin/reports?saved_report=1');
+  } catch (err) { next(err); }
+});
+
+APP.get('/admin/audit', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    const rows = await store.recentAudit(300);
+    res.send(views.adminAudit({
+      user: await withBadges(req.user), consent: req.consent,
+      rows, q: String(req.query.q || '').slice(0, 40), total: rows.length,
+    }));
+  } catch (err) { next(err); }
+});
+
 APP.get('/admin/moderation', async (req, res, next) => {
   try {
     if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
