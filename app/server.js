@@ -10,6 +10,7 @@
  * media API means implementing three methods there — nothing above changes.
  */
 import express from 'express';
+import helmet from 'helmet';
 import multer from 'multer';
 import crypto from 'node:crypto';
 import path from 'node:path';
@@ -25,6 +26,8 @@ import {
 } from './src/unlocks.js';
 import { selfTest as adapterSelfTest, advisories as adapterAdvisories, ADAPTERS } from './src/providers/index.js';
 import * as views from './src/views.js';
+import * as auth from './src/auth.js';
+import { originCheck, rateLimit, cookieParser, setSessionCookie, clearSessionCookie } from './src/security.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -32,43 +35,94 @@ const APP = express();
 
 APP.disable('x-powered-by');
 
+// Security headers. The CSP is the part that matters: script-src 'self' means
+// an injected <script> does not execute, which is the failure that actually
+// costs a session. style-src allows inline because slot heights are per-row
+// values from the database; that is a real weakening and the honest description
+// is "styles are trusted, scripts are not".
+APP.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      // Ad networks load their own scripts and frames from their own origins.
+      // Locked to 'self' for now because no tag is rendered yet; this list grows
+      // when component 6 does, and it must be an allowlist, never a wildcard.
+      imgSrc: ["'self'", 'data:'],
+      connectSrc: ["'self'"],
+      frameSrc: ["'none'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+      upgradeInsecureRequests: process.env.NODE_ENV === 'production' ? [] : null,
+    },
+  },
+  // Ad networks embed our pages in a WebView, not an iframe, but this is the
+  // right default and costs nothing.
+  frameguard: { action: 'deny' },
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+  hsts: process.env.NODE_ENV === 'production' ? { maxAge: 15552000 } : false,
+}));
+
 // Raw body is retained so postback signatures cover the exact bytes received.
 APP.use(express.json({
+  limit: '1mb',
   verify: (req, _res, buf) => { req.rawBody = buf.toString('utf8'); },
 }));
-APP.use(express.urlencoded({ extended: true }));
-APP.use(express.static(path.join(__dirname, 'public')));
+APP.use(express.urlencoded({ extended: true, limit: '256kb' }));
+APP.use(cookieParser());
+APP.use(originCheck({ publicBaseUrl: `http://127.0.0.1:${PORT}` }));
+APP.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h', etag: true }));
+APP.set('trust proxy', 1);   // behind Cloudflare/Vercel, so req.ip is the client
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+// Rate limits. Named per purpose so a flood of one does not exhaust another.
+const limitLogin = rateLimit({ windowMs: 15 * 60_000, max: 12, name: 'sign-in attempts' });
+const limitSignup = rateLimit({ windowMs: 60 * 60_000, max: 10, name: 'signups' });
+const limitUnlock = rateLimit({ windowMs: 60_000, max: 20, name: 'unlock attempts' });
+const limitPostback = rateLimit({ windowMs: 60_000, max: 600, name: 'postbacks' });
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  // A cap on the request, not just a preference: multer buffers to RAM, so an
+  // unbounded upload is a memory exhaustion primitive.
+  limits: { fileSize: 25 * 1024 * 1024, files: 2, fields: 12 },
+});
 
 // ---------------------------------------------------------------------------
-// Session — deliberately trivial for now. Real auth is the next phase.
+// Session
+//
+// Identity comes from a signed-in session, full stop.
+//
+// There used to be a `?as=<email>` parameter that selected the acting user. That
+// was an authentication bypass: any visitor could read any creator's dashboard by
+// guessing an email address. It is gone, and it is not coming back in the form of
+// a dev flag either — a flag is one misconfigured environment away from being a
+// production bypass, and the whole point of removing it is that it cannot be
+// reached. Demo accounts are seeded with real passwords instead (see seed()).
 // ---------------------------------------------------------------------------
-async function currentUser(req) {
-  const email = req.headers['x-user-email'] || req.query.as || null;
-  if (!email) return null;
-  // Resolve-or-create, so an unrecognised identity becomes its OWN new user.
-  //
-  // This used to return null and every API route then fell back to a shared
-  // 'guest@bytebikri.local'. Anyone passing an unrecognised email acted as the
-  // same person as everyone else doing so, and one guest's unlock was visible to
-  // all of them. It also made tests lie: a "fresh user" was silently the guest,
-  // so checks that should have failed passed.
-  return store.userByEmailOrCreate(email);
-}
-
-/** An API route that needs an identity must refuse without one, not borrow one. */
-function requireUser(res) {
-  res.status(401).json({ ok: false, error: 'no identity — pass ?as=<email> or x-user-email' });
-  return null;
-}
-
 APP.use(async (req, _res, next) => {
   try {
-    req.user = await currentUser(req);
+    req.user = null;
+    if (req.cookies?.bb_session) {
+      req.user = await auth.resolveSession(req.cookies.bb_session);
+    }
     next();
   } catch (err) { next(err); }
 });
+
+/** An API route that needs an identity must refuse without one, not borrow one. */
+function requireUser(res) {
+  res.status(401).json({ ok: false, error: 'not signed in' });
+  return null;
+}
+
+/** Page routes redirect instead of 401 — a JSON error is not a useful next step. */
+function requireUserPage(req, res) {
+  const next = encodeURIComponent(req.originalUrl);
+  res.redirect(`/login?next=${next}`);
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Page helpers
@@ -125,22 +179,127 @@ APP.get('/marketplace', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-APP.get('/login', (req, res) => res.send(views.login({ user: req.user })));
+APP.get('/login', (req, res) => {
+  if (req.user) return res.redirect(safeNext(req.query.next) || '/');
+  res.send(views.login({ user: null, next: safeNext(req.query.next) || '', email: req.query.email || '' }));
+});
 
-APP.post('/login', async (req, res, next) => {
+APP.get('/signup', (req, res) => {
+  if (req.user) return res.redirect('/');
+  res.send(views.login({ user: null, mode: 'signup', next: safeNext(req.query.next) || '' }));
+});
+
+/**
+ * Only ever redirect to a path on this site.
+ *
+ * `?next=https://evil.example` would otherwise turn our own login form into a
+ * convincing phishing hop: the victim signs in on the real domain and lands
+ * somewhere else, having just typed a password into a page they trust.
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (v) => UUID_RE.test(String(v || ''));
+
+function safeNext(value) {
+  if (typeof value !== 'string' || !value) return null;
+  if (!value.startsWith('/') || value.startsWith('//')) return null;
+  return value;
+}
+
+APP.post('/login', limitLogin, async (req, res, next) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase();
-    if (!email) return res.redirect('/login');
-    const user = await store.userByEmailOrCreate(email);
+    const password = String(req.body.password || '');
+    const back = safeNext(req.body.next);
+    const ipHash = auth.hashIp(req.ip);
+
+    const reject = (message, status = 401) => {
+      // Never say WHICH half was wrong. "No such account" tells an attacker
+      // which addresses are registered, which is the first half of a breach.
+      res.status(status).send(views.login({
+        user: null, error: message, email, next: back || '',
+      }));
+    };
+
+    if (!email || !password) return reject('Enter your email and password.', 400);
+
+    // Lockout is checked before the password, and counted in the database so a
+    // restart does not hand an attacker a fresh budget.
+    const failures = await auth.recentFailures(email, ipHash);
+    if (auth.isLockedOut(failures)) {
+      await auth.recordAttempt(email, false, ipHash);
+      return reject('Too many failed attempts. Try again in about fifteen minutes.', 429);
+    }
+
+    const user = await store.userByEmail(email);
+    if (!user || !user.password_hash) {
+      // Burn the same CPU as a real check. Returning here in 1ms is a
+      // user-enumeration oracle: "unknown email" must not be measurably faster
+      // than "wrong password".
+      auth.burnPasswordTime();
+      await auth.recordAttempt(email, false, ipHash);
+      return reject('That email and password do not match an account.');
+    }
+    if (!auth.verifyPassword(password, user.password_hash)) {
+      await auth.recordAttempt(email, false, ipHash);
+      return reject('That email and password do not match an account.');
+    }
+
+    await auth.recordAttempt(email, true, ipHash);
+    const { token, ttl } = await auth.createSession({
+      userId: user.id,
+      // Explicitly opt-in: an absent field means a shared machine, which is the
+      // safe reading. The form sends "on" when the box is ticked.
+      remember: req.body.remember === 'on',
+      userAgent: req.get('user-agent'),
+      ip: req.ip,
+    });
+    setSessionCookie(res, token, ttl);
+    await store.audit('auth.login', { userId: user.id });
+    res.redirect(back || '/');
+  } catch (err) { next(err); }
+});
+
+APP.post('/signup', limitSignup, async (req, res, next) => {
+  try {
+    const email = String(req.body.email || '').trim().toLowerCase();
+    const password = String(req.body.password || '');
+    const displayName = String(req.body.display_name || '').trim();
     const channelName = String(req.body.channel || '').trim();
+
+    const fail = (message, status = 400) =>
+      res.status(status).send(views.login({
+        user: null, mode: 'signup', error: message, email,
+      }));
+
+    try {
+      var user = await auth.createAccount({ email, password, displayName });
+    } catch (err) {
+      if (err.status) return fail(err.message, err.status);
+      if (err.code === '23505') return fail('An account with that email already exists.', 409);
+      throw err;
+    }
+
     if (channelName) {
-      let slug = slugify(channelName);
+      let slug = slugify(channelName) || 'store';
       let n = 1;
       while (await store.channelBySlug(slug)) slug = `${slugify(channelName)}-${++n}`;
-      const ch = await store.createChannel({ ownerId: user.id, slug, name: channelName });
-      return res.redirect(`/dashboard/${ch.slug}?as=${encodeURIComponent(email)}`);
+      await store.createChannel({ ownerId: user.id, slug, name: channelName });
     }
-    res.redirect(`/?as=${encodeURIComponent(email)}`);
+
+    const { token, ttl } = await auth.createSession({
+      userId: user.id, userAgent: req.get('user-agent'), ip: req.ip,
+    });
+    setSessionCookie(res, token, ttl);
+    await store.audit('auth.signup', { userId: user.id });
+    res.redirect('/');
+  } catch (err) { next(err); }
+});
+
+APP.post('/logout', async (req, res, next) => {
+  try {
+    await auth.revokeSession(req.cookies?.bb_session);
+    clearSessionCookie(res);
+    res.redirect('/');
   } catch (err) { next(err); }
 });
 
@@ -150,7 +309,7 @@ APP.get('/s/:slug', async (req, res, next) => {
     if (!channel) return res.status(404).send('Channel not found');
     await store.bumpPageView(channel.id);
 
-    const slots = await buildSlots(channel);
+    const slots = (await buildSlots(channel)).filter((s) => s.serving);
     const rawAssets = await store.assetsOf(channel.id);
     const assets = await Promise.all(rawAssets.map(async (a) => ({
       ...a,
@@ -158,6 +317,8 @@ APP.get('/s/:slug', async (req, res, next) => {
       ads_required: (await store.unlockPolicy(a.id))?.ads_required ?? 1,
     })));
     const pageviews = await store.pageviews30d(channel.id);
+    // The rent estimate is what the CREATOR pays for traffic — billing detail.
+    // It feeds the dashboard, not the shop window, so it is not passed here.
     const estimate = estimateRentSlotValue({ pageviews30d: pageviews, slots });
 
     // Which of these the viewer has already unlocked, in ONE query rather than
@@ -199,15 +360,28 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
     res.send(views.assetPage({
       channel, asset, files, unlocked, user: req.user,
       policy: await store.unlockPolicy(asset.id),
-      slots: (await buildSlots(channel)).filter((s) => s.surface === 'webview'),
+      slots: (await buildSlots(channel)).filter((s) => s.serving && s.surface === 'webview'),
     }));
   } catch (err) { next(err); }
 });
 
+/**
+ * A dashboard shows earnings, ad connections and traffic. It was readable by
+ * anyone who knew the slug, because the route never checked who was asking.
+ * Now: signed in, and the channel is yours.
+ */
 APP.get('/dashboard/:slug', async (req, res, next) => {
   try {
+    if (!req.user) {
+      return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    }
     const channel = await store.channelBySlug(req.params.slug);
     if (!channel) return res.status(404).send('Channel not found');
+    if (channel.owner_id !== req.user.id && req.user.role !== 'admin') {
+      // 404 rather than 403: confirming a store exists but is not yours still
+      // tells a stranger the store exists.
+      return res.status(404).send('Channel not found');
+    }
 
     const slots = await buildSlots(channel);
     const pageviews = await store.pageviews30d(channel.id);
@@ -217,7 +391,17 @@ APP.get('/dashboard/:slug', async (req, res, next) => {
       unlocks: unlocks.filter((u) => !u.revoked_at).length,
     };
 
+    // Flash messages travel as short codes and are mapped to sentences here.
+    // Never echo a query parameter into HTML: `?error=<script>` is the oldest
+    // reflected-XSS there is, and escaping is not a substitute for not doing it.
+    const flash = req.query.published
+      ? { kind: 'success', message: `Published “${String(req.query.published).slice(0, 80)}”. It is live on your storefront now.` }
+      : req.query.error
+        ? { kind: 'danger', message: FLASH[String(req.query.error)] || 'That did not work. Nothing was published.' }
+        : null;
+
     res.send(views.dashboard({
+      flash,
       channel, slots, user: req.user,
       connections: await store.connectionsOf(channel.id),
       providers: await selectableProviders(),
@@ -233,7 +417,7 @@ APP.get('/dashboard/:slug', async (req, res, next) => {
 // ---------------------------------------------------------------------------
 // Unlock API — the browser may only START an unlock
 // ---------------------------------------------------------------------------
-APP.post('/api/unlock/start', async (req, res, next) => {
+APP.post('/api/unlock/start', limitUnlock, async (req, res, next) => {
   try {
     const user = req.user;
     if (!user) return requireUser(res);
@@ -247,6 +431,15 @@ APP.get('/api/unlock/status', async (req, res, next) => {
   try {
     const user = req.user;
     if (!user) return requireUser(res);
+    // Validate at the boundary. A client that sends an empty or malformed id is
+    // making a bad request, and a bad request deserves 400 — not a 500 that
+    // buries a real bug in DB errors and teaches the client to retry forever.
+    if (!isUuid(req.query.assetId)) {
+      return res.status(400).json({ ok: false, error: 'assetId must be a uuid' });
+    }
+    if (req.query.viewId && !isUuid(req.query.viewId)) {
+      return res.status(400).json({ ok: false, error: 'viewId must be a uuid' });
+    }
     res.json(await unlockStatus({
       assetId: req.query.assetId, userId: user.id, viewId: req.query.viewId,
     }));
@@ -263,7 +456,7 @@ APP.get('/api/unlock/status', async (req, res, next) => {
 //
 // `all` rather than `post`: BitLabs, PubScale and AppLixir all send GET.
 // ---------------------------------------------------------------------------
-APP.all('/api/ads/postback/:providerId/:connectionId', async (req, res, next) => {
+APP.all('/api/ads/postback/:providerId/:connectionId', limitPostback, async (req, res, next) => {
   try {
     const { providerId, connectionId } = req.params;
     const result = await handlePostback({
@@ -402,12 +595,31 @@ APP.post('/dev/forge-postback/:providerId', devOnly, async (req, res, next) => {
 // ---------------------------------------------------------------------------
 APP.get('/api/content/:assetId/file/:fileId', async (req, res, next) => {
   try {
+    // The token is necessary but NOT sufficient.
+    //
+    // Alone it is a bearer credential: anyone the link reaches can download
+    // inside its ten-minute window, which directly contradicts what the page
+    // promises ("They cannot be forwarded"). So the session has to match the
+    // account the link was minted for. Now forwarding a link is useless — the
+    // recipient is not signed in as the buyer, and signing in as them requires
+    // their password.
+    if (!req.user) {
+      await store.audit('content.denied', { reason: 'not signed in', assetId: req.params.assetId });
+      return res.status(401).json({ ok: false, error: 'sign in to download' });
+    }
+
     const check = verifyAccessToken(req.query.t);
     if (!check.ok) {
       await store.audit('content.denied', { reason: check.reason, assetId: req.params.assetId });
       return res.status(403).json({ ok: false, error: check.reason });
     }
     const { a, f, u } = check.payload;
+    if (u !== req.user.id) {
+      await store.audit('content.denied', {
+        reason: 'token belongs to another account', assetId: a, userId: req.user.id,
+      });
+      return res.status(403).json({ ok: false, error: 'this link was issued to a different account' });
+    }
     if (a !== req.params.assetId || f !== req.params.fileId) {
       return res.status(403).json({ ok: false, error: 'token does not match this file' });
     }
@@ -434,6 +646,122 @@ APP.get('/api/content/:assetId/file/:fileId', async (req, res, next) => {
     res.send(buf);
   } catch (err) {
     if (err.code === 'ENOENT') return res.status(410).json({ ok: false, error: 'file missing from storage' });
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Public media
+//
+// Covers and banners are the shop window: they must load without a token, on the
+// storefront and in a share preview, for a visitor with no account. Gated content
+// lives in the same directory but a different namespace, and this route refuses
+// anything that is not in the public one — so "public" is enforced by the key,
+// not by a flag someone has to remember to set.
+// ---------------------------------------------------------------------------
+// `/media/public/:file`, NOT `/media/:key`. An Express path parameter does not
+// match across a slash, so the two-segment key silently 404s — and the fix is
+// also the better design: the public namespace is part of the ROUTE, so there
+// is no way to express a request for private content in the first place.
+APP.get('/media/public/:file', async (req, res, next) => {
+  try {
+    const key = `public/${req.params.file}`;
+    const buf = await storage.get(key);
+    res.setHeader('content-type', mimeFor(key));
+    // Safe to cache hard: the key contains a uuid, so replacing an image
+    // produces a new URL rather than changing the bytes behind an old one.
+    res.setHeader('cache-control', 'public, max-age=31536000, immutable');
+    res.send(buf);
+  } catch (err) {
+    if (err.code === 'ENOENT' || /bad storage key/.test(err.message)) return res.status(404).end();
+    next(err);
+  }
+});
+
+const mimeFor = (key) => ({
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp',
+  gif: 'image/gif', avif: 'image/avif', svg: 'image/svg+xml',
+}[key.split('.').pop().toLowerCase()] || 'application/octet-stream');
+
+// ---------------------------------------------------------------------------
+// Publishing
+//
+// Without this the product is read-only: a creator can sign in and look at an
+// empty dashboard but cannot put anything in it. The JSON API at /api/assets
+// still exists for programmatic use; this is the form a person actually uses,
+// which is why it redirects back with a message instead of returning JSON.
+// ---------------------------------------------------------------------------
+const FLASH = {
+  title: 'Give the file a title — it becomes the page address.',
+  media: 'Attach the file people are unlocking. Nothing was published.',
+  limit: 'Your plan\'s file limit is reached. Existing files stay live; upgrade to publish more.',
+  cover: 'The cover must be an image under 5 MB.',
+  size: 'That file is larger than the 25 MB upload limit.',
+  toobig: 'That file is larger than the 25 MB upload limit.',
+};
+
+APP.post('/dashboard/:slug/assets', upload.fields([
+  { name: 'media', maxCount: 1 },
+  { name: 'cover', maxCount: 1 },
+]), async (req, res, next) => {
+  const back = `/dashboard/${encodeURIComponent(req.params.slug)}`;
+  try {
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+
+    const channel = await store.channelBySlug(req.params.slug);
+    if (!channel || channel.owner_id !== req.user.id) return res.status(404).send('Channel not found');
+
+    const fail = (code) => res.redirect(`${back}?error=${encodeURIComponent(code)}`);
+
+    const title = String(req.body.title || '').trim().slice(0, 200);
+    if (!title) return fail('title');
+
+    const media = req.files?.media?.[0];
+    if (!media) return fail('media');
+
+    const plan = store.plan(channel);
+    const limit = plan.capabilities.max_assets;
+    if (limit !== -1 && (await store.assetsOf(channel.id)).length >= limit) return fail('limit');
+
+    const cover = req.files?.cover?.[0];
+    if (cover && !String(cover.mimetype).startsWith('image/')) return fail('cover');
+    if (cover && cover.size > 5 * 1024 * 1024) return fail('cover');
+
+    const unlockMode = req.body.unlockMode === 'open' ? 'open' : 'ad_gated';
+
+    // Slug: derived from the title, made unique WITHIN the store. Two stores may
+    // both have "poster-kit"; one store may not have two.
+    const base = slugify(title) || 'file';
+    let assetSlug = base;
+    for (let n = 2; await store.assetBySlug(channel.id, assetSlug); n += 1) assetSlug = `${base}-${n}`;
+
+    const asset = await store.createAsset({
+      channelId: channel.id, title, slug: assetSlug,
+      description: String(req.body.description || '').trim().slice(0, 2000),
+      unlockMode,
+      coverUrl: cover
+        ? `/media/${await storage.put(cover.buffer, cover.originalname, { namespace: 'public' })}`
+        : null,
+    });
+
+    await store.addFile({
+      assetId: asset.id,
+      storageKey: await storage.put(media.buffer, media.originalname),
+      filename: media.originalname,
+      mimeType: media.mimetype,
+      sizeBytes: media.size,
+      checksum: crypto.createHash('sha256').update(media.buffer).digest('hex'),
+    });
+
+    const seconds = Number(req.body.adMinSeconds);
+    if (Number.isFinite(seconds)) {
+      await store.setAdMinSeconds(asset.id, Math.min(Math.max(Math.round(seconds), 5), 120));
+    }
+
+    await store.audit('asset.created', { assetId: asset.id, channelId: channel.id });
+    res.redirect(`${back}?published=${encodeURIComponent(assetSlug)}`);
+  } catch (err) {
+    if (err.code === 'LIMIT_FILE_SIZE' || err.code === 'LIMIT_UNEXPECTED_FILE') return fail('size');
     next(err);
   }
 });
@@ -578,20 +906,30 @@ async function seed({ force = false } = {}) {
   const existing = await scalar(`select count(*)::int from channels`);
   if (existing > 0 && !force) return { seeded: false, channels: existing };
 
-  const aliceUser = await store.userByEmailOrCreate('alice@bytebikri.local');
-  await store.userByEmailOrCreate('guest@bytebikri.local');
+  // No demo accounts in production. A seeded login with a known password is a
+  // back door, and "it only runs on an empty database" is not a mitigation —
+  // production starts empty.
+  if (process.env.NODE_ENV === 'production') {
+    return { seeded: false, reason: 'refusing to seed demo accounts in production' };
+  }
 
+  const demoPassword = process.env.DEMO_PASSWORD || 'bytebikri-demo';
+  const aliceUser = await store.userByEmailOrCreate('alice@bytebikri.local');
+  await auth.setPassword(aliceUser.id, demoPassword);
   const alice = await store.createChannel({
     ownerId: aliceUser.id, slug: 'alice', name: "Alice's Studio",
     tagline: 'Design templates and guides for Nepali creators.',
+    bannerUrl: '/img/demo/alice-banner.jpg',
     listingMode: 'marketplace',
   });
   await store.applyUpgrade(alice, 'store');
 
   const bobUser = await store.userByEmailOrCreate('bob@bytebikri.local');
+  await auth.setPassword(bobUser.id, demoPassword);
   const bob = await store.createChannel({
     ownerId: bobUser.id, slug: 'bob', name: 'Bob Photography',
     tagline: 'Print-ready photo packs.', listingMode: 'storefront',
+    bannerUrl: '/img/demo/bob-banner.jpg',
   });
 
   // A provider must be explicitly enabled to be connectable — the registry ships
@@ -626,6 +964,7 @@ async function seed({ force = false } = {}) {
 
   const asset = await store.createAsset({
     channelId: alice.id, title: 'Devanagari Poster Kit', slug: 'devanagari-poster-kit',
+    coverUrl: '/img/demo/devanagari-poster-kit.jpg',
     description: '18 layered poster templates with Devanagari type pairings. Unlock with one ad.',
   });
   const body = Buffer.from(
@@ -641,10 +980,21 @@ async function seed({ force = false } = {}) {
   // Demo-friendly: 5 seconds rather than the real 15.
   await store.setAdMinSeconds(asset.id, 5);
 
-  await store.createAsset({
+  const sampleAsset = await store.createAsset({
     channelId: alice.id, title: 'Free sample pack', slug: 'free-sample-pack',
+    coverUrl: '/img/demo/sample-pack.jpg',
     description: 'Open access — no ad needed. Proves the lock is per-asset, not per-channel.',
     unlockMode: 'open',
+  });
+  const sampleBody = Buffer.from(
+    'ByteBikri sample pack.\n\nThis one is free: no ad, no wait, no account. It exists to\n'
+    + 'prove the lock is per file — the same store sells ad-gated downloads\n'
+    + 'beside this one.\n');
+  await store.addFile({
+    assetId: sampleAsset.id, storageKey: await storage.put(sampleBody, 'sample-pack.txt'),
+    filename: 'sample-pack.txt', mimeType: 'text/plain',
+    sizeBytes: sampleBody.length,
+    checksum: crypto.createHash('sha256').update(sampleBody).digest('hex'),
   });
 
   // Bob's asset is gated through a GET-dialect provider. Two channels, two
@@ -669,6 +1019,9 @@ async function seed({ force = false } = {}) {
 const result = await seed();
 if (result.seeded) {
   console.log('  seeded a fresh database: /s/alice and /s/bob');
+  console.log(`  demo sign-in: alice@bytebikri.local / ${process.env.DEMO_PASSWORD || 'bytebikri-demo'}`);
+} else if (result.reason) {
+  console.log(`  not seeding: ${result.reason}`);
 } else {
   console.log(`  existing data found (${result.channels} channels) — not seeding`);
 }
@@ -676,7 +1029,7 @@ if (result.seeded) {
 const SERVER = APP.listen(PORT, '0.0.0.0', () => {
   console.log(`\n  ByteBikri  →  http://0.0.0.0:${PORT}`);
   console.log(`  storefront →  /s/alice`);
-  console.log(`  dashboard  →  /dashboard/alice?as=alice@bytebikri.local\n`);
+  console.log(`  dashboard  →  /dashboard/alice   (sign in first)\n`);
 });
 
 // Graceful shutdown: stop accepting, let in-flight requests finish, close the

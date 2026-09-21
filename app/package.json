@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "ByteBikri \u2014 storefronts, ad-gated content unlocks, ad slot allocation",
+  "description": "ByteBikri — storefronts, ad-gated content unlocks, ad slot allocation",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "express": "^4.19.2",
+    "helmet": "^8.3.0",
     "multer": "^1.4.5-lts.1",
     "pg": "^8.23.0"
   },

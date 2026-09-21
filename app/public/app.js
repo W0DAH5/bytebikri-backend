@@ -1,161 +1,198 @@
-/* ByteBikri client.
+/**
+ * Client.
  *
- * The only job the browser has in the unlock flow is to START it and then ask
- * whether it finished. It never declares that an ad completed — that claim
- * arrives from the ad network's server, signed. See app/src/unlocks.js.
+ * The client's entire job is to START an unlock and then wait. It cannot grant
+ * one, and the code here is written so that it plainly cannot: the only thing it
+ * can do is ask the server whether a postback has arrived. Anything else would
+ * mean the browser's word counted, and a browser's word is forgeable.
+ *
+ * It also never decides a view is complete. The countdown is a courtesy to the
+ * person watching; the network tells the server what happened, not us.
  */
-(function () {
-  'use strict'
+(() => {
+  'use strict';
 
-  const $ = (sel, root = document) => root.querySelector(sel)
-  const $$ = (sel, root = document) => [...root.querySelectorAll(sel)]
+  const $ = (sel, root = document) => root.querySelector(sel);
 
-  // ---------------------------------------------------------------- unlock --
-  const box = $('.unlock-box')
-  if (box && !box.classList.contains('is-unlocked')) {
-    const btn = $('#unlockBtn')
-    if (btn) btn.addEventListener('click', () => startUnlock(box))
-  }
+  const api = async (url, options = {}) => {
+    const res = await fetch(url, {
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      ...options,
+    });
+    const body = await res.json().catch(() => ({ ok: false, error: 'unreadable response' }));
+    return { status: res.status, ...body };
+  };
 
-  async function startUnlock(box) {
-    const assetId = box.dataset.asset
-    const seconds = Number(box.dataset.seconds || 15)
-    const required = Number(box.dataset.required || 1)
+  // ── the unlock flow ──────────────────────────────────────────────────────
+  const unlockBtn = $('#unlock-btn');
+  if (unlockBtn) {
+    const modal = $('#ad-modal');
+    const countEl = $('#ad-count');
+    const progress = $('#ad-progress');
+    const note = $('#ad-note');
+    const providerLine = $('#ad-provider');
+    const statusEl = $('#unlock-status');
 
-    const res = await post('/api/unlock/start', { assetId })
-    if (!res.ok) return flash(box, res.error || 'Could not start unlock', true)
+    let poll = null;
+    let ticker = null;
 
-    let completed = 0
-    while (completed < required) {
-      const watched = await playRewardedAd(res, seconds)
-      if (!watched) return flash(box, 'Ad was not completed — no unlock granted.', true)
-      completed++
-    }
+    const setStatus = (text, kind = '') => {
+      if (!statusEl) return;
+      statusEl.textContent = text;
+      statusEl.style.color = kind ? `var(--${kind}-text)` : '';
+    };
 
-    // Ask the server. The postback may already have landed.
-    for (let i = 0; i < 10; i++) {
-      const st = await get(`/api/unlock/status?assetId=${encodeURIComponent(assetId)}&viewId=${encodeURIComponent(res.viewId)}`)
-      if (st.unlocked) {
-        flash(box, 'Unlocked — reloading…')
-        setTimeout(() => location.reload(), 600)
-        return
+    const close = () => {
+      clearInterval(poll);
+      clearInterval(ticker);
+      poll = ticker = null;
+      if (modal) modal.hidden = true;
+    };
+
+    const fail = (message) => {
+      clearInterval(ticker);
+      if (note) {
+        note.textContent = message;
+        note.style.color = 'var(--danger-text)';
       }
-      await wait(400)
-    }
-    flash(box, 'Unlock not confirmed. The network postback has not arrived.', true)
-  }
+      setStatus(message, 'danger');
+      unlockBtn.disabled = false;
+      setTimeout(close, 2600);
+    };
 
-  /**
-   * Demo player. In production this hands off to the provider's SDK/iframe and
-   * the completion arrives by postback. Here we call a dev-only endpoint that
-   * plays the part of the network — it SIGNS the postback and delivers it
-   * server-to-server, so the trust boundary is exercised for real.
-   */
-  function playRewardedAd(session, seconds) {
-    return new Promise((resolve) => {
-      const overlay = document.createElement('div')
-      overlay.id = 'adOverlay'
-      overlay.innerHTML = `
-        <div class="ad-player">
-          <div class="ad-label">Rewarded ad · ${session.adConfig.providerId}</div>
-          <div class="ad-frame">
-            <div class="big" id="adCount">${seconds}</div>
-            <div class="sub">verification not required to skip — skip and get nothing</div>
-          </div>
-          <div class="ad-progress"><i id="adBar"></i></div>
-          <div class="ad-status" id="adStatus">Playing…</div>
-          <button class="btn" id="adSkip">Skip (no unlock)</button>
-        </div>`
-      document.body.appendChild(overlay)
+    const finish = async (viewId, assetId) => {
+      clearInterval(ticker);
+      if (countEl) countEl.textContent = '✓';
+      if (note) {
+        note.textContent = 'Verified. Minting your download link…';
+        note.style.color = 'var(--success-text)';
+      }
 
-      const count = $('#adCount', overlay)
-      const bar = $('#adBar', overlay)
-      const status = $('#adStatus', overlay)
-      let left = seconds
-      let settled = false
-
-      bar.style.width = '0%'
-      requestAnimationFrame(() => { bar.style.transition = `width ${seconds}s linear`; bar.style.width = '100%' })
-
-      const timer = setInterval(() => {
-        left--
-        count.textContent = Math.max(0, left)
-        if (left <= 0) {
-          clearInterval(timer)
-          if (settled) return
-          settled = true
-          status.textContent = 'Completed — sending to network for signing…'
-          // Browser → simulated network → (signed) → our postback endpoint.
-          post(`/dev/simulate-network/${encodeURIComponent(session.adConfig.providerId)}`, {
-            viewId: session.viewId,
-            connectionId: session.adConfig.connectionId,
-            durationSec: seconds,
-          }).then((r) => {
-            status.textContent = r.ok
-              ? 'Network confirmed. Verifying signature…'
-              : 'Network rejected: ' + (r.error || 'unknown')
-            setTimeout(() => { overlay.remove(); resolve(r.ok && r.granted !== false) }, 700)
-          })
+      // Reload and let the server decide what to render. It re-checks the
+      // unlock and mints a fresh expiring URL; doing it here would mean the
+      // browser constructing its own access.
+      const started = Date.now();
+      const check = async () => {
+        const s = await api(`/api/unlock/status?assetId=${encodeURIComponent(assetId)}&viewId=${encodeURIComponent(viewId)}`);
+        if (s.unlocked) {
+          setStatus('Unlocked — reloading…', 'success');
+          location.reload();
+          return;
         }
-      }, 1000)
+        // Providers reconcile asynchronously, so keep asking for a while rather
+        // than declaring failure the moment the ad ends.
+        if (Date.now() - started < 90_000) {
+          poll = setTimeout(check, 1500);
+        } else {
+          fail('The network has not confirmed yet. This can take a moment — reload to check.');
+        }
+      };
+      check();
+    };
 
-      $('#adSkip', overlay).addEventListener('click', () => {
-        if (settled) return
-        settled = true
-        clearInterval(timer)
-        overlay.remove()
-        resolve(false)
-      })
-    })
-  }
+    const runAd = async (assetId) => {
+      const start = await api('/api/unlock/start', {
+        method: 'POST',
+        body: JSON.stringify({ assetId }),
+      });
 
-  // ------------------------------------------------------ ad connections --
-  $$('[data-connect]').forEach((el) => {
-    el.addEventListener('click', async () => {
-      const providerId = el.dataset.connect
-      const slug = location.pathname.split('/').pop()
-      el.disabled = true
-      el.textContent = 'Redirecting…'
-      // In production this is a top-level redirect to the provider's own signup,
-      // carrying our referral parameter server-side. It cannot be an iframe:
-      // providers block framing, and circumventing that violates their terms.
-      const r = await post('/api/ad-connections/start', { slug, providerId })
-      if (r.ok) {
-        el.textContent = 'Connected'
-        setTimeout(() => location.reload(), 700)
-      } else {
-        el.disabled = false
-        el.textContent = 'Failed — retry'
+      if (!start.ok) {
+        if (start.status === 401) {
+          location.href = `/login?next=${encodeURIComponent(location.pathname)}`;
+          return;
+        }
+        setStatus(start.error || 'Could not start.', 'danger');
+        unlockBtn.disabled = false;
+        return;
       }
-    })
-  })
+      if (start.alreadyUnlocked) { location.reload(); return; }
 
-  $$('[data-revoke]').forEach((el) => {
-    el.addEventListener('click', async () => {
-      if (!confirm('Revoke this ad connection? Its slots become reserved and empty.')) return
-      const r = await post('/api/ad-connections/revoke', { connectionId: el.dataset.revoke })
-      if (r.ok) location.reload()
-    })
-  })
+      const cfg = start.adConfig;
+      const seconds = Number(cfg.minSeconds) || 15;
 
-  // ----------------------------------------------------------------- utils --
-  async function post(url, body) {
-    try {
-      const r = await fetch(url, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body || {}),
-      })
-      return await r.json()
-    } catch (e) { return { ok: false, error: String(e) } }
+      if (providerLine) providerLine.textContent = `${cfg.providerId} · rewarded video`;
+      if (modal) modal.hidden = false;
+      if (note) {
+        note.textContent = 'The unlock is not granted by this screen. It arrives from the provider\'s '
+          + 'server, signed, and is verified before the download link appears.';
+        note.style.color = '';
+      }
+
+      // Countdown. Cosmetic only — see the file header.
+      let left = seconds;
+      if (countEl) countEl.textContent = String(left);
+      if (progress) progress.style.width = '0%';
+      ticker = setInterval(() => {
+        left -= 1;
+        if (countEl) countEl.textContent = String(Math.max(left, 0));
+        if (progress) progress.style.width = `${Math.min(((seconds - left) / seconds) * 100, 100)}%`;
+        if (left <= 0) clearInterval(ticker);
+      }, 1000);
+
+      if (cfg.devSimulator) {
+        // The sandbox network, driven from the browser ONLY because there is no
+        // real provider here. A real integration never calls this: the network
+        // calls us. Guarded by cfg.devSimulator, which the server omits in
+        // production.
+        try {
+          const r = await api(`/dev/simulate-network/${encodeURIComponent(cfg.providerId)}`, {
+            method: 'POST',
+            body: JSON.stringify({
+              viewId: start.viewId,
+              connectionId: cfg.connectionId,
+              durationSec: seconds,
+            }),
+          });
+          if (!r.ok) return fail(r.error || 'The network rejected the view.');
+        } catch {
+          return fail('Could not reach the sandbox network.');
+        }
+      }
+
+      setTimeout(() => finish(start.viewId, assetId), seconds * 1000 + 400);
+    };
+
+    unlockBtn.addEventListener('click', () => {
+      unlockBtn.disabled = true;
+      setStatus('Starting…');
+      runAd(unlockBtn.dataset.asset).catch(() => {
+        setStatus('Something went wrong starting the ad.', 'danger');
+        unlockBtn.disabled = false;
+      });
+    });
+
+    $('#ad-close')?.addEventListener('click', () => {
+      close();
+      unlockBtn.disabled = false;
+      setStatus('Closed before the ad finished. Nothing was unlocked.');
+    });
   }
-  async function get(url) {
-    try { return await (await fetch(url)).json() } catch (e) { return { ok: false, error: String(e) } }
-  }
-  const wait = (ms) => new Promise((r) => setTimeout(r, ms))
-  function flash(box, msg, isError) {
-    let el = $('.unlock-flash', box)
-    if (!el) { el = document.createElement('p'); el.className = 'unlock-flash fine'; box.appendChild(el) }
-    el.textContent = msg
-    el.style.color = isError ? 'var(--danger)' : 'var(--accent)'
-  }
-})()
+
+  // ── dashboard actions ────────────────────────────────────────────────────
+  document.querySelectorAll('[data-connect]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const slug = location.pathname.split('/').pop();
+      btn.disabled = true;
+      btn.textContent = 'Connecting…';
+      const r = await api('/api/ad-connections/start', {
+        method: 'POST',
+        body: JSON.stringify({ slug, providerId: btn.dataset.connect }),
+      });
+      if (r.ok) location.reload();
+      else { btn.disabled = false; btn.textContent = r.error || 'Failed'; }
+    });
+  });
+
+  document.querySelectorAll('[data-revoke]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Disconnect this ad network? Anything it gates stops unlocking.')) return;
+      btn.disabled = true;
+      await api('/api/ad-connections/revoke', {
+        method: 'POST',
+        body: JSON.stringify({ connectionId: btn.dataset.revoke }),
+      });
+      location.reload();
+    });
+  });
+})();

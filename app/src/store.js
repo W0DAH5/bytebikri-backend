@@ -26,15 +26,43 @@ export const orderCode = (n = 6) =>
 // ---------------------------------------------------------------------------
 // File storage adapter — replace with the media API later.
 // ---------------------------------------------------------------------------
+/**
+ * Storage adapter.
+ *
+ * Two namespaces, because the files have opposite visibility. `private` keys
+ * are gated content; they are only ever handed out through the download route
+ * after an unlock is checked. `public` keys are covers and banners — the shop
+ * window — and are served straight from /media with no token, which is the
+ * point of a cover image.
+ *
+ * The namespace is part of the KEY, so a public route can never be coaxed into
+ * reading private content: it checks the prefix before it touches the disk.
+ */
+const KEY_RE = /^[a-z]+\/[0-9a-f-]{36}\.[a-z0-9]{1,5}$/i;
+
 export const storage = {
-  async put(buffer, filename) {
-    await fs.mkdir(UPLOAD_DIR, { recursive: true });
-    const key = `${id()}${path.extname(filename || '')}`;
+  async put(buffer, filename, { namespace = 'private' } = {}) {
+    if (!/^[a-z]+$/.test(namespace)) throw new Error('bad storage namespace');
+    const ext = (path.extname(filename || '') || '').toLowerCase().replace(/[^.a-z0-9]/g, '');
+    await fs.mkdir(path.join(UPLOAD_DIR, namespace), { recursive: true });
+    const key = `${namespace}/${id()}${ext}`;
     await fs.writeFile(path.join(UPLOAD_DIR, key), buffer);
     return key;
   },
-  async get(key) { return fs.readFile(path.join(UPLOAD_DIR, key)); },
+
+  /**
+   * Keys reach here from a URL, so the shape is checked before the path is
+   * built. Without this, `../../etc/passwd` is a valid key on a filesystem
+   * join — and the check has to be an allowlist, not a scan for '..', because
+   * a scan misses encodings and absolute paths.
+   */
+  async get(key) {
+    if (!KEY_RE.test(String(key || ''))) throw new Error('bad storage key');
+    return fs.readFile(path.join(UPLOAD_DIR, key));
+  },
+
   async exists(key) {
+    if (!KEY_RE.test(String(key || ''))) return false;
     try { await fs.access(path.join(UPLOAD_DIR, key)); return true; } catch { return false; }
   },
 };
@@ -126,13 +154,13 @@ export const store = {
   },
 
   // ---- channels ----------------------------------------------------------
-  async createChannel({ ownerId, slug, name, tagline, listingMode = 'storefront' }) {
+  async createChannel({ ownerId, slug, name, tagline, listingMode = 'storefront', bannerUrl = null }) {
     try {
       return await one(
-        `insert into channels (owner_id, slug, name, tagline, listing_mode, moderation_state)
-         values ($1, $2, $3, $4, $5, 'approved')
+        `insert into channels (owner_id, slug, name, tagline, listing_mode, moderation_state, banner_url)
+         values ($1, $2, $3, $4, $5, 'approved', $6)
          returning *`,
-        [ownerId, slug, name, tagline || '', listingMode],
+        [ownerId, slug, name, tagline || '', listingMode, bannerUrl],
       );
     } catch (err) {
       if (isUniqueViolation(err)) throw new Error('slug already taken');
@@ -237,13 +265,13 @@ export const store = {
   },
 
   // ---- assets ------------------------------------------------------------
-  async createAsset({ channelId, title, slug, description, unlockMode = 'ad_gated' }) {
+  async createAsset({ channelId, title, slug, description, unlockMode = 'ad_gated', coverUrl = null }) {
     return withTransaction(async (c) => {
       const { rows } = await c.query(
-        `insert into assets (channel_id, title, slug, description, kind, unlock_mode, status, moderation_state)
-         values ($1, $2, $3, $4, 'digital', $5, 'live', 'approved')
+        `insert into assets (channel_id, title, slug, description, kind, unlock_mode, status, moderation_state, cover_url)
+         values ($1, $2, $3, $4, 'digital', $5, 'live', 'approved', $6)
          returning *`,
-        [channelId, title, slug || slugify(title), description || '', unlockMode],
+        [channelId, title, slug || slugify(title), description || '', unlockMode, coverUrl],
       );
       const asset = rows[0];
       await c.query(
@@ -393,6 +421,7 @@ export const store = {
 
   // ---- unlocks -----------------------------------------------------------
   async unlockFor(assetId, userId) {
+    if (!UUID_RE.test(String(assetId || ''))) return null;
     return one(
       `select * from unlocks
         where asset_id = $1 and user_id = $2 and revoked_at is null
@@ -401,6 +430,10 @@ export const store = {
     );
   },
   async isUnlocked(assetId, userId) {
+    // An id that cannot be a uuid cannot be unlocked. Checking here rather than
+    // letting Postgres reject the cast keeps a malformed query string a 400-ish
+    // answer instead of a 500 — the same fix the postback needed.
+    if (!UUID_RE.test(String(assetId || ''))) return false;
     const n = await scalar(
       `select count(*)::int from unlocks
         where asset_id = $1 and user_id = $2 and revoked_at is null
