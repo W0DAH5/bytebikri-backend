@@ -399,3 +399,123 @@ test('the CSP hash is computed from the script the page renders', () => {
   const page = viewsModule.layout({ title: 'x', user: null, body: '', reveal: true });
   assert.equal((page.match(/reveal-ready/g) || []).length, 1, 'one copy of the bootstrap, in one place');
 });
+
+// ---------------------------------------------------------------------------
+// The charts
+// ---------------------------------------------------------------------------
+
+const series = (values, { gapAt = [] } = {}) => values.map((v, i) => ({
+  day: `2026-09-${String(i + 1).padStart(2, '0')}`,
+  value: v,
+  measured: !gapAt.includes(i),
+}));
+
+test('a day we did not measure is never drawn as a day with no traffic', () => {
+  const { trafficChart } = viewsModule;
+  // Day 2 is a gap. Day 3 is a MEASURED zero — the distinction this test exists
+  // for, and the one my first fixture got wrong by putting the zero inside the gap.
+  const points = series([3, 5, 0, 8, 4], { gapAt: [1] });
+  const html = trafficChart({ points, label: 'Views' });
+
+  // Every measured day is a bar, including the measured zero.
+  assert.equal((html.match(/class="chart-bar/g) || []).length, 4);
+  assert.match(html, /chart-bar-zero/, 'a day we measured at zero is a stub, not an absence');
+  assert.match(html, /2026-09-03: 0 views \(measured, none\)/, 'and its tooltip says we looked');
+  // Gaps are bands, drawn behind, and there is no bar for them.
+  assert.equal((html.match(/class="chart-gap"/g) || []).length, 1, 'a gap run is one band');
+  assert.ok(!/2026-09-02:/.test(html), 'an unmeasured day has no value to report');
+
+  // And the accessible name says the quiet parts out loud rather than letting a
+  // screen-reader user assume the line is solid.
+  const label = /aria-label="([^"]+)"/.exec(html)[1];
+  assert.match(label, /1 day was not measured and is not drawn as zero/);
+  assert.match(label, /across 4 measured days/);
+});
+
+test('a chart describes itself in one sentence, with direction and peak', () => {
+  const { trafficChart } = viewsModule;
+  const rising = trafficChart({ points: series([1, 1, 1, 9, 9, 9]), label: 'Views' });
+  assert.match(/aria-label="([^"]+)"/.exec(rising)[1], /rising across the window/);
+  const falling = trafficChart({ points: series([9, 9, 9, 1, 1, 1]), label: 'Views' });
+  assert.match(/aria-label="([^"]+)"/.exec(falling)[1], /falling across the window/);
+  const flat = trafficChart({ points: series([4, 4, 4, 4]), label: 'Views' });
+  assert.match(/aria-label="([^"]+)"/.exec(flat)[1], /peak 4 on 2026-09-01/);
+
+  // One highlight, never several: marking peak, trough, first and last at once
+  // is the documented way to defeat the point of a sparkline.
+  const html = trafficChart({ points: series([1, 7, 2, 6, 3]), label: 'Views' });
+  assert.equal((html.match(/chart-bar-peak/g) || []).length, 1);
+  assert.ok(!/chart-bar-trough|chart-bar-first|chart-bar-last/.test(html));
+});
+
+test('a file sparkline is scaled by its caller, so rows can be compared', () => {
+  const { sparkline } = viewsModule;
+  const small = sparkline({ points: series([1, 0, 1]), max: 100 });
+  const big = sparkline({ points: series([50, 100, 25]), max: 100 });
+  const heightOf = (svg) => Number(/y="([\d.]+)"/.exec(svg)[1]);
+  // The same peak value must draw the same height in both, and a small value
+  // must be visibly shorter than a large one. Independent axes per row would make
+  // a 5% change and a 500% change look identical.
+  const tallSmall = 26 - heightOf(small);
+  const tallBig = 26 - heightOf(big);
+  assert.ok(tallBig > tallSmall * 3, 'the shared scale makes the big row visibly bigger');
+  assert.match(big, /100 ad views/);
+  // No axes, no gridlines, no legend — the number is in the column beside it.
+  assert.ok(!/<line|grid|legend/i.test(sparkline({ points: series([2, 3]), max: 3 })));
+});
+
+test('an empty or flat series still says something true', () => {
+  const { trafficChart, sparkline } = viewsModule;
+  assert.match(trafficChart({ points: [] }), /Nothing to draw yet/);
+  const flat = trafficChart({ points: series([0, 0, 0]), label: 'Views' });
+  assert.match(/aria-label="([^"]+)"/.exec(flat)[1], /no activity yet/);
+  assert.equal(sparkline({ points: [] }), '');
+});
+
+// ---------------------------------------------------------------------------
+// The pages that exist when something is missing
+// ---------------------------------------------------------------------------
+
+test('a missing page is a page, not a bare pre tag', () => {
+  const { notFound, serverError } = viewsModule;
+  const page = notFound({ user: null, consent: null, requestedKind: 'store' });
+  assert.match(page, /Error 404/);
+  assert.match(page, /That store is not here/, 'the heading names what is missing');
+  assert.match(page, /<h1/, 'it has a heading');
+  assert.match(page, /href="\/marketplace"/, 'and a way back into the product');
+  assert.match(page, /action="\/marketplace"/, 'and the search that actually exists');
+  assert.match(page, /byte for byte the same as a store that never existed/,
+    'a removed store and a store that never existed must be indistinguishable');
+  // The forbidden shortcut is echoing the requested path, and the way this page
+  // avoids it is by having no way to receive one: `notFound()` takes a KIND, never
+  // a URL. (A `<script>` is present — that is the CSP-hashed reveal bootstrap every
+  // page carries, which is why this asserts the signature rather than a substring.)
+  const signature = viewsModule.notFound.toString().split('{')[0];
+  assert.ok(!/path|url|req/i.test(signature), `the view cannot receive the address: ${signature.trim()}`);
+  assert.ok(!/not-a-page/.test(page), 'nothing resembling a requested path is in the markup');
+
+  const f = notFound({ requestedKind: 'file' });
+  assert.match(f, /That file is not here/);
+  assert.match(f, /minted per person/);
+
+  const err = serverError({ requestId: 'abc12345' });
+  assert.match(err, /Something broke on our side/);
+  assert.match(err, /abc12345/, 'the request id is the only way to find the failure in the log');
+  assert.match(err, /there is no charge to make/, 'and it says nothing was charged while money is manual');
+});
+
+test('a failure answers a browser with a page and an API client with JSON', () => {
+  // Behaviour, not markup: this is the router's job, so read the source for the
+  // negotiation and assert both branches exist rather than pretending a unit test
+  // can boot the server.
+  const server = readFileSync(path.join(root, 'server.js'), 'utf8');
+  const handler = server.slice(server.indexOf('const requestId = crypto.randomBytes(4)'));
+  assert.match(handler, /const wantsHtml = String\(req\.headers\.accept \|\| ''\)\.includes\('text\/html'\)/,
+    'the answer depends on what the caller asked for');
+  assert.match(handler, /res\.status\(status\)\.json\(\{/, 'JSON for API clients');
+  assert.match(handler, /views\.serverError\(\{/, 'a page for browsers');
+  assert.match(handler, /if \(res\.headersSent\) return undefined/,
+    'and it must not try to answer twice if the response already started');
+  // In production the message must not leak the failure itself.
+  assert.ok(!/error: err\.message/.test(handler), 'the raw message never reaches the client');
+});

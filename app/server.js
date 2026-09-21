@@ -259,6 +259,22 @@ function refuseWrite(req, res, channel) {
   return true;
 }
 
+/**
+ * The one way to say "not here" to a person.
+ *
+ * The storefront and asset routes used to answer `res.status(404).send('Channel
+ * not found')`, which is a bare text page — no header, no footer, no search, no
+ * way back. It was reachable by clicking any shared link to a store that had been
+ * removed. Removed stores and stores that never existed must stay indistinguishable
+ * ("byte for byte the same answer"), and this keeps that property while making the
+ * answer a page.
+ */
+function notFoundPage(req, res, kind = null) {
+  return res.status(404).send(views.notFound({
+    user: req.user || null, consent: req.consent || null, requestedKind: kind,
+  }));
+}
+
 async function requireOwnChannel(req, res) {
   if (!req.user) return requireUserPage(req, res);
   const channel = await store.channelBySlug(req.params.slug);
@@ -540,11 +556,11 @@ APP.post('/logout', async (req, res, next) => {
 APP.get('/s/:slug', async (req, res, next) => {
   try {
     const channel = await store.channelBySlug(req.params.slug);
-    if (!channel) return res.status(404).send('Channel not found');
+    if (!channel) return notFoundPage(req, res, 'store');
     const owner = Boolean(req.user) && req.user.id === channel.owner_id;
     if (!isPublicChannel(channel) && !maySeeHidden(req, channel)) {
       // Byte for byte the same answer a store that never existed gets.
-      return res.status(404).send('Channel not found');
+      return notFoundPage(req, res, 'store');
     }
     // A page view by the owner while the store is hidden is not a view by the
     // public, and counting it would flatter the rent estimate with the owner's
@@ -648,7 +664,7 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
       return res.status(404).send('Channel not found');
     }
     const asset = await store.assetBySlug(channel.id, req.params.assetSlug);
-    if (!asset) return res.status(404).send('Asset not found');
+    if (!asset) return notFoundPage(req, res, 'file');
     await store.bumpPageView(channel.id);
 
     const unlocked = asset.unlock_mode === 'open'
@@ -782,6 +798,8 @@ APP.get('/dashboard/:slug', async (req, res, next) => {
       adViews: await store.adViews({ channelId: channel.id }),
       assets: await store.assetsOf(channel.id),
       assetStats: await store.assetStats(channel.id),
+      traffic: await store.trafficSeries(channel.id, { days: 30 }),
+      adViewSeries: await store.assetAdViewSeries(channel.id, { days: 30 }),
       upgrade: store.upgradeQuote(channel, 'store'),
       // Through the subscription, because a plan payment has no channel of its
       // own: `plan_payments.subscription_id` is the only path back, and the
@@ -2250,7 +2268,7 @@ APP.post('/s/:slug/a/:assetSlug/review', limitUnlock, async (req, res, next) => 
     const channel = await store.channelBySlug(req.params.slug);
     if (!channel) return res.status(404).send('Channel not found');
     const asset = await store.assetBySlug(channel.id, req.params.assetSlug);
-    if (!asset) return res.status(404).send('Asset not found');
+    if (!asset) return notFoundPage(req, res, 'file');
 
     /**
      * The gate is the unlock row, not the form.
@@ -2388,7 +2406,7 @@ APP.post('/s/:slug/a/:assetSlug/report', async (req, res, next) => {
     const channel = await store.channelBySlug(req.params.slug);
     if (!channel) return res.status(404).send('Channel not found');
     const asset = await store.assetBySlug(channel.id, req.params.assetSlug);
-    if (!asset) return res.status(404).send('Asset not found');
+    if (!asset) return notFoundPage(req, res, 'file');
 
     const check = validateReport({
       reason: req.body?.reason, note: req.body?.note,
@@ -2652,7 +2670,7 @@ APP.post('/admin/reports/:assetId', async (req, res, next) => {
   try {
     if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
     const asset = await store.assetById(req.params.assetId);
-    if (!asset) return res.status(404).send('Asset not found');
+    if (!asset) return notFoundPage(req, res, 'file');
     const action = req.body?.action === 'dismissed' ? 'dismissed' : 'actioned';
 
     // A decision and the closure of its reports are one transaction: a queue row
@@ -2889,14 +2907,70 @@ APP.get('/health', async (_req, res, next) => {
 // Errors — last, so it catches everything above.
 // ---------------------------------------------------------------------------
 // eslint-disable-next-line no-unused-vars
-APP.use((err, req, res, _next) => {
-  console.error(`[error] ${req.method} ${req.originalUrl} — ${err.message}`);
-  if (process.env.NODE_ENV !== 'production') console.error(err.stack);
-  const status = err.status || (err.code === 'LIMIT_FILE_SIZE' ? 413 : 500);
-  res.status(status).json({
-    ok: false,
-    error: status === 500 ? 'internal error' : err.message,
-  });
+/**
+ * The files a crawler asks for that are not pages.
+ *
+ * `robots.txt` disallows the surfaces nobody should index and points at the
+ * sitemap. Nothing here is a ranking trick: the disallowed list is the set of
+ * pages that are per-person (dashboards, unlock links, admin), and indexing them
+ * would be wrong even if it helped.
+ */
+APP.get('/robots.txt', (req, res) => {
+  res.type('text/plain').send([
+    'User-agent: *',
+    // Per-person and operator surfaces. A dashboard is somebody's own, an unlock
+    // link is minted for one person, and the console is not a public page.
+    'Disallow: /dashboard/',
+    'Disallow: /admin',
+    'Disallow: /login',
+    'Disallow: /signup',
+    'Disallow: /consent',
+    'Disallow: /files/',
+    'Disallow: /api/',
+    // Marketing and legal pages are worth crawling; storefronts are the front door.
+    `Sitemap: ${publicBase(req)}/sitemap.xml`,
+    '',
+  ].join('\n'));
+});
+
+/**
+ * The sitemap: the front page, the legal pages, and every storefront that is
+ * public and not held.
+ *
+ * Only URLs that return 200 are listed — a suspended or removed storefront
+ * answers 404 on purpose, so putting it in a sitemap would be handing a crawler a
+ * broken link. Last-modified comes from the newest file in each store, because
+ * that is when the page actually changed.
+ */
+APP.get('/sitemap.xml', async (req, res, next) => {
+  try {
+    const base = publicBase(req);
+    const stores = await store.indexableStores();
+    const pages = [
+      { loc: '/', priority: '1.0', changefreq: 'daily' },
+      { loc: '/marketplace', priority: '0.9', changefreq: 'daily' },
+      { loc: '/privacy', priority: '0.3', changefreq: 'monthly' },
+      { loc: '/terms', priority: '0.3', changefreq: 'monthly' },
+      { loc: '/cookies', priority: '0.3', changefreq: 'monthly' },
+    ];
+    // XML escaping is not HTML escaping: an apostrophe is legal in a URL inside
+    // a sitemap and `&#39;` is not, so this escapes the five characters XML
+    // actually reserves rather than reusing the HTML helper.
+    const xml = (str) => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+    const url = (loc, lastmod, changefreq, priority) => `  <url>
+    <loc>${xml(base + loc)}</loc>${lastmod ? `
+    <lastmod>${xml(new Date(lastmod).toISOString().slice(0, 10))}</lastmod>` : ''}
+    <changefreq>${changefreq}</changefreq>
+    <priority>${priority}</priority>
+  </url>`;
+    res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${pages.map((p) => url(p.loc, null, p.changefreq, p.priority)).join('\n')}
+${stores.map((c) => url(`/s/${c.slug}`, c.last_changed, 'weekly', '0.8')).join('\n')}
+</urlset>
+`);
+  } catch (err) { return next(err); }
 });
 
 // ---------------------------------------------------------------------------
@@ -3215,3 +3289,54 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
     setTimeout(() => process.exit(1), 10_000).unref();
   });
 }
+
+// ---------------------------------------------------------------------------
+// The last two things a request can hit, and the only two that are allowed to
+// answer with something other than a page.
+// ---------------------------------------------------------------------------
+
+/**
+ * 404. A page, not a bare `<pre>`.
+ *
+ * `requestedKind` comes from the path so the heading can say "that STORE is not
+ * here" rather than a generic apology — the distinction matters because a store
+ * link is the one people share, and a removed store answers 404 on purpose. The
+ * requested URL is never echoed into the page.
+ */
+APP.use((req, res) => {
+  const wantsHtml = String(req.headers.accept || '').includes('text/html');
+  if (!wantsHtml) return res.status(404).json({ ok: false, error: 'not found' });
+  const kind = /^\/s\/[^/]+/.test(req.path) ? 'file'
+    : (/^\/s\/|^\/dashboard\//.test(req.path) && !req.path.includes('/a/')) ? 'store' : null;
+  // A storefront path that reached here is a file, not a store: /s/alice handled
+  // its own store already. The only way to be sure is the path shape.
+  const asKind = req.path.startsWith('/s/') && req.path.split('/').filter(Boolean).length >= 3
+    ? 'file' : (req.path.startsWith('/s/') ? 'store' : kind);
+  return res.status(404).send(views.notFound({
+    user: req.user || null, consent: req.consent || null, requestedKind: asKind,
+  }));
+});
+
+APP.use((err, req, res, _next) => {
+  const status = err.status || (err.code === 'LIMIT_FILE_SIZE' ? 413 : 500);
+  // One id per failure, logged with the stack and shown to the person who hit it.
+  // Without it a report says "it broke" and the log says nothing that matches.
+  const requestId = crypto.randomBytes(4).toString('hex');
+  console.error(`[error ${requestId}] ${req.method} ${req.originalUrl} — ${err.message}`);
+  if (process.env.NODE_ENV !== 'production') console.error(err.stack);
+  if (res.headersSent) return undefined;
+
+  // Content negotiation, not guessing: an API client asked for JSON and keeps
+  // getting it; a browser asked for HTML and gets a page it can read.
+  const wantsHtml = String(req.headers.accept || '').includes('text/html');
+  if (!wantsHtml) {
+    return res.status(status).json({
+      ok: false,
+      error: status === 500 ? 'internal error' : err.message,
+      requestId,
+    });
+  }
+  return res.status(status).send(views.serverError({
+    user: req.user || null, consent: req.consent || null, requestId,
+  }));
+});

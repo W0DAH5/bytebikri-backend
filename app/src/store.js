@@ -1328,6 +1328,85 @@ export const store = {
     ));
   },
 
+  /**
+   * A day-by-day traffic series, one row per calendar day, INCLUDING the days
+   * with no row at all.
+   *
+   * `generate_series` is the point of this query. The daily table only holds days
+   * something happened, so reading it directly would draw a chart that closes the
+   * gaps — and a chart that closes a gap is claiming traffic on a day we did not
+   * measure. Each point carries `measured` so the drawing code can tell "we
+   * recorded nothing" apart from "we recorded zero", which are different facts
+   * and the research says so out loud.
+   *
+   * `unlocks` comes from a separate table on purpose: unlocks are events, not
+   * aggregates, and summing them per day is exact.
+   */
+  async trafficSeries(channelId, { days = 30 } = {}) {
+    const window = Math.min(Math.max(Number(days) || 30, 7), 90);
+    return many(
+      `with span as (
+         select generate_series(current_date - ($2::int - 1), current_date, interval '1 day')::date as day
+       )
+       select span.day,
+              pvd.views,
+              (pvd.channel_id is not null) as measured,
+              coalesce(u.n, 0)::int       as unlocks
+         from span
+         left join page_view_daily pvd on pvd.channel_id = $1 and pvd.day = span.day
+         left join lateral (
+           select count(*) as n from unlocks x
+            join assets a on a.id = x.asset_id
+           where a.channel_id = $1
+             and x.revoked_at is null
+             and x.granted_at >= span.day
+             and x.granted_at < span.day + 1
+         ) u on true
+        order by span.day`,
+      [channelId, window],
+    ).then((rows) => rows.map((r) => ({
+      day: r.day instanceof Date ? r.day.toISOString().slice(0, 10) : String(r.day).slice(0, 10),
+      views: r.views === null ? null : Number(r.views),
+      unlocks: Number(r.unlocks) || 0,
+      measured: r.measured === true,
+    })));
+  },
+
+  /**
+   * The same series, per file, for the little charts beside each one.
+   *
+   * One query for every file rather than one per row: a dashboard with nine files
+   * must not cost nine round trips. Days with no events are absent here on
+   * purpose — the caller pads them, so the shape of a file's month is drawn
+   * against the same 30-day window as every other file and as the store's own
+   * chart. Comparing two charts on different axes is how a dashboard lies.
+   */
+  assetAdViewSeries(channelId, { days = 30 } = {}) {
+    const window = Math.min(Math.max(Number(days) || 30, 7), 90);
+    return many(
+      `select a.id as asset_id, d.day::date as day, count(*)::int as views
+         from assets a
+         cross join generate_series((current_date - ($2::int - 1))::timestamp,
+                                    current_date::timestamp, interval '1 day') d(day)
+         left join ad_view_events e
+                on e.asset_id = a.id and e.completed
+               and e.created_at >= d.day and e.created_at < d.day + interval '1 day'
+        where a.channel_id = $1
+        group by a.id, d.day
+        order by a.id, d.day`,
+      [channelId, window],
+    ).then((rows) => {
+      const byAsset = new Map();
+      for (const r of rows) {
+        const key = r.asset_id;
+        if (!byAsset.has(key)) byAsset.set(key, []);
+        const day = r.day instanceof Date ? r.day.toISOString().slice(0, 10) : String(r.day).slice(0, 10);
+        byAsset.get(key).push({ day, views: Number(r.views) || 0 });
+      }
+      return byAsset;
+    });
+  },
+
   // ---- plan payments (money INTO bytebikri — being paid, not holding) -----
   /**
    * A payment attaches to a SUBSCRIPTION, not to a channel. That is the schema's
@@ -2119,6 +2198,32 @@ export const store = {
     ]);
 
     return { channel, files, reports, invoice: invoice || null, history };
+  },
+
+  /**
+   * The storefronts a crawler may index.
+   *
+   * Public and not held, and nothing else: a suspended or removed storefront
+   * answers 404 on purpose, so listing one in a sitemap would hand a search
+   * engine a broken link. `last_changed` is the newest file in the store, because
+   * that is the last time the page's content actually changed — a `lastmod` that
+   * moves every day teaches a crawler to ignore it.
+   */
+  indexableStores() {
+    return many(
+      `select c.slug,
+              greatest(
+                coalesce(max(a.created_at), c.created_at),
+                c.created_at
+              ) as last_changed
+         from channels c
+         left join assets a on a.channel_id = c.id and a.status = 'live'
+        where c.moderation_state = 'approved'
+          and c.listing_mode = 'marketplace'
+        group by c.id, c.slug, c.created_at
+        order by last_changed desc
+        limit 5000`,
+    );
   },
 
   recentAudit(limit = 200) {

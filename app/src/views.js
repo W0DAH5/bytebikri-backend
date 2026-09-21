@@ -965,6 +965,88 @@ function accessExpiry(until) {
 // Auth
 // ---------------------------------------------------------------------------
 
+/**
+ * The page for an address that does not exist.
+ *
+ * Express's default is a bare `<pre>Cannot GET /x</pre>` with no header, no
+ * footer, no way back and no idea what this site is — which is what a person sees
+ * when they mistype a store, follow a dead link, or open a file that was paused.
+ * It is the one page that appears when something has already gone wrong, so it is
+ * the wrong place to make somebody feel lost.
+ *
+ * It does two useful things beyond saying sorry: it offers the search that
+ * actually exists, and it points at the marketplace. It deliberately does NOT
+ * echo the requested path back into the page — a 404 that reflects the URL is a
+ * reflected-XSS with extra steps, and the browser already shows the address.
+ */
+export function notFound({ user = null, consent = null, requestedKind = null }) {
+  const kind = requestedKind === 'store'
+    ? 'That store is not here'
+    : requestedKind === 'file' ? 'That file is not here' : 'That page is not here';
+
+  return layout({
+    title: 'Not found', user, consent, current: null,
+    body: `
+<div class="section" style="margin-bottom:0">
+  <p class="pill pill-warning" style="display:inline-flex">Error 404</p>
+  <h1 style="margin-top:var(--space-4)">${esc(kind)}</h1>
+  <p class="lede" style="margin-top:var(--space-3)">
+    Nothing is stored at this address. A store that was removed returns this page on purpose —
+    byte for byte the same as a store that never existed, so the address itself cannot be used to
+    find out whether something used to be there.
+  </p>
+  <div class="row" style="margin-top:var(--space-6);gap:var(--space-3);flex-wrap:wrap">
+    <a class="btn btn-primary" href="/marketplace">Browse stores</a>
+    <a class="btn" href="/">Home</a>
+  </div>
+</div>
+
+<section class="section">
+  <div class="section-head">
+    <h2>If you were looking for a file</h2>
+    <p>A file link expires and is minted per person, so a link from somebody else will not work for you — and a link you were given a while ago may simply have run out. Open the store and unlock it again.</p>
+  </div>
+  <form class="search" method="get" action="/marketplace" role="search">
+    <label class="sr-only" for="nf-q">Search stores</label>
+    <input class="input" id="nf-q" name="q" type="search" placeholder="Search stores — name, tagline or file">
+    <button class="btn" type="submit">Search</button>
+  </form>
+</section>`,
+  });
+}
+
+/**
+ * The page for a failure we did not anticipate.
+ *
+ * The error handler used to answer a browser with JSON — `{"ok":false,"error":
+ * "internal error"}` rendered as text in a tab — because the only clients it was
+ * written for were API callers. A person who hits a bug should get a page that
+ * says a page failed, not a serialised object. API clients still get JSON, by
+ * content negotiation, and in production the message never carries the stack.
+ */
+export function serverError({ user = null, consent = null, requestId = null }) {
+  return layout({
+    title: 'Something broke', user, consent, current: null,
+    body: `
+<div class="section" style="margin-bottom:0">
+  <p class="pill pill-danger" style="display:inline-flex">Error 500</p>
+  <h1 style="margin-top:var(--space-4)">Something broke on our side</h1>
+  <p class="lede" style="margin-top:var(--space-3)">
+    The request failed while we were handling it. Nothing you did caused it, and nothing was
+    charged: there is no charge to make. Money that moves here moves by a bank or wallet transfer
+    that a person matches by hand, so a failed page cannot take any.
+  </p>
+  ${requestId ? `<p class="fine" style="margin-top:var(--space-4)">
+    If you report this, quote <span class="mono">${esc(requestId)}</span> — it is the only thing that
+    lets us find the failure in the log.</p>` : ''}
+  <div class="row" style="margin-top:var(--space-6);gap:var(--space-3);flex-wrap:wrap">
+    <a class="btn btn-primary" href="/">Home</a>
+    <a class="btn" href="javascript:history.back()">Go back</a>
+  </div>
+</div>`,
+  });
+}
+
 export function login({ user, error, next = '', email = '', mode = 'login', consent = null }) {
   const isSignup = mode === 'signup';
   const action = isSignup ? '/signup' : '/login';
@@ -1264,10 +1346,161 @@ function proof(value, label, literal = null) {
 // Dashboard
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Charts
+//
+// Two tiny charts, written by hand as SVG rather than pulled from a library,
+// because the rules they have to obey are the whole design and a library would
+// make them hard to see:
+//
+//   - ONE series per chart. A sparkline mixing two metrics communicates nothing.
+//   - A PINNED scale where charts sit next to each other. If each file's chart
+//     picked its own maximum, a 5% change and a 500% change would draw the same
+//     shape — "the biggest risk with sparklines" — so the caller passes one max
+//     for the whole table and every chart in it shares it.
+//   - A MEASURED ZERO and a MISSING DAY are different facts and are drawn
+//     differently. The daily table only holds days something happened; a chart
+//     that fills the rest with zero is claiming traffic we never measured.
+//   - The shape is the point, the exact number is elsewhere. So no axes, no
+//     gridlines, no legend: the total is already in the KPI above, and the title
+//     element carries the sentence for anyone using a screen reader.
+//   - One highlight, never several. Marking the peak, the trough, the first and
+//     the last at once defeats the purpose.
+// ---------------------------------------------------------------------------
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** A short human sentence describing a series, for the accessible name. */
+function describeSeries(points, { unit = 'views' } = {}) {
+  const measured = points.filter((p) => p.measured !== false);
+  if (!measured.length) return `No ${unit} have been measured yet.`;
+  const total = measured.reduce((a, p) => a + (p.value || 0), 0);
+  const peak = measured.reduce((a, p) => Math.max(a, p.value || 0), 0);
+  const peakDay = measured.find((p) => (p.value || 0) === peak);
+  const half = Math.floor(measured.length / 2);
+  const firstHalf = measured.slice(0, half).reduce((a, p) => a + (p.value || 0), 0);
+  const secondHalf = measured.slice(half).reduce((a, p) => a + (p.value || 0), 0);
+  const gap = points.length - measured.length;
+
+  let direction = 'flat';
+  if (firstHalf > 0 || secondHalf > 0) {
+    if (secondHalf > firstHalf * 1.15) direction = 'rising';
+    else if (secondHalf < firstHalf * 0.85) direction = 'falling';
+  }
+  const parts = [
+    `${total.toLocaleString('en-IN')} ${unit} across ${measured.length} measured ${measured.length === 1 ? 'day' : 'days'}`,
+    peak ? `peak ${peak.toLocaleString('en-IN')} on ${peakDay.day}` : 'no activity yet',
+    `${direction} across the window`,
+  ];
+  // Say the gaps out loud rather than letting the reader assume the line is solid.
+  // Agreement matters in a sentence a screen reader will read aloud: "1 day was
+  // not measured and are not drawn as zero" is the kind of thing that makes a
+  // chart sound broken, and it shipped for one test run.
+  if (gap > 0) {
+    parts.push(gap === 1
+      ? '1 day was not measured and is not drawn as zero'
+      : `${gap} days were not measured and are not drawn as zero`);
+  }
+  return `${parts.join('; ')}.`;
+}
+
+/**
+ * A 30-day column chart.
+ *
+ * Columns rather than a line: traffic arrives in whole visits on whole days, and
+ * a line implies continuity between today and the day before that nobody
+ * measured. Missing days are drawn as a faint band so they cannot be mistaken for
+ * quiet ones, and the peak column is the only thing highlighted.
+ */
+export function trafficChart({ points = [], height = 132, label = 'Views' } = {}) {
+  const n = points.length;
+  if (!n) return '<div class="empty">Nothing to draw yet.</div>';
+
+  const max = points.reduce((a, p) => Math.max(a, p.value || 0), 0);
+  const scale = max > 0 ? max : 1;
+  const plot = height - 22;               // room for the date labels under the plot
+  const colW = 100 / n;                   // viewBox units, percentages of width
+
+  // Contiguous runs of unmeasured days become one band each.
+  const bands = [];
+  for (let i = 0; i < n; i += 1) {
+    if (points[i].measured === false) {
+      const start = i;
+      while (i < n && points[i].measured === false) i += 1;
+      bands.push([start, i]);
+    }
+  }
+
+  const peakIndex = points.reduce((best, p, i) => ((p.value || 0) > (points[best]?.value || 0) ? i : best), 0);
+
+  const bars = points.map((p, i) => {
+    const value = p.value || 0;
+    if (p.measured === false) return '';
+    // A measured zero still gets a stub, so "we looked and saw nothing" is on the
+    // chart instead of being an absence that reads like a missing day.
+    const h = value > 0 ? Math.max((value / scale) * plot, 3) : 2;
+    const y = plot - h + 10;
+    const cls = value > 0 ? (i === peakIndex ? 'chart-bar chart-bar-peak' : 'chart-bar') : 'chart-bar chart-bar-zero';
+    return `<rect class="${cls}" x="${(i * colW + colW * 0.18).toFixed(2)}%" y="${y.toFixed(1)}" `
+      + `width="${(colW * 0.64).toFixed(2)}%" height="${h.toFixed(1)}" `
+      + `rx="${Math.min(colW * 0.18, 1.2).toFixed(2)}"><title>${esc(p.day)}: ${value.toLocaleString('en-IN')} ${esc(label.toLowerCase())}${value === 0 ? ' (measured, none)' : ''}</title></rect>`;
+  }).join('');
+
+  const bandShapes = bands.map(([from, to]) => `<rect class="chart-gap" x="${(from * colW).toFixed(2)}%" y="10" `
+    + `width="${((to - from) * colW).toFixed(2)}%" height="${plot}" rx="2"><title>No daily row for these days</title></rect>`).join('');
+
+  const first = points[0].day.slice(5);
+  const last = points[n - 1].day.slice(5);
+
+  return `<figure class="chart" data-chart>
+  <div class="chart-plot" style="height:${height}px">
+    <svg class="chart-svg" viewBox="0 0 100 ${height}" preserveAspectRatio="none" role="img"
+         aria-label="${esc(describeSeries(points, { unit: label.toLowerCase() }))}">
+      ${bandShapes}${bars}
+      <line class="chart-axis" x1="0" y1="${plot + 10}" x2="100" y2="${plot + 10}" vector-effect="non-scaling-stroke"></line>
+    </svg>
+    ${max > 0 ? `<span class="chart-max" aria-hidden="true">${max.toLocaleString('en-IN')}</span>` : ''}
+  </div>
+  <figcaption class="chart-foot">
+    <span>${esc(first)}</span>
+    <span class="spacer"></span>
+    <span>${esc(last)}</span>
+  </figcaption>
+</figure>`;
+}
+
+/**
+ * A word-sized chart for one row of a table.
+ *
+ * Columns again, and the scale is PASSED IN rather than computed, so every chart
+ * in the table shares one. A subtlety worth stating: `max` of zero would draw
+ * every row flat and identical, which is correct — a store with no ad views at
+ * all has no shape to show.
+ */
+export function sparkline({ points = [], max = 0, height = 26, label = 'ad views' } = {}) {
+  const n = points.length;
+  if (!n) return '';
+  const scale = Math.max(max, 1);
+  const colW = 100 / n;
+  const bars = points.map((p, i) => {
+    const value = p.value || 0;
+    if (!value) return '';
+    const h = Math.max((value / scale) * (height - 2), 2);
+    return `<rect class="chart-bar" x="${(i * colW + colW * 0.2).toFixed(2)}%" y="${(height - h).toFixed(1)}" `
+      + `width="${(colW * 0.6).toFixed(2)}%" height="${h.toFixed(1)}" rx="0.6"><title>${esc(p.day)}: ${value.toLocaleString('en-IN')} ${esc(label)}</title></rect>`;
+  }).join('');
+  return `<svg class="spark" viewBox="0 0 100 ${height}" preserveAspectRatio="none" role="img"
+      aria-label="${esc(describeSeries(points, { unit: label }))}">${bars}</svg>`;
+}
+
 export function dashboard({
   channel, slots, connections, providers, plan, estimate, pageviews, adViews,
   upgrade, user, pendingPayments = [], flash = null, consent = null,
   assets = [], assetStats = [], moderation = null,
+  // The day-by-day series behind the totals. Optional so every existing caller
+  // and test keeps working, and so a page that has no series simply draws no
+  // chart instead of drawing an empty one.
+  traffic = [], adViewSeries = null,
 }) {
   const conn = connections[0] || null;
   const provider = conn ? providers.find((p) => p.id === conn.provider_id) : null;
@@ -1339,6 +1572,26 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
   <a href="/dashboard/${esc(channel.slug)}/earnings">Where the money goes →</a>
 </p>
 
+${traffic.length ? `
+<div class="panel" style="margin-top:var(--space-6)">
+  <div class="panel-head">
+    <h2 style="font-size:var(--text-md)">Views, day by day</h2>
+    <span class="spacer"></span>
+    <span class="fine">Last 30 days</span>
+  </div>
+  <div class="panel-body">
+    ${trafficChart({
+    points: traffic.map((p) => ({ day: p.day, value: p.views || 0, measured: p.measured })),
+    label: 'Views',
+  })}
+    <p class="fine" style="margin-top:var(--space-3)">
+      Counted in our own table when a storefront page is served, so it is exact for what it measures —
+      and it measures page views, not people. Days with no row at all are shaded and never drawn as
+      zero: a gap in our records is not a quiet day.
+    </p>
+  </div>
+</div>` : ''}
+
 <div class="panel" style="margin-top:var(--space-5)">
   <div class="panel-head"><h2 style="font-size:var(--text-md)">What this store rents</h2></div>
   <div class="panel-body">
@@ -1366,21 +1619,40 @@ ${assets.length ? `
   </div>
   <div class="panel"><div class="panel-body panel-body-flush">
     <table class="table">
-      <thead><tr><th>File</th><th>Access</th><th>State</th><th class="num">Unlocks</th><th class="num"></th></tr></thead>
-      <tbody>${assets.map((a) => {
-    const st = assetStats.find((x) => x.id === a.id) || { files: 0, unlocks: 0 };
-    return `<tr>
+      <thead><tr><th>File</th><th>Access</th><th>State</th>
+        <th class="num">Unlocks</th><th>Ad views · 30d</th><th class="num"></th></tr></thead>
+      <tbody>${(() => {
+    // One scale for every row. If each chart picked its own maximum, the file
+    // with one ad view would draw the same shape as the file with two hundred.
+    const seriesOf = (id) => {
+      const raw = adViewSeries?.get ? adViewSeries.get(id) : null;
+      return raw ? raw.map((p) => ({ day: p.day, value: p.views })) : [];
+    };
+    const sharedMax = assets.reduce((best, a) => {
+      const peak = seriesOf(a.id).reduce((m, p) => Math.max(m, p.value), 0);
+      return Math.max(best, peak);
+    }, 0);
+    return assets.map((a) => {
+      const st = assetStats.find((x) => x.id === a.id) || { files: 0, unlocks: 0 };
+      const series = seriesOf(a.id);
+      const monthTotal = series.reduce((t, p) => t + p.value, 0);
+      return `<tr>
         <td><strong>${esc(a.title)}</strong>
           <div class="fine">${esc(a.slug)} · ${plural(Number(st.files) || 0, 'file')}${
-  a.unlock_mode === 'open' ? ' · open to everyone' : ''}</div></td>
+    a.unlock_mode === 'open' ? ' · open to everyone' : ''}</div></td>
         <td>${a.unlock_mode === 'open' ? pill('Free', 'success') : pill('Ad-gated', 'locked')}</td>
         <td>${a.status === 'paused'
     ? pill('Paused', 'warning')
     : a.status === 'removed' ? pill('Removed', 'danger') : pill('Live', 'success')}</td>
         <td class="num">${num(Number(st.unlocks) || 0)}</td>
+        <td>${series.length
+    ? `<div class="row" style="gap:var(--space-3);align-items:center">${sparkline({ points: series, max: sharedMax })}
+         <span class="fine">${monthTotal ? `${num(monthTotal)} this month` : 'none yet'}</span></div>`
+    : '<span class="fine">—</span>'}</td>
         <td class="num"><a class="btn btn-sm" href="/dashboard/${esc(channel.slug)}/assets/${esc(a.id)}">Edit</a></td>
       </tr>`;
-  }).join('')}</tbody>
+    }).join('');
+  })()}</tbody>
     </table>
   </div></div>
 </section>` : ''}

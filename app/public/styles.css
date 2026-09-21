@@ -1759,3 +1759,40 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 
 .pager { display: flex; align-items: center; gap: var(--space-4); margin-top: var(--space-5); }
 .pager .fine { margin: 0; }
+
+/* ── charts ─────────────────────────────────────────────────────────────── */
+/* Two shapes only: columns for the store's month, columns for a file's row.
+   No grids, no legends, no gradients — the value is printed next to the chart
+   and the shape is the point. Everything here is static: a chart that animates
+   its bars into place draws the eye to the animation rather than to the trend,
+   and it is a thing that can fail to finish.
+
+   The columns are scaled with `preserveAspectRatio="none"`, so nothing here uses
+   a stroke that would stretch: the axis line carries `vector-effect`. */
+.chart { margin: 0; }
+.chart-plot { position: relative; }
+.chart-svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.chart-bar { fill: var(--indigo-400); }
+.chart-bar-peak { fill: var(--indigo-500); }
+.chart-bar-zero { fill: var(--border-strong); }
+/* A day we did not measure is a band, not a bar. It must be impossible to read
+   as "no traffic" — that is a different fact, and it is drawn as a 2px stub. */
+.chart-gap { fill: color-mix(in srgb, var(--text-faint) 9%, transparent); }
+.chart-axis { stroke: var(--border-subtle); stroke-width: 1; }
+.chart-max {
+  position: absolute; top: -2px; left: 0;
+  font-size: var(--text-2xs); color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.chart-foot {
+  display: flex; align-items: center; gap: var(--space-3);
+  margin-top: var(--space-2);
+  font-size: var(--text-2xs); color: var(--text-faint);
+}
+.chart-foot .spacer { flex: 1 1 auto; }
+
+/* A word-sized chart inside a table cell. Sized in em so it scales with the row
+   rather than fighting it, and given a hard maximum width so a wide table does
+   not stretch one file's month across the screen. */
+.spark { display: block; width: 84px; height: 26px; flex: none; overflow: visible; }
+.spark .chart-bar { fill: var(--indigo-400); }
