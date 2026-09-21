@@ -131,6 +131,33 @@ Also fixed, because they read as unfinished rather than as design:
 Verified after the pass: `/`, `/marketplace`, `/s/alice`, `/s/bob`, the three
 legal pages, `/login`, `/signup`, `/healthz`, `/readyz` → **all 200**.
 
+### The motion pass
+
+The second design round, after the layout one. Where the first round fixed
+geometry, this one fixes *feel* — and every decision below is a published rule
+rather than taste.
+
+| Decision | Source | Why |
+|---|---|---|
+| Duration and easing are tokens: 120 / 180 / 240 / 320 ms, and M3's four curves (standard `0.2,0,0,1`, decelerate `0.05,0.7,0.1,1`, accelerate `0.3,0,0.8,0.15`, spring `0.16,1,0.3,1`) | Material 3 motion tokens, via Helix UI's set | One place to change how the whole product moves. A raw `cubic-bezier` in a component is a curve nobody can find |
+| Enter decelerates, exit accelerates, exit is shorter | M3's pairing rule | Things arriving settle; things leaving get out of the way |
+| Hover/press 120 ms · panels 240 ms · page-level 320 ms · nothing over 500 ms | M3 duration bands | Over 500 ms reads as slow, and at that point it is not the curve |
+| Hover animates `transform` and `opacity` only | classic compositor rule | A hover that animates height or padding relayouts the page under the pointer — that is the card-grid jitter |
+| 44 px hit area on `(pointer: coarse)` | WCAG 2.5.8 / platform guidance | The 32 px small button is fine on a mouse and wrong under a thumb |
+| Section rhythm 64 px, up from 48 px | practitioner consensus on the "janky page" problem — line-height ~1.5, ≤2 weights, 64–96 px section padding | A long page stops reading as a wall |
+| One primary CTA in the hero, the second action demoted to a link | single-CTA pages convert at 13.5% vs 10.5% for 5+ (SaaSHero 2026) | Two equal buttons make the visitor choose; the choice is ours to make, not theirs |
+| The hero shows the product: a window containing the real money map | Linear/Vercel/Stripe pattern; "real UI beats abstract illustration" is unanimous across the 2026 roundups | A screenshot removes doubt, and the money map is the one thing this product says that nobody else does |
+| Sections rise as they enter, driven by `animation-timeline: view()` behind `@supports` + `no-preference` | scroll-triggered reveals, 2026 trend | No listeners, no layout reads, and where it is unsupported the content is simply visible — a decorative animation must never be what makes content appear |
+| Reduced motion collapses durations to **0.01 ms**, not to `none` | Helix UI's approach | `animationend` and `transitionend` still fire, so components that clean up on those events are not left holding state |
+| `@view-transition` for same-document navigation | browser-native, 4 lines | Cross-fade instead of a white flash, ignored where unsupported |
+
+`test/design.test.js` (10 assertions) holds all of it: no raw curves outside the
+token block, no `transition: all`, no hover that animates layout, no
+browser-default easing keywords, the reduced-motion block complete, the counters
+landing exactly on the rendered value, and the hero carrying exactly one primary
+call to action. Two of them failed against the code as first written — the hero
+had two primaries, and the scroll-driven block was written outside its guard.
+
 ### Template research, cited
 
 - **Gumroad** — deliberately minimal storefront, consistent cards, zero design
@@ -269,8 +296,9 @@ chore.
 
 ## 9. Tests
 
-`npm test` → **232 pass, 0 fail** (133 four rounds ago; 152 after the player
-round; 184 after the revenue round; 214 after the slot round).
+`npm test` → **242 pass, 0 fail** (133 five rounds ago; 152 after the player
+round; 184 after the revenue round; 214 after the slot round; 232 after the
+connection round).
 
 | New | What it holds still |
 |---|---|
@@ -280,6 +308,7 @@ round; 184 after the revenue round; 214 after the slot round).
 | `test/billing.test.js` (23) | the two charges and nothing else; rent = monthly estimate × 12 with a zero floor; request-then-pay keeps the paid plan and the renewal date; a payment without an open request is refused; reject leaves the plan alone; matching twice is a no-op; grace is calculated, not stored; **and a write round-trip through every generated `SET` clause** |
 | `test/ui.test.js` (+9) | the billing page states both charges and refuses a third; an unconfigured payment rail says so and names its env var; a pending upgrade never claims the plan changed; no rent invoice explains WHICH reason applies; settings cannot promise a free store the Explore listing; reviews appear only for a buyer with an unlock; the asset page is one form; the operator queue shows what was asked for; search replaces the directory |
 | `test/earnings.test.js` (15) | an open period is shown but never compared; the estimate and the statement are never blended; rent is annualised against annualised statements; a blank payout label is not a label; **and `payout_accounts` is asserted to hold no column that could move money** |
+| `test/design.test.js` (10) | motion lives in tokens and nowhere else; no `transition: all`; no hover that animates layout; reduced motion collapses to 0.01 ms so `animationend` still fires; scroll-driven reveals sit inside their `no-preference` guard; touch targets reach 44 px where the pointer is a finger; the hero has exactly one primary call to action; and **the landing page's money facts are the same strings the earnings page renders**, from the same structure |
 | `test/networks.test.js` (18) | a network with no adapter has no Connect button and says what still works; the callback URL keeps the network's macros verbatim (a percent-encoded macro is a postback that never arrives); no secret means not verified; "never called back" names the likeliest cause; **and the only field the flow may ever ask for is the verification secret** — asserted against the rendered form, not the code |
 | `test/creatives.test.js` (15) | the store's message can never fill the platform's slot or the reverse; a creative written for one slot does not leak into the others; `javascript:`, `data:` and protocol-relative links are refused; a link label with no link is dropped; one message per slot, corrected in place |
 

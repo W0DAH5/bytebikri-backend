@@ -9,3 +9,6 @@ npm-debug.log
 app/node_modules/
 app/.data/
 app/.data/
+
+# Design reference images pulled during research — scratch, never shipped.
+/image-search/

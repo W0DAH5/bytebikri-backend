@@ -148,7 +148,7 @@ export function layout({ title, user, body, activeChannel = null, wide = false, 
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
-<header class="header">
+<header class="header" id="site-header">
   <div class="wrap">
     <a class="brand" href="/"><span class="brand-mark">B</span> ByteBikri</a>
     <nav class="nav" aria-label="Main">
@@ -159,6 +159,7 @@ export function layout({ title, user, body, activeChannel = null, wide = false, 
     <span class="spacer"></span>
     ${account}
   </div>
+  <span class="scroll-progress" aria-hidden="true"></span>
 </header>
 <main id="main"${wide ? '' : ''} class="wrap">${body}</main>
 ${consentBanner(consent)}
@@ -183,8 +184,33 @@ ${consentBanner(consent)}
 // Landing
 // ---------------------------------------------------------------------------
 
-export function landing({ channels, user, stats, consent = null }) {
+export function landing({ channels, user, stats, consent = null, moneyMap = null }) {
   const featured = channels.slice(0, 6).map(channelCard).join('');
+
+  /**
+   * The hero shows the product, not a description of it.
+   *
+   * Linear, Vercel and Stripe all open with real interface, and the research is
+   * unambiguous that a screenshot removes doubt in a way copy cannot. So the
+   * window below is not an illustration of the money map: it is the money map —
+   * the same four facts the earnings page renders, from the same structure, so
+   * the two pages cannot drift apart or disagree.
+   *
+   * One primary action, and it is the one a stranger can act on. Pages with a
+   * single CTA convert at 13.5% against 10.5% for five or more, and the second
+   * button here was competing with the first for the same click.
+   */
+  const legs = moneyMap ? [
+    { dt: 'Who pays for the unlock', dd: 'The ad network', primary: false },
+    { dt: 'Paid into', dd: moneyMap.toCreator.account, primary: true },
+    { dt: 'Held by ByteBikri', dd: moneyMap.toCreator.held, primary: true },
+    { dt: 'Our share of it', dd: moneyMap.toCreator.cut, primary: true },
+  ] : [];
+
+  const moneyLegs = legs.map((l) => `<div class="money-leg${l.primary ? ' money-leg-primary' : ''}" style="border:0;padding:0">
+    <dt>${esc(l.dt)}</dt><dd>${esc(l.dd)}</dd>
+  </div>`).join('');
+
   return layout({
     title: 'Content that unlocks with attention',
     user, current: 'home', consent,
@@ -192,19 +218,31 @@ export function landing({ channels, user, stats, consent = null }) {
 <section class="hero">
   <span class="pill pill-accent pill-lg">Ad-gated access</span>
   <h1 style="margin-top:var(--space-5)">Watch a short ad.<br>Unlock the file.</h1>
-  <p class="lede">Creators publish templates, photos, guides and sample packs. A visitor watches one
-  rewarded ad to unlock a download — and the ad network pays <strong>the creator's own account</strong>
-  directly. ByteBikri is not in that payment path and never holds the money.</p>
+  <p class="lede">Creators publish templates, photos, guides and sample packs. One rewarded ad
+  unlocks a download, and the network pays the creator's own account.</p>
   <div class="hero-actions">
     <a class="btn btn-lg btn-primary" href="/marketplace">Explore stores</a>
-    <a class="btn btn-lg" href="/signup">Open your store</a>
+    <a class="link-quiet" href="/signup">or open a store of your own →</a>
   </div>
 
-  <div class="stat-row">
-    <div class="stat"><div class="stat-value">${num(stats.channels)}</div><div class="stat-label">Stores</div></div>
-    <div class="stat"><div class="stat-value">${num(stats.assets)}</div><div class="stat-label">Unlockable files</div></div>
-    <div class="stat"><div class="stat-value">${num(stats.unlocks)}</div><div class="stat-label">Unlocks granted</div></div>
-    <div class="stat"><div class="stat-value">0%</div><div class="stat-label">Cut of ad revenue</div></div>
+  ${legs.length ? `
+  <div class="preview-window" aria-hidden="false">
+    <div class="preview-bar" aria-hidden="true">
+      <span class="preview-dots"><span></span><span></span><span></span></span>
+      <span class="preview-url">bytebikri.com/dashboard/your-store/earnings</span>
+    </div>
+    <div class="preview-body">
+      <dl class="money-map">${moneyLegs}</dl>
+      <p class="fine" style="margin:0">${esc(moneyMap.toCreator.detail)}</p>
+      <p class="fine" style="margin:0">${esc(moneyMap.toPlatform.detail)}</p>
+    </div>
+  </div>` : ''}
+
+  <div class="proof-strip">
+    ${proof(stats.channels, 'Stores')}
+    ${proof(stats.assets, 'Unlockable files')}
+    ${proof(stats.unlocks, 'Unlocks granted')}
+    ${proof(null, 'Cut of ad revenue', '0%')}
   </div>
 </section>
 
@@ -780,6 +818,23 @@ export function login({ user, error, next = '', email = '', mode = 'login', cons
   </p>
 </div>`,
   });
+}
+
+/**
+ * One proof figure.
+ *
+ * `data-count` makes it animate from zero on first paint — the client reads the
+ * attribute, counts up in 700ms, and writes the final value back as text. With
+ * no JavaScript, or with reduced motion, the number is simply already there:
+ * the markup is the truth and the animation is an enhancement, never the other
+ * way round.
+ */
+function proof(value, label, literal = null) {
+  const shown = literal ?? num(value);
+  return `<div class="proof">
+    <span class="proof-value"${literal === null ? ` data-count="${Number(value) || 0}"` : ''}>${shown}</span>
+    <span class="proof-label">${esc(label)}</span>
+  </div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -2425,7 +2480,7 @@ ${flashNote(flash)}
         <dl class="kv" style="margin-top:var(--space-4)">
           <dt>Paid by</dt><dd>${esc(moneyMap.toCreator.payer)}</dd>
           <dt>Into</dt><dd>${esc(moneyMap.toCreator.account)}</dd>
-          <dt>Held by bytebikri</dt><dd><strong>Nothing, ever</strong></dd>
+          <dt>Held by bytebikri</dt><dd><strong>${esc(moneyMap.toCreator.held)}</strong></dd>
         </dl>
         <div class="amount-line">
           <span>What the network reported, ${plural(days, 'day')}</span>

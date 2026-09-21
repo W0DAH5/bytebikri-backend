@@ -212,6 +212,79 @@
     });
   });
 
+  // ── the page itself ──────────────────────────────────────────────────────
+  /**
+   * Presentation only, and every piece of it degrades to the markup already
+   * rendered. Nothing here decides state, grants anything, or is needed for the
+   * page to be correct — the server sends the truth and this decorates it.
+   */
+  const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /**
+   * The header is part of the page at the top and floats over it once scrolled.
+   *
+   * One rAF-throttled listener writing two custom properties. Nothing is
+   * measured per frame except scrollY, which the browser has already computed —
+   * `scrollHeight` is read once per resize instead of once per scroll, because
+   * that is the read that forces layout.
+   */
+  const header = $('#site-header');
+  if (header) {
+    let docHeight = 1;
+    const measure = () => { docHeight = Math.max(1, document.documentElement.scrollHeight - innerHeight); };
+    let queued = false;
+    const paint = () => {
+      queued = false;
+      const y = scrollY;
+      header.classList.toggle('header-pinned', y > 6);
+      header.style.setProperty('--scroll-p', String(Math.min(1, Math.max(0, y / docHeight))));
+    };
+    const onScroll = () => { if (!queued) { queued = true; requestAnimationFrame(paint); } };
+
+    measure();
+    paint();
+    addEventListener('scroll', onScroll, { passive: true });
+    addEventListener('resize', () => { measure(); onScroll(); }, { passive: true });
+  }
+
+  /**
+   * Count a figure up on first paint.
+   *
+   * The number is in the DOM already; this only animates the approach to it, so
+   * a crawler, a screen reader and a JavaScript-free visitor all get the real
+   * value. Tabular figures mean the width never changes while it runs.
+   */
+  const counters = document.querySelectorAll('[data-count]');
+  if (counters.length && !calm) {
+    const DURATION = 700;
+    const run = (el) => {
+      const target = Number(el.dataset.count) || 0;
+      if (!target) return;
+      const started = performance.now();
+      const step = (now) => {
+        const t = Math.min(1, (now - started) / DURATION);
+        // Same deceleration as the CSS tokens: fast out of the gate, settling.
+        const eased = 1 - (1 - t) ** 3;
+        el.textContent = String(Math.round(target * eased));
+        if (t < 1) requestAnimationFrame(step);
+        else el.textContent = String(target);
+      };
+      requestAnimationFrame(step);
+    };
+    if ('IntersectionObserver' in window) {
+      const io = new IntersectionObserver((entries) => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          io.unobserve(e.target);
+          run(e.target);
+        }
+      }, { threshold: 0.4 });
+      counters.forEach((el) => io.observe(el));
+    } else {
+      counters.forEach(run);
+    }
+  }
+
   document.querySelectorAll('[data-revoke]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       if (!confirm('Disconnect this ad network? Anything it gates stops unlocking.')) return;

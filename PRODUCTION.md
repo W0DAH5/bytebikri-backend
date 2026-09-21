@@ -241,6 +241,17 @@ the page and the platform's slot goes last, so the ordering the slots page
 describes is what a visitor sees. Owners manage the space at
 `/dashboard/:slug/slots`, which previews every position with the real renderer.
 
+**The motion pass.** Durations and easings are tokens now (M3's values via
+Helix UI's set), so the whole product moves on one system: entrance decelerates,
+exit accelerates and is shorter, hover animates transform and opacity only, and
+section rhythm went to 64 px. The landing hero shows the product instead of
+describing it — a framed window containing the actual money map, the same
+structure the earnings page renders — with one primary call to action rather
+than two competing ones. Reduced motion collapses every duration to 0.01 ms so
+`animationend` still fires, and the scroll-driven reveals are behind
+`@supports` + `no-preference`, because an animation must never be the only thing
+that makes content appear.
+
 **Still to do:** the mobile pass; a look at real storefronts in this category
 rather than at my own reasoning; creative images (the column and the sanitiser
 exist, the upload path does not). Rent is currently priced from an assumed RPM

@@ -260,6 +260,7 @@ export const MONEY_MAP = {
     label: 'Your ad earnings',
     payer: 'The ad network',
     account: 'Your own account, at the network',
+    held: 'Nothing, ever',
     cut: '0% to bytebikri',
     detail: 'The advertiser pays the network. The network pays your account. bytebikri is not a party to either leg and cannot see the balance.',
   },
@@ -267,7 +268,8 @@ export const MONEY_MAP = {
     label: 'What you pay bytebikri',
     payer: 'You',
     account: 'bytebikri',
-    cut: 'Two charges only',
+    held: 'Two charges only',
+    cut: 'An upgrade and annual rent',
     detail: 'A plan upgrade and annual rent for the platform ad slot. Neither is a share of what you earn, and neither is charged on a sale — there is no sale.',
   },
 };

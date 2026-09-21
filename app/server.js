@@ -297,6 +297,9 @@ APP.get('/', async (req, res, next) => {
     ]);
     res.send(views.landing({
       channels, user: req.user, consent: req.consent,
+      // The same structure the earnings page renders, so the landing page cannot
+      // form its own opinion about who pays whom.
+      moneyMap: MONEY_MAP,
       stats: { channels: channels.length, assets, unlocks, views: views_ },
     }));
   } catch (err) { next(err); }
