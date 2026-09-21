@@ -424,6 +424,55 @@ APP.get('/s/:slug', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * The storefront as data, for a client that cannot read HTML.
+ *
+ * Same visibility rule as the page above it: if a store answers at /s/<slug>,
+ * it answers here. No session required — this is the shop window, and the app's
+ * first screen must render before anybody signs in. Nothing in it is gated: no
+ * storage keys, no URLs, just what the store is and what it sells.
+ */
+APP.get('/api/stores/:slug', async (req, res, next) => {
+  try {
+    const channel = await store.channelBySlug(req.params.slug);
+    if (!channel) return res.status(404).json({ ok: false, error: 'store not found' });
+
+    const assets = await store.assetsOf(channel.id);
+    const unlockedIds = req.user
+      ? new Set((await many(
+          `select asset_id from unlocks
+            where user_id = $1 and revoked_at is null
+              and (expires_at is null or expires_at > now())
+              and asset_id = any($2)`,
+          [req.user.id, assets.map((a) => a.id)],
+        )).map((r) => r.asset_id))
+      : new Set();
+
+    res.json({
+      ok: true,
+      store: {
+        slug: channel.slug, name: channel.name, tagline: channel.tagline,
+        bannerUrl: channel.banner_url, listingMode: channel.listing_mode,
+      },
+      assets: await Promise.all(assets.map(async (a) => {
+        const files = await store.filesOf(a.id);
+        // Which player to open, decided by the same function the web page uses,
+        // so a phone and a browser never disagree about what something is: a
+        // video if there is one, otherwise whatever the first file is.
+        const kinds = files.map((f) => mediaKind(f.mime_type, f.filename));
+        return {
+          id: a.id, title: a.title, slug: a.slug, description: a.description,
+          coverUrl: a.cover_url, unlockMode: a.unlock_mode,
+          fileCount: files.length,
+          kind: kinds.find((k) => k === 'video' || k === 'audio') || kinds[0] || 'file',
+          unlocked: a.unlock_mode === 'open' || unlockedIds.has(a.id),
+          adsRequired: (await store.unlockPolicy(a.id))?.ads_required ?? 1,
+        };
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
 APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
   try {
     const channel = await store.channelBySlug(req.params.slug);
@@ -828,6 +877,89 @@ function sendRanged(req, res, buf, { type, filename, disposition = 'inline' }) {
   res.setHeader('content-length', String(slice.length));
   return res.status(206).end(wantsBody ? slice : undefined);
 }
+
+/**
+ * The asset as data.
+ *
+ * The page mints its content URLs while rendering HTML, which is fine for a
+ * browser and useless for an app: the Android client has no HTML to parse, and
+ * this endpoint is the difference between "the app calls an API that exists" and
+ * "the app calls an API I once imagined". Everything it returns is minted here,
+ * per request, per account — same token machinery, same unlock check, so the app
+ * cannot obtain anything a browser could not.
+ */
+APP.get('/api/content/:assetId', async (req, res, next) => {
+  try {
+    if (!req.user) return requireUser(res);
+
+    const asset = await store.assetById(req.params.assetId);
+    if (!asset) return res.status(404).json({ ok: false, error: 'asset not found' });
+
+    const channel = await store.channelById(asset.channel_id);
+    // A draft is not public. The owner may look at their own; nobody else can.
+    if (asset.status !== 'live' && channel?.owner_id !== req.user.id) {
+      return res.status(404).json({ ok: false, error: 'asset not found' });
+    }
+
+    const unlocked = asset.unlock_mode === 'open' || await store.isUnlocked(asset.id, req.user.id);
+    const policy = await store.unlockPolicy(asset.id);
+    const label = watermarkLabel({ ref: req.user.id, assetId: asset.id });
+
+    const files = (await store.filesOf(asset.id)).map((f) => {
+      const kind = mediaKind(f.mime_type, f.filename);
+      const inline = isPlayable(f.mime_type, f.filename) || kind === 'image';
+      return {
+        id: f.id,
+        filename: f.filename,
+        mimeType: f.mime_type,
+        sizeBytes: Number(f.size_bytes),
+        kind,
+        // The app needs to know which player to open, and whether the bytes it
+        // receives will already carry a mark.
+        playable: isPlayable(f.mime_type, f.filename),
+        marked: kind === 'image',
+        streamUrl: unlocked && inline
+          ? issueStreamUrl({ assetId: asset.id, file: f, userId: req.user.id, basePath: '' })
+          : null,
+        downloadUrl: unlocked
+          ? issueDownloadUrl({ assetId: asset.id, file: f, userId: req.user.id, basePath: '' })
+          : null,
+      };
+    });
+
+    res.json({
+      ok: true,
+      asset: {
+        id: asset.id, title: asset.title, slug: asset.slug,
+        description: asset.description, coverUrl: asset.cover_url,
+        unlockMode: asset.unlock_mode, status: asset.status,
+        channel: channel ? { slug: channel.slug, name: channel.name } : null,
+      },
+      viewer: {
+        signedIn: true,
+        unlocked,
+        // The entitlement row, not the asset's policy: what this viewer has.
+        expiresAt: unlocked ? (await store.unlockFor(asset.id, req.user.id))?.expires_at ?? null : null,
+      },
+      policy: {
+        adsRequired: policy?.ads_required ?? 1,
+        adMinSeconds: policy?.ad_min_seconds ?? 15,
+        unlockHours: policy?.unlock_hours ?? 24,
+      },
+      files,
+      // The mark the app draws over playback, so a recording of the screen can
+      // be traced to an account. The app cannot burn it into the frames — that
+      // needs a transcoder — so it overlays exactly as the web page does.
+      mark: { label, overlay: watermarkSvgDataUri(label) },
+      // Said once, in the payload, so the client does not have to invent copy
+      // about a protection that does not exist.
+      protection: {
+        screenshotsBlocked: false,
+        note: 'Watermarked and traceable. No website or app can stop a screen recording of a video; Android can block screenshots of its own windows only.',
+      },
+    });
+  } catch (err) { next(err); }
+});
 
 APP.get('/api/content/:assetId/file/:fileId', async (req, res, next) => {
   try {

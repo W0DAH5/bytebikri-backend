@@ -18,12 +18,27 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
+
+        // Where the server lives. 10.0.2.2 is the host machine as seen from the
+        // emulator, which is the only reason a development build can talk to a
+        // local server at all.
+        //
+        // The placeholder in the old version of this app was a Replit URL typed
+        // into two Kotlin files and never changed. A build-time constant is at
+        // least one place, and MainActivity refuses to run a release build with
+        // anything that is not https.
+        buildConfigField("String", "BASE_URL", "\"http://10.0.2.2:3000\"")
     }
 
     buildTypes {
+        debug {
+            buildConfigField("String", "BASE_URL", "\"http://10.0.2.2:3000\"")
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            // The real origin. Change it, or the release build will not start.
+            buildConfigField("String", "BASE_URL", "\"https://REPLACE-WITH-PRODUCTION-HOST\"")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -42,6 +57,7 @@ android {
     
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     
     composeOptions {
@@ -68,7 +84,14 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     
     implementation("androidx.navigation:navigation-compose:2.7.6")
-    
+
+    // Playback. media3 is ExoPlayer under its current name; the OkHttp
+    // datasource exists so the player sends the session cookie on every range
+    // request, which a plain DefaultHttpDataSource cannot do.
+    implementation("androidx.media3:media3-exoplayer:1.3.0")
+    implementation("androidx.media3:media3-ui:1.3.0")
+    implementation("androidx.media3:media3-datasource-okhttp:1.3.0")
+
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     

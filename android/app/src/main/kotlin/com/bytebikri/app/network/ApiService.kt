@@ -2,383 +2,308 @@ package com.bytebikri.app.network
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.*
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
 import java.util.concurrent.TimeUnit
 
-class ApiService {
-    companion object {
-        // ⚠️ CHANGE THIS to your Replit URL after deployment
-        private const val BASE_URL = "https://your-replit-url.repl.co"
+/**
+ * The server, as it actually is.
+ *
+ * The previous version of this file called `/api/signup`, `/api/signin`,
+ * `/api/assets`, `/api/upload`, `/api/coins/{id}`, `/api/spend` and three
+ * `/api/admin/*` routes. Not one of them exists. Every screen in the app was
+ * built on that contract, which is why the app could never have worked — and why
+ * it is worth saying out loud that this file is now written against the routes
+ * in `server.js`, checked by `app/test/android-contract.test.js`.
+ *
+ * Three product decisions are load-bearing here and are easy to undo by accident:
+ *
+ *   1. THERE IS NO PRICE. Unlocking is: watch N rewarded ads, the network pays
+ *      the creator's own account, bytebikri is not in that path. So there is no
+ *      wallet, no coins, no purchase call, and no balance to cache.
+ *   2. THERE IS NO ADMIN CONSOLE IN THE APP. Moderation is the operator's job on
+ *      the server, not a screen with a ban button on somebody's phone.
+ *   3. THE SESSION IS THE CREDENTIAL. The server's content routes check the
+ *      session AND the signed token AND that the token belongs to that session,
+ *      so a forwarded stream URL is inert. The client holds a cookie; it never
+ *      holds anything secret.
+ */
+class ApiService(val baseUrl: String) {
+
+    /**
+     * Cookies in memory, and only in memory.
+     *
+     * A session cookie written to disk on a shared phone is a session someone
+     * else can resume. Nothing here needs to survive the process, so nothing
+     * does — the user signs in again, which is the correct cost.
+     */
+    private class MemoryCookieJar : CookieJar {
+        private val store = mutableMapOf<String, MutableList<Cookie>>()
+
+        @Synchronized
+        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+            val list = store.getOrPut(url.host) { mutableListOf() }
+            for (cookie in cookies) {
+                list.removeAll { it.name == cookie.name }
+                list.add(cookie)
+            }
+        }
+
+        @Synchronized
+        override fun loadForRequest(url: HttpUrl): List<Cookie> =
+            store[url.host].orEmpty().filter { it.matches(url) }
     }
 
+    private val cookies = MemoryCookieJar()
+
     private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .cookieJar(cookies)
+        .connectTimeout(20, TimeUnit.SECONDS)
+        // Playback is a long-lived response: a short read timeout would cut a
+        // video off mid-stream and look like a broken file.
+        .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    suspend fun signup(email: String, password: String): Result<AuthResponse> {
-        return withContext(Dispatchers.IO) {
-            try {
-                val json = JSONObject().apply {
-                    put("email", email)
-                    put("password", password)
-                }
+    // A 302 after a form POST is success; following it would hide the difference
+    // between "welcome back" and "wrong password" behind a 200 render.
+    private val noRedirects = client.newBuilder().followRedirects(false).build()
 
-                val body = json.toString().toRequestBody("application/json".toMediaType())
-                val request = Request.Builder()
-                    .url("$BASE_URL/api/signup")
-                    .post(body)
-                    .build()
+    private fun url(path: String) = "$baseUrl$path"
 
-                client.newCall(request).execute().use { response ->
-                    val responseBody = response.body?.string() ?: ""
-                    val jsonResponse = JSONObject(responseBody)
+    private suspend fun get(path: String): JSONObject = withContext(Dispatchers.IO) {
+        client.newCall(Request.Builder().url(url(path)).get().build()).execute().use { res ->
+            val text = res.body?.string().orEmpty()
+            if (!res.isSuccessful) throw ApiException(res.code, errorFrom(text, res.code))
+            JSONObject(text)
+        }
+    }
 
-                    if (response.isSuccessful && jsonResponse.optBoolean("ok", false)) {
-                        Result.success(
-                            AuthResponse(
-                                success = true,
-                                userId = jsonResponse.optJSONObject("user")?.optString("id") ?: "",
-                                token = jsonResponse.optString("token", ""),
-                                message = "Signup successful"
-                            )
-                        )
-                    } else {
-                        Result.failure(Exception(jsonResponse.optString("error", "Signup failed")))
-                    }
-                }
-            } catch (e: Exception) {
-                Result.failure(e)
+    private suspend fun postJson(path: String, body: JSONObject): JSONObject = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(url(path))
+            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+        client.newCall(request).execute().use { res ->
+            val text = res.body?.string().orEmpty()
+            if (!res.isSuccessful) throw ApiException(res.code, errorFrom(text, res.code))
+            JSONObject(text)
+        }
+    }
+
+    private fun errorFrom(text: String, code: Int): String =
+        runCatching { JSONObject(text).optString("error") }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?: "The server said $code. Try again."
+
+    // ── sign in ──────────────────────────────────────────────────────────────
+
+    /**
+     * The web form, posted from the app.
+     *
+     * Deliberately the same endpoint the website uses: one authentication path
+     * with one set of lockout rules and one audit trail, rather than a second
+     * one written for the app and tested less. The response is a redirect on
+     * success — which is why redirects are off here and `302` is the check.
+     */
+    suspend fun signIn(email: String, password: String): Unit = withContext(Dispatchers.IO) {
+        val form = okhttp3.FormBody.Builder()
+            .add("email", email)
+            .add("password", password)
+            .build()
+        val request = Request.Builder().url(url("/login")).post(form).build()
+
+        noRedirects.newCall(request).execute().use { res ->
+            when (res.code) {
+                in 300..399 -> Unit                       // redirect = signed in
+                429 -> throw ApiException(429, "Too many failed attempts. Try again in about fifteen minutes.")
+                400 -> throw ApiException(400, "Enter your email and password.")
+                else -> throw ApiException(res.code, "That email and password do not match an account.")
             }
         }
     }
 
-    suspend fun signin(email: String, password: String): Result<AuthResponse> {
-        return withContext(Dispatchers.IO) {
-            try {
-                val json = JSONObject().apply {
-                    put("email", email)
-                    put("password", password)
-                }
+    // ── browsing ─────────────────────────────────────────────────────────────
 
-                val body = json.toString().toRequestBody("application/json".toMediaType())
-                val request = Request.Builder()
-                    .url("$BASE_URL/api/signin")
-                    .post(body)
-                    .build()
-
-                client.newCall(request).execute().use { response ->
-                    val responseBody = response.body?.string() ?: ""
-                    val jsonResponse = JSONObject(responseBody)
-
-                    if (response.isSuccessful && jsonResponse.optBoolean("ok", false)) {
-                        val userObj = jsonResponse.optJSONObject("user")
-                        Result.success(
-                            AuthResponse(
-                                success = true,
-                                userId = userObj?.optString("id") ?: "",
-                                token = jsonResponse.optString("token", ""),
-                                role = userObj?.optString("role", "user") ?: "user",
-                                message = "Login successful"
-                            )
-                        )
-                    } else {
-                        Result.failure(Exception(jsonResponse.optString("error", "Login failed")))
-                    }
-                }
-            } catch (e: Exception) {
-                Result.failure(e)
-            }
-        }
+    /** A storefront. Public: the first screen must render before anyone signs in. */
+    suspend fun store(slug: String): Store = withContext(Dispatchers.IO) {
+        val json = get("/api/stores/$slug")
+        val store = json.getJSONObject("store")
+        val assets = json.optJSONArray("assets") ?: JSONArray()
+        Store(
+            slug = store.getString("slug"),
+            name = store.getString("name"),
+            tagline = store.optString("tagline"),
+            bannerUrl = store.optString("bannerUrl").takeIf { it.isNotBlank() },
+            assets = (0 until assets.length()).map { assets.getJSONObject(it).toAsset() },
+        )
     }
 
-    suspend fun fetchAssets(token: String): Result<List<Asset>> {
-        return withContext(Dispatchers.IO) {
-            try {
-                val request = Request.Builder()
-                    .url("$BASE_URL/api/assets")
-                    .header("x-auth-token", token)
-                    .get()
-                    .build()
+    /**
+     * One asset, with URLs that only exist once there is an unlock.
+     *
+     * `streamUrl` and `downloadUrl` are minted per request for this account and
+     * expire. They are the only way to the bytes; the storage key never leaves
+     * the server.
+     */
+    suspend fun asset(assetId: String): AssetDetail = withContext(Dispatchers.IO) {
+        val json = get("/api/content/$assetId")
+        val asset = json.getJSONObject("asset")
+        val files = json.optJSONArray("files") ?: JSONArray()
+        val viewer = json.getJSONObject("viewer")
+        val policy = json.getJSONObject("policy")
+        val mark = json.getJSONObject("mark")
 
-                client.newCall(request).execute().use { response ->
-                    val responseBody = response.body?.string() ?: "[]"
-                    val jsonArray = JSONArray(responseBody)
-                    
-                    val assets = mutableListOf<Asset>()
-                    for (i in 0 until jsonArray.length()) {
-                        val obj = jsonArray.getJSONObject(i)
-                        assets.add(
-                            Asset(
-                                id = obj.getString("id"),
-                                ownerId = obj.getString("owner_id"),
-                                title = obj.getString("title"),
-                                priceCoins = obj.getInt("price_coins"),
-                                fileUrl = obj.getString("file_url"),
-                                previewUrl = obj.getString("preview_url"),
-                                type = obj.optString("type", "small"),
-                                unlocked = obj.optBoolean("unlocked", false),
-                                flagged = obj.optBoolean("flagged", false)
-                            )
-                        )
-                    }
-                    Result.success(assets)
-                }
-            } catch (e: Exception) {
-                Result.failure(e)
-            }
-        }
+        AssetDetail(
+            id = asset.getString("id"),
+            title = asset.getString("title"),
+            description = asset.optString("description"),
+            coverUrl = asset.optString("coverUrl").takeIf { it.isNotBlank() },
+            unlockMode = asset.getString("unlockMode"),
+            storeSlug = asset.optJSONObject("channel")?.optString("slug").orEmpty(),
+            locked = !viewer.optBoolean("unlocked", false),
+            adsRequired = policy.optInt("adsRequired", 1),
+            adMinSeconds = policy.optInt("adMinSeconds", 15),
+            unlockHours = policy.optInt("unlockHours", 24),
+            markLabel = mark.optString("label"),
+            markOverlay = mark.optString("overlay"),
+            files = (0 until files.length()).map { files.getJSONObject(it).toFile() },
+        )
     }
 
-    suspend fun uploadAsset(
-        token: String,
-        file: File,
-        title: String,
-        priceCoins: Int
-    ): Result<Asset> {
-        return withContext(Dispatchers.IO) {
-            try {
-                val requestBody = MultipartBody.Builder()
-                    .setType(MultipartBody.FORM)
-                    .addFormDataPart(
-                        "file",
-                        file.name,
-                        file.asRequestBody("application/octet-stream".toMediaType())
-                    )
-                    .addFormDataPart("title", title)
-                    .addFormDataPart("price_coins", priceCoins.toString())
-                    .build()
+    // ── unlocking ────────────────────────────────────────────────────────────
 
-                val request = Request.Builder()
-                    .url("$BASE_URL/api/upload")
-                    .header("x-auth-token", token)
-                    .post(requestBody)
-                    .build()
-
-                client.newCall(request).execute().use { response ->
-                    val responseBody = response.body?.string() ?: ""
-                    val jsonResponse = JSONObject(responseBody)
-
-                    if (response.isSuccessful && jsonResponse.optBoolean("ok", false)) {
-                        val assetObj = jsonResponse.getJSONObject("asset")
-                        Result.success(
-                            Asset(
-                                id = assetObj.getString("id"),
-                                ownerId = assetObj.getString("owner_id"),
-                                title = assetObj.getString("title"),
-                                priceCoins = assetObj.getInt("price_coins"),
-                                fileUrl = assetObj.getString("file_url"),
-                                previewUrl = assetObj.getString("preview_url"),
-                                type = assetObj.optString("type", "small"),
-                                unlocked = false,
-                                flagged = false
-                            )
-                        )
-                    } else {
-                        Result.failure(Exception(jsonResponse.optString("error", "Upload failed")))
-                    }
-                }
-            } catch (e: Exception) {
-                Result.failure(e)
-            }
-        }
+    /**
+     * Ask the server to start a view, and get back what the network expects.
+     *
+     * The app never decides that an ad completed. The network tells the SERVER,
+     * server to server; the app polls until the server says the unlock exists.
+     * `devSimulator` is only present in a development build, and the sandbox
+     * network it names has no account behind it.
+     */
+    suspend fun startUnlock(assetId: String): UnlockStart = withContext(Dispatchers.IO) {
+        val json = postJson("/api/unlock/start", JSONObject().put("assetId", assetId))
+        val cfg = json.optJSONObject("adConfig") ?: JSONObject()
+        UnlockStart(
+            viewId = json.optString("viewId"),
+            alreadyUnlocked = json.optBoolean("alreadyUnlocked", false),
+            providerId = cfg.optString("providerId"),
+            connectionId = cfg.optString("connectionId"),
+            minSeconds = cfg.optInt("minSeconds", 15),
+            devSimulator = cfg.optBoolean("devSimulator", false),
+        )
     }
 
-    suspend fun getCoinBalance(userId: String, token: String): Result<Int> {
-        return withContext(Dispatchers.IO) {
-            try {
-                val request = Request.Builder()
-                    .url("$BASE_URL/api/coins/$userId")
-                    .header("x-auth-token", token)
-                    .get()
-                    .build()
-
-                client.newCall(request).execute().use { response ->
-                    val responseBody = response.body?.string() ?: ""
-                    val jsonResponse = JSONObject(responseBody)
-
-                    if (response.isSuccessful) {
-                        Result.success(jsonResponse.optInt("balance", 0))
-                    } else {
-                        Result.failure(Exception(jsonResponse.optString("error", "Failed to fetch balance")))
-                    }
-                }
-            } catch (e: Exception) {
-                Result.failure(e)
-            }
-        }
+    suspend fun unlockStatus(assetId: String, viewId: String): Boolean = withContext(Dispatchers.IO) {
+        val json = get("/api/unlock/status?assetId=$assetId&viewId=$viewId")
+        json.optBoolean("unlocked", false)
     }
 
-    suspend fun purchaseAsset(
-        token: String,
-        assetId: String,
-        coins: Int
-    ): Result<PurchaseResponse> {
-        return withContext(Dispatchers.IO) {
-            try {
-                val json = JSONObject().apply {
-                    put("assetId", assetId)
-                    put("coins", coins)
-                }
+    // ── media ────────────────────────────────────────────────────────────────
 
-                val body = json.toString().toRequestBody("application/json".toMediaType())
-                val request = Request.Builder()
-                    .url("$BASE_URL/api/spend")
-                    .header("x-auth-token", token)
-                    .post(body)
-                    .build()
+    /**
+     * A media URL with the session cookie attached, for ExoPlayer.
+     *
+     * ExoPlayer needs headers it can send; passing the URL alone would 401, and
+     * the token in the query string is not enough by itself — it was minted for
+     * a signed-in account. Both go with every request, including each seek.
+     */
+    fun mediaUrl(path: String): String = url(path)
 
-                client.newCall(request).execute().use { response ->
-                    val responseBody = response.body?.string() ?: ""
-                    val jsonResponse = JSONObject(responseBody)
-
-                    if (response.isSuccessful && jsonResponse.optBoolean("ok", false)) {
-                        Result.success(
-                            PurchaseResponse(
-                                success = true,
-                                bonus = jsonResponse.optInt("bonus", 0),
-                                message = "Purchase successful"
-                            )
-                        )
-                    } else {
-                        Result.failure(Exception(jsonResponse.optString("error", "Purchase failed")))
-                    }
-                }
-            } catch (e: Exception) {
-                Result.failure(e)
-            }
-        }
-    }
-
-    suspend fun fetchFlaggedAssets(token: String): Result<List<Asset>> {
-        return withContext(Dispatchers.IO) {
-            try {
-                val request = Request.Builder()
-                    .url("$BASE_URL/api/admin/flagged")
-                    .header("x-auth-token", token)
-                    .get()
-                    .build()
-
-                client.newCall(request).execute().use { response ->
-                    val responseBody = response.body?.string() ?: ""
-                    val jsonResponse = JSONObject(responseBody)
-                    val jsonArray = jsonResponse.optJSONArray("assets") ?: JSONArray()
-                    
-                    val assets = mutableListOf<Asset>()
-                    for (i in 0 until jsonArray.length()) {
-                        val obj = jsonArray.getJSONObject(i)
-                        assets.add(
-                            Asset(
-                                id = obj.getString("id"),
-                                ownerId = obj.getString("owner_id"),
-                                title = obj.getString("title"),
-                                priceCoins = obj.getInt("price_coins"),
-                                fileUrl = obj.getString("file_url"),
-                                previewUrl = obj.getString("preview_url"),
-                                type = obj.optString("type", "small"),
-                                unlocked = false,
-                                flagged = true
-                            )
-                        )
-                    }
-                    Result.success(assets)
-                }
-            } catch (e: Exception) {
-                Result.failure(e)
-            }
-        }
-    }
-
-    suspend fun banUser(token: String, userId: String): Result<Boolean> {
-        return withContext(Dispatchers.IO) {
-            try {
-                val json = JSONObject().apply {
-                    put("userId", userId)
-                }
-
-                val body = json.toString().toRequestBody("application/json".toMediaType())
-                val request = Request.Builder()
-                    .url("$BASE_URL/api/admin/ban")
-                    .header("x-auth-token", token)
-                    .post(body)
-                    .build()
-
-                client.newCall(request).execute().use { response ->
-                    val responseBody = response.body?.string() ?: ""
-                    val jsonResponse = JSONObject(responseBody)
-
-                    if (response.isSuccessful && jsonResponse.optBoolean("ok", false)) {
-                        Result.success(true)
-                    } else {
-                        Result.failure(Exception(jsonResponse.optString("error", "Ban failed")))
-                    }
-                }
-            } catch (e: Exception) {
-                Result.failure(e)
-            }
-        }
-    }
-
-    suspend fun unflagAsset(token: String, assetId: String): Result<Boolean> {
-        return withContext(Dispatchers.IO) {
-            try {
-                val json = JSONObject().apply {
-                    put("assetId", assetId)
-                }
-
-                val body = json.toString().toRequestBody("application/json".toMediaType())
-                val request = Request.Builder()
-                    .url("$BASE_URL/api/admin/unflag")
-                    .header("x-auth-token", token)
-                    .post(body)
-                    .build()
-
-                client.newCall(request).execute().use { response ->
-                    val responseBody = response.body?.string() ?: ""
-                    val jsonResponse = JSONObject(responseBody)
-
-                    if (response.isSuccessful && jsonResponse.optBoolean("ok", false)) {
-                        Result.success(true)
-                    } else {
-                        Result.failure(Exception(jsonResponse.optString("error", "Unflag failed")))
-                    }
-                }
-            } catch (e: Exception) {
-                Result.failure(e)
-            }
-        }
-    }
+    fun cookieHeader(): String =
+        cookies.loadForRequest(HttpUrl.get(url("/")))
+            .joinToString("; ") { "${it.name}=${it.value}" }
 }
 
-data class AuthResponse(
-    val success: Boolean,
-    val userId: String = "",
-    val token: String = "",
-    val role: String = "user",
-    val message: String = ""
+// ── transport types ────────────────────────────────────────────────────────
+
+class ApiException(val code: Int, override val message: String) : Exception(message)
+
+data class Store(
+    val slug: String,
+    val name: String,
+    val tagline: String,
+    val bannerUrl: String?,
+    val assets: List<StoreAsset>,
 )
 
-data class Asset(
+data class StoreAsset(
     val id: String,
-    val ownerId: String,
     val title: String,
-    val priceCoins: Int,
-    val fileUrl: String,
-    val previewUrl: String,
-    val type: String,
+    val description: String,
+    val coverUrl: String?,
+    val kind: String,
+    val fileCount: Int,
     val unlocked: Boolean,
-    val flagged: Boolean
+    val adsRequired: Int,
 )
 
-data class PurchaseResponse(
-    val success: Boolean,
-    val bonus: Int = 0,
-    val message: String = ""
+data class AssetDetail(
+    val id: String,
+    val title: String,
+    val description: String,
+    val coverUrl: String?,
+    val unlockMode: String,
+    val storeSlug: String,
+    val locked: Boolean,
+    val adsRequired: Int,
+    val adMinSeconds: Int,
+    val unlockHours: Int,
+    val markLabel: String,
+    val markOverlay: String,
+    val files: List<AssetFile>,
+) {
+    val playable: AssetFile? get() = files.firstOrNull { it.playable }
+}
+
+data class AssetFile(
+    val id: String,
+    val filename: String,
+    val mimeType: String,
+    val sizeBytes: Long,
+    val kind: String,
+    val playable: Boolean,
+    val marked: Boolean,
+    val streamUrl: String?,
+    val downloadUrl: String?,
+)
+
+data class UnlockStart(
+    val viewId: String,
+    val alreadyUnlocked: Boolean,
+    val providerId: String,
+    val connectionId: String,
+    val minSeconds: Int,
+    val devSimulator: Boolean,
+)
+
+private fun JSONObject.toAsset() = StoreAsset(
+    id = getString("id"),
+    title = getString("title"),
+    description = optString("description"),
+    coverUrl = optString("coverUrl").takeIf { it.isNotBlank() },
+    kind = optString("kind", "file"),
+    fileCount = optInt("fileCount", 1),
+    unlocked = optBoolean("unlocked", false),
+    adsRequired = optInt("adsRequired", 1),
+)
+
+private fun JSONObject.toFile() = AssetFile(
+    id = getString("id"),
+    filename = getString("filename"),
+    mimeType = optString("mimeType"),
+    sizeBytes = optLong("sizeBytes", 0),
+    kind = optString("kind", "file"),
+    playable = optBoolean("playable", false),
+    marked = optBoolean("marked", false),
+    streamUrl = optString("streamUrl").takeIf { it.isNotBlank() },
+    downloadUrl = optString("downloadUrl").takeIf { it.isNotBlank() },
 )
