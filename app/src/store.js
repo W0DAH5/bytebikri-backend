@@ -181,11 +181,13 @@ export const store = {
   async channelBySlug(slug) {
     return one(
       `select c.*,
+              coalesce(o.banned, false) as owner_banned,
               coalesce(s.plan_code, 'free')           as plan_code,
               s.status                            as subscription_status,
               s.period_end                        as subscription_end,
               s.grace_until                       as subscription_grace
          from channels c
+         left join profiles o on o.id = c.owner_id
          left join lateral (
            select sub.plan_code, sub.status, sub.period_end, sub.grace_until
              from subscriptions sub
@@ -221,8 +223,12 @@ export const store = {
       `select c.*,
               coalesce(s.plan_code, 'free') as plan_code,
               s.status as subscription_status,
-              s.period_end as subscription_end
+              s.period_end as subscription_end,
+              -- A banned seller's stores are not advertised anywhere. Read for
+              -- the operator, invisible to the public.
+              coalesce(o.banned, false) as owner_banned
          from channels c
+         left join profiles o on o.id = c.owner_id
          left join lateral (
            select sub.plan_code, sub.status, sub.period_end
              from subscriptions sub
@@ -234,10 +240,108 @@ export const store = {
         -- two states a visitor must not learn about, and the storefront route
         -- enforces the same rule for a store reached by its own address.
         where c.moderation_state not in ('removed', 'suspended')
+          and coalesce(o.banned, false) = false
           ${listedOnly ? "and c.listing_mode = 'marketplace'" : ''}
         order by c.created_at`,
     );
   },
+  // ---- people -------------------------------------------------------------
+  /**
+   * Ban or reinstate an ACCOUNT.
+   *
+   * This is the Android app's `banUser`, which it has called since its first
+   * schema and which never existed on the server — the app was posting to
+   * `/api/admin/ban-user` and getting a 404 while its admin screen showed a
+   * "Ban User" button in red.
+   *
+   * Three writes, one transaction:
+   *
+   *   profiles.banned      the flag every public read already filters on
+   *   sessions             revoked, so a live session cannot outlive the ban
+   *   moderation_actions   the record: who decided, when, citing which rule
+   *
+   * Revoking the sessions is defence in depth rather than the control —
+   * `auth.resolveSession` already refuses a banned account's token — but a
+   * session row that still says "valid" is the kind of thing a later change
+   * quietly starts trusting.
+   */
+  async setUserBanned({ userId, action, ruleCode = null, remedy = '', actorId = null }) {
+    const banned = action === 'suspend';
+    return withTransaction(async (client) => {
+      const res = await client.query(
+        'update profiles set banned = $2 where id = $1 returning id, email, display_name, banned',
+        [userId, banned],
+      );
+      const user = res.rows[0] ?? null;
+      await client.query(
+        `insert into moderation_actions
+           (subject_type, subject_id, action, rule_code, reason, actor_id, automated)
+         values ('profile', $1, $2, $3, $4, $5, false)`,
+        [userId, action, ruleCode, remedy ? String(remedy) : null, actorId],
+      );
+      if (banned) {
+        await client.query(
+          'update sessions set revoked_at = now() where user_id = $1 and revoked_at is null',
+          [userId],
+        );
+      }
+      return user;
+    });
+  },
+
+  /** The accounts that are not in a normal state. */
+  bannedUsers() {
+    return many(
+      `select p.id, p.email, p.display_name, p.role, p.banned, p.created_at,
+              (select count(*)::int from channels c where c.owner_id = p.id) as stores,
+              (select max(m.created_at) from moderation_actions m
+                where m.subject_type = 'profile' and m.subject_id = p.id) as last_decision_at,
+              (select m.rule_code from moderation_actions m
+                where m.subject_type = 'profile' and m.subject_id = p.id
+                order by m.created_at desc, m.id desc limit 1) as last_rule,
+              (select m.action from moderation_actions m
+                where m.subject_type = 'profile' and m.subject_id = p.id
+                order by m.created_at desc, m.id desc limit 1) as last_action
+         from profiles p
+        where p.banned = true
+        order by p.created_at desc
+        limit 100`,
+    );
+  },
+
+  /**
+   * Find an account to act on.
+   *
+   * An operator is given a mailbox, not an id: the store page shows an email,
+   * and asking somebody to copy a UUID out of the database is how a feature
+   * stops being used. An exact match wins over a partial one.
+   */
+  usersMatching(q, limit = 25) {
+    const term = String(q ?? '').trim();
+    if (!term) return [];
+    return many(
+      `select p.id, p.email, p.display_name, p.banned, p.created_at,
+              (select count(*)::int from channels c where c.owner_id = p.id) as stores
+         from profiles p
+        where p.email = $1 or p.email ilike '%' || $1 || '%' or p.display_name ilike '%' || $1 || '%'
+        order by (p.email = $1) desc, p.created_at
+        limit $2`,
+      [term.toLowerCase(), limit],
+    );
+  },
+
+  userModerationHistory(userId, limit = 20) {
+    return many(
+      `select m.*, r.title as rule_title
+         from moderation_actions m
+         left join policy_rules r on r.code = m.rule_code
+        where m.subject_type = 'profile' and m.subject_id = $1
+        order by m.created_at desc, m.id desc
+        limit $2`,
+      [userId, limit],
+    );
+  },
+
   // ---- moderation ---------------------------------------------------------
   /**
    * The rules a decision can cite. Read from the table, never from a constant in
@@ -493,7 +597,9 @@ export const store = {
          left join lateral (
            select count(*) as items from assets as_ where as_.channel_id = c.id and as_.status = 'live'
          ) a on true
-        where c.moderation_state <> 'removed'`,
+        left join profiles o on o.id = c.owner_id
+        where c.moderation_state not in ('removed', 'suspended')
+          and coalesce(o.banned, false) = false`,
       [days],
     );
   },
@@ -1663,16 +1769,22 @@ export const store = {
               where sub.channel_id = c.id and sub.status in ('active','grace')
               order by sub.created_at desc limit 1
            ) s on true
+          left join profiles o on o.id = c.owner_id
           where c.listing_mode = 'marketplace'
-            and c.moderation_state <> 'removed'
+            and c.moderation_state not in ('removed', 'suspended')
+            and coalesce(o.banned, false) = false
             and (c.name ilike $1 or c.tagline ilike $1 or c.about ilike $1)
           order by c.created_at limit $2`,
         [like, limit],
       ),
       many(
         `select a.*, c.slug as channel_slug, c.name as channel_name
-           from assets a join channels c on c.id = a.channel_id
-          where a.status = 'live' and c.moderation_state <> 'removed'
+           from assets a
+           join channels c on c.id = a.channel_id
+           left join profiles o on o.id = c.owner_id
+          where a.status = 'live'
+            and c.moderation_state not in ('removed', 'suspended')
+            and coalesce(o.banned, false) = false
             and c.listing_mode = 'marketplace'
             and (a.title ilike $1 or a.description ilike $1)
           order by a.created_at desc limit $2`,

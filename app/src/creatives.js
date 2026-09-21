@@ -185,6 +185,9 @@ export function composeSlot({
     // Not on the page that manages slots: the form is right there, and a link to
     // where you already are is noise.
     editHref: owner === 'channel' && !usable && isOwner && surface !== 'dashboard' ? editHref : null,
+    // Who is looking. The renderer needs it for one decision it cannot make from
+    // `emptyNote`: whether to draw the empty space at all.
+    isOwner,
     // The seam. A real network's tag mounts in this container; nothing about the
     // network is stored in our database. A slot the store filled itself is not a
     // network slot however many connections the channel has — the tag seam is

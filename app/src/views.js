@@ -157,7 +157,10 @@ function consentBanner(consent) {
 </div>`;
 }
 
-export function layout({ title, user, body, activeChannel = null, wide = false, current = '', consent = null }) {
+export function layout({
+  title, user, body, activeChannel = null, wide = false, current = '', consent = null,
+  reveal = false,
+}) {
   const navLink = (href, label, key) =>
     `<a href="${esc(href)}"${current === key ? ' aria-current="page"' : ''}>${esc(label)}</a>`;
 
@@ -182,9 +185,22 @@ export function layout({ title, user, body, activeChannel = null, wide = false, 
 <meta name="description" content="Watch an ad, unlock the file. Creators keep their own ad revenue.">
 <link rel="stylesheet" href="/styles.css">
 <script>
-// Before paint, and only when motion is welcome. With no JavaScript the class is
-// never added, no element is ever hidden, and the page simply renders.
-if (!matchMedia('(prefers-reduced-motion: reduce)').matches) document.documentElement.classList.add('reveal-ready');
+/*
+ * Entrance reveals, and where they are allowed.
+ *
+ * This is a LANDING-PAGE device, so it is switched on by the page that wants it
+ * and by nothing else. A dashboard is a tool: its cards, tables and panels are
+ * the thing the person came for, and fading them in as they scroll reads as the
+ * interface being slow rather than as movement. Storefronts and Explore get it;
+ * every signed-in page does not.
+ *
+ * Two conditions, both necessary: the page asked for it, and motion is welcome.
+ * With no JavaScript at all the class is never added, nothing is ever hidden,
+ * and the page simply renders.
+ */
+if (${reveal ? 'true' : 'false'} && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  document.documentElement.classList.add('reveal-ready');
+}
 </script>
 </head>
 <body>
@@ -255,6 +271,7 @@ export function landing({ channels, user, stats, consent = null, moneyMap = null
   return layout({
     title: 'Content that unlocks with attention',
     user, current: 'home', consent,
+    reveal: true,
     body: `
 <section class="hero">
   <span class="pill pill-accent pill-lg">Ad-gated access</span>
@@ -423,6 +440,7 @@ export function marketplace({ channels, user, consent = null, q = '', results = 
     </section>` : '';
   return layout({
     title: 'Explore', user, current: 'marketplace', consent,
+    reveal: true,
     body: `
 <div class="section" style="margin-bottom:0">
   <h1>Explore</h1>
@@ -481,6 +499,7 @@ export function storefront({ channel, assets, slots, user, estimate, pageviews, 
 
   return layout({
     title: channel.name, user, activeChannel: channel, consent,
+    reveal: true,
     body: `
 ${channel.banner_url
     ? `<div class="store-hero">
@@ -1060,6 +1079,124 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
 }
 
 /**
+ * The operator's People page.
+ *
+ * The Android app's admin screen had a red "Ban User" button next to every
+ * flagged file, and this is that, done where the server can enforce it: search
+ * by email, one form per account, and the history of every decision already made
+ * about it. A ban is not a deletion, and the page says so above the button
+ * rather than after it.
+ */
+export function adminUsers({
+  user, rules, banned = [], matches = [], q = '', history = {},
+  personActions = [], labels = {}, flash = null, consent = null,
+}) {
+  const options = (selected = null) => rules
+    .map((r) => `<option value="${esc(r.code)}"${r.code === selected ? ' selected' : ''}>${esc(r.title)} (${esc(r.code)})</option>`)
+    .join('');
+
+  const form = (u, { heading = true } = {}) => `
+  <form method="post" action="/admin/users/${esc(u.id)}" class="user-form">
+    ${heading ? `<div class="row" style="align-items:baseline">
+      <strong>${esc(u.display_name || u.email)}</strong>
+      <span class="fine">${esc(u.email)}</span>
+      <span class="spacer"></span>
+      ${u.banned ? pill('suspended', 'danger') : pill('active', 'success')}
+      <span class="fine">${plural(u.stores || 0, 'store')}</span>
+    </div>` : ''}
+    <div class="row" style="align-items:flex-end;gap:var(--space-4);flex-wrap:wrap;margin-top:var(--space-4)">
+      <div class="field" style="flex:1 1 160px;margin:0">
+        <label for="a-${esc(u.id.slice(0, 8))}">Action</label>
+        <select class="input" id="a-${esc(u.id.slice(0, 8))}" name="action">
+          ${personActions.map((a) => `<option value="${esc(a)}">${esc(labels[a] || a)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field" style="flex:2 1 240px;margin:0">
+        <label for="r-${esc(u.id.slice(0, 8))}">Reason</label>
+        <select class="input" id="r-${esc(u.id.slice(0, 8))}" name="ruleCode">
+          <option value="">— none cited —</option>
+          ${options(null)}
+        </select>
+      </div>
+      <button class="btn ${u.banned ? '' : 'btn-danger'}" type="submit">
+        ${u.banned ? 'Record decision' : 'Suspend this account'}
+      </button>
+    </div>
+    <div class="field" style="margin-top:var(--space-3)">
+      <input class="input" name="remedy" maxlength="280"
+             placeholder="One line to the person. They read this and nothing else.">
+    </div>
+  </form>`;
+
+  return layout({
+    title: 'People', user, current: 'admin', consent,
+    body: `
+<div class="section" style="margin-bottom:0">
+  <h1>People</h1>
+  <p class="lede" style="margin-top:var(--space-3)">Accounts, not stores. Suspending one signs it out
+  everywhere and takes its stores off the public site — and deletes nothing.</p>
+</div>
+
+${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)" role="status">${esc(flash.message)}</div>` : ''}
+
+<section class="section">
+  <div class="panel"><div class="panel-body">
+    <h2 style="font-size:var(--text-md)">What a suspension does</h2>
+    <dl class="kv" style="margin-top:var(--space-4)">
+      <dt>Sign-in</dt><dd>Refused, with the reason and where to reply. Checked after the password, so it is not a way to discover which addresses exist.</dd>
+      <dt>Sessions</dt><dd>Every live session is revoked in the same transaction. A banned account's token is refused even if one survived.</dd>
+      <dt>Their stores</dt><dd>Hidden from Explore, from search, and from their own addresses — 404 to everyone but the seller and an operator.</dd>
+      <dt>Their files</dt><dd>Untouched. Nothing is deleted, and reinstating restores everything exactly as it was.</dd>
+    </dl>
+  </div></div>
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>Find an account</h2></div>
+  <div class="panel"><div class="panel-body">
+    <form method="get" action="/admin/users" role="search" class="search" style="margin-top:0">
+      <label class="sr-only" for="q">Email or name</label>
+      <input class="input" id="q" name="q" type="search" value="${esc(q)}"
+             placeholder="alice@example.com" autocomplete="off">
+      <button class="btn btn-primary" type="submit">Search</button>
+    </form>
+    ${q.trim().length >= 2 && !matches.length
+      ? `<p class="fine" style="margin-top:var(--space-4)">Nothing matches “${esc(q)}”.</p>` : ''}
+    ${matches.map((u) => `<div class="user-row">${form(u)}
+      ${historyOf(u.id, history)}</div>`).join('')}
+  </div></div>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Suspended accounts</h2>
+    <p>${banned.length ? plural(banned.length, 'account') : 'Nothing is suspended'}</p>
+  </div>
+  ${banned.length
+    ? banned.map((u) => `<div class="panel" style="margin-top:var(--space-4)"><div class="panel-body">
+        ${form(u)}
+        ${historyOf(u.id, history)}
+      </div></div>`).join('')
+    : '<div class="empty">No account is suspended.</div>'}
+</section>`,
+  });
+}
+
+/** The decisions already made about an account, newest first. */
+function historyOf(userId, history) {
+  const rows = history?.[userId] || [];
+  if (!rows.length) return '';
+  return `<ul class="list-plain fine" style="margin-top:var(--space-4)">
+    ${rows.map((h) => `<li>
+      <span class="mono">${esc(h.action)}</span>
+      ${h.rule_title ? `· ${esc(h.rule_title)}` : ''}
+      · ${esc(relTime(h.created_at))}
+      ${h.reason ? `<div style="margin-top:var(--space-1)">“${esc(h.reason)}”</div>` : ''}
+    </li>`).join('')}
+  </ul>`;
+}
+
+/**
  * One proof figure.
  *
  * `data-count` makes it animate from zero on first paint — the client reads the
@@ -1363,6 +1500,25 @@ export function renderSlot(slot) {
   const owner = slot.owner === 'platform' ? 'platform' : 'channel';
   const from = slot.from || 'none';
   const creative = slot.creative || null;
+
+  /*
+   * AN EMPTY SPACE THE STORE OWNS IS NOT RENDERED TO A VISITOR.
+   *
+   * This is not tidiness. The store's own slot sits at rank 1 — the first thing
+   * a visitor sees, by design, because the top position belongs to the creator
+   * rather than to the platform. When the creator has not written anything, that
+   * made the most valuable position on the page a 250px box saying "Alice has not
+   * put a message here yet", with the actual files pushed below the fold.
+   *
+   * A screenshot of the storefront is what found it. Nothing in the test suite
+   * could have: every assertion about the empty note was true, and the note was
+   * correct — it should simply never have reached a shopper.
+   *
+   * The owner still sees it, because they are the one person who can act on it,
+   * and on their dashboard it is a compact prompt rather than a hole.
+   */
+  if (!creative && owner === 'channel' && !slot.isOwner) return '';
+  const compact = !creative && owner === 'channel';
   const cls = ['slot', `slot-${owner}`, from === 'none' ? 'slot-empty' : 'slot-filled'];
   if (slot.surface === 'app_native') cls.push('slot-app');
 
@@ -1380,10 +1536,10 @@ export function renderSlot(slot) {
     <div class="slot-empty-note">${esc(slot.emptyNote || slot.byline || '')}</div>
     ${slot.editHref ? `<a class="slot-empty-action" href="${esc(slot.editHref)}">Write one →</a>` : ''}`;
 
-  return `<aside class="${cls.join(' ')}" data-slot="${esc(slot.slotKey || slot.key || '')}"
+  return `<aside class="${cls.join(' ')}${compact ? ' slot-prompt' : ''}" data-slot="${esc(slot.slotKey || slot.key || '')}"
        data-owner="${esc(owner)}" data-serving="${from === 'none' ? 'false' : 'true'}"
        data-adapter="${esc(slot.adapter || '')}" data-surface="${esc(slot.surface || 'web')}"
-       style="min-height:${h}px" role="complementary" aria-label="${esc(slot.label || 'Advertisement')}">
+       ${compact ? '' : `style="min-height:${h}px"`} role="complementary" aria-label="${esc(slot.label || 'Advertisement')}">
   <div class="slot-inner">
     <div class="slot-label">${esc(slot.label || 'Advertisement')}</div>
     <div class="slot-sub">${esc(slot.byline || '')}</div>

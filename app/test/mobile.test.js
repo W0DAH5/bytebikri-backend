@@ -55,13 +55,15 @@ test('the navigation is never hidden on a small screen', () => {
     'the header hides its navigation below some width — on a phone that is a missing feature, not a responsive one');
 });
 
-test('the phone header keeps one row and lets the links scroll instead', () => {
-  const nav = PHONE.map((b) => /\.nav\s*\{([^}]*)\}/.exec(b.body)?.[1]).filter(Boolean).join('\n');
+test('the phone header wraps to two rows instead of clipping a link', () => {
+  const body = PHONE.map((b) => b.body).join('\n');
+  const nav = /\.nav\s*\{([^}]*)\}/.exec(body)?.[1] || '';
   assert.ok(nav, 'no small-screen rule for .nav at all');
-  assert.match(nav, /overflow-x:\s*auto/, 'the links scroll rather than clip');
-  assert.match(nav, /flex:\s*1 1 auto/);
-  assert.match(nav, /min-width:\s*0/, 'without min-width:0 a flex item refuses to shrink and pushes the row wide');
-  // The account controls keep their place; the caption goes.
+  // A horizontally scrolling link strip was tried and screenshotted: it showed
+  // "Explore | Da" and hid the rest of the word. Nothing may clip a label.
+  assert.ok(!/overflow-x:\s*auto/.test(nav), 'the links must not scroll inside a clipped strip');
+  assert.match(nav, /width:\s*100%/, 'the navigation gets its own row');
+  assert.match(body, /\.header\s*\{[^}]*height:\s*auto/, 'the header must be allowed to grow');
   assert.ok(PHONE.some((b) => /\.who\s+\.muted\s*\{[^}]*display:\s*none/.test(b.body)),
     'the display name should be the thing that goes, not the account control');
 });
@@ -70,8 +72,14 @@ test('tables are allowed to be wider than a phone and scroll', () => {
   const body = PHONE.map((b) => b.body).join('\n');
   assert.match(body, /\.panel-body-flush[^{]*\{[^}]*overflow-x:\s*auto/,
     'a table inside a panel must be in a scroll container, or .panel\'s overflow:hidden clips it');
-  assert.match(body, /\.table\s*\{[^}]*min-width:\s*\d+px/,
-    'a squeezed table is worse than a scrolled one');
+  assert.match(body, /\.panel-body[^{]*\.table[^{]*\{[^}]*min-width:\s*\d+px/,
+    'a squeezed table is worse than a scrolled one — but the floor belongs to the table in a scrolling container, not to every table');
+  // The floor must NOT be global: it made the document itself scroll sideways on
+  // the legal pages, where tables live in prose rather than in a panel.
+  assert.ok(!/\n\s*\.table\s*\{[^}]*min-width/.test(body),
+    'a blanket .table min-width widens the whole document on a phone');
+  assert.match(css, /\.prose table\s*\{[^}]*overflow-x:\s*auto/,
+    'a wide table inside prose scrolls itself');
   // And never the other way round: nowrap on cells would hide text instead.
   assert.ok(!/\.table td[^{]*\{[^}]*white-space:\s*nowrap/.test(css));
 });

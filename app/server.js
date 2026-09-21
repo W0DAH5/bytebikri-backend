@@ -24,8 +24,9 @@ import { allocateSlots, estimateRentSlotValue, POLICY } from './src/slots.js';
 import { composeSlots, HOUSE_CREATIVE, sanitizeUrl } from './src/creatives.js';
 import { exploreRails } from './src/ranking.js';
 import {
-  ACTIONS as MOD_ACTIONS, ACTION_LABELS, behaviour, canWrite, changesVisibility,
-  decisionNote, isPublic, normaliseState, stateFor, validateDecision,
+  ACTIONS as MOD_ACTIONS, ACTION_LABELS, PERSON_ACTIONS, behaviour, canWrite,
+  changesVisibility, decisionNote, isPublic, isPublicChannel, normaliseState,
+  personStateFor, stateFor, validateDecision,
 } from './src/moderation.js';
 import { AUTO_HIDE_AFTER, orderQueue, reportVerdict, validateReport } from './src/reports.js';
 import {
@@ -451,6 +452,17 @@ APP.post('/login', limitLogin, async (req, res, next) => {
       return reject('That email and password do not match an account.');
     }
 
+    if (user.banned) {
+      // Checked AFTER the password, so this is not an oracle for which addresses
+      // exist: only somebody who already knows the password learns the account
+      // is suspended, and that is the person who needs to know.
+      await auth.recordAttempt(email, false, ipHash);
+      return reject(
+        'This account is suspended. Reply to the message you were sent, or write to the operator address in the footer, and a person will look at it.',
+        403,
+      );
+    }
+
     await auth.recordAttempt(email, true, ipHash);
     const { token, ttl } = await auth.createSession({
       userId: user.id,
@@ -515,14 +527,14 @@ APP.get('/s/:slug', async (req, res, next) => {
     const channel = await store.channelBySlug(req.params.slug);
     if (!channel) return res.status(404).send('Channel not found');
     const owner = Boolean(req.user) && req.user.id === channel.owner_id;
-    if (!isPublic(channel.moderation_state) && !maySeeHidden(req, channel)) {
+    if (!isPublicChannel(channel) && !maySeeHidden(req, channel)) {
       // Byte for byte the same answer a store that never existed gets.
       return res.status(404).send('Channel not found');
     }
     // A page view by the owner while the store is hidden is not a view by the
     // public, and counting it would flatter the rent estimate with the owner's
     // own refreshes.
-    if (isPublic(channel.moderation_state)) await store.bumpPageView(channel.id);
+    if (isPublicChannel(channel)) await store.bumpPageView(channel.id);
 
     // A storefront shows the slots that have something in them. An empty
     // channel slot is a hole the owner should fill, not a curiosity for a
@@ -557,7 +569,9 @@ APP.get('/s/:slug', async (req, res, next) => {
       consent: req.consent,
       // Only the owner ever sees this banner, and only on a store that is not
       // public — it is a message about their own shop, not a public notice.
-      moderation: owner && !isPublic(channel.moderation_state) ? moderationBrief(channel) : null,
+      moderation: owner && !isPublicChannel(channel)
+        ? await moderationBrief(channel)
+        : null,
     }));
   } catch (err) { next(err); }
 });
@@ -615,7 +629,7 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
   try {
     const channel = await store.channelBySlug(req.params.slug);
     if (!channel) return res.status(404).send('Channel not found');
-    if (!isPublic(channel.moderation_state) && !maySeeHidden(req, channel)) {
+    if (!isPublicChannel(channel) && !maySeeHidden(req, channel)) {
       return res.status(404).send('Channel not found');
     }
     const asset = await store.assetBySlug(channel.id, req.params.assetSlug);
@@ -1562,6 +1576,7 @@ const SUCCESS_FLASH = {
   revoked: () => 'Disconnected. Its callbacks are refused from now on, and anything it gated stops unlocking.',
   responded: () => 'Reply posted.',
   saved_moderation: () => 'Decision recorded. The seller sees the reason and the note on their dashboard.',
+  saved_user: () => 'Decision recorded. A suspended account is signed out everywhere, and its stores disappear from the public site.',
   saved_report: () => 'Report closed. The file is paused if you removed it, and every report on it is resolved.',
 };
 
@@ -1604,6 +1619,24 @@ const ERROR_FLASH = {
  * rendered unescaped: `views.js` escapes every field of it.
  */
 async function moderationBrief(channel) {
+  // A ban hides the store too, and telling the seller "your store is suspended"
+  // when it is their ACCOUNT that was stopped would send them to the wrong
+  // remedy.
+  if (channel.owner_banned) {
+    const latest = await store.latestModerationAction(channel.id).catch(() => null);
+    const person = channel.owner_id
+      ? await store.userModerationHistory(channel.owner_id, 1).catch(() => [])
+      : [];
+    const decision = person[0] || latest;
+    return {
+      state: 'account suspended',
+      ruleCode: decision?.rule_code || null,
+      ruleTitle: decision?.rule_title || null,
+      decidedAt: decision?.created_at || null,
+      note: decisionNote({ title: decision?.rule_title, description: null }, decision?.reason || ''),
+      ownerNote: 'Your account is suspended, so this store is not visible to anyone but you. Your files are untouched and nothing has been deleted. Signing in is switched off until this is lifted.',
+    };
+  }
   const latest = await store.latestModerationAction(channel.id).catch(() => null);
   const state = normaliseState(channel.moderation_state);
   return {
@@ -2394,12 +2427,12 @@ APP.post('/s/:slug/a/:assetSlug/report', async (req, res, next) => {
  * the single most common way an admin console loses an operator's trust.
  */
 async function consoleCounts() {
-  const [payments, invoices, reports, moderation, payouts, unmatched] = await Promise.all([
+  const [payments, invoices, reports, moderation, banned, unmatched] = await Promise.all([
     store.unmatchedPayments(),
     store.openRentInvoices(),
     store.reportCounts(),
     store.channelsNeedingModeration(),
-    Promise.resolve([]),
+    store.bannedUsers(),
     store.planPayments(),
   ]);
   return {
@@ -2408,16 +2441,30 @@ async function consoleCounts() {
     reports: reports.open,
     reportedFiles: reports.files,
     moderation: moderation.length,
-    payouts: Array.isArray(payouts) ? payouts.length : 0,
+    banned: banned.length,
     unmatched: Array.isArray(unmatched) ? unmatched.length : 0,
   };
 }
 
-/** Attach the counts to the operator for the navigation badges. */
+/**
+ * Attach the counts to the operator, for the navigation badges.
+ *
+ * `banned` is in the badge set because it is the one queue with no other way to
+ * be reminded of it: a suspended account is invisible by design, so nothing on
+ * any other page will mention that it is waiting.
+ */
 async function withBadges(user) {
   if (!user || user.role !== 'admin') return user;
   const c = await consoleCounts();
-  return { ...user, adminBadges: { payments: c.payments + c.invoices, reports: c.reports, moderation: c.moderation } };
+  return {
+    ...user,
+    adminBadges: {
+      payments: c.payments + c.invoices,
+      reports: c.reports,
+      moderation: c.moderation,
+      banned: c.banned,
+    },
+  };
 }
 
 APP.get('/admin', async (req, res, next) => {
@@ -2449,6 +2496,7 @@ APP.get('/admin', async (req, res, next) => {
         { title: 'Transfers to match', count: counts.payments + counts.invoices, note: 'A person matches each one against the statement by hand.', href: '/admin/payments' },
         { title: 'Files reported', count: counts.reports, note: `${AUTO_HIDE_AFTER} distinct reporters hide a file automatically. Below that, it waits.`, href: '/admin/reports' },
         { title: 'Stores needing a decision', count: counts.moderation, note: 'Restricted, suspended or removed.', href: '/admin/moderation' },
+        { title: 'Suspended accounts', count: counts.banned, note: 'Signed out everywhere, stores hidden, nothing deleted.', href: '/admin/users' },
       ],
       platform: [
         ['Charges', '<strong>Two</strong> — a plan upgrade and annual rent'],
@@ -2574,6 +2622,66 @@ APP.post('/admin/moderation/:slug', async (req, res, next) => {
       state: decision.state, ruleCode: decision.ruleCode, actorId: req.user.id,
     });
     res.redirect('/admin/moderation?saved_moderation=1');
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// People — the account-level half of moderation
+// ---------------------------------------------------------------------------
+/**
+ * `/admin/users` is the Android app's admin screen done on the web.
+ *
+ * The app has had `fetchFlaggedAssets`, `banUser` and `unflagAsset` since its
+ * first schema; the server implemented the file half (reports) and the store
+ * half (moderation) and never the person. `banUser` posted to a route that did
+ * not exist, so the app's red "Ban User" button had never once worked.
+ *
+ * A ban is not a deletion and the page says so at every step: the account, its
+ * stores and its files all stay, the sessions are revoked, and reinstating gives
+ * everything back.
+ */
+APP.get('/admin/users', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    const q = String(req.query.q || '').slice(0, 80);
+    const [rules, banned] = await Promise.all([store.policyRules(), store.bannedUsers()]);
+    const matches = q.trim().length >= 2 ? await store.usersMatching(q) : [];
+    const history = Object.fromEntries(await Promise.all(
+      banned.slice(0, 25).map(async (u) => [u.id, await store.userModerationHistory(u.id, 3)]),
+    ));
+    res.send(views.adminUsers({
+      user: req.user, consent: req.consent, flash: flashFor(req.query),
+      rules, banned, matches, q, history, personActions: PERSON_ACTIONS, labels: ACTION_LABELS,
+    }));
+  } catch (err) { next(err); }
+});
+
+APP.post('/admin/users/:userId', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    const target = await store.userById(req.params.userId);
+    if (!target) return res.status(404).send('No such account');
+
+    const action = String(req.body?.action || '');
+    if (!PERSON_ACTIONS.includes(action)) return res.redirect('/admin/users?error=action');
+    const ruleCodes = new Set((await store.policyRules()).map((r) => r.code));
+    const ruleCode = req.body?.ruleCode ? String(req.body.ruleCode) : null;
+    // Suspending a PERSON is a restriction, so it cites a rule like any other.
+    if (action === 'suspend' && !ruleCode) return res.redirect('/admin/users?error=reason');
+    if (ruleCode && !ruleCodes.has(ruleCode)) return res.redirect('/admin/users?error=rule');
+
+    const decision = validateDecision({ action, ruleCode, remedy: req.body?.remedy || '' });
+    if (!decision.ok) return res.redirect(`/admin/users?error=${decision.error}`);
+
+    const updated = await store.setUserBanned({
+      userId: target.id, action, ruleCode: decision.ruleCode,
+      remedy: decision.remedy, actorId: req.user.id,
+    });
+    await store.audit('moderation.user', {
+      userId: target.id, action, state: personStateFor(action),
+      ruleCode: decision.ruleCode, actorId: req.user.id,
+    });
+    res.redirect(`/admin/users?q=${encodeURIComponent(target.email)}&saved_user=1`);
   } catch (err) { next(err); }
 });
 

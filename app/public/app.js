@@ -284,7 +284,10 @@
    *     must not be able to produce, so it is not left to a callback.
    */
   if (document.documentElement.classList.contains('reveal-ready')) {
-    const targets = document.querySelectorAll('.section, .card, .asset, .panel, .preview-window, .stat-row, .proof-strip, .rail-card');
+    // Marketing surfaces only — see the inline script in `layout`. `.panel` and
+    // `.card` are dashboard furniture as well as landing-page furniture, and a
+    // dashboard that fades its own content in is a dashboard that feels slow.
+    const targets = document.querySelectorAll('.preview-window, .stat-row, .proof-strip, .rail-card, .channel-card');
     const show = (el) => el.classList.add('is-in');
     if ('IntersectionObserver' in window) {
       const io = new IntersectionObserver((entries) => {

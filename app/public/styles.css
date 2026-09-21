@@ -322,7 +322,7 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
   display: flex; align-items: baseline; gap: var(--space-4);
   margin-bottom: var(--space-6); flex-wrap: wrap;
 }
-.section-head p { color: var(--text-muted); font-size: var(--text-sm); margin: 0; }
+.section-head p { color: var(--text-muted); font-size: var(--text-sm); margin: 0; max-width: 72ch; }
 
 /* ── header ──────────────────────────────────────────────────────────────── */
 .header {
@@ -383,25 +383,39 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
  * hidden behind a tap, nothing needs JavaScript, and the row stays one row.
  * This is the same pattern the platform's own tab bars use.
  */
+/* The header becomes two rows on a phone: brand and account above, navigation
+ * below, each link on screen in full.
+ *
+ * The first attempt at this made the links a horizontally scrolling strip, and a
+ * screenshot showed what that actually looks like — "Explore | Da" with the rest
+ * of the word inside a scroll area nobody can see. A clipped label is worse than
+ * a tall header: the reader cannot tell whether the page is broken or the site
+ * is just bad. Two rows cost 40px of a 844px screen and hide nothing.
+ */
 @media (max-width: 700px) {
-  .header .wrap { gap: var(--space-3); }
+  .header { height: auto; }
+  :root { --header-actual: 104px; }
+  .header .wrap {
+    height: auto;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-3);
+    padding-block: var(--space-2);
+  }
 
   .nav {
-    margin-left: 0; gap: 0;
-    flex: 1 1 auto; min-width: 0;
-    overflow-x: auto; overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-    /* The last link must not sit flush against the account buttons. */
-    mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
+    order: 3;
+    width: 100%;
+    margin-left: 0;
+    justify-content: space-between;
+    overflow: visible;
   }
-  .nav::-webkit-scrollbar { display: none; }
-  .nav a { padding-inline: var(--space-2); font-size: var(--text-sm); white-space: nowrap; }
+  .nav a { padding-inline: var(--space-2); }
 
   /* The account keeps its control and loses its caption: a name is not what a
      thumb is looking for, and the avatar already says whether you are signed in. */
   .who .muted { display: none; }
   .header .spacer { display: none; }
+  .nav:empty { display: none; }
 }
 
 .who {
@@ -523,6 +537,7 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
 .panel-body-flush { padding: 0; }
 
 .note {
+  max-width: 84ch;
   padding: var(--space-4) var(--space-5);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
@@ -762,7 +777,24 @@ a.kpi:hover { border-color: var(--border-strong); text-decoration: none; box-sha
 /* A search box that sits in a page header rather than on its own line. */
 .search-inline { margin-top: 0; max-width: 380px; }
 
+/* A slot the owner has not filled, drawn small.
+   It is a prompt on the owner's own page, not an advertisement and not a hole:
+   the previous version reserved the slot's full height (up to 280px) for a
+   message that did not exist. */
+.slot-prompt {
+  min-height: 0 !important;
+  border-style: dashed;
+  background: transparent;
+  padding: var(--space-4) var(--space-5);
+}
+.slot-prompt .slot-inner { gap: var(--space-2); }
+.slot-prompt .slot-empty-note { font-size: var(--text-sm); color: var(--text-muted); }
+
 /* ── moderation ──────────────────────────────────────────────────────────── */
+.user-form { padding-block: var(--space-4); border-top: 1px solid var(--border-subtle); }
+.user-form:first-child { border-top: 0; padding-top: 0; }
+.user-row { margin-top: var(--space-5); }
+
 /* A notice about the seller's own store. It sits above everything because it is
    the first thing they need to know, and it is deliberately not styled like an
    error toast: this is a decision, not a glitch. */
@@ -882,7 +914,10 @@ a.kpi:hover { border-color: var(--border-strong); text-decoration: none; box-sha
 .asset-layout { display: grid; gap: var(--space-8); grid-template-columns: 1fr; align-items: start; }
 @media (min-width: 900px) { .asset-layout { grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr); } }
 
-.unlock-card { position: sticky; top: calc(var(--header-h) + var(--space-5)); }
+/* The sticky unlock card has to clear the header, which is two rows on a phone.
+   `--header-actual` is 60px on a wide screen and the taller value where the
+   navigation wraps. */
+.unlock-card { position: sticky; top: calc(var(--header-actual, var(--header-h)) + var(--space-5)); }
 @media (max-width: 899px) { .unlock-card { position: static; } }
 
 /* Checkbox row. Clickable across the whole label, not just the box — a 16px
@@ -994,7 +1029,11 @@ a.kpi:hover { border-color: var(--border-strong); text-decoration: none; box-sha
 .slot-creative-body { font-size: var(--text-xs); color: var(--text-faint); max-width: 46ch; }
 .slot-cta {
   margin-top: var(--space-1);
-  font-size: var(--text-xs); font-weight: 600; color: var(--accent-hover);
+  font-size: var(--text-xs); font-weight: 600;
+  /* --accent-hover measured 4.16:1 on the raised surface — under the 4.5 the
+     rest of the sheet holds itself to, and a call to action is the one label
+     that must not be the hardest thing on the page to read. */
+  color: var(--accent-text);
 }
 .slot-empty-note { font-size: var(--text-xs); color: var(--text-faint); max-width: 44ch; }
 .slot-empty-action { font-size: var(--text-xs); font-weight: 600; color: var(--accent-hover); }
@@ -1188,12 +1227,19 @@ a.kpi:hover { border-color: var(--border-strong); text-decoration: none; box-sha
  */
 @media (max-width: 700px) {
   .panel-body-flush, .panel-body { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .table { min-width: 520px; }
+  /* A table is given a floor only where its container scrolls. Applied to every
+     table this made the whole DOCUMENT 520px wide on a phone, because the legal
+     pages put tables in prose rather than in a panel — the page scrolled
+     sideways and every paragraph moved under a reader's thumb. */
+  .panel-body .table, .panel-body-flush .table { min-width: 520px; }
 
   /* A hero's 80px of headroom is a third of a phone screen. */
   .hero { padding-block: var(--space-12) var(--space-10); }
   .hero::before { height: 420px; }
   .section { margin-block: var(--space-12); }
+  /* The header is two rows on a phone, so an anchored section needs more room
+     above it than the one-row header height. */
+  [id] { scroll-margin-top: 120px; }
   .footer { margin-top: var(--space-16); padding-block: var(--space-6); }
 
   /* Definition lists stack: two columns of `auto 1fr` on a 320px screen leaves
@@ -1275,7 +1321,14 @@ a.kpi:hover { border-color: var(--border-strong); text-decoration: none; box-sha
 .mono { font-family: var(--font-mono); font-size: var(--text-xs); }
 .muted { color: var(--text-muted); }
 .small { font-size: var(--text-sm); color: var(--text-muted); }
-.fine { font-size: var(--text-xs); color: var(--text-faint); line-height: var(--leading-snug); }
+.fine {
+  font-size: var(--text-xs); color: var(--text-faint);
+  line-height: var(--leading-snug);
+  /* Small print still gets a measure. The legend under the hero's product window
+     ran to 168 characters per line on a 1280px screen, which is not small print,
+     it is ticker tape. */
+  max-width: 78ch;
+}
 .lede { font-size: var(--text-lg); color: var(--text-muted); max-width: var(--measure); }
 .empty {
   padding: var(--space-10) var(--space-5); text-align: center;
@@ -1359,7 +1412,19 @@ a.kpi:hover { border-color: var(--border-strong); text-decoration: none; box-sha
 body:has(.consent) .footer { padding-bottom: 8rem; }
 
 /* ── prose (legal pages) ─────────────────────────────────────────────────── */
-.prose { color: var(--text-secondary); font-size: var(--text-base); line-height: var(--leading-relaxed); }
+/* A measure, finally. The legal text ran the full 1120px of the layout column,
+   which is roughly 120 characters a line — twice what a paragraph can be read
+   at, and the single biggest reason those pages looked like a wall. */
+.prose {
+  color: var(--text-secondary); font-size: var(--text-base);
+  line-height: var(--leading-relaxed);
+  max-width: 74ch;
+}
+/* Wide tables inside prose scroll themselves rather than the page. `display:
+   block` plus `overflow-x` keeps the rows as a table — the cells still lay out
+   in an anonymous table box — and the alternative, wrapping every authored table
+   in a div, means a structure in the content module deciding about layout. */
+.prose table { display: block; max-width: 100%; overflow-x: auto; }
 .prose p { margin-block: 0 var(--space-4); }
 .prose ul, .prose ol { margin: 0 0 var(--space-4) var(--space-5); }
 .prose li { margin-block: var(--space-2); }

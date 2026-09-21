@@ -260,6 +260,14 @@ it renders below the earned rail while still holding a position the directory
 does not give. A store that both earns and buys keeps one card and an honest pill
 rather than two cards.
 
+**Bans are real, and they are not store suspensions.** `profiles.banned` is
+enforced in every public read (Explore, search, store stats, the storefront's own
+address), live sessions are revoked in the same transaction as the flag, and the
+login route refuses a suspended account with a sentence rather than a silent
+failure — which is what it did before. `/admin/users` is the page the Android app
+has been trying to post to since its first schema. Nothing is deleted;
+reinstating restores everything and keeps the record.
+
 **Moderation has a mechanism.** `channels.moderation_state` is enforced:
 `suspended` hides a store from every listing and returns 404 at its own address
 while its owner still sees the whole dashboard and reads why, `removed` is a 404
@@ -293,6 +301,15 @@ get a `min-width` and a scroll container rather than squeezed columns, hero
 headroom halves, definition lists stack, and headings were already fluid at the
 token level. `test/mobile.test.js` asserts the phone can still reach the
 navigation, read a table and tap a control.
+
+**There is a browser now.** `npm run shots <path…>` renders a page to a PNG and
+`npm run audit:visual` measures every page at three widths for overflow,
+sideways-scrolling documents, reserved space nothing filled, grid items out of
+line, tiny type, over-long lines and contrast failures. Both exist because four
+rounds of CSS had been written without anybody looking at the result, and the
+first screenshot found four things no test could: an empty ad slot rendering to
+visitors at rank 1, a phone rule that made the whole document scroll sideways,
+a clipped navigation label, and prose with no measure.
 
 **Still to do:** a look at real storefronts in this category
 rather than at my own reasoning; creative images (the column and the sanitiser

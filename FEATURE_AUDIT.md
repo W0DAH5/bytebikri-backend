@@ -767,3 +767,102 @@ showed **3** with the reporter's notes and no names, and the nav badge read 3.
 cannot ask), a report on a whole store rather than a file, rate limiting on the
 report endpoint, and country rules (`policy_rules.scope = 'country'` is modelled
 and unused).
+
+---
+
+## 15. Looking at the pages, and what it found
+
+Four rounds of CSS were written and none of them had ever been looked at. Every
+assertion in the suite reads the stylesheet as text; "balance, alignment,
+positioning" cannot be argued about with a text diff, and the one time the site
+was inspected in a browser the answer was that the layout had gone haywire.
+
+So there is a browser now, and two tools that use it.
+
+### Getting one
+
+`storage.googleapis.com` and `deb.debian.org` are both unreachable here, so
+neither Playwright's own download nor `apt-get` can produce a Chromium.
+`@sparticuz/chromium` ships its payload inside the npm package, which works — but
+its binary needs `libnss3`, `libnssutil3` and `libnspr4`, and the base image has
+none of them. They were built from source (`mozilla/nspr` plus nss-dev's
+`build.sh`, which needs `gyp` and `ninja` from pip) into `/tmp/dist/Release/lib`.
+
+Both scripts set `LD_LIBRARY_PATH` themselves. On a normal machine with a normal
+package manager, none of that is necessary: `apt-get install chromium` and
+`npx playwright install chromium` both do the right thing.
+
+### `npm run shots` — look at it
+
+`scripts/shoot.mjs`. Real browser, real viewport, PNG per page, with
+`--cookies`, `--theme`, `--w` and `--full`. It also reports horizontal overflow
+and semi-transparent blocks, which is how two of the bugs below were found before
+a screenshot was even opened.
+
+### `npm run audit:visual` — measure it
+
+`scripts/audit.mjs`. Every page at 1280, 834 and 390, checking the things that
+actually read as broken: an element wider than the viewport, a document that
+scrolls sideways, a vertical hole over 220px inside the content column, boxes
+covering each other, grid items on one row with different tops, type under 11px,
+lines over 95 characters, and text under 4.5:1 against its own background.
+
+The first version of the alignment check was wrong and reported 48 findings that
+were not there — it treated a vertical stack (a label above its value) as a row
+that had to share a top. It now requires a genuinely multi-column grid and
+horizontally overlapping items, and the entire report is 2 findings.
+
+### What it found
+
+| Finding | Why it read as broken |
+|---|---|
+| **An empty ad slot was rendered to visitors** | The store's own slot is rank 1 — the first thing a visitor sees, by design. With no creative it was a 250px box saying *"Alice has not put a message here yet"*, pushing the files below the fold. Now an empty space the store owns is not rendered to a visitor at all; the owner sees a compact dashed prompt instead, with no reserved height |
+| **The phone table rule widened the document** | `.table { min-width: 520px }` was written for tables inside `.panel`, where the container scrolls. The legal pages put tables in prose, so the whole document became 540px wide on a 390px phone and every paragraph moved under a reader's thumb. The floor is now scoped to a scrolling container, and `.prose table` scrolls itself |
+| **The phone header clipped a link** | The first fix for "the nav is hidden below 640px" made the links a horizontally scrolling strip, and the screenshot showed `Explore · Da…`. A clipped label is worse than a tall header. Two rows now: brand and account above, navigation below, every label whole |
+| **Legal prose had no measure** | 1120px of column, about 120 characters a line, twice what a paragraph is read at |
+| **Small print had no measure** | The legend under the hero's product window ran to 168 characters per line |
+| **A slot call-to-action at 4.16:1** | Under the 4.5 the rest of the sheet holds to, on the one label that should not be the hardest thing to read |
+| **The reveal animation was inert in one place and over-broad in another** | See below |
+
+### The reveal, settled
+
+`animation-timeline: view()` with `fill-mode: both` was holding `opacity: 0` for
+anything whose scroll range had not been reached, and Chrome applies that
+timeline on load. That is what "everything went haywire" was. It is deleted
+outright, with the reasoning left in the stylesheet so it does not come back.
+
+What replaced it is a client-driven reveal whose **default state is visible**: an
+inline script adds `reveal-ready` only when the page asks for it and motion is
+welcome, an IntersectionObserver adds the transition as elements arrive, and a
+two-second timer reveals everything regardless. A section that stays invisible
+because a callback did not fire is the one failure this must not be able to
+produce, so it is not left to a callback.
+
+It is also **scoped to the marketing surfaces**. A dashboard is a tool: its
+panels and tables are what the person came for, and fading them in while they
+scroll reads as the interface being slow. The storefront and Explore get it;
+every signed-in page does not.
+
+### And one from the app
+
+`/admin/users`. The Android app has had `fetchFlaggedAssets`, `banUser` and
+`unflagAsset` since its first schema, and `admin.js` has always said the
+`/api/admin/*` routes do not exist — because they did not. The red **Ban User**
+button in the app had never once worked.
+
+The file half (reports) and the store half (`moderation_state`) were built; the
+person was missing. A ban is now a real mechanism and it is deliberately not the
+same thing as hiding a store: `profiles.banned` is the flag the public reads
+already filter on, every live session is revoked in the same transaction as the
+flag, and **the login route refuses a banned account** — which was the actual
+hole, because it previously let a suspended person sign in and then silently
+failed to resolve their session, leaving them holding a cookie and a signed-out
+page with no explanation.
+
+Nothing is deleted. Reinstating restores everything, and the ban stays on the
+record.
+
+Verified live: suspend → sign-in **403** with a sentence, the old cookie **302**
+to sign-in, `/s/bob` **404 to a stranger and to its own owner**, out of Explore
+and out of search, `moderation_actions` row citing `financial_scam`; reinstate →
+sign-in works, storefront 200, back in Explore.

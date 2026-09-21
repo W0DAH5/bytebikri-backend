@@ -14,7 +14,9 @@
     "db:reset": "node scripts/reset-db.mjs",
     "db:test": "node scripts/test-db.mjs",
     "secrets": "node -e \"import('./src/config.js').then(m=>{for(const n of ['SESSION_SECRET','ACCESS_TOKEN_SECRET','AD_POSTBACK_SECRET'])console.log(n+'='+m.generateSecret())})\"",
-    "check:env": "node -e \"process.env.NODE_ENV=process.env.NODE_ENV||'production';import('./src/config.js').then(m=>{const r=m.checkConfig();console.log(m.formatConfigReport(r)||'  Configuration is complete.');process.exit(r.ok?0:1)})\""
+    "check:env": "node -e \"process.env.NODE_ENV=process.env.NODE_ENV||'production';import('./src/config.js').then(m=>{const r=m.checkConfig();console.log(m.formatConfigReport(r)||'  Configuration is complete.');process.exit(r.ok?0:1)})\"",
+    "shots": "node scripts/shoot.mjs",
+    "audit:visual": "node scripts/audit.mjs"
   },
   "dependencies": {
     "express": "^4.19.2",
@@ -26,6 +28,8 @@
     "node": ">=20.0.0"
   },
   "devDependencies": {
-    "embedded-postgres": "^18.4.0-beta.17"
+    "@sparticuz/chromium": "^131.0.1",
+    "embedded-postgres": "^18.4.0-beta.17",
+    "puppeteer-core": "^23.11.1"
   }
 }

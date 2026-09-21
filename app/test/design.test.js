@@ -185,7 +185,8 @@ test('hover moves things with transform and opacity only', () => {
 // The page that sells it
 // ---------------------------------------------------------------------------
 
-const { landing } = await import('../src/views.js');
+const viewsModule = await import('../src/views.js');
+const { landing, dashboard, storefront } = viewsModule;
 const { MONEY_MAP } = await import('../src/earnings.js');
 
 const STATS = { channels: 2, assets: 4, unlocks: 1, views: 9 };
@@ -193,6 +194,30 @@ const STATS = { channels: 2, assets: 4, unlocks: 1, views: 9 };
 // action for a signed-out visitor, and that is a different decision.
 const doc = landing({ channels: [], user: null, stats: STATS, moneyMap: MONEY_MAP });
 const hero = doc.slice(doc.indexOf('<section class="hero">'), doc.indexOf('</section>', doc.indexOf('<section class="hero">')));
+
+const MARKET = {
+  id: '00000000-0000-0000-0000-000000000001', slug: 'shop', name: 'Shop',
+  tagline: '', listing_mode: 'marketplace', moderation_state: 'approved',
+};
+
+test('scroll reveals are opt-in per page, and only on the marketing surfaces', () => {
+  const { layout } = viewsModule;
+  const on = layout({ title: 'x', user: null, body: '', reveal: true });
+  const off = layout({ title: 'x', user: null, body: '' });
+  assert.match(on, /if \(true && !matchMedia/, 'the page that wants reveals says so');
+  assert.match(off, /if \(false && !matchMedia/, 'and every other page does not');
+
+  // A dashboard is a tool: its panels must not fade in as somebody scrolls to
+  // find what they came for.
+  const dashboardShell = dashboard({
+    channel: MARKET, slots: [], connections: [], providers: [],
+    plan: { name: 'Free', code: 'free', capabilities: {} }, estimate: {}, pageviews: 0, adViews: [],
+    upgrade: null, user: null,
+  });
+  assert.match(dashboardShell, /if \(false && !matchMedia/);
+  const storeShell = storefront({ channel: MARKET, assets: [], slots: [], estimate: {}, pageviews: 0 });
+  assert.match(storeShell, /if \(true && !matchMedia/, 'a storefront is the shelf, so it may animate');
+});
 
 test('the hero has one primary action, not a choice of three', () => {
   const primary = [...hero.matchAll(/class="btn[^"]*btn-primary[^"]*"/g)];

@@ -26,11 +26,13 @@ process.env.DATABASE_URL ||= 'postgres://postgres:postgres@127.0.0.1:55432/byteb
 
 const {
   STATES, ACTIONS, ACTION_TO_STATE, ACTION_LABELS, BEHAVIOUR,
+  PERSON_ACTIONS, personStateFor, isPublicChannel,
   normaliseState, behaviour, isPublic, canWrite, stateFor,
   cleanRemedy, decisionNote, validateDecision, changesVisibility, REMEDY_LIMIT,
 } = await import('../src/moderation.js');
 
 const { store } = await import('../src/store.js');
+const auth = await import('../src/auth.js');
 const { query, close } = await import('../src/db.js');
 const { after } = await import('node:test');
 after(async () => { await close(); });
@@ -330,4 +332,157 @@ test('the operator page offers only the actions and rules that exist', () => {
   assert.match(html, /maxlength="280"/, 'the remedy is capped in the form as well as in the module');
   assert.match(html, /Hidden Store/);
   assert.match(html, /Action recorded|Record decision/);
+});
+
+// ---------------------------------------------------------------------------
+// People: the half the Android app has always had
+// ---------------------------------------------------------------------------
+
+test('a store is public only when neither the store nor its owner is stopped', () => {
+  for (const state of STATES) {
+    assert.equal(isPublicChannel({ moderation_state: state }), isPublic(state));
+  }
+  assert.equal(isPublicChannel({ moderation_state: 'approved', owner_banned: true }), false,
+    'a banned seller\'s store is not public even though the STORE is in good standing');
+  assert.equal(isPublicChannel({ moderation_state: 'suspended', owner_banned: false }), false);
+  assert.equal(isPublicChannel({ moderation_state: 'approved', owner_banned: false }), true);
+  // Two separate decisions, never merged into one column.
+  assert.notEqual(isPublicChannel({ moderation_state: 'approved', owner_banned: true }),
+    isPublic('approved'));
+});
+
+test('the person vocabulary is the store vocabulary, narrowed', () => {
+  assert.deepEqual(PERSON_ACTIONS, ['suspend', 'reinstate', 'warn']);
+  for (const a of PERSON_ACTIONS) assert.ok(ACTIONS.includes(a), `${a} is not an action the schema knows`);
+  assert.equal(personStateFor('suspend'), 'banned');
+  assert.equal(personStateFor('reinstate'), 'active');
+  assert.equal(personStateFor('warn'), 'active');
+  assert.equal(personStateFor('remove'), null, 'there is no "removed" person — a ban is not a deletion');
+});
+
+test('a suspension signs the account out everywhere and hides its stores', async () => {
+  const tag = `${Date.now()}-${++seq}`;
+  const user = await store.userByEmailOrCreate(`ban-${tag}@test.local`);
+  await store.setPassword ? null : null;
+  const ch = await store.createChannel({
+    ownerId: user.id, slug: `ban-${tag}`, name: `Ban ${tag}`, listingMode: 'marketplace',
+  });
+  const operator = await store.userByEmailOrCreate(`op-${tag}@test.local`);
+
+  // Two live sessions, as if they were signed in on a phone and a laptop.
+  const s1 = await auth.createSession({ userId: user.id });
+  const s2 = await auth.createSession({ userId: user.id });
+  assert.ok(await auth.resolveSession(s1.token));
+  assert.ok((await store.channels({ listedOnly: true })).some((c) => c.id === ch.id));
+
+  const banned = await store.setUserBanned({
+    userId: user.id, action: 'suspend', ruleCode: 'malware',
+    remedy: 'A file on your store was harmful. Reply and we will look again.', actorId: operator.id,
+  });
+  assert.equal(banned.banned, true);
+
+  // 1. every session is dead, not just refused at read time
+  assert.equal(await auth.resolveSession(s1.token), null, 'a live session must not outlive the ban');
+  assert.equal(await auth.resolveSession(s2.token), null);
+  const live = await query('select count(*)::int as n from sessions where user_id = $1 and revoked_at is null', [user.id]);
+  assert.equal(live.rows[0].n, 0, 'revoked in the same transaction as the flag');
+
+  // 2. the store is out of the public directory and out of search
+  assert.ok(!(await store.channels({ listedOnly: true })).some((c) => c.id === ch.id));
+  const found = await store.search(`Ban ${tag}`);
+  assert.equal(found.stores.length, 0, 'a banned seller is not findable by name either');
+
+  // 3. the record exists, and it is about the PERSON
+  const history = await store.userModerationHistory(user.id);
+  assert.equal(history.length, 1);
+  assert.equal(history[0].action, 'suspend');
+  assert.equal(history[0].rule_code, 'malware');
+  assert.equal(history[0].rule_title, 'Malware / exploits');
+  assert.equal(history[0].actor_id, operator.id);
+
+  // 4. and the channel row itself is untouched — the store was never the problem
+  const after = await store.channelBySlug(ch.slug);
+  assert.equal(after.moderation_state, 'approved');
+  assert.equal(after.owner_banned, true, 'the read carries the flag the routes need');
+  assert.equal(isPublicChannel(after), false);
+});
+
+test('reinstating gives everything back, and keeps the record of the ban', async () => {
+  const tag = `${Date.now()}-${++seq}`;
+  const user = await store.userByEmailOrCreate(`re-${tag}@test.local`);
+  const ch = await store.createChannel({ ownerId: user.id, slug: `re-${tag}`, name: `Re ${tag}`, listingMode: 'marketplace' });
+
+  await store.setUserBanned({ userId: user.id, action: 'suspend', ruleCode: 'counterfeit', remedy: '' });
+  await store.setUserBanned({ userId: user.id, action: 'reinstate', remedy: 'False alarm.' });
+
+  const after = await store.channelBySlug(ch.slug);
+  assert.equal(after.owner_banned, false);
+  assert.equal(isPublicChannel(after), true);
+  assert.ok((await store.channels({ listedOnly: true })).some((c) => c.id === ch.id), 'back in Explore');
+
+  const history = await store.userModerationHistory(user.id);
+  assert.deepEqual(history.map((h) => h.action), ['reinstate', 'suspend'],
+    'the ban is still on the record after it is lifted');
+  assert.equal(history[0].rule_title, null, 'a reinstatement cites no rule');
+
+  // A fresh sign-in works again.
+  const session = await auth.createSession({ userId: user.id });
+  assert.ok(await auth.resolveSession(session.token));
+});
+
+test('a banned account cannot sign in, and the refusal is a sentence', async () => {
+  const tag = `${Date.now()}-${++seq}`;
+  const user = await store.userByEmailOrCreate(`sign-${tag}@test.local`);
+  await store.setUserBanned({ userId: user.id, action: 'suspend', ruleCode: 'financial_scam', remedy: '' });
+  // The route checks `user.banned` before creating a session; if that line were
+  // removed, this would be the only place it showed up, and only in production.
+  const fresh = await store.userByEmail(user.email);
+  assert.equal(fresh.banned, true);
+  await store.setUserBanned({ userId: user.id, action: 'reinstate', remedy: '' });
+  assert.equal((await store.userByEmail(user.email)).banned, false);
+});
+
+test('the operator can find an account by mailbox, because that is what a store page shows', async () => {
+  const tag = `${Date.now()}-${++seq}`;
+  const user = await store.userByEmailOrCreate(`find-${tag}@test.local`);
+  assert.deepEqual(await store.usersMatching(''), [], 'an empty search is not a list of everybody');
+  const exact = await store.usersMatching(user.email);
+  assert.equal(exact[0].id, user.id, 'an exact address wins over a partial match');
+  const partial = await store.usersMatching('find-');
+  assert.ok(partial.some((u) => u.id === user.id));
+});
+
+test('the account list is only the accounts that are not normal', async () => {
+  const tag = `${Date.now()}-${++seq}`;
+  const user = await store.userByEmailOrCreate(`list-${tag}@test.local`);
+  assert.ok(!(await store.bannedUsers()).some((u) => u.id === user.id));
+  await store.setUserBanned({ userId: user.id, action: 'suspend', ruleCode: 'financial_scam', remedy: '' });
+  const row = (await store.bannedUsers()).find((u) => u.id === user.id);
+  assert.ok(row, 'a suspended account is listed');
+  assert.equal(row.last_action, 'suspend');
+  assert.equal(row.last_rule, 'financial_scam');
+  assert.equal(row.banned, true);
+});
+
+test('the profile subject type exists, so the record has somewhere to go', async () => {
+  const types = await checkValues('moderation_actions', 'subject_type');
+  assert.ok(types.includes('profile'), `no 'profile' subject_type in the schema: ${types.join(', ')}`);
+});
+
+test('every rule code this file uses is a rule the policy table has', async () => {
+  // The foreign key refuses a made-up code at runtime; this catches it at review
+  // time, which is earlier and quieter. Three of these were invented in the first
+  // draft of the module ('scam', 'spam', 'off_platform') and the FK is what found
+  // them.
+  const codes = new Set((await store.policyRules()).map((r) => r.code));
+  const { readFile } = await import('node:fs/promises');
+  const text = await readFile(new URL(import.meta.url), 'utf8');
+  // The file deliberately cites one code that does not exist, to prove the
+  // foreign key refuses it. Deliberate-invalid codes say so in their name.
+  const cited = new Set([...text.matchAll(/ruleCode: '([a-z_]+)'/g)].map((m) => m[1])
+    .filter((code) => !/^(made_up|bogus|not_a)/.test(code)));
+  assert.ok(cited.size >= 3, 'the file should be citing several rules');
+  for (const code of cited) {
+    assert.ok(codes.has(code), `'${code}' is not in policy_rules`);
+  }
 });

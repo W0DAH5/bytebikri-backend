@@ -64,6 +64,27 @@ export const ACTION_TO_STATE = {
   warn: null,
 };
 
+/**
+ * The same actions, applied to a PERSON rather than to a store.
+ *
+ * Only two of the six make sense for an account, and the mapping is not the
+ * store's: there is no `restricted` person and no `removed` person. `suspended`
+ * is the ban the Android app has always called `banUser`; `reinstate` lifts it.
+ * A ban is not a deletion — the account, its stores and its files all stay, and
+ * everything comes back when it is lifted.
+ */
+export const PERSON_ACTIONS = ['suspend', 'reinstate', 'warn'];
+
+export const PERSON_STATE = {
+  suspend: 'banned',
+  reinstate: 'active',
+  warn: 'active',
+};
+
+export function personStateFor(action) {
+  return PERSON_STATE[String(action ?? '')] ?? null;
+}
+
 export const ACTION_LABELS = {
   approve: 'Approve',
   reinstate: 'Reinstate',
@@ -131,6 +152,24 @@ export function behaviour(state) {
 
 export function isPublic(state) {
   return behaviour(state).publicVisible;
+}
+
+/**
+ * Is this STORE visible to the public?
+ *
+ * Two independent things can hide a store and they are not the same decision:
+ *
+ *   the store's own state   — what is wrong with this store
+ *   the owner's ban         — what is wrong with this person
+ *
+ * A store is public only when neither applies. The seller's own pages stay
+ * readable to them in both cases: `isPublic(state)` governs what a stranger can
+ * reach, and this governs whether the store is advertised or linked at all.
+ *
+ * @param {{moderation_state?: string, owner_banned?: boolean}} channel
+ */
+export function isPublicChannel(channel) {
+  return isPublic(channel?.moderation_state) && !channel?.owner_banned;
 }
 
 export function canWrite(state) {
