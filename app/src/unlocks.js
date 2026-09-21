@@ -33,7 +33,7 @@ const DEFAULT_ACCESS_TTL_MS = 10 * 60 * 1000;
  * Step 1 — the browser starts an unlock. We mint a nonce and hand back the ad
  * config. Nothing is unlocked yet; this grants nothing.
  */
-export async function startUnlock({ assetId, userId, providerId }) {
+export async function startUnlock({ assetId, userId, providerId, personalised = false }) {
   const asset = await store.assetById(assetId);
   if (!asset) return { ok: false, error: 'asset not found' };
 
@@ -85,13 +85,23 @@ export async function startUnlock({ assetId, userId, providerId }) {
       // The identifier the client passes through to the network. A random UUID4
       // that resolves to a user only inside our database — an ad network has no
       // business knowing who is watching.
-      userId: adRef,
+      //
+      // Omitted entirely without consent for personalised ads. This is the point
+      // at which a refusal stops being a stored preference and starts being a
+      // fact about what the network receives: with no identifier it cannot link
+      // this view to the last one, so the ad it serves is untargeted whatever it
+      // intends. Sending the id and asking the network nicely would be a promise
+      // we have no way to keep or verify.
+      userId: personalised ? adRef : undefined,
       // Echoed back by the network so the postback ties to this exact view
       // rather than being guessed at from a user id.
       custom: view.id,
       type: 'rewarded',
       minSeconds: view.ad_min_seconds,
       requiredViews: view.required_ads,
+      // Told to the client so the modal can say which kind of ad this is. The
+      // server does not trust it back.
+      personalised,
     },
   };
 }

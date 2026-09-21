@@ -77,7 +77,41 @@ function avatar(name) {
 // Chrome
 // ---------------------------------------------------------------------------
 
-export function layout({ title, user, body, activeChannel = null, wide = false, current = '' }) {
+/**
+ * The consent banner.
+ *
+ * Two real buttons of equal weight. No dimmed "manage" link as the only way to
+ * say no, no pre-ticked boxes, no "by continuing you agree". A banner that is
+ * hard to refuse is not consent, and the difference is the whole point of the
+ * ePrivacy rules.
+ *
+ * It is a plain form POST, so it works with no JavaScript and cannot be
+ * silently skipped by a script failure.
+ */
+function consentBanner(consent) {
+  if (!consent || !consent.outstanding) return '';
+  return `
+<div class="consent" role="region" aria-label="Cookies">
+  <div class="wrap consent-inner">
+    <div>
+      <strong>Ads pay for the free downloads here.</strong>
+      <p class="small" style="margin:var(--space-2) 0 0">
+        Personalised ads let the network use what you have already watched to pick the next one,
+        which pays the creator more. Say no and you still watch an ad — an untargeted one. Nothing
+        is shared until you choose. <a href="/legal/cookies">What this means</a>.
+      </p>
+    </div>
+    <form method="post" action="/consent" class="consent-actions">
+      <input type="hidden" name="next" value="${esc(consent.returnTo || '/')}">
+      <button class="btn btn-primary" type="submit" name="choice" value="all">Accept all</button>
+      <button class="btn" type="submit" name="choice" value="none">Reject all</button>
+      <a class="btn btn-ghost" href="/legal/cookies">Choose individually</a>
+    </form>
+  </div>
+</div>`;
+}
+
+export function layout({ title, user, body, activeChannel = null, wide = false, current = '', consent = null }) {
   const navLink = (href, label, key) =>
     `<a href="${esc(href)}"${current === key ? ' aria-current="page"' : ''}>${esc(label)}</a>`;
 
@@ -116,6 +150,7 @@ export function layout({ title, user, body, activeChannel = null, wide = false, 
   </div>
 </header>
 <main id="main"${wide ? '' : ''} class="wrap">${body}</main>
+${consentBanner(consent)}
 <footer class="footer">
   <div class="wrap">
     <div class="row">
@@ -123,6 +158,7 @@ export function layout({ title, user, body, activeChannel = null, wide = false, 
       <span class="row-tight">
         <a href="/legal/privacy" style="color:inherit">Privacy</a>
         <a href="/legal/terms" style="color:inherit">Terms</a>
+        <a href="/legal/cookies" style="color:inherit">Cookies</a>
       </span>
     </div>
   </div>
@@ -136,11 +172,11 @@ export function layout({ title, user, body, activeChannel = null, wide = false, 
 // Landing
 // ---------------------------------------------------------------------------
 
-export function landing({ channels, user, stats }) {
+export function landing({ channels, user, stats, consent = null }) {
   const featured = channels.slice(0, 6).map(channelCard).join('');
   return layout({
     title: 'Content that unlocks with attention',
-    user, current: 'home',
+    user, current: 'home', consent,
     body: `
 <section class="hero">
   <span class="pill pill-accent pill-lg">Ad-gated access</span>
@@ -215,7 +251,7 @@ function channelCard(c) {
 </a>`;
 }
 
-export function marketplace({ channels, user }) {
+export function marketplace({ channels, user, consent = null }) {
   const listed = channels.filter((c) => c.listing_mode === 'marketplace');
   const rest = channels.filter((c) => c.listing_mode !== 'marketplace');
 
@@ -231,7 +267,7 @@ export function marketplace({ channels, user }) {
   </section>`;
 
   return layout({
-    title: 'Explore', user, current: 'marketplace',
+    title: 'Explore', user, current: 'marketplace', consent,
     body: `
 <div class="section" style="margin-bottom:0">
   <h1>Explore</h1>
@@ -243,7 +279,7 @@ ${section('Own address only', 'These stores exist at their link but are not list
   });
 }
 
-export function storefront({ channel, assets, slots, user, estimate, pageviews, unlockedIds = new Set() }) {
+export function storefront({ channel, assets, slots, user, estimate, pageviews, unlockedIds = new Set(), consent = null }) {
   const cards = assets.map((a) => {
     const open = a.unlock_mode === 'open';
     const unlocked = open || (user && unlockedIds.has(a.id));
@@ -271,7 +307,7 @@ export function storefront({ channel, assets, slots, user, estimate, pageviews, 
   const slotHtml = slots.map(renderSlot).join('');
 
   return layout({
-    title: channel.name, user, activeChannel: channel,
+    title: channel.name, user, activeChannel: channel, consent,
     body: `
 ${channel.banner_url
     ? `<div class="store-hero">
@@ -308,7 +344,7 @@ ${slotHtml}
 // Asset page
 // ---------------------------------------------------------------------------
 
-export function assetPage({ channel, asset, files, unlocked, user, policy, slots }) {
+export function assetPage({ channel, asset, files, unlocked, user, policy, slots, consent = null }) {
   const open = asset.unlock_mode === 'open';
   const needsAd = !open && !unlocked;
 
@@ -348,7 +384,7 @@ export function assetPage({ channel, asset, files, unlocked, user, policy, slots
          <div id="unlock-status" class="fine" role="status" aria-live="polite" style="margin-top:var(--space-3);text-align:center"></div>`;
 
   return layout({
-    title: asset.title, user, activeChannel: channel,
+    title: asset.title, user, activeChannel: channel, consent,
     body: `
 <a class="fine" href="/s/${esc(channel.slug)}" style="display:inline-block;margin-block:var(--space-6) var(--space-5)">← ${esc(channel.name)}</a>
 
@@ -431,11 +467,11 @@ function assetUnlockExpiry(asset) {
 // Auth
 // ---------------------------------------------------------------------------
 
-export function login({ user, error, next = '', email = '', mode = 'login' }) {
+export function login({ user, error, next = '', email = '', mode = 'login', consent = null }) {
   const isSignup = mode === 'signup';
   const action = isSignup ? '/signup' : '/login';
   return layout({
-    title: isSignup ? 'Open a store' : 'Sign in', user,
+    title: isSignup ? 'Open a store' : 'Sign in', user, consent,
     body: `
 <div class="section auth-card" style="margin-top:var(--space-12)">
   <h1 style="font-size:var(--text-2xl)">${isSignup ? 'Open your store' : 'Sign in'}</h1>
@@ -495,7 +531,7 @@ export function login({ user, error, next = '', email = '', mode = 'login' }) {
 // Dashboard
 // ---------------------------------------------------------------------------
 
-export function dashboard({ channel, slots, connections, providers, plan, estimate, pageviews, adViews, upgrade, user, pendingPayments = [], flash = null }) {
+export function dashboard({ channel, slots, connections, providers, plan, estimate, pageviews, adViews, upgrade, user, pendingPayments = [], flash = null, consent = null }) {
   const conn = connections[0] || null;
   const provider = conn ? providers.find((p) => p.id === conn.provider_id) : null;
 
@@ -524,7 +560,7 @@ export function dashboard({ channel, slots, connections, providers, plan, estima
   const earnings = adViews.filter((v) => v.completed).reduce((a, v) => a + (Number(v.revenue_usd) || 0), 0);
 
   return layout({
-    title: channel.name, user, activeChannel: channel, current: 'dashboard',
+    title: channel.name, user, activeChannel: channel, consent, current: 'dashboard',
     body: `
 <div class="section" style="margin-bottom:0">
   <div class="row">
@@ -723,3 +759,90 @@ export function renderSlot(slot) {
 }
 
 export const m = { esc, npr, num, relTime, pill };
+
+// ---------------------------------------------------------------------------
+// Legal
+// ---------------------------------------------------------------------------
+
+/**
+ * A legal page.
+ *
+ * Rendered from the structures in src/legal.js rather than written as markup, so
+ * the body of each section is authored once and the warning about missing
+ * operator details cannot be forgotten on one page but not another.
+ */
+export function legalPage({ user, doc, consent = null, missingOperatorFields = [], next = '/' }) {
+  const body = doc.sections.map((sec) => `
+    <section class="section" style="margin-top:var(--space-8)">
+      <h2 style="font-size:var(--text-lg)">${esc(sec.h)}</h2>
+      <div class="prose" style="margin-top:var(--space-3)">${sec.body}</div>
+    </section>`).join('');
+
+  return layout({
+    title: doc.title, user, consent, current: 'legal',
+    body: `
+<div class="section" style="margin-top:var(--space-8);max-width:var(--measure)">
+  <h1>${esc(doc.title)}</h1>
+  <p class="lede" style="margin-top:var(--space-3)">${esc(doc.lede)}</p>
+</div>
+
+${missingOperatorFields.length ? `
+<div class="note note-warning" style="max-width:var(--measure)" role="alert">
+  <strong>This deployment has not been configured.</strong>
+  <p class="small" style="margin-top:var(--space-2)">
+    A notice that does not identify who is responsible for the data is not a notice. The
+    following are still empty and must be set before this page is shown to anyone:
+  </p>
+  <ul class="small" style="margin:var(--space-2) 0 0 var(--space-5)">
+    ${missingOperatorFields.map((f) => `<li><code>${esc(f.key)}</code> — ${esc(f.why)}</li>`).join('')}
+  </ul>
+</div>` : ''}
+
+${doc.consent !== undefined ? consentControls({ consent, next }) : ''}
+
+<div style="max-width:var(--measure)">${body}</div>
+`,
+  });
+}
+
+/**
+ * The controls, on the page, for changing the decision.
+ *
+ * A single form rather than three buttons: the checkboxes carry the state, so
+ * "save" means exactly what the boxes say. Two mega-buttons that flip everything
+ * without showing what they flipped is how people end up granting something they
+ * meant to refuse.
+ */
+function consentControls({ consent, next }) {
+  const purposes = consent?.purposes || [];
+  // Read straight from the stored choices, so the checkbox reflects what is on
+  // file rather than a hand-maintained list of special cases.
+  const on = (key) => consent?.choices?.[key] === true;
+
+  return `
+<form method="post" action="/consent" class="card card-pad-lg" style="max-width:var(--measure);margin-top:var(--space-6)">
+  <input type="hidden" name="next" value="${esc(next)}">
+  <div class="row">
+    <h2 style="font-size:var(--text-md)">Choose individually</h2>
+    <span class="spacer"></span>
+    ${consent?.decided
+      ? pill(consent.ads ? 'Personalised ads on' : 'Personalised ads off', consent.ads ? 'success' : '')
+      : pill('Not answered')}
+  </div>
+
+  ${purposes.map((p) => `
+  <label class="check" style="align-items:flex-start">
+    <input type="checkbox" name="${esc(p.key)}" value="on" ${on(p.key) ? 'checked' : ''}>
+    <span>
+      <strong>${esc(p.label)}</strong>
+      <span class="fine" style="display:block;margin-top:var(--space-1)">${esc(p.detail)}</span>
+    </span>
+  </label>`).join('')}
+
+  <div class="row" style="margin-top:var(--space-4);gap:var(--space-3)">
+    <button class="btn btn-primary" type="submit" name="choice" value="save">Save my choice</button>
+    <button class="btn" type="submit" name="choice" value="none">Reject all</button>
+    <button class="btn" type="submit" name="choice" value="all">Accept all</button>
+  </div>
+</form>`;
+}

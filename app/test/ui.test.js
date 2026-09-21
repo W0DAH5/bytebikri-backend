@@ -102,3 +102,25 @@ test('asset ids rendered into HTML are uuid-shaped, so the API can accept them',
   // the button would fail with a 400 for every visitor.
   assert.match(views, /data-asset="\$\{esc\(asset\.id\)\}"/);
 });
+
+test('every page render passes consent, or the banner silently disappears', () => {
+  // The banner is the only place a visitor can refuse personalised ads. If a new
+  // page forgets to thread `consent` through, nothing breaks, nothing logs, and
+  // the site quietly stops asking — which is the failure mode worth a test.
+  const server = read('server.js');
+  const calls = [...server.matchAll(/views\.(landing|marketplace|storefront|assetPage|dashboard|login|legalPage)\(\{([\s\S]*?)\}\)/g)];
+  assert.ok(calls.length >= 6, `expected several view calls, found ${calls.length}`);
+  const missing = calls
+    .filter(([, fn, args]) => !/consent/.test(args))
+    .map(([, fn]) => fn);
+  assert.deepEqual(missing, [], `these render calls do not pass consent: ${missing.join(', ')}`);
+});
+
+test('the consent banner offers a real refusal', () => {
+  // Both answers must be submit buttons with equal standing — a dimmed link to
+  // "manage preferences" as the only way to say no is the dark pattern the
+  // ePrivacy rules are about.
+  assert.match(views, /name="choice" value="all"/);
+  assert.match(views, /name="choice" value="none"/);
+  assert.match(views, /If you refuse personalised ads|Reject all/);
+});

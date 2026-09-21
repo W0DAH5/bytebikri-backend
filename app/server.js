@@ -28,6 +28,10 @@ import { selfTest as adapterSelfTest, advisories as adapterAdvisories, ADAPTERS 
 import * as views from './src/views.js';
 import * as auth from './src/auth.js';
 import { originCheck, rateLimit, cookieParser, setSessionCookie, clearSessionCookie } from './src/security.js';
+import {
+  consentState, recordConsent, PURPOSES, newVisitorId, CONSENT_COOKIE, POLICY_VERSION,
+} from './src/consent.js';
+import * as legal from './src/legal.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -111,6 +115,21 @@ APP.use(async (req, _res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * Consent, resolved once per request.
+ *
+ * A missing cookie short-circuits to the "no decision" state WITHOUT a database
+ * query, because that is the path every static asset and every first visit takes.
+ * Only a visitor who has answered costs a lookup.
+ */
+APP.use(async (req, _res, next) => {
+  try {
+    req.consent = await consentState(req);
+    req.consent.returnTo = req.originalUrl === '/consent' ? '/' : req.originalUrl;
+    next();
+  } catch (err) { next(err); }
+});
+
 /** An API route that needs an identity must refuse without one, not borrow one. */
 function requireUser(res) {
   res.status(401).json({ ok: false, error: 'not signed in' });
@@ -155,6 +174,59 @@ async function buildSlots(channel, surfaces = ['web']) {
 }
 
 // ---------------------------------------------------------------------------
+// Consent and legal
+// ---------------------------------------------------------------------------
+APP.post('/consent', async (req, res, next) => {
+  try {
+    const { acceptAll, rejectAll, normaliseChoices } = await import('./src/consent.js');
+    const choice = String(req.body.choice || 'save');
+
+    const choices = choice === 'all' ? acceptAll()
+      : choice === 'none' ? rejectAll()
+        : normaliseChoices({
+          ads: req.body.ads === 'on',
+          analytics: req.body.analytics === 'on',
+        });
+
+    // The visitor id is minted here, on the decision, rather than on arrival:
+    // no cookie for someone who never answered, which is the least we can set
+    // and still remember the answer.
+    const visitorId = req.cookies?.[CONSENT_COOKIE] || newVisitorId();
+    await recordConsent({ visitorId, choices, req, country: req.consent?.country ?? null });
+
+    res.cookie(CONSENT_COOKIE, visitorId, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      path: '/',
+      maxAge: 365 * 24 * 60 * 60 * 1000,   // 12 months, then we ask again
+    });
+
+    // Only ever back to a path on this site. `?next=https://evil.example` would
+    // turn our own consent form into a phishing hop.
+    const back = typeof req.body.next === 'string' && req.body.next.startsWith('/') && !req.body.next.startsWith('//')
+      ? req.body.next : '/';
+    await store.audit('consent.recorded', { ads: choices.ads, analytics: choices.analytics, version: POLICY_VERSION });
+    res.redirect(back);
+  } catch (err) { next(err); }
+});
+
+const LEGAL_DOCS = { privacy: legal.privacy, terms: legal.terms, cookies: legal.cookies };
+
+APP.get('/legal/:slug', async (req, res, next) => {
+  try {
+    const build = LEGAL_DOCS[req.params.slug];
+    if (!build) return res.status(404).send('Not found');
+    const doc = build({ consent: req.consent });
+    res.send(views.legalPage({
+      user: req.user, doc, consent: req.consent,
+      missingOperatorFields: legal.MISSING_OPERATOR_FIELDS,
+      next: req.query.next && String(req.query.next).startsWith('/') ? String(req.query.next) : req.originalUrl,
+    }));
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // Pages
 // ---------------------------------------------------------------------------
 APP.get('/', async (req, res, next) => {
@@ -166,7 +238,7 @@ APP.get('/', async (req, res, next) => {
       scalar(`select count(*)::int from ad_view_events where completed = true`),
     ]);
     res.send(views.landing({
-      channels, user: req.user,
+      channels, user: req.user, consent: req.consent,
       stats: { channels: channels.length, assets, unlocks, views: views_ },
     }));
   } catch (err) { next(err); }
@@ -175,18 +247,23 @@ APP.get('/', async (req, res, next) => {
 APP.get('/marketplace', async (req, res, next) => {
   try {
     const channels = await decorateChannels(await store.channels({ listedOnly: true }));
-    res.send(views.marketplace({ channels, user: req.user }));
+    res.send(views.marketplace({ channels, user: req.user, consent: req.consent }));
   } catch (err) { next(err); }
 });
 
 APP.get('/login', (req, res) => {
   if (req.user) return res.redirect(safeNext(req.query.next) || '/');
-  res.send(views.login({ user: null, next: safeNext(req.query.next) || '', email: req.query.email || '' }));
+  res.send(views.login({
+    user: null, consent: req.consent,
+    next: safeNext(req.query.next) || '', email: req.query.email || '',
+  }));
 });
 
 APP.get('/signup', (req, res) => {
   if (req.user) return res.redirect('/');
-  res.send(views.login({ user: null, mode: 'signup', next: safeNext(req.query.next) || '' }));
+  res.send(views.login({
+    user: null, consent: req.consent, mode: 'signup', next: safeNext(req.query.next) || '',
+  }));
 });
 
 /**
@@ -216,7 +293,7 @@ APP.post('/login', limitLogin, async (req, res, next) => {
       // Never say WHICH half was wrong. "No such account" tells an attacker
       // which addresses are registered, which is the first half of a breach.
       res.status(status).send(views.login({
-        user: null, error: message, email, next: back || '',
+        user: null, consent: req.consent, error: message, email, next: back || '',
       }));
     };
 
@@ -268,7 +345,7 @@ APP.post('/signup', limitSignup, async (req, res, next) => {
 
     const fail = (message, status = 400) =>
       res.status(status).send(views.login({
-        user: null, mode: 'signup', error: message, email,
+        user: null, consent: req.consent, mode: 'signup', error: message, email,
       }));
 
     try {
@@ -333,7 +410,10 @@ APP.get('/s/:slug', async (req, res, next) => {
         )).map((r) => r.asset_id))
       : new Set();
 
-    res.send(views.storefront({ channel, assets, slots, user: req.user, estimate, pageviews, unlockedIds }));
+    res.send(views.storefront({
+      channel, assets, slots, user: req.user, estimate, pageviews, unlockedIds,
+      consent: req.consent,
+    }));
   } catch (err) { next(err); }
 });
 
@@ -358,7 +438,7 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
     }));
 
     res.send(views.assetPage({
-      channel, asset, files, unlocked, user: req.user,
+      channel, asset, files, unlocked, user: req.user, consent: req.consent,
       policy: await store.unlockPolicy(asset.id),
       slots: (await buildSlots(channel)).filter((s) => s.serving && s.surface === 'webview'),
     }));
@@ -401,7 +481,7 @@ APP.get('/dashboard/:slug', async (req, res, next) => {
         : null;
 
     res.send(views.dashboard({
-      flash,
+      flash, consent: req.consent,
       channel, slots, user: req.user,
       connections: await store.connectionsOf(channel.id),
       providers: await selectableProviders(),
@@ -423,6 +503,7 @@ APP.post('/api/unlock/start', limitUnlock, async (req, res, next) => {
     if (!user) return requireUser(res);
     res.json(await startUnlock({
       assetId: req.body?.assetId, userId: user.id, providerId: req.body?.providerId,
+      personalised: req.consent?.ads === true,
     }));
   } catch (err) { next(err); }
 });
