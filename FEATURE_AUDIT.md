@@ -158,6 +158,33 @@ landing exactly on the rendered value, and the hero carrying exactly one primary
 call to action. Two of them failed against the code as first written — the hero
 had two primaries, and the scroll-driven block was written outside its guard.
 
+### The phone
+
+The layout research above is desktop-shaped, and that is the trap. Two failures
+were found by reading the stylesheet rather than by looking at a browser, and
+both were *absences* rather than ugliness:
+
+- **The navigation was `display: none` below 640px.** On a phone — where most of
+  this product's traffic is — the header had no route to Explore. Every page
+  still rendered and every link still existed in the HTML, which is why nothing
+  caught it. It is now a scrolling strip: brand and account stay put, the links
+  take the remaining room and scroll horizontally, no JavaScript, one row.
+- **Tables were squeezed, not scrolled.** `.panel { overflow: hidden }` clipped
+  them and the columns crushed to two characters a line. They now get a
+  `min-width` inside a scroll container, which is the honest fix: the alternative
+  — one card per row — is a different information architecture, not a media
+  query.
+
+Also on small screens: hero headroom halves (80px is a third of a phone
+viewport), definition lists stack (two columns of `auto 1fr` on a 320px screen
+leaves the value column narrower than the labels), search becomes a column, and
+the account caption goes while the control stays.
+
+`test/mobile.test.js` (7) asserts what a small screen must still be able to DO —
+reach the navigation, read a table, tap a control, see a heading that fits — and
+it deliberately checks that nothing is revealed by hovering, because a phone
+cannot hover.
+
 ### Template research, cited
 
 - **Gumroad** — deliberately minimal storefront, consistent cards, zero design
@@ -296,9 +323,10 @@ chore.
 
 ## 9. Tests
 
-`npm test` → **272 pass, 0 fail** (133 six rounds ago; 152 after the player
+`npm test` → **279 pass, 0 fail** (133 seven rounds ago; 152 after the player
 round; 184 after the revenue round; 214 after the slot round; 232 after the
-connection round; 242 after the design pass; 256 after the Explore round).
+connection round; 242 after the design pass; 256 after the Explore round; 272
+after the moderation round).
 
 | New | What it holds still |
 |---|---|
@@ -310,6 +338,7 @@ connection round; 242 after the design pass; 256 after the Explore round).
 | `test/earnings.test.js` (15) | an open period is shown but never compared; the estimate and the statement are never blended; rent is annualised against annualised statements; a blank payout label is not a label; **and `payout_accounts` is asserted to hold no column that could move money** |
 | `test/design.test.js` (10) | motion lives in tokens and nowhere else; no `transition: all`; no hover that animates layout; reduced motion collapses to 0.01 ms so `animationend` still fires; scroll-driven reveals sit inside their `no-preference` guard; touch targets reach 44 px where the pointer is a finger; the hero has exactly one primary call to action; and **the landing page's money facts are the same strings the earnings page renders**, from the same structure |
 | `test/networks.test.js` (18) | a network with no adapter has no Connect button and says what still works; the callback URL keeps the network's macros verbatim (a percent-encoded macro is a postback that never arrives); no secret means not verified; "never called back" names the likeliest cause; **and the only field the flow may ever ask for is the verification secret** — asserted against the rendered form, not the code |
+| `test/mobile.test.js` (7) | the navigation is never `display: none` at any small width; the phone header keeps one row and scrolls its links instead; tables scroll rather than crush; the hero's spacing is halved and definitions stack; headings are fluid at the token level; nothing is revealed on hover, because a phone cannot hover |
 | `test/moderation.test.js` (16) | **the code's vocabulary is read out of `pg_constraint` and compared with the schema's CHECK constraints** — a state the code can write but the database rejects fails here rather than at runtime; every state has behaviour and no state hides a store without telling its owner; a restriction must cite a real rule and `moderation_actions.rule_code` refuses a made-up one with 23503; the state change and the record are one transaction, so a failed decision leaves nothing behind; the remedy is the only free text, capped and flattened; the notice is escaped and rendered to the owner only |
 | `test/ranking.test.js` (14) | the earned rail cannot read a plan — a Pro store with no traffic stays off it while a free store with traffic leads it; the paid rail is labelled as paid everywhere and never borrows the word "earned"; the score weights an unlock above a pageview; below 20 views a store is not "popular" at all; the rails are disjoint, a store that both earns and buys keeps one card and carries a pill instead of a second; and a store with no rows at all still gets a row from `channelStats`, because a store missing from the page is a store nobody can find |
 | `test/creatives.test.js` (15) | the store's message can never fill the platform's slot or the reverse; a creative written for one slot does not leak into the others; `javascript:`, `data:` and protocol-relative links are refused; a link label with no link is dropped; one message per slot, corrected in place |

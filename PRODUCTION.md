@@ -271,7 +271,16 @@ transaction. The operator page is `/admin/moderation`, deliberately plain.
 Still missing: a seller-facing report button, an asset-level queue, and country
 rules.
 
-**Still to do:** the mobile pass; a look at real storefronts in this category
+**The phone pass.** The navigation was `display: none` below 640px for several
+rounds — on a phone the header offered no route to Explore at all, and nothing in
+the suite noticed because every page still rendered. It is now a scrolling strip:
+the brand and the account stay, the links take what is left and scroll. Tables
+get a `min-width` and a scroll container rather than squeezed columns, hero
+headroom halves, definition lists stack, and headings were already fluid at the
+token level. `test/mobile.test.js` asserts the phone can still reach the
+navigation, read a table and tap a control.
+
+**Still to do:** a look at real storefronts in this category
 rather than at my own reasoning; creative images (the column and the sanitiser
 exist, the upload path does not). Rent is currently priced from an assumed RPM
 and FX rate — the working is printed on the invoice, but it should read

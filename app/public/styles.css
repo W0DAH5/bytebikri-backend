@@ -367,7 +367,36 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
 }
 .nav a:hover { background: var(--surface-hover); color: var(--text-primary); text-decoration: none; }
 .nav a[aria-current="page"] { color: var(--text-primary); background: var(--surface-hover); }
-@media (max-width: 640px) { .nav { display: none; } }
+/* Below 640px the navigation used to be `display: none`, which meant that on a
+ * phone — where most of this product's traffic is — the header offered no way to
+ * reach Explore at all. Hiding navigation is not a responsive design; it is a
+ * missing one.
+ *
+ * It is now a scrolling strip: the brand and the account stay put, the links get
+ * whatever room is left and scroll horizontally if they need more. Nothing is
+ * hidden behind a tap, nothing needs JavaScript, and the row stays one row.
+ * This is the same pattern the platform's own tab bars use.
+ */
+@media (max-width: 700px) {
+  .header .wrap { gap: var(--space-3); }
+
+  .nav {
+    margin-left: 0; gap: 0;
+    flex: 1 1 auto; min-width: 0;
+    overflow-x: auto; overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    /* The last link must not sit flush against the account buttons. */
+    mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
+  }
+  .nav::-webkit-scrollbar { display: none; }
+  .nav a { padding-inline: var(--space-2); font-size: var(--text-sm); white-space: nowrap; }
+
+  /* The account keeps its control and loses its caption: a name is not what a
+     thumb is looking for, and the avatar already says whether you are signed in. */
+  .who .muted { display: none; }
+  .header .spacer { display: none; }
+}
 
 .who {
   display: inline-flex; align-items: center; gap: var(--space-2);
@@ -1016,6 +1045,38 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
 ::view-transition-new(root) { animation: fade-in var(--motion-normal) var(--ease-decelerate) both; }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes fade-out { from { opacity: 1; } to { opacity: 0; } }
+
+/* ── phone ───────────────────────────────────────────────────────────────── */
+/* Everything below is one idea: a phone is not a small laptop, and the things
+ * that break on one are almost always the things that were given a fixed size.
+ *
+ * `min-width` on the tables rather than `nowrap` on the cells: a table that is
+ * allowed to be wider than its container scrolls, and one that is squeezed
+ * crushes a column into two characters per line. The alternative — a card
+ * layout per row — is a different information architecture, not a media query.
+ */
+@media (max-width: 700px) {
+  .panel-body-flush, .panel-body { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .table { min-width: 520px; }
+
+  /* A hero's 80px of headroom is a third of a phone screen. */
+  .hero { padding-block: var(--space-12) var(--space-10); }
+  .hero::before { height: 420px; }
+  .section { margin-block: var(--space-12); }
+  .footer { margin-top: var(--space-16); padding-block: var(--space-6); }
+
+  /* Definition lists stack: two columns of `auto 1fr` on a 320px screen leaves
+     the value column narrower than the labels. */
+  .kv { grid-template-columns: 1fr; gap: var(--space-1) 0; }
+  .kv dt { margin-top: var(--space-3); }
+  .kv dt:first-child { margin-top: 0; }
+
+  .search { flex-direction: column; }
+  .search .btn { width: 100%; }
+  .card-pad-lg { padding: var(--space-5); }
+  .stat-row { margin-top: var(--space-8); }
+  .proof-strip { gap: var(--space-4) var(--space-6); }
+}
 
 /* ── forms ───────────────────────────────────────────────────────────────── */
 .field { display: grid; gap: var(--space-2); margin-bottom: var(--space-4); }
