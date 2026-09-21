@@ -168,6 +168,13 @@ legal pages, `/login`, `/signup`, `/healthz`, `/readyz` → **all 200**.
 | Legal: privacy, terms, cookies | `src/legal.js` | ✅ |
 | Page-view counting | `page_view_daily` | ✅ |
 | Dashboard: stats, slots, connect, publish | `src/views.js` | ✅ |
+| **Billing: plans, pro-rated upgrade, payment rails** | `src/billing.js`, `/dashboard/:slug/billing` | ✅ **new** |
+| **Annual rent: invoice, working shown, reference, match** | `rent_invoices`, migration 0011 | ✅ **new** |
+| **Operator queue for matching money** | `/admin/billing`, `role = 'admin'` | ✅ **new** |
+| **Store settings: name, tagline, about, banner, listing, ads** | `/dashboard/:slug/settings` | ✅ **new** |
+| **Reviews: written only against an unlock, one reply each** | `reviews` table, asset + dashboard pages | ✅ **new** |
+| **Single-asset management: edit, pause, unlock terms** | `/dashboard/:slug/assets/:id` | ✅ **new** |
+| **Search: stores and files, listed stores only** | `store.search()`, `/marketplace?q=` | ✅ **new** |
 | Deploy: Docker, CI, config refusal | `Dockerfile`, `ci/` | ✅ |
 | Moderation schema, per-country policy | migrations | 🟡 schema only, no workflow |
 
@@ -188,18 +195,20 @@ legal pages, `/login`, `/signup`, `/healthz`, `/readyz` → **all 200**.
 
 ### Missing product surface
 
+Built this round (see §10): billing and upgrade, annual rent with its working
+shown, the operator matching queue, store settings, reviews keyed off unlocks,
+single-asset management, and search.
+
 | Missing | Note |
 |---|---|
-| Reviews and ratings | decided: keyed off unlocks. Schema exists, nothing written |
-| Search and filters | the marketplace lists stores; it cannot search |
-| Store settings (rename, tagline, banner upload) | create-only |
-| Asset editing (rename, re-upload, delete) | create-only |
 | Notifications | delegated in the model; nothing implemented |
 | Refund/dispute flow | decided: harsh measures; no mechanism |
 | KYC verification flow | schema exists, no upload, no review |
-| Wallet / plan payment UI | `plan_payments` exists, no checkout |
 | Following a store | absent |
 | Offline viewing (Android) | absent **on purpose**: a disk cache of unlocked media is a leak with a progress bar |
+| Comments, replies between buyers | reviews only; a comment thread is a moderation load nobody has agreed to carry |
+| Bulk asset operations | one file at a time; a seller with 200 files will want more |
+| Analytics beyond the estimate | no per-asset view counts, no traffic sources in the UI |
 
 ### Missing infrastructure
 
@@ -255,10 +264,84 @@ chore.
 
 ## 9. Tests
 
-`npm test` → **152 pass, 0 fail** (was 133 at the start of this round).
+`npm test` → **184 pass, 0 fail** (was 133 two rounds ago; 152 after the player
+round).
 
 | New | What it holds still |
 |---|---|
 | `test/media.test.js` (12) | kind detection with MIME fallback; the label carries no identity and survives a quote; derivative keys cannot escape their directory; the overlay SVG cannot be made to emit markup; the full Range matrix and exact byte slices; the LRU's bound; and a real ImageMagick run asserting sRGB, dimensions, a visible mark, and a loud failure on a corrupt file |
 | `test/ui.test.js` (+4) | the player is not a download with a label on it; the page never claims the web can stop a screenshot; every selector the client queries exists in a view; **every class the views emit has a CSS rule** |
 | `test/android-contract.test.js` (3) | every endpoint the app calls exists server-side; the parked endpoints stay deleted; `FLAG_SECURE` is set, `FLAG_PRESENTATION` is not, and the app does not kill its own process |
+| `test/billing.test.js` (23) | the two charges and nothing else; rent = monthly estimate × 12 with a zero floor; request-then-pay keeps the paid plan and the renewal date; a payment without an open request is refused; reject leaves the plan alone; matching twice is a no-op; grace is calculated, not stored; **and a write round-trip through every generated `SET` clause** |
+| `test/ui.test.js` (+9) | the billing page states both charges and refuses a third; an unconfigured payment rail says so and names its env var; a pending upgrade never claims the plan changed; no rent invoice explains WHICH reason applies; settings cannot promise a free store the Explore listing; reviews appear only for a buyer with an unlock; the asset page is one form; the operator queue shows what was asked for; search replaces the directory |
+
+Two of the assertions above exist because the bug they describe shipped: the
+billing page's "renewal date does not move" line had no code behind it for a
+zero-length period, and `updateAsset` generated `set title = 2` from a missing
+`$`. Both were found by writing the test, not by reading the code.
+
+---
+
+## 10. This round: the revenue model on the web
+
+The model, stated once: **bytebikri charges two things — a store upgrade and
+annual rent for the platform's one ad slot.** It takes **0% of ad earnings**,
+there is **no price on content**, no commission, and no third charge anywhere in
+the code. Content is unlocked with attention; the ad network pays the seller's
+own account directly and bytebikri is not in that path.
+
+### The two charges
+
+| Charge | How it works | Where |
+|---|---|---|
+| Store upgrade | Pro-rated to the end of the period already paid for. Free 0 · Store 999 · Pro 2499 NPR. The renewal date does not move | `store.upgradeQuote`, `/dashboard/:slug/billing` |
+| Annual rent | Twelve months of one slot's share of measured traffic, on the channel's own anniversary. Zero when the page is too short to spare a slot, or when the traffic did not arrive | `rent_invoices`, `annualRentNpr` |
+
+### Payment is a transfer and a human, because there is no alternative
+
+No acquirer settles to a Nepal-registered entity for this shape of business and
+Stripe Connect is not available to one, so there is no card checkout to build.
+The flow is: **request → pay into a listed account → submit the reference →
+an operator matches it against the statement**. The migration comment for
+`plan_payments` says it exactly: *a screenshot proves a transfer was initiated;
+the statement proves it arrived.* The page says so too, rather than rendering a
+checkout that cannot exist.
+
+Rails are configured from the environment (`PAY_ESEWA_ID`, `PAY_KHALTI_ID`,
+`PAY_IMEPAY_ID`, `PAY_BANK_ACCOUNT`). An unset rail renders as "not configured"
+with the variable name, because the alternative — a placeholder account number
+on a payment page — is how somebody sends money to a stranger.
+
+### What was wrong before this round, and how it showed
+
+| Defect | Consequence | Fix |
+|---|---|---|
+| `requestUpgrade` overwrote the subscription row | asking for Pro **dropped the seller to free**, and the pro-rated quote recomputed against Pro — NPR 2,499 instead of NPR 1,500 | migration 0012: the request lives in `pending_plan_code` and grants nothing |
+| `subscriptions.period_end` was NOT NULL | a free store buying its first plan had no period to record | migration 0013: null means "nothing paid yet, full price due" |
+| the dashboard filtered `plan_payments` by a `channel_id` that does not exist | every seller's payment history was silently empty | `planPaymentsOfChannel` joins through the subscription |
+| `updateAsset` emitted `set title = 2` (no `$` in the template literal) | every save from the asset page failed with a 500 | fixed, and a round-trip test now covers every generated `SET` clause |
+| `plan()` honoured a subscribed plan regardless of status | a cancelled or unpaid subscription still granted paid capability | `effectivePlanCode` reads the status, and calculates the 30-day grace instead of storing it |
+| Store tier had `marketplace_listed: false` | a seller could pay NPR 999 and still be invisible — paying for capacity while the product's promise went unsold | migration 0014: Explore from the first paid tier up; featured placement stays Pro |
+
+### Operator runbook
+
+Set `OPERATOR_EMAIL` to the account that does the matching. Boot promotes that
+account to `role = 'admin'` — the only path to operator, deliberately: there is
+no route that grants the role, so becoming one is a deploy decision rather than
+something somebody can post to. In development the account also gets the demo
+password, so the flow can be walked end to end; in production it must sign up
+first, because `DEMO_PASSWORD` is fatal there.
+
+`/admin/billing` then shows two queues: upgrades waiting for a reference to be
+matched, and rent outstanding. Matching an upgrade is the only action in the
+system that changes what a seller has paid for.
+
+### Still honest about the limits
+
+- Rent is priced at an **assumed** RPM ($0.20) and an assumed FX rate (133), both
+  shown on the invoice. Real provider-reported revenue exists per ad view
+  (`ad_view_events.revenue_usd`) and could replace the assumption instead of
+  sitting next to it.
+- Grace is 30 days and self-calculated. Nothing is deleted on expiry.
+- No dunning, no reminders, no receipts by email: notifications are delegated and
+  unimplemented, so the seller sees their own state on their own billing page.

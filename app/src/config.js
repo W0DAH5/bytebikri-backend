@@ -106,7 +106,7 @@ export function checkConfig(env = process.env) {
     }
     if (!env.OPERATOR_EMAIL) {
       warnings.push({ name: 'OPERATOR_EMAIL', why: 'missing',
-        detail: 'The privacy notice publishes a contact address; without one it is not a valid notice.' });
+        detail: 'Two things need it: the privacy notice publishes a contact address, and every boot promotes this account to operator so payments can be matched at /admin/billing.' });
     }
     if (env.DEMO_PASSWORD) {
       errors.push({ name: 'DEMO_PASSWORD', why: 'set in production',

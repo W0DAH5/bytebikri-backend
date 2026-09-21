@@ -850,3 +850,154 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   background: var(--surface-sunken); padding: 2px 6px; border-radius: var(--radius-sm);
 }
 .prose strong { color: var(--text-primary); }
+
+/* ── account pages: sub-navigation ───────────────────────────────────────── */
+/* One row, present on every account page, with the current one marked. A
+   dashboard whose pages do not link to each other is four dead ends. */
+.subnav {
+  display: flex; flex-wrap: wrap; gap: var(--space-2);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  margin-top: var(--space-6);
+}
+.subnav a {
+  padding: var(--space-2) var(--space-4); min-height: 36px;
+  display: inline-flex; align-items: center;
+  border-radius: var(--radius-full);
+  color: var(--text-muted); font-size: var(--text-sm); font-weight: 550;
+  border: 1px solid transparent;
+}
+.subnav a:hover { color: var(--text-primary); background: var(--surface-hover); text-decoration: none; }
+.subnav a[aria-current="page"] {
+  color: var(--accent-text); background: var(--accent-soft); border-color: var(--border-subtle);
+}
+
+/* ── account pages: two-column layout ────────────────────────────────────── */
+/* Grid for the page, so the two cards line up on the same rows whatever the
+   length of their contents. Below 900px it is a single column and the order is
+   the order of the markup — the money first on the billing page, which is what
+   someone opened it for. */
+.cols-2 {
+  display: grid; gap: var(--space-6);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  align-items: start;
+}
+.cols-2 > .panel, .cols-2 > form { margin: 0; }
+.form-foot {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap;
+  padding-top: var(--space-4); border-top: 1px solid var(--border-subtle);
+}
+
+/* ── payment rails ───────────────────────────────────────────────────────── */
+.rail-grid {
+  display: grid; gap: var(--space-4); margin-top: var(--space-5);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+}
+.rail {
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+  background: var(--surface-base);
+}
+.rail-off { border-style: dashed; }
+.rail-name { font-size: var(--text-xs); color: var(--text-faint); letter-spacing: var(--tracking-wide); text-transform: uppercase; }
+.rail-value { font-size: var(--text-md); font-weight: 600; margin-top: var(--space-2); overflow-wrap: anywhere; }
+
+/* An amount and what it is for, on one line, with the number right-aligned to
+   the same edge as every other number on the page. */
+.amount-line {
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-4);
+  padding-block: var(--space-4); margin-block: var(--space-2);
+  border-block: 1px solid var(--border-subtle);
+  font-size: var(--text-sm); color: var(--text-muted);
+}
+.amount-line strong { font-size: var(--text-xl); color: var(--text-primary); font-variant-numeric: tabular-nums; }
+
+.pay-form {
+  margin-top: var(--space-5); padding-top: var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+}
+.list-checks { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3); }
+.list-checks > li {
+  position: relative; padding-left: var(--space-8);
+  font-size: var(--text-sm); color: var(--text-secondary); line-height: var(--leading-snug);
+}
+.list-checks > li::before {
+  content: "✓"; position: absolute; left: 0; top: 0;
+  color: var(--success-text); font-weight: 700;
+}
+
+/* ── settings ────────────────────────────────────────────────────────────── */
+.settings-banner {
+  display: block; width: 100%; aspect-ratio: 4 / 1; object-fit: cover;
+  border-radius: var(--radius-md); border: 1px solid var(--border-subtle);
+  background: var(--surface-sunken);
+}
+.settings-banner-empty {
+  display: grid; place-items: center;
+  color: var(--text-faint); font-size: var(--text-sm);
+}
+.choice, .check {
+  display: flex; gap: var(--space-4); align-items: flex-start;
+  padding: var(--space-4); margin-top: var(--space-3);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+  background: var(--surface-base); cursor: pointer;
+  font-size: var(--text-sm); line-height: var(--leading-snug);
+}
+.check { align-items: center; }
+.choice:hover, .check:hover { border-color: var(--border-strong); }
+.choice input, .check input { margin-top: 2px; width: 18px; height: 18px; accent-color: var(--accent); flex: 0 0 auto; }
+.check input { margin-top: 0; }
+.choice strong { display: block; font-size: var(--text-md); color: var(--text-primary); }
+.choice .fine { display: block; margin-top: var(--space-2); }
+
+/* ── search ──────────────────────────────────────────────────────────────── */
+.search { display: flex; gap: var(--space-3); margin-top: var(--space-6); max-width: 560px; }
+.search .input { flex: 1 1 auto; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* ── reviews ─────────────────────────────────────────────────────────────── */
+.review-list { list-style: none; margin: var(--space-6) 0 0; padding: 0; display: grid; gap: var(--space-4); }
+.review {
+  padding: var(--space-5);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+}
+.review-head { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; font-size: var(--text-sm); }
+.review-who { color: var(--text-faint); }
+.review-body { margin: var(--space-3) 0 0; font-size: var(--text-sm); color: var(--text-secondary); line-height: var(--leading-normal); }
+.review-reply {
+  margin-top: var(--space-4); padding: var(--space-4);
+  border-left: 2px solid var(--accent);
+  background: var(--surface-base); border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  font-size: var(--text-sm); color: var(--text-secondary);
+}
+.review-reply p { margin: var(--space-2) 0 0; }
+.review-reply .fine { color: var(--text-faint); }
+.review-form { display: flex; gap: var(--space-3); margin-top: var(--space-4); align-items: center; }
+.review-form .input { flex: 1 1 auto; }
+.review-write {
+  margin-top: var(--space-6); padding: var(--space-5);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+}
+.review-write h3 { font-size: var(--text-md); margin: 0 0 var(--space-4); }
+.review-write .textarea { margin-top: var(--space-4); }
+.review-write .btn { margin-top: var(--space-4); }
+/* A star row, sized so the glyphs are legible rather than decorative. */
+.stars { color: var(--warning-text); letter-spacing: 2px; font-size: var(--text-md); }
+.rating-picker { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.rating-picker label {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  min-height: 44px; min-width: 44px; justify-content: center;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+  cursor: pointer; font-size: var(--text-sm); font-variant-numeric: tabular-nums;
+}
+.rating-picker label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); color: var(--text-primary); }
+
+/* ── operator queue ──────────────────────────────────────────────────────── */
+.inline-form { display: inline-flex; gap: var(--space-2); }

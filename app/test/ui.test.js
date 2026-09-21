@@ -210,3 +210,215 @@ test('every class the views emit has a rule in the stylesheet', () => {
   assert.deepEqual(missing, [], `views.js uses classes with no CSS rule: ${missing.join(', ')}`);
   assert.ok(used.size >= 40, `expected the views to use several classes, saw ${used.size}`);
 });
+
+// ---------------------------------------------------------------------------
+// The pages that were missing
+//
+// Billing, settings, reviews, single-asset management and search. Each of these
+// is a page whose content is a claim about money or about who may speak, so the
+// assertions are about what the page SAYS, not that it renders.
+// ---------------------------------------------------------------------------
+
+const { billing: billingView, storeSettings, dashboardReviews, assetManage, operatorBilling, marketplace } =
+  await import('../src/views.js');
+const { PLANS } = await import('../src/store.js');
+const { railDetails, planBenefits, upgradeExplanation, NOT_CHARGED } = await import('../src/billing.js');
+
+const CHANNEL = {
+  id: '11111111-1111-4111-8111-111111111111', slug: 'alice', name: 'Alice Studio',
+  tagline: 'Poster kits', about: 'About', channel_contact: '', banner_url: null,
+  listing_mode: 'storefront', ads_enabled: true, sells_digital: true, sells_physical: false,
+};
+const SUB = {
+  id: '22222222-2222-4222-8222-222222222222', channel_id: CHANNEL.id, plan_code: 'store',
+  status: 'active', period_end: '2027-09-21T00:00:00Z', period_start: '2026-09-21T00:00:00Z',
+  pending_plan_code: null,
+};
+
+test('the billing page states both charges and refuses to invent a third', () => {
+  const html = billingView({
+    channel: CHANNEL, user: null, plan: PLANS.store, nextPlanCode: 'pro',
+    quote: { from: PLANS.store, to: PLANS.pro, daysLeft: 200, fullDifference: 1500, amountNpr: 822 },
+    // The real explanation, because the route passes the real one: a stub here
+    // would test the stub.
+    upgrade: upgradeExplanation({ from: PLANS.store, to: PLANS.pro, daysLeft: 200, fullDifference: 1500, amountNpr: 822 }),
+    pending: null, subscription: SUB, invoice: null,
+    estimate: { pageviews30d: 400, total: 5, rent: 1, rpmUsd: 0.2, estNpr: 2 },
+    pageviews: 400, paidTotal: 0, payments: [], invoices: [],
+    rails: railDetails({ PAY_ESEWA_ID: '9800000001' }), railsReady: true, payee: 'ByteBikri Pvt Ltd',
+    benefits: planBenefits(PLANS.store, { availableSlots: 5 }), notCharged: NOT_CHARGED, slots: [],
+  });
+
+  assert.ok(/NPR 822/.test(html), 'the pro-rated amount is on the page');
+  assert.ok(/renewal date does not move/i.test(html));
+  assert.ok(/no card checkout/i.test(html), 'the absence of a processor is explained, not hidden');
+  assert.ok(/0%/.test(html), 'the 0% ad-share promise is stated where money is mentioned');
+  assert.ok(!/checkout now|pay with card|stripe|paypal/i.test(html), 'no fake checkout, ever');
+  // The words appear only in the "what you are not charged" list. A bare
+  // /commission/ test would fail on that list — which is the page doing its job.
+  const chargeWords = [...html.matchAll(/.{0,14}(commission|platform fee|take rate)/gi)].map((m) => m[0]);
+  assert.ok(chargeWords.every((m) => /no /i.test(m)),
+    `a third charge is named without being denied: ${chargeWords.join(' | ')}`);
+});
+
+test('a pending upgrade says what to send, and does not claim the plan changed', () => {
+  const pending = {
+    code: 'pro', name: 'Pro', amountNpr: 1500, reference: null, method: null, since: new Date(),
+  };
+  const html = billingView({
+    channel: CHANNEL, user: null, plan: PLANS.store, nextPlanCode: 'pro', quote: null, upgrade: null,
+    pending, subscription: SUB, invoice: null, estimate: {}, pageviews: 0, paidTotal: 0,
+    payments: [], invoices: [], rails: railDetails({ PAY_KHALTI_ID: '9800000002' }), railsReady: true,
+    payee: 'ByteBikri Pvt Ltd', benefits: [], notCharged: NOT_CHARGED, slots: [],
+  });
+  assert.ok(/Waiting to be matched/.test(html));
+  assert.ok(/stays exactly as it is until the money is matched/.test(html));
+  assert.ok(/name="txnReference"/.test(html), 'the reference form is the next step');
+  assert.ok(/upgrade requested/.test(html), 'the pill says a request is open');
+
+  // With a reference submitted, the form is gone: there is nothing more to send.
+  const submitted = billingView({
+    channel: CHANNEL, user: null, plan: PLANS.store, nextPlanCode: 'pro', quote: null, upgrade: null,
+    pending: { ...pending, reference: 'KHALTI778899', method: 'khalti' },
+    subscription: SUB, invoice: null, estimate: {}, pageviews: 0, paidTotal: 0,
+    payments: [], invoices: [], rails: [], railsReady: false, payee: null,
+    benefits: [], notCharged: NOT_CHARGED, slots: [],
+  });
+  assert.ok(/Reference received/.test(submitted));
+  assert.ok(!/name="txnReference"/.test(submitted), 'nobody is asked to submit a reference twice');
+});
+
+test('no rent invoice says WHY there is none', () => {
+  const withSlot = billingView({
+    channel: CHANNEL, user: null, plan: PLANS.free, nextPlanCode: 'store', quote: null, upgrade: null,
+    pending: null, subscription: null, invoice: null,
+    estimate: { pageviews30d: 12, total: 5, rent: 1, rpmUsd: 0.2, estNpr: 0 }, pageviews: 12,
+    paidTotal: 0, payments: [], invoices: [], rails: [], railsReady: false, payee: null,
+    benefits: [], notCharged: NOT_CHARGED, slots: [],
+  });
+  assert.ok(/earned nothing this period/.test(withSlot), 'a slot that earned nothing is not a short page');
+
+  const shortPage = billingView({
+    channel: CHANNEL, user: null, plan: PLANS.free, nextPlanCode: 'store', quote: null, upgrade: null,
+    pending: null, subscription: null, invoice: null,
+    estimate: { pageviews30d: 900, total: 2, rent: 0, rpmUsd: 0.2, estNpr: 0 }, pageviews: 900,
+    paidTotal: 0, payments: [], invoices: [], rails: [], railsReady: false, payee: null,
+    benefits: [], notCharged: NOT_CHARGED, slots: [],
+  });
+  assert.ok(/shorter than that/.test(shortPage), 'a page too short to rent says so');
+  assert.ok(!/earned nothing/.test(shortPage), 'and does not blame the traffic for it');
+});
+
+test('the rail list shows an unconfigured account as unconfigured', () => {
+  const html = billingView({
+    channel: CHANNEL, user: null, plan: PLANS.free, nextPlanCode: 'store', quote: null, upgrade: null,
+    pending: null, subscription: null, invoice: null, estimate: {}, pageviews: 0, paidTotal: 0,
+    payments: [], invoices: [], rails: railDetails({ PAY_ESEWA_ID: '9800000001' }), railsReady: true,
+    payee: null, benefits: [], notCharged: NOT_CHARGED, slots: [],
+  });
+  assert.ok(/9800000001/.test(html), 'a configured account is shown');
+  assert.ok(/not configured/.test(html), 'an unconfigured rail says so rather than showing a placeholder');
+  assert.ok(/PAY_KHALTI_ID/.test(html), 'and names the variable that would fix it');
+  // The "something else" rail is not an account and never appears in the list.
+  assert.ok(!/Something else\s*<\/div>\s*<div class="rail-value mono"/.test(html));
+});
+
+test('store settings cannot promise a free store the Explore listing', () => {
+  const free = storeSettings({
+    channel: CHANNEL, user: null, plan: PLANS.free, canList: false, subscription: null, stats: {},
+  });
+  assert.ok(/does not include it/.test(free), 'the disabled radio explains why');
+  assert.ok(/disabled/.test(free), 'and the control is actually disabled');
+
+  const pro = storeSettings({
+    channel: { ...CHANNEL, listing_mode: 'marketplace' }, user: null, plan: PLANS.pro,
+    canList: true, subscription: SUB, stats: { count: 3, average: 4.5 },
+  });
+  assert.ok(/Included in your plan/.test(pro));
+  assert.ok(!/disabled/.test(pro));
+  assert.ok(/a buyer cannot use this store to find you/i.test(pro),
+    'the page states what is kept private, not just what is shown');
+});
+
+test('reviews are keyed off unlocks on both sides of the page', async () => {
+  const { assetPage } = await import('../src/views.js');
+  const base = {
+    channel: CHANNEL, asset: { slug: 'kit', title: 'Kit', description: 'd', unlock_mode: 'ad_gated' },
+    files: [], unlocked: true, user: null, policy: {}, slots: [], previewFile: null,
+    markUri: '', markLabel: 'BYTEBIKRI abc def', accessUntil: null, reviewStats: { count: 0, average: 0 },
+  };
+
+  const buyer = assetPage({ ...base, reviews: [], canReview: true, myReview: null });
+  assert.ok(/name="rating"/.test(buyer), 'someone holding an unlock gets a form');
+
+  const stranger = assetPage({ ...base, unlocked: false, reviews: [], canReview: false, myReview: null });
+  assert.ok(!/name="rating"/.test(stranger), 'someone without one does not');
+  assert.ok(/only be written by somebody who unlocked/i.test(stranger));
+
+  const mine = assetPage({ ...base, reviews: [], canReview: false, myReview: { rating: 4, body: 'Good' } });
+  assert.ok(/Your review is on the page/.test(mine));
+  assert.ok(/Update review/.test(mine));
+
+  const seller = dashboardReviews({
+    channel: CHANNEL, user: null,
+    reviews: [{
+      id: '33333333-3333-4333-8333-333333333333', rating: 5, body: 'Great', asset_title: 'Kit',
+      asset_slug: 'kit', created_at: new Date().toISOString(), seller_response: null,
+    }],
+    stats: { count: 1, average: 5 },
+  });
+  assert.ok(/name="response"/.test(seller), 'the seller gets one reply box');
+  assert.ok(/Written only by people who unlocked the file/.test(seller));
+});
+
+test('the asset page is one form, so one save cannot undo another', () => {
+  const html = assetManage({
+    channel: CHANNEL, user: null,
+    asset: {
+      id: '44444444-4444-4444-8444-444444444444', slug: 'kit', title: 'Kit',
+      description: 'd', unlock_mode: 'ad_gated', status: 'live',
+    },
+    files: [{ filename: 'kit.zip', mime_type: 'application/zip', size_bytes: 1024 }],
+    policy: { ads_required: 1, ad_min_seconds: 15, unlock_hours: 24 },
+    stats: { count: 0, average: 0 }, unlocks: 0,
+  });
+  assert.equal((html.match(/<form/g) || []).length, 1, 'one form on the page, one save');
+  assert.ok(/name="title"/.test(html) && /name="adsRequired"/.test(html));
+  assert.ok(!/type="hidden"/.test(html), 'nothing is mirrored into a hidden field to go stale');
+  assert.ok(/cannot be swapped for another one here/.test(html),
+    'the page refuses a silent file swap, and says why');
+});
+
+test('the operator queue shows what the seller asked for, and only open items', () => {
+  const html = operatorBilling({
+    user: { role: 'admin', email: 'op@bytebikri.local', display_name: 'Op' }, payee: 'ByteBikri Pvt Ltd',
+    payments: [{
+      id: '55555555-5555-4555-8555-555555555555', channel_name: 'Alice Studio', channel_slug: 'alice',
+      plan_code: 'pro', txn_reference: 'KHALTI778899', method: 'khalti', payer_name: 'Alice',
+      payer_number: '9800000001', amount_npr: 1500, created_at: new Date().toISOString(),
+    }],
+    invoices: [{
+      id: '66666666-6666-4666-8666-666666666666', channel_name: 'Alice Studio', channel_slug: 'alice',
+      period_start: '2026-09-21', period_end: '2027-09-21', txn_reference: 'SLIP-9931',
+      amount_npr: 24, status: 'submitted',
+    }],
+  });
+  assert.ok(/KHALTI778899/.test(html) && /NPR 1,500/.test(html));
+  assert.ok(/value="match"/.test(html) && /value="reject"/.test(html), 'both outcomes are one click each');
+  assert.ok(/Matching an upgrade activates the subscription; it is the only thing that does/.test(html),
+    'the page states the single thing that changes what a seller has paid for');
+  assert.ok(/Mark paid/.test(html));
+});
+
+test('search results replace the directory rather than sitting above it', () => {
+  const searching = marketplace({
+    channels: [], user: null, q: 'devanagari',
+    results: { term: 'devanagari', stores: [], assets: [] },
+  });
+  assert.ok(/Nothing matches/.test(searching));
+  assert.ok(!/Listed stores/.test(searching), 'the heading is not an answer to the search');
+  assert.ok(/role="search"/.test(searching));
+
+  const plain = marketplace({ channels: [], user: null, q: '', results: null });
+  assert.ok(/Listed stores/.test(plain));
+});

@@ -17,10 +17,13 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { store, storage, SLOT_DEFS, slugify } from './src/store.js';
-import { assertProductionConfig, readSecret, checkConfig, formatConfigReport } from './src/config.js';
+import { store, storage, SLOT_DEFS, slugify, PLANS } from './src/store.js';
+import { assertProductionConfig, readSecret, checkConfig, formatConfigReport, isProd } from './src/config.js';
 import { many, scalar, health as dbHealth, close as closeDb } from './src/db.js';
 import { allocateSlots, estimateRentSlotValue, POLICY } from './src/slots.js';
+import {
+  railDetails, railsReady, payeeName, upgradeExplanation, planBenefits, NOT_CHARGED,
+} from './src/billing.js';
 import { selectableProviders, providerById, loadRegistry } from './src/registry.js';
 import {
   startUnlock, unlockStatus, handlePostback, signHousePostback,
@@ -253,8 +256,13 @@ APP.get('/', async (req, res, next) => {
 
 APP.get('/marketplace', async (req, res, next) => {
   try {
+    const q = String(req.query.q || '').slice(0, 80);
+    // Only search when there is something to search for. The directory itself
+    // stays the default answer, because a search box that starts empty and
+    // returns nothing looks broken.
+    const results = q.trim().length >= 2 ? await store.search(q) : null;
     const channels = await decorateChannels(await store.channels({ listedOnly: true }));
-    res.send(views.marketplace({ channels, user: req.user, consent: req.consent }));
+    res.send(views.marketplace({ channels, user: req.user, consent: req.consent, q, results }));
   } catch (err) { next(err); }
 });
 
@@ -528,10 +536,21 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
     // lives, so every 24-hour unlock was described as "permanent access".
     const unlock = unlocked && req.user ? await store.unlockFor(asset.id, req.user.id) : null;
 
+    // Reviews: the list, the average, and whether THIS person may write one.
+    // The view cannot ask — it renders synchronously — so all three are decided
+    // here, including the one that matters: an unlock row is what earns a voice.
+    const reviews = await store.reviewsOfAsset(asset.id);
+    const reviewStats = await store.reviewStatsOfAsset(asset.id);
+    const myReview = unlock ? reviews.find((r) => r.unlock_id === unlock.id) ?? null : null;
+
     res.send(views.assetPage({
       channel, asset, files, unlocked, user: req.user, consent: req.consent,
       accessUntil: unlock?.expires_at ?? null,
       previewFile, markUri, markLabel,
+      reviews, reviewStats,
+      canReview: Boolean(unlock) && !myReview,
+      myReview,
+      reviewError: REVIEW_ERRORS[String(req.query.error)] || null,
       policy: await store.unlockPolicy(asset.id),
       slots: (await buildSlots(channel)).filter((s) => s.serving && s.surface === 'webview'),
     }));
@@ -567,11 +586,7 @@ APP.get('/dashboard/:slug', async (req, res, next) => {
     // Flash messages travel as short codes and are mapped to sentences here.
     // Never echo a query parameter into HTML: `?error=<script>` is the oldest
     // reflected-XSS there is, and escaping is not a substitute for not doing it.
-    const flash = req.query.published
-      ? { kind: 'success', message: `Published “${String(req.query.published).slice(0, 80)}”. It is live on your storefront now.` }
-      : req.query.error
-        ? { kind: 'danger', message: FLASH[String(req.query.error)] || 'That did not work. Nothing was published.' }
-        : null;
+    const flash = flashFor(req.query);
 
     res.send(views.dashboard({
       flash, consent: req.consent,
@@ -582,7 +597,11 @@ APP.get('/dashboard/:slug', async (req, res, next) => {
       estimate, pageviews,
       adViews: await store.adViews({ channelId: channel.id }),
       upgrade: store.upgradeQuote(channel, 'store'),
-      pendingPayments: (await store.planPayments()).filter((p) => p.channel_id === channel.id),
+      // Through the subscription, because a plan payment has no channel of its
+      // own: `plan_payments.subscription_id` is the only path back, and the
+      // previous version filtered on a column that does not exist — which is
+      // why this counter always read zero.
+      pendingPayments: await store.planPaymentsOfChannel(channel.id),
     }));
   } catch (err) { next(err); }
 });
@@ -1095,14 +1114,59 @@ const mimeFor = (key) => ({
 // still exists for programmatic use; this is the form a person actually uses,
 // which is why it redirects back with a message instead of returning JSON.
 // ---------------------------------------------------------------------------
-const FLASH = {
-  title: 'Give the file a title — it becomes the page address.',
+const PLAN_CODES = Object.keys(PLANS);
+const PAY_METHODS = ['esewa', 'khalti', 'imepay', 'bank', 'other'];
+
+/**
+ * Flash messages, from short codes.
+ *
+ * Codes travel in the query string and are mapped to sentences here, because
+ * echoing a query parameter into HTML is the oldest reflected-XSS there is and
+ * escaping is not a substitute for not doing it. An unknown code produces
+ * nothing rather than the code itself.
+ */
+const REVIEW_ERRORS = {
+  unlock: 'Only somebody who unlocked this file can review it. Unlock it first, then come back.',
+  rating: 'Pick a rating from one to five.',
+};
+
+const SUCCESS_FLASH = {
+  published: (v) => `Published “${String(v).slice(0, 80)}”. It is live on your storefront now.`,
+  saved: () => 'Saved.',
+  submitted: () => 'Reference received. An operator matches it against the bank or wallet statement by hand, and your plan changes when it clears.',
+  requested: () => 'Upgrade requested. Send the amount to the account shown, then submit the transfer reference.',
+  reviewed: () => 'Thank you — your review is on the page.',
+  responded: () => 'Reply posted.',
+};
+
+const ERROR_FLASH = {
+  name: 'A store needs a name.',
+  title: 'A file needs a title — it becomes the page address.',
+  plan: 'That plan is not available from your current one.',
+  listing: 'Explore is part of the paid plans. Switch to your own address, or upgrade on the billing page.',
+  banner: 'The banner must be an image under 5 MB.',
+  reference: 'Enter the transaction reference from your transfer — at least four characters.',
+  nothing: 'There is nothing waiting to be paid right now.',
+  unlock: 'Only someone who has unlocked this file can review it.',
+  rating: 'Pick a rating from one to five.',
   media: 'Attach the file people are unlocking. Nothing was published.',
-  limit: 'Your plan\'s file limit is reached. Existing files stay live; upgrade to publish more.',
+  limit: "Your plan's file limit is reached. Existing files stay live; upgrade to publish more.",
   cover: 'The cover must be an image under 5 MB.',
   size: 'That file is larger than the 25 MB upload limit.',
   toobig: 'That file is larger than the 25 MB upload limit.',
 };
+
+function flashFor(query = {}) {
+  for (const [key, build] of Object.entries(SUCCESS_FLASH)) {
+    if (query[key]) return { kind: 'success', message: build(query[key]) };
+  }
+  if (query.error) {
+    // An unmatched code still says something. An empty red box is a worse
+    // answer than a vague sentence.
+    return { kind: 'danger', message: ERROR_FLASH[String(query.error)] || 'That did not work. Nothing was changed.' };
+  }
+  return null;
+}
 
 APP.post('/dashboard/:slug/assets', upload.fields([
   { name: 'media', maxCount: 1 },
@@ -1171,6 +1235,420 @@ APP.post('/dashboard/:slug/assets', upload.fields([
 });
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Billing — the two things bytebikri charges for
+//
+// A store upgrade and annual rent. Both are the SELLER paying the PLATFORM for
+// space and capability; neither is a cut of what the seller earns, and there is
+// no third charge anywhere in this file.
+//
+// One rule repeated in every route below: bytebikri holds no money from selling,
+// so the seller's flow ends with a reference submitted and a human matching it
+// against the statement. The page says that plainly rather than rendering a
+// checkout that cannot exist.
+// ---------------------------------------------------------------------------
+
+/** Resolve the store in the URL, and refuse anyone who is not its owner. */
+async function ownerChannel(req, res) {
+  if (!req.user) {
+    res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    return null;
+  }
+  const channel = await store.channelBySlug(req.params.slug);
+  // 404 rather than 403, the same as the dashboard: confirming a store exists
+  // but is not yours still tells a stranger it exists.
+  if (!channel || (channel.owner_id !== req.user.id && req.user.role !== 'admin')) {
+    res.status(404).send('Channel not found');
+    return null;
+  }
+  return channel;
+}
+
+/** Billing state, assembled once for the page. */
+async function billingState(channel) {
+  const slots = await buildSlots(channel);
+  const pageviews = await store.pageviews30d(channel.id);
+  const estimate = estimateRentSlotValue({ pageviews30d: pageviews, slots });
+  const invoice = await store.ensureRentInvoice({ channel, estimate });
+  const plan = store.plan(channel);
+  const nextCode = plan.code === 'free' ? 'store' : plan.code === 'store' ? 'pro' : null;
+  const payments = await store.planPaymentsOfChannel(channel.id);
+  const subscription = await store.subscriptionOf(channel.id);
+
+  const quote = nextCode ? store.upgradeQuote(channel, nextCode) : null;
+
+  /**
+   * An upgrade that has been asked for and not yet paid for.
+   *
+   * The amount is taken from the submitted payment when there is one, and from
+   * the quote when there is not — never from the request's plan price, which is
+   * the number nobody owes. A request with no reference yet shows the seller
+   * what to send; a request with one says what is being checked.
+   */
+  const pendingCode = subscription?.pending_plan_code || null;
+  const submitted = pendingCode ? payments.find((pay) => pay.status === 'submitted') : null;
+  const pending = pendingCode ? {
+    code: pendingCode,
+    name: (PLANS[pendingCode] || {}).name || pendingCode,
+    amountNpr: submitted?.amount_npr ?? quote?.amountNpr ?? 0,
+    reference: submitted?.txn_reference || null,
+    method: submitted?.method || null,
+    since: subscription.pending_since,
+  } : null;
+
+  return {
+    slots, pageviews, estimate, invoice, plan, nextCode, payments, pending, quote,
+    paidTotal: payments.filter((p) => p.status === 'matched').reduce((acc, p) => acc + p.amount_npr, 0),
+    invoices: await store.rentInvoicesOfChannel(channel.id),
+    subscription,
+  };
+}
+
+APP.get('/dashboard/:slug/billing', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+
+    const state = await billingState(channel);
+    res.send(views.billing({
+      channel, user: req.user, consent: req.consent, flash: flashFor(req.query),
+      plan: state.plan,
+      nextPlanCode: state.nextCode,
+      pending: state.pending,
+      quote: state.quote,
+      upgrade: state.quote ? upgradeExplanation(state.quote) : null,
+      subscription: state.subscription,
+      invoice: state.invoice,
+      estimate: state.estimate,
+      pageviews: state.pageviews,
+      paidTotal: state.paidTotal,
+      payments: state.payments,
+      invoices: state.invoices,
+      rails: railDetails(),
+      railsReady: railsReady(),
+      payee: payeeName(),
+      // How many slots EXIST, not how many the plan allows: the pricing page
+      // must not promise a position the storefront cannot render.
+      benefits: planBenefits(state.plan, {
+        availableSlots: SLOT_DEFS.filter((d) => d.active && (d.surfaces || []).includes('web')).length,
+      }),
+      notCharged: NOT_CHARGED,
+      slots: state.slots,
+    }));
+  } catch (err) { return next(err); }
+});
+
+/** Ask for the upgrade. Creates a PENDING subscription — never an active one. */
+APP.post('/dashboard/:slug/upgrade', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    const back = `/dashboard/${encodeURIComponent(channel.slug)}/billing`;
+
+    const code = String(req.body.plan || '');
+    if (!PLAN_CODES.includes(code) || code === 'free') return res.redirect(`${back}?error=plan`);
+
+    // Up only. A downgrade mid-period is a refund decision, and there is
+    // nothing here to refund into.
+    const quote = store.upgradeQuote(channel, code);
+    if (!quote) return res.redirect(`${back}?error=plan`);
+
+    await store.requestUpgrade(channel, code);
+    await store.audit('plan.requested', { channelId: channel.id, plan: code, amountNpr: quote.amountNpr });
+    return res.redirect(`${back}?requested=${encodeURIComponent(code)}`);
+  } catch (err) { return next(err); }
+});
+
+/** The seller submits the transfer reference for their upgrade. */
+APP.post('/dashboard/:slug/billing/plan-payment', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    const back = `/dashboard/${encodeURIComponent(channel.slug)}/billing`;
+
+    // Refuse when there is no OPEN request. The first version tested the
+    // subscription status instead, and since a request no longer changes the
+    // status (it must not — the paid plan stays active), that check refused
+    // every submission with "there is nothing waiting to be paid".
+    const subscript = await store.subscriptionOf(channel.id);
+    if (!subscript?.pending_plan_code) return res.redirect(`${back}?error=nothing`);
+
+    const reference = String(req.body.txnReference || '').trim().slice(0, 120);
+    if (reference.length < 4) return res.redirect(`${back}?error=reference`);
+
+    // The amount is recomputed HERE, from the plan and the period. A hidden
+    // field is a suggestion; this one decides how much money is expected.
+    // Quoted against the plan being UPGRADED TO, pro-rated from the one being
+    // held. Reading `subscript.plan_code` here would have quoted the current
+    // plan against itself and billed the full price of the new one.
+    const quote = store.upgradeQuote(channel, subscript.pending_plan_code);
+    const amount = quote ? quote.amountNpr
+      : (PLANS[subscript.pending_plan_code] || {}).priceNpr || 0;
+
+    const payment = await store.recordPlanPayment({
+      channelId: channel.id,
+      amountNpr: amount,
+      txnReference: reference,
+      method: PAY_METHODS.includes(req.body.method) ? req.body.method : 'esewa',
+      payerName: String(req.body.payerName || '').trim().slice(0, 120),
+      payerNumber: String(req.body.payerNumber || '').trim().slice(0, 40),
+    });
+    if (!payment) return res.redirect(`${back}?error=nothing`);
+
+    await store.audit('plan.payment_submitted', {
+      channelId: channel.id, amountNpr: amount, reference, method: payment.method,
+    });
+    return res.redirect(`${back}?submitted=1`);
+  } catch (err) { return next(err); }
+});
+
+/** The seller submits the transfer reference for this year's rent. */
+APP.post('/dashboard/:slug/billing/rent-payment', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    const back = `/dashboard/${encodeURIComponent(channel.slug)}/billing`;
+
+    const reference = String(req.body.txnReference || '').trim().slice(0, 120);
+    if (reference.length < 4) return res.redirect(`${back}?error=reference`);
+
+    const invoice = await store.submitRentPayment({
+      invoiceId: String(req.body.invoiceId || ''),
+      channelId: channel.id,
+      method: PAY_METHODS.includes(req.body.method) ? req.body.method : 'esewa',
+      txnReference: reference,
+      payerName: String(req.body.payerName || '').trim().slice(0, 120),
+      payerNumber: String(req.body.payerNumber || '').trim().slice(0, 40),
+    });
+    if (!invoice) return res.redirect(`${back}?error=nothing`);
+
+    await store.audit('rent.payment_submitted', {
+      channelId: channel.id, invoiceId: invoice.id, amountNpr: invoice.amount_npr, reference,
+    });
+    return res.redirect(`${back}?submitted=1`);
+  } catch (err) { return next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// Operator — matching money against the statement
+//
+// A page and not an API: this is the one place a human decision changes what
+// somebody has paid for, so it should be visible, boring, and hard to do by
+// accident. Behind `role = 'admin'`, which no seller account has.
+// ---------------------------------------------------------------------------
+APP.get('/admin/billing', async (req, res, next) => {
+  try {
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    if (req.user.role !== 'admin') return res.status(404).send('Not found');
+    res.send(views.operatorBilling({
+      user: req.user, consent: req.consent, flash: flashFor(req.query),
+      payments: await store.unmatchedPayments(),
+      invoices: await store.openRentInvoices(),
+      payee: payeeName(),
+    }));
+  } catch (err) { return next(err); }
+});
+
+APP.post('/admin/billing/plan/:id', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    if (req.body.action === 'reject') {
+      await store.rejectPlanPayment({
+        paymentId: req.params.id, actorId: req.user.id,
+        reason: String(req.body.reason || '').trim().slice(0, 300),
+      });
+      await store.audit('plan.payment_rejected', { paymentId: req.params.id });
+    } else {
+      const matched = await store.matchPlanPayment({ paymentId: req.params.id, actorId: req.user.id });
+      await store.audit('plan.payment_matched', { paymentId: req.params.id, ok: Boolean(matched) });
+    }
+    return res.redirect('/admin/billing');
+  } catch (err) { return next(err); }
+});
+
+APP.post('/admin/billing/rent/:id', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    await store.matchRentPayment({
+      invoiceId: req.params.id, actorId: req.user.id,
+      note: String(req.body.note || '').trim().slice(0, 300) || null,
+    });
+    await store.audit('rent.payment_matched', { invoiceId: req.params.id });
+    return res.redirect('/admin/billing');
+  } catch (err) { return next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// Store settings
+// ---------------------------------------------------------------------------
+APP.get('/dashboard/:slug/settings', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    const plan = store.plan(channel);
+    res.send(views.storeSettings({
+      channel, user: req.user, consent: req.consent, flash: flashFor(req.query),
+      plan,
+      // Whether the marketplace is REACHABLE, not just whether the box is
+      // ticked: a free store that asks for it gets an explanation, not a
+      // silent revert to storefront.
+      canList: plan.capabilities.marketplace_listed === true,
+      subscription: await store.subscriptionOf(channel.id),
+      stats: await store.reviewStatsOfChannel(channel.id),
+    }));
+  } catch (err) { return next(err); }
+});
+
+APP.post('/dashboard/:slug/settings', upload.single('banner'), async (req, res, next) => {
+  const back = () => `/dashboard/${encodeURIComponent(req.params.slug)}/settings`;
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    const fail = (code) => res.redirect(`${back()}?error=${encodeURIComponent(code)}`);
+
+    const name = String(req.body.name || '').trim();
+    if (!name) return fail('name');
+
+    const plan = store.plan(channel);
+    const wantsListing = req.body.listingMode === 'marketplace';
+    // The capability check lives here, where the plan is known: the marketplace
+    // is bytebikri's traffic, so listing is what the paid tiers buy.
+    if (wantsListing && plan.capabilities.marketplace_listed !== true) return fail('listing');
+
+    const banner = req.file;
+    if (banner && !String(banner.mimetype).startsWith('image/')) return fail('banner');
+    if (banner && banner.size > 5 * 1024 * 1024) return fail('banner');
+
+    await store.updateChannel(channel.id, {
+      name,
+      tagline: String(req.body.tagline || '').trim(),
+      about: String(req.body.about || '').trim(),
+      channel_contact: String(req.body.channelContact || '').trim(),
+      listing_mode: wantsListing ? 'marketplace' : 'storefront',
+      ads_enabled: req.body.adsEnabled === 'on',
+      sells_digital: req.body.sellsDigital === 'on',
+      sells_physical: req.body.sellsPhysical === 'on',
+      ...(banner
+        ? { banner_url: `/media/${await storage.put(banner.buffer, banner.originalname, { namespace: 'public' })}` }
+        : {}),
+    });
+
+    await store.audit('channel.settings_updated', { channelId: channel.id });
+    return res.redirect(`${back()}?saved=1`);
+  } catch (err) {
+    if (err.code === 'LIMIT_FILE_SIZE' || err.code === 'LIMIT_UNEXPECTED_FILE') return res.redirect(`${back()}?error=banner`);
+    return next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Reviews — written only by someone who unlocked the thing
+// ---------------------------------------------------------------------------
+APP.post('/s/:slug/a/:assetSlug/review', limitUnlock, async (req, res, next) => {
+  const here = () => `/s/${encodeURIComponent(req.params.slug)}/a/${encodeURIComponent(req.params.assetSlug)}`;
+  try {
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    const channel = await store.channelBySlug(req.params.slug);
+    if (!channel) return res.status(404).send('Channel not found');
+    const asset = await store.assetBySlug(channel.id, req.params.assetSlug);
+    if (!asset) return res.status(404).send('Asset not found');
+
+    /**
+     * The gate is the unlock row, not the form.
+     *
+     * `unlockFor` returns null for anyone who never got the file, so a review
+     * cannot be written by a passer-by — which is the only thing that makes a
+     * star average worth reading. It is also why a revoked unlock takes its
+     * review with it: `reviews.unlock_id` cascades.
+     */
+    const unlock = await store.unlockFor(asset.id, req.user.id);
+    if (!unlock) return res.redirect(`${here()}?error=unlock`);
+
+    const rating = Number(req.body.rating);
+    if (!(rating >= 1 && rating <= 5)) return res.redirect(`${here()}?error=rating`);
+
+    await store.addReview({
+      unlockId: unlock.id, assetId: asset.id, channelId: channel.id,
+      buyerId: req.user.id, rating, body: req.body.body,
+    });
+    await store.audit('review.written', { assetId: asset.id, channelId: channel.id, rating });
+    return res.redirect(`${here()}?reviewed=1`);
+  } catch (err) { return next(err); }
+});
+
+APP.get('/dashboard/:slug/reviews', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    res.send(views.dashboardReviews({
+      channel, user: req.user, consent: req.consent, flash: flashFor(req.query),
+      reviews: await store.reviewsOfChannel(channel.id),
+      stats: await store.reviewStatsOfChannel(channel.id),
+    }));
+  } catch (err) { return next(err); }
+});
+
+APP.post('/dashboard/:slug/reviews/:reviewId', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    const response = String(req.body.response || '').trim();
+    if (response) {
+      await store.respondToReview({
+        reviewId: req.params.reviewId, channelId: channel.id, response,
+      });
+      await store.audit('review.responded', { reviewId: req.params.reviewId, channelId: channel.id });
+    }
+    return res.redirect(`/dashboard/${encodeURIComponent(channel.slug)}/reviews`);
+  } catch (err) { return next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// One asset, from the seller's side
+// ---------------------------------------------------------------------------
+APP.get('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    const asset = await store.assetById(req.params.assetId);
+    if (!asset || asset.channel_id !== channel.id) return res.status(404).send('Not found');
+    res.send(views.assetManage({
+      channel, asset, user: req.user, consent: req.consent, flash: flashFor(req.query),
+      files: await store.filesOf(asset.id),
+      policy: await store.unlockPolicy(asset.id),
+      stats: await store.reviewStatsOfAsset(asset.id),
+      unlocks: (await store.unlocksOfChannel(channel.id)).filter((u) => u.asset_id === asset.id).length,
+    }));
+  } catch (err) { return next(err); }
+});
+
+APP.post('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    const back = `/dashboard/${encodeURIComponent(channel.slug)}/assets/${encodeURIComponent(req.params.assetId)}`;
+    const asset = await store.assetById(req.params.assetId);
+    if (!asset || asset.channel_id !== channel.id) return res.status(404).send('Not found');
+
+    const title = String(req.body.title || '').trim().slice(0, 200);
+    if (!title) return res.redirect(`${back}?error=title`);
+
+    await store.updateAsset(asset.id, {
+      title,
+      description: String(req.body.description || '').trim().slice(0, 2000),
+      unlock_mode: req.body.unlockMode === 'open' ? 'open' : 'ad_gated',
+      status: req.body.status === 'paused' ? 'paused' : 'live',
+    });
+    await store.setUnlockPolicy(asset.id, {
+      ads_required: req.body.adsRequired,
+      ad_min_seconds: req.body.adMinSeconds,
+      unlock_hours: req.body.unlockHours,
+    });
+    await store.audit('asset.updated', { assetId: asset.id, channelId: channel.id });
+    return res.redirect(`${back}?saved=1`);
+  } catch (err) { return next(err); }
+});
+
 // Ad connections
 // ---------------------------------------------------------------------------
 APP.post('/api/ad-connections/start', async (req, res, next) => {
@@ -1461,6 +1939,37 @@ async function seed({ force = false } = {}) {
   return { seeded: true, alice: alice.slug, bob: bob.slug };
 }
 
+/**
+ * The operator account, and the only thing that makes one.
+ *
+ * No route grants `role = 'admin'`, deliberately. The only thing that turns an
+ * account into an operator is a value in the server's environment, set by
+ * whoever runs the server — so becoming an operator is a deploy decision rather
+ * than a form somebody can post to. Idempotent, because a redeploy should not
+ * fail on the fact that the operator already exists.
+ */
+async function ensureOperator() {
+  const email = String(process.env.OPERATOR_EMAIL || '').trim().toLowerCase();
+  if (!email) return null;
+  const user = await store.userByEmailOrCreate(email);
+  if (user.role !== 'admin') {
+    await store.query("update profiles set role = 'admin' where id = $1", [user.id]);
+  }
+
+  // An account created by this function has no password, and is therefore
+  // unreachable — which is the correct default for the one role that can move
+  // money. In development the demo password is set so the flow can be walked
+  // end to end; in production DEMO_PASSWORD is a fatal misconfiguration, so the
+  // operator signs up normally and then gets promoted on the next boot.
+  const fresh = await store.userById(user.id);
+  const demoPassword = process.env.DEMO_PASSWORD || (isProd() ? null : 'bytebikri-demo');
+  if (!fresh.password_hash && demoPassword) {
+    await auth.setPassword(user.id, demoPassword);
+    return { email, password: demoPassword };
+  }
+  return { email, password: null };
+}
+
 // A second line of defence for `node server.js` run directly; scripts/boot.mjs
 // has already done this, and printed it, when that is the entry point.
 assertProductionConfig(process.env, { quiet: true });
@@ -1473,6 +1982,12 @@ if (result.seeded) {
   console.log(`  not seeding: ${result.reason}`);
 } else {
   console.log(`  existing data found (${result.channels} channels) — not seeding`);
+}
+
+const operator = await ensureOperator();
+if (operator) {
+  console.log(`  operator (can match payments): ${operator.email}`
+    + (operator.password ? `  /  ${operator.password}` : '  (sign in with this account)'));
 }
 
 const SERVER = APP.listen(PORT, '0.0.0.0', () => {

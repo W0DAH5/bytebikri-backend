@@ -15,7 +15,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { one, many, scalar, query, withTransaction, isUniqueViolation } from './db.js';
 
+import { rentPeriod, annualRentNpr, rentWorking } from './billing.js';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/** Grace after a subscription period ends: features stay on, nothing is deleted. */
+const GRACE_DAYS = 30;
 const UPLOAD_DIR = path.resolve(__dirname, '../.data/uploads');
 
 export const now = () => new Date();
@@ -84,7 +89,10 @@ export const PLANS = {
     code: 'store', name: 'Store', priceNpr: 999, periodMonths: 12,
     capabilities: {
       max_assets: 200, slot_count: 5, can_theme: true, custom_sections: 3,
-      remove_footer: true, marketplace_listed: false, analytics_level: 'sources',
+      // Explore listing, which is what the first paid tier buys. Featured
+      // placement stays Pro-only — capacity and placement are the upsell, not
+      // being found at all. See migration 0014.
+      remove_footer: true, marketplace_listed: true, analytics_level: 'sources',
       verified_badge: true, featured_eligible: false, ad_free: false,
     },
   },
@@ -182,6 +190,7 @@ export const store = {
            select sub.plan_code, sub.status, sub.period_end, sub.grace_until
              from subscriptions sub
             where sub.channel_id = c.id
+              and sub.status in ('active','grace')
             order by sub.created_at desc limit 1
          ) s on true
         where c.slug = $1`,
@@ -200,6 +209,7 @@ export const store = {
            select sub.plan_code, sub.status, sub.period_end, sub.grace_until
              from subscriptions sub
             where sub.channel_id = c.id
+              and sub.status in ('active','grace')
             order by sub.created_at desc limit 1
          ) s on true
         where c.id = $1`,
@@ -217,6 +227,7 @@ export const store = {
            select sub.plan_code, sub.status, sub.period_end
              from subscriptions sub
             where sub.channel_id = c.id
+              and sub.status in ('active','grace')
             order by sub.created_at desc limit 1
          ) s on true
         where c.moderation_state <> 'removed'
@@ -229,7 +240,40 @@ export const store = {
   },
 
   /** Pure function, not a query — plans are constants and capabilities are data. */
-  plan(c) { return PLANS[c?.plan_code] ?? PLANS.free; },
+  /**
+   * Which plan a channel is ACTUALLY on, right now.
+   *
+   * Not simply the plan on its newest subscription row. Three states must not
+   * grant paid capability:
+   *
+   *   pending_payment — the upgrade has been requested but no money has been
+   *     matched. Honouring the requested plan here would give the product away
+   *     to anyone who can submit a form.
+   *   expired — the period ended and the grace window has run out.
+   *   refunded / cancelled — deliberately ended.
+   *
+   * The grace window is CALCULATED, not stored: thirty days after the period
+   * ends, features keep working and nothing is deleted. A cron job that has not
+   * run must never be the reason a paying seller loses their storefront, so the
+   * rule lives in a pure function rather than in a scheduled task.
+   */
+  effectivePlanCode(c) {
+    const code = c?.plan_code;
+    if (!code || code === 'free') return 'free';
+    // Read explicitly, with no fallback to "well, it has an end date". A row
+    // with an end date and a cancelled status granted Pro before this line was
+    // written: the query aliases the status from the subscription, so a missing
+    // one means the caller did not read it — not that the plan is running.
+    const status = c?.subscription_status ?? null;
+    const end = c.subscription_end ? new Date(c.subscription_end) : null;
+    if (status !== 'active' && status !== 'grace') return 'free';
+    if (status === 'grace') return code;
+    if (!end || end > now()) return code;
+    return GRACE_DAYS && end.getTime() + GRACE_DAYS * 86400000 > now() ? code : 'free';
+  },
+
+  /** Days of grace after a period ends. A seller's bad week is not a data loss. */
+  plan(c) { return PLANS[this.effectivePlanCode(c)] ?? PLANS.free; },
 
   upgradeQuote(channel, newPlanCode) {
     const cur = this.plan(channel);
@@ -238,7 +282,11 @@ export const store = {
     const end = channel?.subscription_end ? new Date(channel.subscription_end) : null;
     const daysLeft = end ? Math.max(0, Math.ceil((end - now()) / 86400000)) : 0;
     const full = next.priceNpr - cur.priceNpr;
-    const amount = Math.round(full * (daysLeft / 365));
+    // Nothing is running, so nothing can be pro-rated: the seller is buying a
+    // whole period. Multiplying by 0/365 would bill NPR 0 for a first purchase —
+    // and `upgradeExplanation` promises "the full difference" in writing, so the
+    // two have to agree.
+    const amount = daysLeft > 0 ? Math.round(full * (daysLeft / 365)) : full;
     return { from: cur, to: next, daysLeft, fullDifference: full, amountNpr: amount };
   },
 
@@ -612,18 +660,475 @@ export const store = {
    * carries the period the money covers.
    */
   async recordPlanPayment({ channelId, amountNpr, txnReference, method = 'esewa', payerName, payerNumber }) {
+    if (String(txnReference || '').trim().length < 4) return null;
     return one(
       `insert into plan_payments (subscription_id, amount_npr, txn_reference, method, payer_name, payer_number)
        select s.id, $2, $3, $4, $5, $6
          from subscriptions s
         where s.channel_id = $1
-        order by s.created_at desc limit 1
+          and s.pending_plan_code is not null
        returning *`,
       [channelId, amountNpr, txnReference, method, payerName ?? null, payerNumber ?? null],
     );
   },
   planPayments() {
     return many('select * from plan_payments order by created_at desc');
+  },
+
+  // ---- channel settings ---------------------------------------------------
+  /**
+   * Update what a seller controls about their store.
+   *
+   * An allowlist of columns rather than a spread of the request body: a
+   * `set ${keys}` built from user input is how a form eventually writes
+   * `moderation_state = 'approved'` on itself, and no amount of route-level
+   * validation makes that safe to have in the codebase.
+   *
+   * `listing_mode` is deliberately NOT gated here. Whether a store MAY be
+   * listed is a plan capability, and the capability is checked at the route
+   * where the plan is known — the store layer has no business knowing about
+   * plans, and a check in two places is a check that will disagree.
+   */
+  async updateChannel(channelId, patch = {}) {
+    const allowed = {
+      name: (v) => String(v).trim().slice(0, 120),
+      tagline: (v) => String(v).trim().slice(0, 200),
+      about: (v) => String(v).trim().slice(0, 4000),
+      channel_contact: (v) => String(v).trim().slice(0, 320),
+      banner_url: (v) => (v === null ? null : String(v)),
+      avatar_url: (v) => (v === null ? null : String(v)),
+      listing_mode: (v) => (v === 'marketplace' ? 'marketplace' : 'storefront'),
+      ads_enabled: (v) => v === true || v === 'on' || v === 'true',
+      sells_digital: (v) => v === true || v === 'on' || v === 'true',
+      sells_physical: (v) => v === true || v === 'on' || v === 'true',
+    };
+    const sets = [];
+    const values = [channelId];
+    for (const [key, coerce] of Object.entries(allowed)) {
+      if (!(key in patch)) continue;
+      if ((key === 'name' || key === 'tagline') && !String(patch[key] || '').trim()) continue;
+      values.push(coerce(patch[key]));
+      sets.push(`${key} = $${values.length}`);
+    }
+    if (!sets.length) return this.channelById(channelId);
+    return one(
+      `update channels set ${sets.join(', ')}, updated_at = now() where id = $1 returning *`,
+      values,
+    );
+  },
+
+  /**
+   * The seller's kill switch.
+   *
+   * `ads_enabled = false` stops the channel's ad slots from resolving, without
+   * touching anything else: the storefront, the unlocks and the files all keep
+   * working. A seller who wants ads off for a week should not have to unpublish.
+   */
+  async setAdsEnabled(channelId, enabled) {
+    return one('update channels set ads_enabled = $2, updated_at = now() where id = $1 returning *',
+      [channelId, enabled]);
+  },
+
+  async updateAsset(assetId, patch = {}) {
+    const allowed = {
+      title: (v) => String(v).trim().slice(0, 200),
+      description: (v) => String(v).trim().slice(0, 2000),
+      unlock_mode: (v) => (v === 'open' ? 'open' : 'ad_gated'),
+      cover_url: (v) => (v === null ? null : String(v)),
+      // Only live <-> paused. 'removed' is the moderation decision and
+      // 'draft'/'pending_review' belong to the publish flow; a settings form
+      // must not be able to reach either.
+      status: (v) => (v === 'paused' ? 'paused' : 'live'),
+    };
+    const sets = [];
+    const values = [assetId];
+    for (const [key, coerce] of Object.entries(allowed)) {
+      if (!(key in patch)) continue;
+      if (key === 'title' && !String(patch.title || '').trim()) continue;
+      values.push(coerce(patch[key]));
+      sets.push(`${key} = $${values.length}`);
+    }
+    if (!sets.length) return this.assetById(assetId);
+    return one(
+      `update assets set ${sets.join(', ')}, updated_at = now() where id = $1 returning *`,
+      values,
+    );
+  },
+
+  /**
+   * Unlock policy, clamped to what the route is willing to promise.
+   *
+   * The clamp is here rather than in the form because the form is a
+   * suggestion: a seller can post `adMinSeconds: 0`, and a zero-second ad is a
+   * view a network will not credit, so the creator would be handing files over
+   * for nothing and blaming us for the revenue.
+   */
+  async setUnlockPolicy(assetId, { ads_required, ad_min_seconds, unlock_hours } = {}) {
+    const int = (v, lo, hi, fallback) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return fallback;
+      return Math.min(hi, Math.max(lo, Math.round(n)));
+    };
+    return one(
+      `update asset_unlock_policy
+          set ads_required = $2, ad_min_seconds = $3, unlock_hours = $4
+        where asset_id = $1
+        returning *`,
+      [
+        assetId,
+        int(ads_required, 1, 5, 1),
+        int(ad_min_seconds, 5, 120, 15),
+        int(unlock_hours, 1, 720, 24),
+      ],
+    );
+  },
+
+  /**
+   * The money did not arrive, or arrived wrong.
+   *
+   * The request is dropped and the plan the seller already paid for is left
+   * exactly as it was. A rejection is not a punishment, and the previous
+   * behaviour — clearing the subscription — would have taken a paid plan away
+   * because of a typo in a reference.
+   */
+  async rejectPlanPayment({ paymentId, actorId, reason }) {
+    return withTransaction(async (c) => {
+      const { rows } = await c.query(
+        `update plan_payments
+            set status = 'rejected', matched_by = $2, matched_at = now(), reject_reason = $3
+          where id = $1 and status = 'submitted'
+          returning *`,
+        [paymentId, actorId, reason || null],
+      );
+      if (!rows.length) return null;
+      await c.query(
+        `update subscriptions
+            set pending_plan_code = null, pending_since = null
+          where id = $1 and pending_plan_code is not null`,
+        [rows[0].subscription_id],
+      );
+      return rows[0];
+    });
+  },
+
+  // ---- billing ------------------------------------------------------------
+  async subscriptionOf(channelId) {
+    return one(
+      `select * from subscriptions where channel_id = $1 order by created_at desc limit 1`,
+      [channelId],
+    );
+  },
+
+  /**
+   * Ask to move to a paid plan.
+   *
+   * The subscription row is created as `pending_payment`, NOT active. The
+   * upgrade takes effect when an operator matches the money, which is the only
+   * honest sequence when the rail is a manual transfer: activating on request
+   * would give away the product to anyone who can fill in a form.
+   *
+   * The amount is recorded on the payment later, not here — but the quote is
+   * recomputed server-side at that moment so a stale page cannot submit
+   * yesterday's price.
+   */
+  /**
+   * Ask for an upgrade. Creates a REQUEST — never an active subscription, and
+   * never at the cost of the plan already paid for.
+   *
+   * The first version of this overwrote the subscription row, because the
+   * schema allows one per channel. A seller who asked for Pro therefore dropped
+   * to free until an operator matched the money, and the pro-rated amount
+   * recomputed against Pro instead of Store — NPR 2,499 instead of NPR 1,500.
+   * The request now lives in `pending_plan_code` (migration 0012) and grants
+   * nothing; capability still follows `plan_code`, which only the operator moves.
+   *
+   * A free channel had no subscription row at all, so this creates one for the
+   * free plan first: the row is the record of what is owed and what is paid, and
+   * it has to exist before it can hold a request.
+   */
+  async requestUpgrade(channel, planCode) {
+    return withTransaction(async (c) => {
+      const plan = await c.query('select 1 from plans where code = $1', [planCode]);
+      if (!plan.rowCount) throw new Error(`unknown plan ${planCode}`);
+
+      const { rows } = await c.query(
+        `insert into subscriptions (channel_id, plan_code, status, period_start, pending_plan_code, pending_since)
+         values ($1, 'free', 'active', now(), $2, now())
+         on conflict (channel_id) do update
+           set pending_plan_code = excluded.pending_plan_code,
+               pending_since     = now()
+         returning *`,
+        [channel.id, planCode],
+      );
+      return rows[0];
+    });
+  },
+
+  /**
+   * Payments for a channel, through the subscription they belong to.
+   *
+   * `plan_payments` has no channel_id — the schema attaches a payment to the
+   * subscription it buys, which is correct. The dashboard used to filter
+   * `store.planPayments()` by `p.channel_id`, a column that does not exist, so
+   * every seller's payment history was silently empty.
+   */
+  planPaymentsOfChannel(channelId) {
+    return many(
+      `select pp.*, s.plan_code, s.status as subscription_status
+         from plan_payments pp
+         join subscriptions s on s.id = pp.subscription_id
+        where s.channel_id = $1
+        order by pp.created_at desc`,
+      [channelId],
+    );
+  },
+
+  /** Every pending payment, for the operator's matching queue. */
+  unmatchedPayments({ limit = 100 } = {}) {
+    return many(
+      `select pp.*, coalesce(s.pending_plan_code, s.plan_code) as plan_code, s.period_end,
+               c.slug as channel_slug, c.name as channel_name
+         from plan_payments pp
+         join subscriptions s on s.id = pp.subscription_id
+         join channels c on c.id = s.channel_id
+        where pp.status = 'submitted'
+        order by pp.created_at
+        limit $1`,
+      [limit],
+    );
+  },
+
+  /**
+   * Confirm a plan payment and activate the subscription.
+   *
+   * Both writes in one transaction, because a payment marked matched with an
+   * inactive subscription is a seller who has paid and has nothing.
+   */
+  async matchPlanPayment({ paymentId, actorId }) {
+    return withTransaction(async (c) => {
+      const { rows } = await c.query(
+        `update plan_payments
+            set status = 'matched', matched_by = $2, matched_at = now()
+          where id = $1 and status = 'submitted'
+          returning *`,
+        [paymentId, actorId],
+      );
+      if (!rows.length) return null;
+
+      /**
+       * The plan moves. The renewal date does not.
+       *
+       * An upgrade is pro-rated to the end of the period already paid for, so
+       * extending the period here would hand over days that were never charged
+       * for; shortening it would take away days that were. Either way the next
+       * charge would arrive on a date nobody agreed to. Only a channel with no
+       * running period — a free store buying its first plan — starts a year.
+       */
+      await c.query(
+        `update subscriptions
+            set plan_code         = coalesce(pending_plan_code, plan_code),
+                pending_plan_code = null,
+                pending_since     = null,
+                status            = 'active',
+                grace_until       = null,
+                period_start      = case when period_end > now() then period_start else now() end,
+                period_end        = case when period_end > now() then period_end
+                                         else now() + interval '1 year' end,
+                verified_by       = $2,
+                verified_at       = now()
+          where id = $1`,
+        [rows[0].subscription_id, actorId],
+      );
+      return rows[0];
+    });
+  },
+
+  /**
+   * Issue this period's rent invoice, if one is due.
+   *
+   * Idempotent through the schema's `unique (channel_id, period_start)` and
+   * `on conflict do nothing`, so calling it on every dashboard view is safe and
+   * is exactly what happens. No invoice is issued when the estimate has no
+   * platform slot: a store below the three-slot floor is not taxed, and an
+   * invoice for NPR 0 would be a bill pretending to be a policy.
+   */
+  async ensureRentInvoice({ channel, estimate, now = new Date() }) {
+    const amountNpr = annualRentNpr(estimate);
+    if (!amountNpr) return null;
+    const period = rentPeriod(channel.created_at, now);
+    await query(
+      `insert into rent_invoices (channel_id, period_start, period_end, amount_npr, basis)
+       values ($1, $2, $3, $4, $5)
+       on conflict (channel_id, period_start) do nothing`,
+      [channel.id, period.start, period.end, amountNpr, JSON.stringify(rentWorking(estimate, amountNpr))],
+    );
+    return one(
+      'select * from rent_invoices where channel_id = $1 and period_start = $2',
+      [channel.id, period.start],
+    );
+  },
+
+  rentInvoicesOfChannel(channelId) {
+    return many('select * from rent_invoices where channel_id = $1 order by period_start desc', [channelId]);
+  },
+
+  /** Every unpaid invoice, for the operator's queue. */
+  openRentInvoices({ limit = 100 } = {}) {
+    return many(
+      `select r.*, c.slug as channel_slug, c.name as channel_name
+         from rent_invoices r
+         join channels c on c.id = r.channel_id
+        where r.status in ('issued','submitted')
+        order by r.submitted_at nulls last, r.created_at
+        limit $1`,
+      [limit],
+    );
+  },
+
+  /**
+   * A seller submits the reference for a transfer they have made.
+   *
+   * Guarded on the current status so a double-submit cannot rewrite a matched
+   * invoice, and so a `paid` row cannot be re-opened by posting again.
+   */
+  async submitRentPayment({ invoiceId, channelId, method, txnReference, payerName, payerNumber }) {
+    // The route checks this too, and the check is repeated here because a
+    // reference is what the operator matches against a statement: "x" cannot be
+    // matched, so accepting it creates a payment nobody can ever clear.
+    if (String(txnReference || '').trim().length < 4) return null;
+    return one(
+      `update rent_invoices
+          set status = 'submitted', method = $3, txn_reference = $4,
+              payer_name = $5, payer_number = $6, submitted_at = now()
+        where id = $1 and channel_id = $2 and status = 'issued'
+        returning *`,
+      [invoiceId, channelId, method, txnReference, payerName ?? null, payerNumber ?? null],
+    );
+  },
+
+  async matchRentPayment({ invoiceId, actorId, note = null }) {
+    return one(
+      `update rent_invoices
+          set status = 'paid', paid_at = now(), matched_by = $2, note = coalesce($3, note)
+        where id = $1 and status in ('issued','submitted')
+        returning *`,
+      [invoiceId, actorId, note],
+    );
+  },
+
+  // ---- reviews ------------------------------------------------------------
+  /**
+   * A review hangs off an UNLOCK, not off an asset.
+   *
+   * That is the schema's design (`reviews.unlock_id` is unique) and it is the
+   * right one: it means a review can only be written by somebody who actually
+   * got the file, it cannot be written twice, and a revoked unlock takes its
+   * review with it. This method exists so the write path uses the same rule.
+   */
+  async addReview({ unlockId, assetId, channelId, buyerId, rating, body }) {
+    const stars = Math.min(5, Math.max(1, Math.round(Number(rating) || 0)));
+    if (!stars) return null;
+    return one(
+      `insert into reviews (unlock_id, asset_id, channel_id, buyer_id, rating, body)
+       values ($1, $2, $3, $4, $5, $6)
+       on conflict (unlock_id) do update
+         set rating = excluded.rating, body = excluded.body
+       returning *`,
+      [unlockId, assetId, channelId, buyerId, stars, String(body || '').trim().slice(0, 2000) || null],
+    );
+  },
+
+  reviewsOfAsset(assetId, { limit = 20 } = {}) {
+    return many(
+      `select r.*, p.display_name as buyer_name
+         from reviews r join profiles p on p.id = r.buyer_id
+        where r.asset_id = $1 and r.moderation_state = 'published' and r.body is not null
+        order by r.created_at desc limit $2`,
+      [assetId, limit],
+    );
+  },
+
+  reviewStatsOfChannel(channelId) {
+    return one(
+      `select count(*)::int as count, coalesce(round(avg(rating)::numeric, 1), 0)::float as average
+         from reviews
+        where channel_id = $1 and moderation_state = 'published'`,
+      [channelId],
+    );
+  },
+
+  reviewStatsOfAsset(assetId) {
+    return one(
+      `select count(*)::int as count, coalesce(round(avg(rating)::numeric, 1), 0)::float as average
+         from reviews where asset_id = $1 and moderation_state = 'published'`,
+      [assetId],
+    );
+  },
+
+  reviewsOfChannel(channelId, { limit = 50 } = {}) {
+    return many(
+      `select r.*, a.title as asset_title, a.slug as asset_slug, p.display_name as buyer_name
+         from reviews r
+         join assets a on a.id = r.asset_id
+         join profiles p on p.id = r.buyer_id
+        where r.channel_id = $1
+        order by r.created_at desc limit $2`,
+      [channelId, limit],
+    );
+  },
+
+  /** The seller gets one reply. A second one replaces it rather than stacking. */
+  async respondToReview({ reviewId, channelId, response }) {
+    return one(
+      `update reviews
+          set seller_response = $3, seller_responded_at = now()
+        where id = $1 and channel_id = $2
+        returning *`,
+      [reviewId, channelId, String(response || '').trim().slice(0, 2000)],
+    );
+  },
+
+  // ---- search -------------------------------------------------------------
+  /**
+   * Search across stores and their files.
+   *
+   * Scoped to `listing_mode = 'marketplace'` on purpose: a store that chose its
+   * own address is not published in a directory, and a search that surfaces it
+   * would overrule the seller's own setting. Approved stores only, live assets
+   * only — a search result that 404s is worse than no result.
+   */
+  async search(q, { limit = 24 } = {}) {
+    const term = String(q || '').trim().slice(0, 80);
+    if (term.length < 2) return { stores: [], assets: [] };
+    const like = `%${term.replace(/[%_]/g, '')}%`;
+    const [stores, assets] = await Promise.all([
+      many(
+        `select c.*, coalesce(s.plan_code, 'free') as plan_code,
+                (select count(*)::int from assets a
+                  where a.channel_id = c.id and a.status = 'live') as asset_count
+           from channels c
+           left join lateral (
+             select sub.plan_code from subscriptions sub
+              where sub.channel_id = c.id and sub.status in ('active','grace')
+              order by sub.created_at desc limit 1
+           ) s on true
+          where c.listing_mode = 'marketplace'
+            and c.moderation_state <> 'removed'
+            and (c.name ilike $1 or c.tagline ilike $1 or c.about ilike $1)
+          order by c.created_at limit $2`,
+        [like, limit],
+      ),
+      many(
+        `select a.*, c.slug as channel_slug, c.name as channel_name
+           from assets a join channels c on c.id = a.channel_id
+          where a.status = 'live' and c.moderation_state <> 'removed'
+            and c.listing_mode = 'marketplace'
+            and (a.title ilike $1 or a.description ilike $1)
+          order by a.created_at desc limit $2`,
+        [like, limit],
+      ),
+    ]);
+    return { stores, assets, term };
   },
 
   async audit(action, meta = {}) {

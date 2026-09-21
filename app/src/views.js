@@ -154,6 +154,7 @@ export function layout({ title, user, body, activeChannel = null, wide = false, 
     <nav class="nav" aria-label="Main">
       ${navLink('/marketplace', 'Explore', 'marketplace')}
       ${activeChannel ? navLink(`/dashboard/${esc(activeChannel.slug)}`, 'Dashboard', 'dashboard') : ''}
+      ${user?.role === 'admin' ? navLink('/admin/billing', 'Billing queue', 'admin') : ''}
     </nav>
     <span class="spacer"></span>
     ${account}
@@ -274,9 +275,39 @@ function channelCard(c) {
  * quietly overrule the seller's decision. The empty state now says what the
  * page is for instead of apologising for a section that should not exist.
  */
-export function marketplace({ channels, user, consent = null }) {
+export function marketplace({ channels, user, consent = null, q = '', results = null }) {
   const listed = channels.filter((c) => c.listing_mode === 'marketplace');
+  const searching = String(q || '').trim().length >= 2;
 
+  const resultBlock = searching ? `
+    <section class="section">
+      <div class="section-head">
+        <h2>Results for “${esc(results.term)}”</h2>
+        <p>${plural(results.stores.length + results.assets.length, 'match', 'matches')}</p>
+      </div>
+      ${results.stores.length
+        ? `<div class="grid-channels">${results.stores.map(channelCard).join('')}</div>`
+        : ''}
+      ${results.assets.length
+        ? `<div class="grid-assets" style="margin-top:var(--space-6)">${results.assets.map((a) => `
+            <a class="asset" href="/s/${esc(a.channel_slug)}/a/${esc(a.slug)}">
+              <div style="position:relative">${thumb({ title: a.title, coverUrl: a.cover_url })}</div>
+              <div class="asset-body">
+                <h3>${esc(a.title)}</h3>
+                <p class="asset-desc">${esc(a.description || 'No description yet.')}</p>
+                <div class="asset-foot">
+                  <span>${esc(a.channel_name)}</span>
+                  <span>${a.unlock_mode === 'open' ? 'Free' : 'One ad'}</span>
+                </div>
+              </div>
+            </a>`).join('')}</div>`
+        : ''}
+      ${results.stores.length + results.assets.length
+        ? ''
+        : `<div class="empty">Nothing matches “${esc(results.term)}”. Search looks at the name,
+             the one-line description and the file titles of stores that are listed here —
+             it does not reach into anybody's private store.</div>`}
+    </section>` : '';
   return layout({
     title: 'Explore', user, current: 'marketplace', consent,
     body: `
@@ -284,8 +315,15 @@ export function marketplace({ channels, user, consent = null }) {
   <h1>Explore</h1>
   <p class="lede" style="margin-top:var(--space-3)">Stores that opted in to being listed here.
   Plenty of sellers keep to their own address and are found by link — those are not listed, on purpose.</p>
+  <form class="search" method="get" action="/marketplace" role="search">
+    <label class="sr-only" for="q">Search stores and files</label>
+    <input class="input" id="q" name="q" type="search" value="${esc(q || '')}"
+           placeholder="Search stores, files, descriptions…" autocomplete="off">
+    <button class="btn btn-primary" type="submit">Search</button>
+  </form>
 </div>
-<section class="section">
+${resultBlock}
+${searching ? '' : `<section class="section">
   <div class="section-head">
     <h2>Listed stores</h2>
     <p>${plural(listed.length, 'store')}</p>
@@ -294,7 +332,8 @@ export function marketplace({ channels, user, consent = null }) {
     ? `<div class="grid-channels">${listed.map(channelCard).join('')}</div>`
     : `<div class="empty">No store has listed itself yet. Every store still works at its own address —
         asking the creator you follow for theirs is the way in.</div>`}
-</section>`,
+</section>`}
+`,
   });
 }
 
@@ -430,9 +469,85 @@ function fileTreatment(f) {
   return { action: 'Download', note: 'shown as a download' };
 }
 
+/**
+ * Reviews, under the file.
+ *
+ * Only somebody who holds an unlock can write one, and the form is only
+ * rendered for them — the server checks the same thing again, because a hidden
+ * form is not a permission. The average is shown with its count, always: "4.8"
+ * from two reviews and "4.8" from two hundred are different facts and the page
+ * says which one it is.
+ */
+function reviewSection({ channel, asset, reviews = [], reviewStats = {}, canReview, myReview, reviewError }) {
+  const count = Number(reviewStats.count) || 0;
+  const average = count ? Number(reviewStats.average).toFixed(1) : null;
+
+  const list = reviews.length
+    ? `<ul class="review-list">${reviews.map((r) => `
+        <li class="review">
+          <div class="review-head">
+            <span class="stars" aria-label="${r.rating} out of 5">${'★'.repeat(r.rating)}${'☆'.repeat(5 - r.rating)}</span>
+            <span class="review-who">${esc(r.buyer_name || 'A buyer')}</span>
+            <span class="spacer"></span>
+            <span class="fine">${relTime(r.created_at)}</span>
+          </div>
+          ${r.body ? `<p class="review-body">${esc(r.body)}</p>` : ''}
+          ${r.seller_response ? `<div class="review-reply">
+              <span class="fine">${esc(channel.name)} replied</span>
+              <p>${esc(r.seller_response)}</p>
+            </div>` : ''}
+        </li>`).join('')}</ul>`
+    : '<p class="fine">No reviews yet. They can only be written by somebody who unlocked the file.</p>';
+
+  const form = myReview
+    ? `<div class="note note-success">
+         <strong>Your review is on the page.</strong>
+         ${'★'.repeat(myReview.rating)}${'☆'.repeat(5 - myReview.rating)}
+         <form method="post" action="/s/${esc(channel.slug)}/a/${esc(asset.slug)}/review"
+               style="margin-top:var(--space-4)">
+           <div class="field">
+             <label for="rv-body">Change what you wrote</label>
+             <textarea class="textarea" id="rv-body" name="body" rows="3" maxlength="2000">${esc(myReview.body || '')}</textarea>
+           </div>
+           <div class="rating-picker">
+             ${[1, 2, 3, 4, 5].map((v) => `
+               <label><input type="radio" name="rating" value="${v}" ${myReview.rating === v ? 'checked' : ''} required><span>${v}</span></label>`).join('')}
+           </div>
+           <button class="btn btn-sm" type="submit">Update review</button>
+         </form>
+       </div>`
+    : canReview
+      ? `<form class="review-write" method="post"
+             action="/s/${esc(channel.slug)}/a/${esc(asset.slug)}/review">
+           <h3>You unlocked this — what did you think?</h3>
+           <div class="rating-picker">
+             ${[1, 2, 3, 4, 5].map((v) => `
+               <label><input type="radio" name="rating" value="${v}" required><span>${v}</span></label>`).join('')}
+             <span class="fine" style="margin-left:var(--space-3)">1 is poor, 5 is what you hoped for.</span>
+           </div>
+           <textarea class="textarea" name="body" rows="3" maxlength="2000"
+                     placeholder="Specific is useful: did the file match the description, was it what you needed?"></textarea>
+           <button class="btn btn-primary btn-sm" type="submit">Post review</button>
+         </form>`
+      : '';
+
+  return `<section class="section" style="margin-top:0">
+    <div class="section-head">
+      <h2>Reviews</h2>
+      ${average
+        ? `<p><strong>${average}</strong> from ${plural(count, 'review')}</p>`
+        : '<p>Nobody has reviewed this yet</p>'}
+    </div>
+    ${reviewError ? `<div class="note note-danger">${esc(reviewError)}</div>` : ''}
+    ${form}
+    ${list}
+  </section>`;
+}
+
 export function assetPage({
   channel, asset, files, unlocked, user, policy, slots, previewFile = null,
   markUri = '', markLabel = '', accessUntil = null, consent = null,
+  reviews = [], reviewStats = {}, canReview = false, myReview = null, reviewError = null,
 }) {
   const open = asset.unlock_mode === 'open';
   const needsAd = !open && !unlocked;
@@ -537,6 +652,8 @@ export function assetPage({
         </dl>
       </div>
     </div>
+
+    ${reviewSection({ channel, asset, reviews, reviewStats, canReview, myReview, reviewError })}
 
     ${slots.map(renderSlot).join('')}
   </div>
@@ -701,6 +818,8 @@ export function dashboard({ channel, slots, connections, providers, plan, estima
   <p class="lede" style="margin-top:var(--space-3)">${esc(channel.tagline || '')}</p>
 </div>
 
+${storeSectionNav(channel, 'overview')}
+
 ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)" role="status">${esc(flash.message)}</div>` : ''}
 
 <div class="stat-row" style="margin-top:var(--space-8)">
@@ -843,6 +962,9 @@ ${conn ? `
       <dt>Current</dt><dd>${esc(plan.name)} · ${npr(plan.priceNpr)}/year</dd>
       <dt>Files</dt><dd>${plan.capabilities.max_assets === -1 ? 'Unlimited' : plan.capabilities.max_assets}</dd>
       <dt>Slots</dt><dd>${plan.capabilities.slot_count}</dd>
+      <dt>Billing</dt><dd><a href="/dashboard/${esc(channel.slug)}/billing">Plans, rent and payments →</a></dd>
+      <dt>Store settings</dt><dd><a href="/dashboard/${esc(channel.slug)}/settings">Name, banner, listing →</a></dd>
+      <dt>Reviews</dt><dd><a href="/dashboard/${esc(channel.slug)}/reviews">What buyers wrote →</a></dd>
     </dl>
     ${upgrade ? `
       <div class="note note-info" style="margin-top:var(--space-5)">
@@ -991,4 +1113,731 @@ function consentControls({ consent, next }) {
     <button class="btn" type="submit" name="choice" value="all">Accept all</button>
   </div>
 </form>`;
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard shell — the pages a seller lives in
+// ---------------------------------------------------------------------------
+
+/**
+ * The sub-navigation for the account pages.
+ *
+ * One row of links, the same on every one of them, with the current page marked
+ * for assistive technology as well as for the eye. A dashboard whose pages do
+ * not link to each other is a set of dead ends, which is what this was before:
+ * the only way to billing was to know the URL.
+ */
+function storeSectionNav(channel, current) {
+  const items = [
+    ['', 'Overview'],
+    ['billing', 'Billing'],
+    ['settings', 'Store settings'],
+    ['reviews', 'Reviews'],
+  ];
+  return `<nav class="subnav" aria-label="Store">
+    ${items.map(([path, label]) => {
+    const href = `/dashboard/${esc(channel.slug)}${path ? `/${path}` : ''}`;
+    const isCurrent = current === (path || 'overview');
+    return `<a href="${href}"${isCurrent ? ' aria-current="page"' : ''}>${esc(label)}</a>`;
+  }).join('')}
+  </nav>`;
+}
+
+/** `21 Sept 2026` — a date someone can read, not an ISO string. */
+const day = (d) => (d
+  ? new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+  : '—');
+
+function pageHead(channel, current, title, lede) {
+  return `${storeSectionNav(channel, current)}
+<div class="section" style="margin-block:var(--space-6) var(--space-2)">
+  <div class="row">
+    <h1 style="font-size:var(--text-2xl)">${esc(title)}</h1>
+    <span class="spacer"></span>
+    <a class="btn btn-sm" href="/s/${esc(channel.slug)}" target="_blank" rel="noopener">View store ↗</a>
+  </div>
+  ${lede ? `<p class="lede" style="margin-top:var(--space-4)">${lede}</p>` : ''}
+</div>`;
+}
+
+const flashNote = (flash) => (flash?.message
+  ? `<div class="note note-${flash.kind}" role="status" style="margin-top:var(--space-6)">${esc(flash.message)}</div>`
+  : '');
+
+// ---------------------------------------------------------------------------
+// Billing — the only two things bytebikri charges for
+// ---------------------------------------------------------------------------
+
+export function billing({
+  channel, user, consent = null, flash = null, plan, nextPlanCode, pending = null, quote, upgrade,
+  subscription, invoice, estimate = {}, pageviews = 0, paidTotal = 0, payments = [],
+  invoices = [], rails = [], railsReady = false, payee = null, benefits = [],
+  notCharged = [], slots = [],
+}) {
+  const periodEnd = subscription?.period_end;
+
+  const railList = rails.filter((r) => r.id !== 'other');
+
+  const payTo = railList.map((r) => `
+    <div class="rail${r.ready ? '' : ' rail-off'}">
+      <div class="rail-name">${esc(r.label)}</div>
+      ${r.ready
+      ? `<div class="rail-value mono">${esc(r.handle || (r.id === 'other' ? 'Ask an operator' : '—'))}</div>`
+      : `<div class="rail-value muted">not configured</div>
+         <div class="fine">Set <span class="mono">${esc(r.env)}</span> on the server to show this.</div>`}
+    </div>`).join('');
+
+  const payForm = (kind) => `
+    <form method="post" action="/dashboard/${esc(channel.slug)}/billing/${kind}-payment" class="pay-form">
+      <input type="hidden" name="invoiceId" value="${kind === 'rent' ? esc(invoice?.id || '') : ''}">
+      <div class="row" style="gap:var(--space-4);align-items:flex-start">
+        <div class="field" style="flex:1 1 160px">
+          <label for="m-${kind}">Paid with</label>
+          <select class="input" id="m-${kind}" name="method">
+            ${railList.map((r) => `<option value="${esc(r.id)}">${esc(r.label)}</option>`).join('')}
+            <option value="other">Something else</option>
+          </select>
+        </div>
+        <div class="field" style="flex:2 1 220px">
+          <label for="r-${kind}">Transaction reference</label>
+          <input class="input" id="r-${kind}" name="txnReference" required minlength="4" maxlength="120"
+                 autocomplete="off" placeholder="e.g. 8FJ2K19QW">
+          <span class="hint">From the wallet receipt or the bank slip. This is what an operator
+          matches against the statement.</span>
+        </div>
+      </div>
+      <div class="row" style="gap:var(--space-4);align-items:flex-start">
+        <div class="field" style="flex:1 1 200px">
+          <label for="n-${kind}">Name on the transfer <span class="muted">(optional)</span></label>
+          <input class="input" id="n-${kind}" name="payerName" maxlength="120">
+        </div>
+        <div class="field" style="flex:1 1 200px">
+          <label for="p-${kind}">Number used <span class="muted">(optional)</span></label>
+          <input class="input" id="p-${kind}" name="payerNumber" maxlength="40" inputmode="tel">
+        </div>
+      </div>
+      <button class="btn btn-primary" type="submit">I have sent it — submit the reference</button>
+      <p class="fine" style="margin-top:var(--space-3)">
+        Nothing is activated by this form. It records what you say you sent; an operator matches it
+        against the statement and only then does anything change.
+      </p>
+    </form>`;
+
+  const subPanel = `
+<div class="panel">
+  <div class="panel-head">
+    <h2>Store plan</h2>
+    <span class="spacer"></span>
+    ${pill(plan.name, plan.code === 'free' ? '' : 'accent')}
+  </div>
+  <div class="panel-body">
+    <dl class="kv">
+      <dt>Price</dt><dd>${plan.priceNpr ? `${npr(plan.priceNpr)} a year` : 'Free, permanently'}</dd>
+      <dt>Renews</dt><dd>${periodEnd ? day(periodEnd) : 'No renewal — nothing to renew'}</dd>
+      <dt>Status</dt><dd>${subscription ? esc(subscription.status.replace('_', ' ')) : 'free'}${pending ? ' · upgrade requested' : ''}</dd>
+      <dt>Paid with bytebikri</dt><dd>${npr(paidTotal)} to date</dd>
+    </dl>
+    <ul class="list-checks" style="margin-top:var(--space-5)">
+      ${benefits.map((b) => `<li>${esc(b)}</li>`).join('')}
+    </ul>
+
+    ${pending ? `
+      <div class="note note-${pending.reference ? 'info' : 'warning'}" style="margin-top:var(--space-5)">
+        <strong>${pending.reference ? 'Reference received — waiting to be matched.' : 'Waiting to be matched.'}</strong>
+        Your upgrade to ${esc(pending.name)} is ${pending.reference ? 'submitted' : 'requested'}, for
+        ${npr(pending.amountNpr)}.
+        ${pending.reference
+          ? `An operator matches <span class="mono">${esc(pending.reference)}</span> against the
+             ${esc(pending.method || '')} statement, and the plan changes when it clears. You do not
+             need to do anything else.`
+          : 'Send it to one of the accounts below, then submit the reference from the receipt.'}
+      </div>
+      ${pending.reference ? '' : payForm('plan')}
+      <p class="fine" style="margin-top:var(--space-4)">
+        Your ${esc(plan.name)} plan stays exactly as it is until the money is matched — asking for an
+        upgrade never takes away what you have already paid for.
+      </p>
+    ` : quote ? `
+      <div class="note note-info" style="margin-top:var(--space-5)">
+        <strong>Upgrade to ${esc(quote.to.name)}.</strong>
+        <ul class="list-plain" style="margin-top:var(--space-3)">
+          ${(upgrade?.lines || []).map((l) => `<li class="fine" style="border:0;padding:2px 0">${esc(l)}</li>`).join('')}
+        </ul>
+        <div class="amount-line">
+          <span>Due today</span>
+          <strong>${npr(quote.amountNpr)}</strong>
+        </div>
+        <form method="post" action="/dashboard/${esc(channel.slug)}/upgrade">
+          <input type="hidden" name="plan" value="${esc(nextPlanCode)}">
+          <button class="btn btn-primary" type="submit">Request this upgrade</button>
+        </form>
+        <p class="fine" style="margin-top:var(--space-3)">
+          Requesting it does not charge anything and does not switch it on. It tells us what you
+          want and gives you the account details to pay into.
+        </p>
+      </div>
+    ` : `
+      <p class="small" style="margin-top:var(--space-5)">
+        You are on the top plan. There is nothing above this one to sell you.
+      </p>
+    `}
+  </div>
+</div>`;
+
+  // Rent: an invoice, or the reason there is not one. Both are answers.
+  const rentPanel = (() => {
+    const working = invoice?.basis || {};
+    const rows = `
+      <dl class="kv">
+        <dt>Traffic</dt><dd>${plural(working.pageviews30d ?? estimate.pageviews30d ?? pageviews, 'view')} in 30 days</dd>
+        <dt>Slots on your pages</dt><dd>${num(working.slotsOnPage ?? estimate.total ?? 0)} — you keep
+          ${num((working.slotsOnPage ?? estimate.total ?? 0) - (working.rentSlots ?? estimate.rent ?? 0))}</dd>
+        <dt>Platform slot</dt><dd>${num(working.rentSlots ?? estimate.rent ?? 0)}${
+      (working.rentSlots ?? estimate.rent ?? 0) ? ' — one per page, last rank' : ' — none, so no rent'}</dd>
+        <dt>Assumed ad rate</dt><dd>$${Number(working.assumedRpmUsd ?? estimate.rpmUsd ?? 0).toFixed(2)} per 1,000 views</dd>
+      </dl>`;
+
+    if (!invoice) {
+      // Two different reasons produce no invoice, and saying the wrong one is
+      // how a seller concludes the page is lying to them. Either there is no
+      // platform slot to rent (a page too short to spare one), or there is a
+      // slot and it earned nothing because the traffic did not arrive. The
+      // second is not a bill of zero, it is an absence of traffic, and the
+      // sentence says which.
+      const rentSlots = working.rentSlots ?? estimate.rent ?? 0;
+      const views = working.pageviews30d ?? estimate.pageviews30d ?? pageviews;
+      const why = rentSlots === 0
+        ? `The platform rents one slot per page — always the last, never the first — and only on a
+           page with at least three. Your pages are shorter than that, so there is nothing rented
+           and nothing to invoice.`
+        : `There is a platform slot on your pages, and it earned nothing this period:
+           ${plural(views, 'view')} is not enough traffic to be worth billing. Rent is a share of
+           the value the platform actually brought you, so a quiet period costs nothing.`;
+
+      return `
+<div class="panel">
+  <div class="panel-head"><h2>Rent for the platform slot</h2></div>
+  <div class="panel-body">
+    <div class="note note-success">
+      <strong>Nothing is due.</strong> ${why}
+    </div>
+    ${rows}
+    <p class="fine" style="margin-top:var(--space-4)">
+      When a page of yours has three or more slots, one of them — always the last, never the first —
+      rents to the platform, and this page grows an invoice for it on your anniversary.
+    </p>
+  </div>
+</div>`;
+    }
+
+    const statusNote = invoice.status === 'paid'
+      ? `<div class="note note-success"><strong>Paid.</strong> Matched ${day(invoice.paid_at)} — thank you.</div>`
+      : invoice.status === 'submitted'
+        ? `<div class="note note-info"><strong>Reference received.</strong> Waiting for an operator to
+           match it against the statement. Reference
+           <span class="mono">${esc(invoice.txn_reference || '')}</span>.</div>`
+        : '';
+
+    return `
+<div class="panel">
+  <div class="panel-head">
+    <h2>Rent for the platform slot</h2>
+    <span class="spacer"></span>
+    ${pill(invoice.status, invoice.status === 'paid' ? 'success' : invoice.status === 'submitted' ? 'info' : 'warning')}
+  </div>
+  <div class="panel-body">
+    ${statusNote}
+    <div class="amount-line" style="margin-top:var(--space-4)">
+      <span>${day(invoice.period_start)} → ${day(invoice.period_end)}</span>
+      <strong>${npr(invoice.amount_npr)}</strong>
+    </div>
+    ${rows}
+    <p class="fine" style="margin-top:var(--space-4)">
+      This is the working, in full: one rent slot's share of thirty days of pageview value, times
+      twelve. It is an estimate at an assumed rate, not a statement — you can check every number in it.
+    </p>
+    ${invoice.status === 'issued' ? payForm('rent') : ''}
+  </div>
+</div>`;
+  })();
+
+  const history = invoices.length || payments.length
+    ? `
+<div class="panel">
+  <div class="panel-head"><h2>What you have paid bytebikri</h2></div>
+  <div class="panel-body panel-body-flush">
+    <table class="table">
+      <thead><tr><th>What</th><th>Period</th><th class="num">Amount</th><th>Status</th></tr></thead>
+      <tbody>
+        ${invoices.map((i) => `<tr>
+          <td>Rent</td>
+          <td>${day(i.period_start)} → ${day(i.period_end)}</td>
+          <td class="num">${npr(i.amount_npr)}</td>
+          <td>${pill(i.status, i.status === 'paid' ? 'success' : i.status === 'submitted' ? 'info' : 'warning')}</td>
+        </tr>`).join('')}
+        ${payments.map((p) => `<tr>
+          <td>Plan · ${esc(p.plan_code)}</td>
+          <td>${day(p.created_at)}</td>
+          <td class="num">${npr(p.amount_npr)}</td>
+          <td>${pill(p.status, p.status === 'matched' ? 'success' : p.status === 'rejected' ? 'danger' : 'info')}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>
+</div>`
+    : '';
+
+  return layout({
+    title: 'Billing', user, activeChannel: channel, consent, current: 'dashboard',
+    body: `
+${pageHead(channel, 'billing', 'Billing', `Two things cost money here, and both are yours to pay.
+      Nothing is taken from what your store earns.`)}
+
+<div class="section">
+  <div class="cols-2">
+    ${subPanel}
+    ${rentPanel}
+  </div>
+
+  <div class="panel" style="margin-top:var(--space-6)">
+    <div class="panel-head">
+      <h2>Where to send it</h2>
+      <span class="spacer"></span>
+      ${railsReady ? '' : pill('not configured yet', 'warning')}
+    </div>
+    <div class="panel-body">
+      ${payee ? `<p class="small">Payable to <strong>${esc(payee)}</strong>.</p>` : ''}
+      <div class="rail-grid">${payTo}</div>
+      <p class="fine" style="margin-top:var(--space-5)">
+        There is no card checkout, and that is not an oversight: no acquirer in this market will
+        settle to a Nepal-registered entity for this shape of business. So payment is a transfer to
+        one of the accounts above, matched by hand against the statement — which is also why your
+        reference matters more than usual.
+      </p>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:var(--space-6)">
+    <div class="panel-head"><h2>What you are not charged for</h2></div>
+    <div class="panel-body">
+      <ul class="list-checks">
+        ${notCharged.map((n) => `<li>${esc(n)}</li>`).join('')}
+      </ul>
+    </div>
+  </div>
+
+  ${history}
+</div>`,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Store settings
+// ---------------------------------------------------------------------------
+
+export function storeSettings({
+  channel, user, consent = null, flash = null, plan, canList = false,
+  subscription = null, stats = {},
+}) {
+  return layout({
+    title: 'Store settings', user, activeChannel: channel, consent, current: 'dashboard',
+    body: `
+${pageHead(channel, 'settings', 'Store settings', 'How your store looks, where it is listed, and how it behaves.')}
+${flashNote(flash)}
+
+<div class="section">
+  <form class="cols-2" method="post" enctype="multipart/form-data"
+        action="/dashboard/${esc(channel.slug)}/settings">
+
+    <div class="panel">
+      <div class="panel-head"><h2>Identity</h2></div>
+      <div class="panel-body">
+        <div class="field">
+          <label for="s-name">Store name</label>
+          <input class="input" id="s-name" name="name" required maxlength="120" value="${esc(channel.name)}">
+        </div>
+        <div class="field">
+          <label for="s-tagline">One line about it</label>
+          <input class="input" id="s-tagline" name="tagline" maxlength="200"
+                 value="${esc(channel.tagline || '')}"
+                 placeholder="What you sell, and to whom.">
+          <span class="hint">This is the line under your name on Explore and on every file page.</span>
+        </div>
+        <div class="field">
+          <label for="s-about">About <span class="muted">(optional)</span></label>
+          <textarea class="textarea" id="s-about" name="about" rows="5" maxlength="4000"
+                    placeholder="Who you are, what you make, how you handle a broken file.">${esc(channel.about || '')}</textarea>
+        </div>
+        <div class="field">
+          <label for="s-contact">Public contact <span class="muted">(optional)</span></label>
+          <input class="input" id="s-contact" name="channelContact" maxlength="320"
+                 value="${esc(channel.channel_contact || '')}"
+                 placeholder="An email or a page, not a personal number.">
+          <span class="hint">Shown to buyers. Your account email and phone are never shown —
+          a buyer cannot use this store to find you.</span>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Banner</h2>
+          <span class="spacer"></span>
+          ${channel.banner_url ? pill('set', 'success') : pill('none')}
+        </div>
+        <div class="panel-body">
+          ${channel.banner_url
+    ? `<img class="settings-banner" src="${esc(channel.banner_url)}" alt="" decoding="async">`
+    : `<div class="settings-banner settings-banner-empty"><span>No banner yet</span></div>`}
+          <div class="field" style="margin-top:var(--space-4)">
+            <label for="s-banner">Replace it</label>
+            <input class="input" id="s-banner" name="banner" type="file" accept="image/*">
+            <span class="hint">Wide and short works best — it is cropped to a band, not a square.
+            Images up to 5 MB.</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:var(--space-6)">
+        <div class="panel-head"><h2>Where you are listed</h2></div>
+        <div class="panel-body">
+          <label class="choice">
+            <input type="radio" name="listingMode" value="storefront"
+                   ${channel.listing_mode === 'marketplace' ? '' : 'checked'}>
+            <span>
+              <strong>My own address</strong>
+              <span class="fine">Your store works at its link and is found by the people you send
+              there. Free, permanently, and no plan needed.</span>
+            </span>
+          </label>
+          <label class="choice">
+            <input type="radio" name="listingMode" value="marketplace"
+                   ${channel.listing_mode === 'marketplace' ? 'checked' : ''}
+                   ${canList ? '' : 'disabled'}>
+            <span>
+              <strong>Listed in Explore</strong>
+              <span class="fine">bytebikri brings the traffic, so this is what the paid plans buy.
+              ${canList
+    ? 'Included in your plan.'
+    : `Your ${esc(plan.name)} plan does not include it — see the billing page.`}</span>
+            </span>
+          </label>
+          <p class="fine" style="margin-top:var(--space-4)">
+            A store keeping to its own address is never listed, never in search, and never shown to
+            anybody you did not send. That is what the setting means, not a temporary state.
+          </p>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:var(--space-6)">
+        <div class="panel-head"><h2>Behaviour</h2></div>
+        <div class="panel-body">
+          <label class="check">
+            <input type="checkbox" name="adsEnabled" ${channel.ads_enabled ? 'checked' : ''}>
+            <span>Serve ads on my pages</span>
+          </label>
+          <p class="fine">
+            Turning this off stops the ads immediately and leaves everything else alone: your files
+            stay published, your unlocks keep working. Use it if a campaign is running elsewhere.
+          </p>
+          <label class="check" style="margin-top:var(--space-5)">
+            <input type="checkbox" name="sellsDigital" ${channel.sells_digital ? 'checked' : ''}>
+            <span>I publish digital files</span>
+          </label>
+          <label class="check">
+            <input type="checkbox" name="sellsPhysical" ${channel.sells_physical ? 'checked' : ''}>
+            <span>I also sell something physical</span>
+          </label>
+          <p class="fine">
+            Physical items are recorded, not shipped by us: bytebikri handles no money and no
+            delivery. It only tells buyers what to expect.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-foot">
+      <button class="btn btn-primary" type="submit">Save settings</button>
+      <span class="fine">Changes are visible immediately.</span>
+    </div>
+  </form>
+
+  <div class="panel" style="margin-top:var(--space-8)">
+    <div class="panel-head"><h2>Your store as buyers see it</h2></div>
+    <div class="panel-body">
+      <dl class="kv">
+        <dt>Address</dt><dd class="mono">/s/${esc(channel.slug)}</dd>
+        <dt>Listed</dt><dd>${channel.listing_mode === 'marketplace' ? 'In Explore' : 'Own address only'}</dd>
+        <dt>Plan</dt><dd>${esc(plan.name)}${subscription?.period_end ? ` · renews ${day(subscription.period_end)}` : ''}</dd>
+        <dt>Reviews</dt><dd>${stats.count
+    ? `${Number(stats.average).toFixed(1)} from ${plural(stats.count, 'review')}`
+    : 'None yet'}</dd>
+      </dl>
+    </div>
+  </div>
+</div>`,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Reviews, from the seller's side
+// ---------------------------------------------------------------------------
+
+export function dashboardReviews({ channel, user, consent = null, flash = null, reviews = [], stats = {} }) {
+  const rows = reviews.map((r) => `
+    <li class="review">
+      <div class="review-head">
+        <span class="stars" aria-label="${r.rating} out of 5">${'★'.repeat(r.rating)}${'☆'.repeat(5 - r.rating)}</span>
+        <a href="/s/${esc(channel.slug)}/a/${esc(r.asset_slug)}">${esc(r.asset_title)}</a>
+        <span class="spacer"></span>
+        <span class="fine">${relTime(r.created_at)}</span>
+      </div>
+      <p class="review-body">${esc(r.body || '')}</p>
+      ${r.seller_response
+    ? `<div class="review-reply">
+           <span class="fine">Your reply · ${relTime(r.seller_responded_at)}</span>
+           <p>${esc(r.seller_response)}</p>
+         </div>`
+    : `<form class="review-form" method="post"
+             action="/dashboard/${esc(channel.slug)}/reviews/${esc(r.id)}">
+         <input class="input" name="response" maxlength="2000" required
+                placeholder="Reply once — it appears under the review.">
+         <button class="btn btn-sm" type="submit">Reply</button>
+       </form>`}
+    </li>`).join('');
+
+  return layout({
+    title: 'Reviews', user, activeChannel: channel, consent, current: 'dashboard',
+    body: `
+${pageHead(channel, 'reviews', 'Reviews', `Written only by people who unlocked the file. You get one
+      reply each, and it stays attached.`)}
+${flashNote(flash)}
+
+<div class="section">
+  <div class="stat-row">
+    <div class="stat"><div class="stat-value">${stats.count ? Number(stats.average).toFixed(1) : '—'}</div>
+      <div class="stat-label">Average</div></div>
+    <div class="stat"><div class="stat-value">${num(stats.count || 0)}</div><div class="stat-label">Reviews</div></div>
+  </div>
+
+  ${reviews.length
+    ? `<ul class="review-list">${rows}</ul>`
+    : `<div class="empty" style="margin-top:var(--space-8)">
+         No reviews yet. They arrive when somebody unlocks a file and writes one — there is no way
+         to invite them, and no way to write one for yourself.
+       </div>`}
+</div>`,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// One asset, from the seller's side
+// ---------------------------------------------------------------------------
+
+export function assetManage({
+  channel, asset, user, consent = null, flash = null, files = [],
+  policy = {}, stats = {}, unlocks = 0,
+}) {
+  const publicHref = `/s/${channel.slug}/a/${asset.slug}`;
+
+  /**
+   * One form, one Save.
+   *
+   * The first cut had two forms side by side, and the second one mirrored the
+   * first one's fields in hidden inputs so that either could be submitted
+   * alone. That is a trap: type a new title, press "Save terms", and the hidden
+   * — stale — title posts back and the edit disappears. Two buttons that
+   * silently undo each other are worse than one button that does both.
+   */
+  return layout({
+    title: asset.title, user, activeChannel: channel, consent, current: 'dashboard',
+    body: `
+${pageHead(channel, 'overview', asset.title, `Published at <a href="${esc(publicHref)}">${esc(publicHref)}</a>.`)}
+${flashNote(flash)}
+
+<form class="cols-2" method="post" action="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}">
+  <div class="panel">
+    <div class="panel-head"><h2>Details</h2></div>
+    <div class="panel-body">
+      <div class="field">
+        <label for="a-title">Title</label>
+        <input class="input" id="a-title" name="title" required maxlength="200" value="${esc(asset.title)}">
+        <span class="hint">The address stays <span class="mono">${esc(asset.slug)}</span> — changing it
+        would break every link anyone has already shared.</span>
+      </div>
+      <div class="field">
+        <label for="a-desc">Description</label>
+        <textarea class="textarea" id="a-desc" name="description" rows="4" maxlength="2000">${esc(asset.description || '')}</textarea>
+      </div>
+      <div class="row" style="gap:var(--space-4);align-items:flex-start">
+        <div class="field" style="flex:1 1 160px">
+          <label for="a-mode">Access</label>
+          <select class="input" id="a-mode" name="unlockMode">
+            <option value="ad_gated" ${asset.unlock_mode === 'ad_gated' ? 'selected' : ''}>One rewarded ad</option>
+            <option value="open" ${asset.unlock_mode === 'open' ? 'selected' : ''}>Free — no ad</option>
+          </select>
+          <span class="hint">Changing this does not take back an unlock anyone already has.</span>
+        </div>
+        <div class="field" style="flex:1 1 160px">
+          <label for="a-status">State</label>
+          <select class="input" id="a-status" name="status">
+            <option value="live" ${asset.status === 'live' ? 'selected' : ''}>Live</option>
+            <option value="paused" ${asset.status === 'paused' ? 'selected' : ''}>Paused — hidden</option>
+          </select>
+          <span class="hint">Pausing hides it without deleting anything.</span>
+        </div>
+      </div>
+      <div class="field">
+        <label for="a-ads">Ads to unlock</label>
+        <input class="input" id="a-ads" name="adsRequired" type="number" min="1" max="5" step="1"
+               value="${Number(policy.ads_required) || 1}">
+        <span class="hint">More than one ad per file is allowed and generally earns less per person
+        than a single longer view.</span>
+      </div>
+      <div class="row" style="gap:var(--space-4);align-items:flex-start">
+        <div class="field" style="flex:1 1 140px">
+          <label for="a-seconds">Minimum ad length</label>
+          <input class="input" id="a-seconds" name="adMinSeconds" type="number" min="5" max="120" step="5"
+                 value="${Number(policy.ad_min_seconds) || 15}">
+          <span class="hint">Seconds. The network sets the real length; this is the floor you ask for.</span>
+        </div>
+        <div class="field" style="flex:1 1 140px">
+          <label for="a-hours">Access lasts</label>
+          <input class="input" id="a-hours" name="unlockHours" type="number" min="1" max="720" step="1"
+                 value="${Number(policy.unlock_hours) || 24}">
+          <span class="hint">Hours. 24 is a day; 720 is a month.</span>
+        </div>
+      </div>
+      <p class="fine">
+        Nobody can unlock this file with money. Unlocks come from watching an ad, and the network
+        pays your own account for it.
+      </p>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <div class="panel-head"><h2>Since publishing</h2></div>
+      <div class="panel-body">
+        <dl class="kv">
+          <dt>Unlocks</dt><dd>${num(unlocks)}</dd>
+          <dt>Files</dt><dd>${plural(files.length, 'file')}</dd>
+          <dt>Reviews</dt><dd>${stats.count
+    ? `${Number(stats.average).toFixed(1)} from ${plural(stats.count, 'review')}`
+    : 'None yet'}</dd>
+        </dl>
+        <ul class="dl-list" style="margin-top:var(--space-5)">
+          ${files.map((f) => `<li class="dl-item">
+            <span class="file-badge" aria-hidden="true">${esc((f.mime_type || 'file').split('/').pop().slice(0, 4).toUpperCase())}</span>
+            <span class="dl-body">
+              <span class="dl-name">${esc(f.filename)}</span>
+              <span class="dl-meta">${(f.size_bytes / 1024).toFixed(1)} KB · ${esc(f.mime_type || '')}</span>
+            </span>
+          </li>`).join('')}
+        </ul>
+        <p class="fine" style="margin-top:var(--space-4)">
+          A file cannot be swapped for another one here. Replacing bytes behind a URL somebody
+          already unlocked is how a store loses the argument about what they bought — publish a
+          new file instead, and pause this one.
+        </p>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:var(--space-6)">
+      <div class="panel-head"><h2>Reviews on this file</h2></div>
+      <div class="panel-body">
+        ${stats.count
+    ? `<p class="small">${Number(stats.average).toFixed(1)} out of 5 from ${plural(stats.count, 'review')}.
+           <a href="/dashboard/${esc(channel.slug)}/reviews">Read and reply →</a></p>`
+    : `<p class="fine">None yet. A review can only be written by somebody holding an unlock.</p>`}
+      </div>
+    </div>
+  </div>
+
+  <div class="form-foot">
+    <button class="btn btn-primary" type="submit">Save</button>
+    <span class="fine">Details and unlock terms save together.</span>
+  </div>
+</form>`,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Operator — matching money against the statement
+// ---------------------------------------------------------------------------
+
+export function operatorBilling({ user, consent = null, flash = null, payments = [], invoices = [], payee = null }) {
+  const payRows = payments.map((p) => `
+    <tr>
+      <td>
+        <strong>${esc(p.channel_name)}</strong>
+        <div class="fine">/s/${esc(p.channel_slug)} · ${esc(p.plan_code)}</div>
+      </td>
+      <td class="mono">${esc(p.txn_reference)}</td>
+      <td>${esc(p.method)}${p.payer_name ? `<div class="fine">${esc(p.payer_name)}${p.payer_number ? ` · ${esc(p.payer_number)}` : ''}</div>` : ''}</td>
+      <td class="num">${npr(p.amount_npr)}</td>
+      <td class="fine">${relTime(p.created_at)}</td>
+      <td>
+        <form class="inline-form" method="post" action="/admin/billing/plan/${esc(p.id)}">
+          <button class="btn btn-sm btn-primary" name="action" value="match" type="submit">Match</button>
+          <button class="btn btn-sm btn-danger" name="action" value="reject" type="submit">Reject</button>
+        </form>
+      </td>
+    </tr>`).join('');
+
+  const rentRows = invoices.map((i) => `
+    <tr>
+      <td>
+        <strong>${esc(i.channel_name)}</strong>
+        <div class="fine">/s/${esc(i.channel_slug)}</div>
+      </td>
+      <td>${day(i.period_start)} → ${day(i.period_end)}</td>
+      <td class="mono">${esc(i.txn_reference || '—')}</td>
+      <td class="num">${npr(i.amount_npr)}</td>
+      <td>${pill(i.status, i.status === 'submitted' ? 'info' : 'warning')}</td>
+      <td>
+        <form class="inline-form" method="post" action="/admin/billing/rent/${esc(i.id)}">
+          <button class="btn btn-sm btn-primary" type="submit">Mark paid</button>
+        </form>
+      </td>
+    </tr>`).join('');
+
+  return layout({
+    title: 'Billing queue', user, consent, current: 'admin',
+    body: `
+<div class="section" style="margin-block:var(--space-8) var(--space-2)">
+  <h1 style="font-size:var(--text-2xl)">Billing queue</h1>
+  <p class="lede" style="margin-top:var(--space-4)">
+    Both of these are matched against the platform's own statement by hand.
+    ${payee ? `Money arrives in the name of <strong>${esc(payee)}</strong>.` : '<strong>No payee name is configured</strong> — set <span class="mono">OPERATOR_LEGAL_NAME</span>.'}
+    Matching an upgrade activates the subscription; it is the only thing that does.
+  </p>
+</div>
+${flashNote(flash)}
+
+<section class="section">
+  <div class="section-head"><h2>Upgrades waiting</h2><p>${plural(payments.length, 'payment')}</p></div>
+  ${payments.length ? `
+    <div class="panel"><div class="panel-body panel-body-flush">
+      <table class="table">
+        <thead><tr><th>Store</th><th>Reference</th><th>Method</th><th class="num">Amount</th><th>When</th><th></th></tr></thead>
+        <tbody>${payRows}</tbody>
+      </table>
+    </div></div>`
+    : '<div class="empty">Nothing waiting. Upgrades only appear here once a seller has submitted a reference.</div>'}
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>Rent outstanding</h2><p>${plural(invoices.length, 'invoice')}</p></div>
+  ${invoices.length ? `
+    <div class="panel"><div class="panel-body panel-body-flush">
+      <table class="table">
+        <thead><tr><th>Store</th><th>Period</th><th>Reference</th><th class="num">Amount</th><th>State</th><th></th></tr></thead>
+        <tbody>${rentRows}</tbody>
+      </table>
+    </div></div>`
+    : '<div class="empty">Nothing outstanding. Rent invoices are only issued where a page is long enough to spare a slot.</div>'}
+</section>`,
+  });
 }

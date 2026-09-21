@@ -94,7 +94,8 @@ Items marked **BLOCKER** must be filled before real users see the app.
 | 6 | **Storage** — Cloudflare R2 or S3 bucket + keys | Your media API decision. `STORAGE_*` env |
 | 7 | **SMTP / email sender** (Resend, Postmark, SES) | Verification + password reset need a sender you own |
 | 8 | **At least one ad network account** — start with BitLabs or Adsterra | Their signup is their KYC. You paste the callback secret |
-| 9 | **Plan payment details** — bank/eSewa to receive NPR | Platform revenue only; manual verification at your volume |
+| 9 | **Plan payment details** — bank/eSewa/Khalti/IME Pay to receive NPR | Platform revenue only; manual verification at your volume. Four variables, all optional: `PAY_ESEWA_ID`, `PAY_KHALTI_ID`, `PAY_IMEPAY_ID`, `PAY_BANK_ACCOUNT`. Until one is set the billing page says "not configured" and names the variable rather than showing a placeholder account |
+| 9b | **`OPERATOR_EMAIL`** — the account that matches payments | Boot promotes it to `role = 'admin'`. It is the only path to operator, so it is a deploy decision, not a form. Sign up with that address first: an account boot creates has no password. Then `/admin/billing` is where an upgrade or a rent payment is matched against your statement |
 | 10 | **Sentry DSN** (or equivalent) | Optional but you'll want it before real traffic |
 | 10b | **`workflows` permission for the GitHub App**, or run one `cp` by hand | This is why CI lives in `ci/ci.yml` instead of `.github/workflows/`: GitHub refuses a push that creates a workflow file without that permission. `ci/README.md` has the one-line install | GitHub settings |
 
@@ -202,12 +203,38 @@ hero, and the dashboard can publish a file with a cover and an access mode. Empt
 public pages: unassigned slots are inventory, and inventory belongs on the
 dashboard where the person selling it can see it.
 
+**The revenue model, built.** Two charges, and the web now has both end to end:
+a store upgrade (pro-rated to the period already paid for, renewal date
+unmoved) and annual rent for the platform's one ad slot. Payment is a transfer
+to an account listed on the billing page plus a reference an operator matches
+against the statement — the only shape available to a Nepal-registered entity,
+so the page explains the absence of a checkout instead of faking one. Every
+money page states the two things bytebikri does **not** take: 0% of ad earnings
+and nothing at all from content, which has no price.
+
+**Also built:** store settings (name, tagline, about, banner, listing mode, ads
+on/off), reviews keyed off unlocks with one seller reply each, single-asset
+management (edit, pause, unlock terms), and search across listed stores and
+their files.
+
 **Still to do:** the asset page's ad placement, the mobile pass, and a look at
-real storefronts in this category rather than at my own reasoning.
+real storefronts in this category rather than at my own reasoning. Rent is
+currently priced from an assumed RPM and FX rate — the working is printed on
+the invoice, but it should read provider-reported revenue instead.
 
 ### Phase 8 — Operations
 
-Moderation workflow, rent enforcement, backups, monitoring, notifications.
+Moderation workflow, backups, monitoring, notifications.
+
+Rent enforcement is **done by policy rather than by dunning**, and it is worth
+being explicit that this is a choice: the grace window is thirty days and
+self-calculated (`effectivePlanCode`), nothing is deleted on expiry, and a
+rejected payment leaves the seller's paid plan exactly as it was. There is no
+automatic suspension to operate, because a cron job that failed to run must
+never be the reason a paying seller loses their storefront.
+
+What is left here: the moderation queue (schema has the states, no UI), a report
+button, backups, and any notification at all.
 
 ---
 

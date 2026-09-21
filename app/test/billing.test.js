@@ -1,0 +1,432 @@
+/**
+ * The revenue model, as arithmetic.  npm test
+ *
+ * Two charges exist: a store upgrade and annual rent for the platform slot.
+ * Everything that decides whether a seller owes money, how much, and what they
+ * get for it lives in `src/billing.js` and a handful of store methods — so it
+ * can be tested rather than asserted in a pricing page.
+ *
+ * These run against a real Postgres, like the rest of the store tests, because
+ * half of what is being checked here IS the database: the unique constraint that
+ * makes the request-then-pay flow idempotent, the column that keeps a requested
+ * upgrade from being mistaken for a paid one, and the SQL that a missing `$` in
+ * a template literal turns into `title = 2`.
+ *
+ * That last one is not hypothetical: `updateAsset` shipped with
+ * `set ${key} = ${values.length}` — no placeholder sigil — and every save from
+ * the asset page failed with "bind message supplies 5 parameters, but prepared
+ * statement requires 1". The suite passed, because no test had ever written to
+ * that method. The round-trip tests below exist so that cannot happen again.
+ */
+import { test, after } from 'node:test';
+import assert from 'node:assert/strict';
+
+process.env.DATABASE_URL ||= 'postgres://postgres:postgres@127.0.0.1:55432/bytebikri_test';
+
+const { store, PLANS } = await import('../src/store.js');
+const { close, query, scalar } = await import('../src/db.js');
+const { annualRentNpr, rentPeriod, upgradeExplanation, planBenefits, NOT_CHARGED } = await import('../src/billing.js');
+
+after(async () => { await close(); });
+
+let seq = 0;
+/** A paid Store channel with one day short of a year left on its period. */
+async function fixture({ plan = 'store', daysLeft = 365, rentSlot = true } = {}) {
+  const tag = `${Date.now()}-${++seq}`;
+  const user = await store.userByEmailOrCreate(`owner-bill-${tag}@test.local`);
+  const channel = await store.createChannel({ ownerId: user.id, slug: `bill-${tag}`, name: `Bill ${tag}` });
+
+  await query(
+    `insert into subscriptions (channel_id, plan_code, status, period_start, period_end)
+     values ($1, $2, 'active', now(), now() + ($3 || ' days')::interval)`,
+    [channel.id, plan, String(daysLeft)],
+  );
+
+  const asset = await store.createAsset({ channelId: channel.id, title: `Asset ${tag}`, slug: `a-${tag}` });
+  // `estimateRentSlotValue` reads slots, and one platform slot is what rent is
+  // charged for. The fixture fakes the estimate rather than building real slots.
+  const estimate = { pageviews30d: 10_000, total: 4, rent: rentSlot ? 1 : 0, rpmUsd: 0.2, estNpr: 280 };
+  return { user, channel: await store.channelById(channel.id), asset, estimate, tag };
+}
+
+// ---------------------------------------------------------------------------
+// The two charges, and nothing else
+// ---------------------------------------------------------------------------
+
+test('rent is the monthly estimate times twelve, and zero when nothing is rented', () => {
+  assert.equal(annualRentNpr({ rent: 1, estNpr: 280 }), 3360);
+  assert.equal(annualRentNpr({ rent: 0, estNpr: 280 }), 0, 'no platform slot means no rent');
+  assert.equal(annualRentNpr({ rent: 1, estNpr: 0 }), 0, 'no traffic means no rent');
+  assert.equal(annualRentNpr(null), 0);
+  assert.equal(annualRentNpr({ rent: 1, estNpr: 280.4 }), 3365, 'rounded to the rupee');
+});
+
+test('the only amounts bytebikri ever charges are the plan prices and the rent', () => {
+  // A guard on the model rather than on a number: if a third charge is ever
+  // added it has to be added here too, deliberately.
+  assert.deepEqual(Object.values(PLANS).map((p) => p.priceNpr), [0, 999, 2499]);
+  assert.equal(NOT_CHARGED.length, 4);
+  assert.ok(NOT_CHARGED.some((n) => /0%/.test(n)), 'the 0% ad-share promise is stated on the billing page');
+  assert.ok(NOT_CHARGED.every((n) => !/commission on|fee of|%/i.test(n) || /0%/.test(n)),
+    'no percentage appears in the not-charged list except the zero one');
+});
+
+test('a rent period is the channel anniversary, not the calendar year', () => {
+  const { start, end } = rentPeriod('2025-03-14T10:00:00Z', new Date('2026-09-21T00:00:00Z'));
+  assert.equal(start, '2026-03-14');
+  assert.equal(end, '2027-03-14');
+  // A channel created in December gets a full year, not two months and a bill.
+  const dec = rentPeriod('2026-12-20T00:00:00Z', new Date('2027-01-05T00:00:00Z'));
+  assert.equal(dec.start, '2026-12-20');
+  assert.equal(dec.end, '2027-12-20');
+});
+
+// ---------------------------------------------------------------------------
+// Asking is not paying
+// ---------------------------------------------------------------------------
+
+test('requesting an upgrade does not change the plan, and records what was asked', async () => {
+  const { channel, user, tag } = await fixture({ plan: 'store' });
+  const before = store.plan(channel);
+  assert.equal(before.code, 'store');
+
+  const sub = await store.requestUpgrade(channel, 'pro');
+  assert.equal(sub.pending_plan_code, 'pro');
+  assert.equal(sub.status, 'active', 'the paid status must not change');
+
+  const after_ = await store.channelById(channel.id);
+  assert.equal(after_.plan_code, 'store', 'a request must not grant the requested plan');
+  assert.equal(store.plan(after_).code, 'store');
+  assert.ok(after_, tag);
+});
+
+test('the pro-rated amount is quoted from the plan HELD, not the one asked for', async () => {
+  const { channel } = await fixture({ plan: 'store', daysLeft: 180 });
+  await store.requestUpgrade(channel, 'pro');
+
+  const fresh = await store.channelById(channel.id);
+  const quote = store.upgradeQuote(fresh, 'pro');
+  assert.ok(quote, 'store -> pro must be quotable');
+  assert.equal(quote.from.code, 'store');
+  assert.equal(quote.fullDifference, 1500);
+  // 365 days of Store->Pro is 1500; half way through the period is 750.
+  assert.equal(quote.amountNpr, 740, `180 days of 365 should be about half, got ${quote.amountNpr}`);
+  assert.ok(quote.amountNpr < PLANS.pro.priceNpr,
+    'the seller must never be billed the full price for a part period');
+});
+
+test('a payment cannot be recorded without an open request', async () => {
+  const { channel } = await fixture({ plan: 'store' });
+  const none = await store.recordPlanPayment({
+    channelId: channel.id, amountNpr: 1500, txnReference: `noreq-${Date.now()}`,
+  });
+  assert.equal(none, null, 'nothing is pending, so there is nothing to attribute a payment to');
+});
+
+test('a free channel can ask for its first plan, and is billed the full price', async () => {
+  const tag = `${Date.now()}-${++seq}`;
+  const user = await store.userByEmailOrCreate(`fresh-${tag}@test.local`);
+  const channel = await store.createChannel({ ownerId: user.id, slug: `fresh-${tag}`, name: `Fresh ${tag}` });
+
+  const sub = await store.requestUpgrade(channel, 'store');
+  assert.equal(sub.plan_code, 'free');
+  assert.equal(sub.pending_plan_code, 'store');
+  assert.equal(sub.period_end, null, 'a free plan has no period end — see migration 0013');
+
+  const fresh = await store.channelById(channel.id);
+  const quote = store.upgradeQuote(fresh, 'store');
+  assert.equal(quote.amountNpr, 999, 'with no running period the full price is due');
+});
+
+test('matching moves the plan, clears the request, and does not move the renewal date', async () => {
+  const { channel, user } = await fixture({ plan: 'store', daysLeft: 300 });
+  await store.requestUpgrade(channel, 'pro');
+  const before = await store.subscriptionOf(channel.id);
+
+  const payment = await store.recordPlanPayment({
+    channelId: channel.id, amountNpr: 1233, txnReference: `match-${Date.now()}`,
+    method: 'esewa', payerName: 'Seller',
+  });
+  assert.ok(payment, 'a payment against an open request must be recorded');
+  assert.equal(payment.status, 'submitted', 'submitting a reference is not approval');
+
+  const mid = await store.channelById(channel.id);
+  assert.equal(mid.plan_code, 'store', 'the plan moves only when an operator matches');
+
+  const operator = await store.userByEmailOrCreate(`op-${Date.now()}@test.local`);
+  const matched = await store.matchPlanPayment({ paymentId: payment.id, actorId: operator.id });
+  assert.equal(matched.status, 'matched');
+
+  const after_ = await store.channelById(channel.id);
+  assert.equal(after_.plan_code, 'pro');
+  assert.equal(store.plan(after_).code, 'pro');
+
+  const sub = await store.subscriptionOf(channel.id);
+  assert.equal(sub.pending_plan_code, null, 'the request is closed');
+  assert.equal(sub.status, 'active');
+  assert.equal(
+    new Date(sub.period_end).toISOString(),
+    new Date(before.period_end).toISOString(),
+    'a pro-rated upgrade keeps the renewal date it was pro-rated to',
+  );
+  assert.ok(user);
+});
+
+test('matching twice is a no-op, not a second year', async () => {
+  const { channel } = await fixture({ plan: 'store', daysLeft: 40 });
+  await store.requestUpgrade(channel, 'pro');
+  const payment = await store.recordPlanPayment({
+    channelId: channel.id, amountNpr: 164, txnReference: `twice-${Date.now()}`,
+  });
+  const operator = await store.userByEmailOrCreate(`op2-${Date.now()}@test.local`);
+
+  const first = await store.matchPlanPayment({ paymentId: payment.id, actorId: operator.id });
+  const second = await store.matchPlanPayment({ paymentId: payment.id, actorId: operator.id });
+  assert.ok(first);
+  assert.equal(second, null, 'a matched payment is not matched again');
+
+  const sub = await store.subscriptionOf(channel.id);
+  assert.equal(new Date(sub.period_end).toISOString(), (await store.subscriptionOf(channel.id)).period_end.toISOString());
+});
+
+test('rejecting a payment drops the request and leaves the paid plan alone', async () => {
+  const { channel } = await fixture({ plan: 'store' });
+  await store.requestUpgrade(channel, 'pro');
+  const payment = await store.recordPlanPayment({
+    channelId: channel.id, amountNpr: 1500, txnReference: `rej-${Date.now()}`,
+  });
+  const operator = await store.userByEmailOrCreate(`op3-${Date.now()}@test.local`);
+
+  const rejected = await store.rejectPlanPayment({
+    paymentId: payment.id, actorId: operator.id, reason: 'no such transfer on the statement',
+  });
+  assert.equal(rejected.status, 'rejected');
+
+  const sub = await store.subscriptionOf(channel.id);
+  assert.equal(sub.pending_plan_code, null);
+  assert.equal(sub.plan_code, 'store', 'a rejected payment must not cost the seller their plan');
+  assert.equal(sub.status, 'active');
+
+  // And the operator queue no longer offers it.
+  const open = await store.unmatchedPayments();
+  assert.ok(!open.some((p) => p.id === payment.id));
+});
+
+// ---------------------------------------------------------------------------
+// Capability follows the paid plan
+// ---------------------------------------------------------------------------
+
+test('the effective plan drops to free only when the period and grace have both run out', () => {
+  const base = { plan_code: 'pro' };
+  assert.equal(store.effectivePlanCode({ ...base, subscription_status: 'active', subscription_end: '2999-01-01' }), 'pro');
+  assert.equal(store.effectivePlanCode({ ...base, subscription_status: 'grace', subscription_end: '2000-01-01' }), 'pro',
+    'grace keeps features on');
+  assert.equal(store.effectivePlanCode({ ...base, subscription_status: 'expired', subscription_end: '2000-01-01' }), 'free');
+  assert.equal(store.effectivePlanCode({ ...base, subscription_status: null, subscription_end: '2999-01-01' }), 'free',
+    'a cancelled or refunded subscription grants nothing');
+  assert.equal(store.effectivePlanCode({ plan_code: 'free' }), 'free');
+  assert.equal(store.effectivePlanCode(null), 'free');
+});
+
+test('a lapsed period keeps its features for the grace window', () => {
+  const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString();
+  assert.equal(store.effectivePlanCode({ plan_code: 'store', subscription_status: 'active', subscription_end: daysAgo(10) }), 'store');
+  assert.equal(store.effectivePlanCode({ plan_code: 'store', subscription_status: 'active', subscription_end: daysAgo(31) }), 'free');
+});
+
+test('the paid plans can be found; a free one cannot, whatever it asks for', async () => {
+  const tag = `${Date.now()}-${++seq}`;
+  const owner = await store.userByEmailOrCreate(`list-${tag}@test.local`);
+  const channel = await store.createChannel({ ownerId: owner.id, slug: `list-${tag}`, name: `List ${tag}` });
+  await store.updateChannel(channel.id, { listing_mode: 'marketplace', name: `List ${tag}` });
+
+  const listed = await store.channels({ listedOnly: true });
+  assert.ok(listed.some((c) => c.id === channel.id), 'a free store that opts in is still listed at the data layer');
+  assert.equal(PLANS.free.capabilities.marketplace_listed, false, 'the ROUTE is where the plan is checked');
+  assert.equal(PLANS.store.capabilities.marketplace_listed, true, 'the first paid tier buys discovery');
+  assert.equal(PLANS.pro.capabilities.featured_eligible, true, 'placement, not visibility, is the upsell');
+});
+
+// ---------------------------------------------------------------------------
+// Writes that go through a generated SET clause
+// ---------------------------------------------------------------------------
+
+test('updateAsset writes what it was given, and refuses what it was not', async () => {
+  const { channel, asset } = await fixture();
+
+  const updated = await store.updateAsset(asset.id, {
+    title: 'Renamed', description: 'A new description', unlock_mode: 'open', status: 'paused',
+  });
+  assert.equal(updated.title, 'Renamed');
+  assert.equal(updated.description, 'A new description');
+  assert.equal(updated.unlock_mode, 'open');
+  assert.equal(updated.status, 'paused');
+
+  // `slug` is the address people already have. `moderation_state` is not the
+  // seller's to change. Neither may be writable through this method.
+  const after_ = await store.updateAsset(asset.id, {
+    slug: 'hijacked', moderation_state: 'removed', channel_id: channel.id,
+  });
+  assert.equal(after_.slug, asset.slug, 'a slug survives an update that tries to change it');
+  assert.equal(after_.channel_id, channel.id);
+  assert.equal(after_.moderation_state, 'approved',
+    "a seller cannot mark their own asset removed — that is the moderator's column");
+
+  // An empty patch is a read, not an error.
+  const same = await store.updateAsset(asset.id, {});
+  assert.equal(same.title, 'Renamed');
+});
+
+test('updateChannel writes every column the settings form offers', async () => {
+  const { channel } = await fixture();
+  const updated = await store.updateChannel(channel.id, {
+    name: 'New name', tagline: 'One line', about: 'About this store',
+    channel_contact: 'hello@example.com', listing_mode: 'marketplace', ads_enabled: false,
+    sells_digital: true, sells_physical: false,
+  });
+  assert.equal(updated.name, 'New name');
+  assert.equal(updated.tagline, 'One line');
+  assert.equal(updated.about, 'About this store');
+  assert.equal(updated.channel_contact, 'hello@example.com');
+  assert.equal(updated.listing_mode, 'marketplace');
+  assert.equal(updated.ads_enabled, false);
+  assert.equal(updated.sells_digital, true);
+  assert.equal(updated.sells_physical, false);
+});
+
+test('setUnlockPolicy clamps to something a network will actually credit', async () => {
+  const { asset } = await fixture();
+  const set = await store.setUnlockPolicy(asset.id, { ads_required: 0, ad_min_seconds: 1, unlock_hours: 0 });
+  assert.equal(set.ads_required, 1, 'a zero-ad unlock hands the file over for nothing');
+  assert.equal(set.ad_min_seconds, 5, 'below the network floor a view is not credited');
+  assert.equal(set.unlock_hours, 1);
+
+  const huge = await store.setUnlockPolicy(asset.id, { ads_required: 99, ad_min_seconds: 999, unlock_hours: 99999 });
+  assert.equal(huge.ads_required, 5);
+  assert.equal(huge.ad_min_seconds, 120);
+  assert.equal(huge.unlock_hours, 720);
+});
+
+// ---------------------------------------------------------------------------
+// Rent, reviews, search
+// ---------------------------------------------------------------------------
+
+test('the rent invoice is issued once, and carries its own working', async () => {
+  const { channel, estimate } = await fixture();
+
+  const first = await store.ensureRentInvoice({ channel, estimate });
+  assert.ok(first, '10,000 views with a platform slot is a billable period');
+  assert.equal(first.amount_npr, 3360);
+  assert.equal(first.status, 'issued');
+  assert.equal(Number(first.basis.estMonthlyNpr), 280);
+  assert.equal(Number(first.basis.months), 12);
+
+  const again = await store.ensureRentInvoice({ channel, estimate });
+  assert.equal(again.id, first.id, 'the unique (channel_id, period_start) makes this idempotent');
+});
+
+test('no invoice is issued when there is nothing to rent', async () => {
+  const { channel, estimate } = await fixture({ rentSlot: false });
+  const invoice = await store.ensureRentInvoice({ channel, estimate: { ...estimate, rent: 0 } });
+  assert.equal(invoice, null, 'a page too short to spare a slot is not taxed');
+});
+
+test('rent is submitted with a reference and marked paid by an operator', async () => {
+  const { channel, estimate } = await fixture();
+  const invoice = await store.ensureRentInvoice({ channel, estimate });
+
+  const bad = await store.submitRentPayment({ invoiceId: invoice.id, channelId: channel.id, txnReference: 'x' });
+  assert.equal(bad, null, 'a one-character reference is not a reference');
+
+  const submitted = await store.submitRentPayment({
+    invoiceId: invoice.id, channelId: channel.id, method: 'esewa', txnReference: `rent-${Date.now()}`,
+  });
+  assert.equal(submitted.status, 'submitted');
+  assert.ok((await store.openRentInvoices()).some((i) => i.id === invoice.id));
+
+  const operator = await store.userByEmailOrCreate(`op4-${Date.now()}@test.local`);
+  const paid = await store.matchRentPayment({ invoiceId: invoice.id, actorId: operator.id, note: 'seen on statement' });
+  assert.equal(paid.status, 'paid');
+  assert.ok(!(await store.openRentInvoices()).some((i) => i.id === invoice.id));
+});
+
+test('a review can only be written where an unlock exists, and the average counts them', async () => {
+  const { asset, channel, user } = await fixture();
+  const buyer = await store.userByEmailOrCreate(`buyer-${Date.now()}-${seq}@test.local`);
+  const unlock = await store.grantUnlock({ assetId: asset.id, channelId: channel.id, userId: buyer.id, method: 'open', adsCompleted: 0 });
+
+  const first = await store.addReview({ unlockId: unlock.id, assetId: asset.id, channelId: channel.id, buyerId: buyer.id, rating: 4, body: 'Good.' });
+
+  // One unlock, one review: a second submission edits the first. Reviews are
+  // keyed off the unlock, so there is no way to write a second opinion with the
+  // same ad view — and no way to pad a rating count.
+  const edited = await store.addReview({
+    unlockId: unlock.id, assetId: asset.id, channelId: channel.id, buyerId: buyer.id, rating: 5, body: 'Better than I said.',
+  });
+  assert.equal(edited.id, first.id, 'the second write updates the same row');
+  const after_ = await store.reviewStatsOfAsset(asset.id);
+  assert.equal(Number(after_.count), 1, 'and the count is still one');
+
+  // A rating with no unlock row has nothing to attach to — the FK is the gate.
+  await assert.rejects(
+    () => store.addReview({
+      unlockId: '00000000-0000-0000-0000-000000000000', assetId: asset.id, channelId: channel.id,
+      buyerId: user.id, rating: 5, body: 'Not mine.',
+    }),
+    /foreign key|violates/i,
+  );
+
+  const stats = await store.reviewStatsOfAsset(asset.id);
+  assert.equal(Number(stats.count), 1);
+  assert.equal(Number(stats.average).toFixed(1), '5.0', 'the average follows the edit');
+});
+
+test('search finds listed stores and their files, and nothing private', async () => {
+  const tag = `${Date.now()}-${++seq}`;
+  const owner = await store.userByEmailOrCreate(`search-${tag}@test.local`);
+  const channel = await store.createChannel({
+    ownerId: owner.id, slug: `srch-${tag}`, name: `Devanagari Studio ${tag}`,
+    tagline: 'Poster kits and type',
+  });
+  await store.updateChannel(channel.id, { listing_mode: 'marketplace', name: `Devanagari Studio ${tag}` });
+  await store.createAsset({ channelId: channel.id, title: `Nepali Poster Kit ${tag}`, slug: `kit-${tag}` });
+
+  const results = await store.search('Devanagari');
+  assert.ok(results.stores.some((c) => c.id === channel.id), 'a listed store is findable by name');
+  assert.ok(Array.isArray(results.assets));
+
+  const byFile = await store.search(`Nepali Poster Kit ${tag}`);
+  assert.ok(byFile.assets.some((a) => a.channel_id === channel.id), 'a file is findable by title');
+
+  // A store that kept to its own address is not in a directory, on purpose.
+  await store.updateChannel(channel.id, { listing_mode: 'storefront' });
+  const after_ = await store.search('Devanagari');
+  assert.ok(!after_.stores.some((c) => c.id === channel.id), 'own-address stores are never listed');
+});
+
+// ---------------------------------------------------------------------------
+// What the page says
+// ---------------------------------------------------------------------------
+
+test('the upgrade explanation shows its arithmetic rather than one number', () => {
+  const quote = { from: PLANS.store, to: PLANS.pro, daysLeft: 200, fullDifference: 1500, amountNpr: 822 };
+  const lines = upgradeExplanation(quote);
+  assert.equal(lines.amountNpr, 822);
+  assert.ok(lines.lines.some((l) => /2,499/.test(l)), 'the new price is stated');
+  assert.ok(lines.lines.some((l) => /999/.test(l)), 'the price being left is stated');
+  assert.ok(lines.lines.some((l) => /200 days/.test(l)), 'the days being pro-rated are stated');
+  assert.ok(lines.lines.some((l) => /renewal date does not move/i.test(l)));
+
+  assert.equal(upgradeExplanation(null), null);
+});
+
+test('plan benefits read as sentences, with no negative sentinel showing through', () => {
+  for (const plan of Object.values(PLANS)) {
+    const lines = planBenefits(plan);
+    assert.ok(lines.length >= 4);
+    assert.ok(!lines.some((l) => /-1/.test(l)), `plan ${plan.code} prints a -1 sentinel: ${lines.join(' | ')}`);
+  }
+  assert.ok(planBenefits(PLANS.pro).some((l) => /Unlimited published files/.test(l)));
+  assert.ok(planBenefits(PLANS.free).some((l) => /own address only/i.test(l)));
+  assert.ok(planBenefits(PLANS.store).some((l) => /Explore/i.test(l)));
+});
