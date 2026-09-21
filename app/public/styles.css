@@ -754,6 +754,14 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
   display: grid; gap: var(--space-4);
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
 }
+/* Five tiles fit the console's measure; six did not, and the sixth dropped to a
+   row of its own with four tiles' worth of empty space beside it. A strip that
+   wraps unevenly reads as a mistake even when every number in it is right, so a
+   row with more than four tiles tightens its minimum until the strip is one row
+   again — the same widths the phone layout already uses, which is where the
+   "does a 170px tile still read?" question was settled. */
+.kpi-row-tight { grid-template-columns: repeat(auto-fit, minmax(min(100%, 156px), 1fr)); }
+
 .kpi {
   display: grid; gap: var(--space-1); align-content: start;
   padding: var(--space-5);

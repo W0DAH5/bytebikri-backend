@@ -3429,7 +3429,7 @@ export function adminOverview({ user, consent = null, flash = null, kpis = [], q
 ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)" role="status">${esc(flash.message)}</div>` : ''}
 
 <section class="section">
-  <div class="kpi-row">${kpis.map(kpi).join('')}</div>
+  <div class="kpi-row${kpis.length > 4 ? ' kpi-row-tight' : ''}">${kpis.map(kpi).join('')}</div>
 </section>
 
 <section class="section">

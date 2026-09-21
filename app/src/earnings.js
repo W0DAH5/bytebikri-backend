@@ -145,7 +145,7 @@ export function gapVerdict({ counted = 0, reported = 0, estimateUsd = 0, gapPct 
       detail: 'That usually means a delivery problem at the network, a payment threshold that has not been crossed, or a provider whose reports we are not seeing. Worth checking the statement directly.',
     };
   }
-  if (gapPct !== null && Math.abs(gapPct) <= 15) {
+  if (gapPct !== null && Math.abs(gapPct) <= CONSISTENT_BAND_PCT) {
     return {
       level: 'consistent',
       headline: 'Our estimate matches your statement closely',
@@ -178,6 +178,17 @@ export function gapVerdict({ counted = 0, reported = 0, estimateUsd = 0, gapPct 
  * not because the model is wrong. Calling that "we under-count" would send
  * somebody to change a rate that was never measured.
  */
+/**
+ * How far our estimate may sit from a statement and still be called consistent.
+ *
+ * Named, exported and used in all three places that decide it — the row state,
+ * the seller's per-statement verdict, and the operator's platform verdict. The
+ * number was written out three times as `15` and `0.15` before this turn, which
+ * is how a threshold ends up meaning different things on two pages that are
+ * supposed to agree about the same traffic.
+ */
+export const CONSISTENT_BAND_PCT = 15;
+
 export function calibrationRowState(row) {
   const views = Number(row.views) || 0;
   const reported = Number(row.reported_usd) || 0;
@@ -197,12 +208,16 @@ export function calibrationRowState(row) {
   }
   // Only rows with views can carry a rate, so only they can be compared.
   const implied = Number(row.implied_rpm_usd);
+  const gapPct = reported > 0 ? Math.round(((estimate - reported) / reported) * 100) : null;
   return {
     state: 'measurable',
     label: 'Measurable',
     tone: '',
     impliedRpmUsd: Number.isFinite(implied) ? implied : null,
-    gapPct: reported > 0 ? Math.round(((estimate - reported) / reported) * 100) : null,
+    gapPct,
+    // The one place "is this rate contradicted" is answered. A caller counting
+    // contradicted rows must not re-implement the band.
+    contradicted: gapPct !== null && Math.abs(gapPct) > CONSISTENT_BAND_PCT,
     why: `Over the same window: our estimate $${estimate.toFixed(4)} at the assumed rate, their statement $${reported.toFixed(2)}.`,
   };
 }
@@ -269,7 +284,21 @@ export function calibrationVerdict({ rows = [], assumedRpmUsd = 0.2, rates = nul
     };
   }
 
-  const off = implied !== null && assumed > 0 ? Math.abs(implied - assumed) / assumed : null;
+  // The classification is done on the same comparison every other surface shows —
+  // our estimate against their reported dollars over the identical window — and
+  // through the same band. Computing the level from the implied RATE while the
+  // rows and their chips use the DOLLAR gap put two denominators on one screen:
+  // at the edge, a row could chip "we estimate higher" while the verdict above it
+  // read "consistent", and both were "15%". One comparison, one band, one story.
+  const dollarGapPct = totalReported > 0
+    ? ((totalEstimate - totalReported) / totalReported) * 100
+    : null;
+  // A statement that reports nothing has no percentage to take: the fallback to
+  // the rate comparison keeps that case classified as it was (we assume more than
+  // arrived), rather than falling through to "consistent" because 0 has no gap.
+  const off = dollarGapPct !== null
+    ? Math.abs(dollarGapPct) / 100
+    : (implied !== null && assumed > 0 ? Math.abs(implied - assumed) / assumed : null);
   // Confidence is about evidence, not direction: it is reported for every level.
   const confidence = periods >= 12 && stores >= 3 ? 'broad'
     : (periods >= 3 && stores >= 2) ? 'narrow' : 'single';
@@ -279,15 +308,28 @@ export function calibrationVerdict({ rows = [], assumedRpmUsd = 0.2, rates = nul
       ? ' This rests on a handful of periods, so treat it as a direction rather than a measurement.'
       : ` This rests on ${periods} period${periods === 1 ? '' : 's'} from ${stores} store${stores === 1 ? '' : 's'} — a signal, not a measurement.`;
 
-  if (off === null || off <= 0.15) {
+  if (off === null || off * 100 <= CONSISTENT_BAND_PCT) {
     return {
       ...base, level: 'consistent', confidence,
       headline: 'The statements are consistent with the rate we assume',
-      detail: `Our estimate is within 15% of what the networks reported across ${periods} settled `
+      detail: `Our estimate is within ${CONSISTENT_BAND_PCT}% of what the networks reported across ${periods} settled `
         + `period${periods === 1 ? '' : 's'}.${hedge}`,
     };
   }
-  if (implied < assumed) {
+  if (implied === null || implied === 0) {
+    // Neither a dollar gap nor a rate to divide by: a statement of zero against
+    // traffic we counted is a delivery question, not a pricing one, and
+    // "the statements imply 0.0× the rate we assume" would be arithmetic dressed
+    // up as a finding.
+    return {
+      ...base, level: 'not_measurable', confidence,
+      headline: 'A statement reports nothing against views this platform counted',
+      detail: 'There is no rate to derive from it, so nothing here changes the assumed rate. It is usually a '
+        + 'delivery question at the network, a payment threshold that has not been crossed, or a provider whose '
+        + 'reports we are not seeing — the seller can see which from their own portal.',
+    };
+  }
+  if (totalEstimate > totalReported) {
     return {
       ...base, level: 'we_over', confidence,
       headline: `We assume ${(assumed / Math.max(implied, 0.0001)).toFixed(1)}× the rate the statements imply`,

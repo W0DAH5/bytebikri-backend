@@ -2528,18 +2528,36 @@ async function withBadges(user) {
 APP.get('/admin', async (req, res, next) => {
   try {
     if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
-    const counts = await consoleCounts();
-    const money = await store.platformMoney();
-    const reach = await scalar(
-      `select json_build_object(
-         'stores', (select count(*)::int from channels where moderation_state <> 'removed'),
-         'listed', (select count(*)::int from channels where listing_mode = 'marketplace' and moderation_state not in ('removed','suspended')),
-         'files',  (select count(*)::int from assets where status = 'live'),
-         'views',  (select coalesce(sum(views),0)::int from page_view_daily where day > current_date - 30),
-         'unlocks',(select count(*)::int from unlocks where revoked_at is null),
-         'events', (select count(*)::int from ad_view_events where completed = true)
-       ) as r`,
-    );
+    const [counts, money, reach, calibrationRows] = await Promise.all([
+      consoleCounts(),
+      store.platformMoney(),
+      scalar(
+        `select json_build_object(
+           'stores', (select count(*)::int from channels where moderation_state <> 'removed'),
+           'listed', (select count(*)::int from channels where listing_mode = 'marketplace' and moderation_state not in ('removed','suspended')),
+           'files',  (select count(*)::int from assets where status = 'live'),
+           'views',  (select coalesce(sum(views),0)::int from page_view_daily where day > current_date - 30),
+           'unlocks',(select count(*)::int from unlocks where revoked_at is null),
+           'events', (select count(*)::int from ad_view_events where completed = true)
+         ) as r`,
+      ),
+      store.statementCalibration(),
+    ]);
+    // The rate every rent figure on the platform is priced from, checked against
+    // the statements creators have recorded. It belongs on this page because it is
+    // the one number that can quietly make all of our pricing wrong — and because
+    // the seller's earnings page promises that reporting a gap gets the rate
+    // corrected, which is a promise nothing was honouring.
+    const calibration = calibrationVerdict({ rows: calibrationRows, assumedRpmUsd: POLICY.assumedRpmUsd });
+    // Rows the verdict counts as contradicted come from the same per-row state the
+    // chip on the earnings table renders, so the count here and the chips there
+    // cannot describe the same traffic differently.
+    const contradicted = calibrationRows.filter((r) => calibrationState(r).contradicted).length;
+    const calibrationNote = calibration.level === 'no_statements'
+      ? 'No statement on file, so the assumed rate is unchecked.'
+      : calibration.level === 'not_measurable'
+        ? (contradicted ? calibration.detail : 'A statement is on file and nothing in it can be measured yet.')
+        : `${calibration.headline}.${contradicted ? '' : ' Nothing to correct.'}`;
 
     res.send(views.adminOverview({
       user: await withBadges(req.user), consent: req.consent, flash: flashFor(req.query),
@@ -2548,6 +2566,15 @@ APP.get('/admin', async (req, res, next) => {
         { label: 'Reports waiting', value: String(counts.reports), context: counts.reports ? `across ${counts.reportedFiles} file${counts.reportedFiles === 1 ? '' : 's'}` : 'nothing reported', tone: counts.reports >= AUTO_HIDE_AFTER ? 'bad' : counts.reports ? 'warn' : '', href: '/admin/reports' },
         { label: 'Stores not public', value: String(counts.moderation), context: counts.moderation ? 'restricted, suspended or removed' : 'every store is public', tone: counts.moderation ? 'warn' : '', href: '/admin/moderation' },
         { label: 'Paying stores', value: String(money.paying_stores || money.payingStores || 0), context: 'on any paid plan', href: '/admin/audit' },
+        {
+          label: 'Rate the statements imply',
+          value: calibration.impliedRpmUsd === null ? '—' : `$${Number(calibration.impliedRpmUsd).toFixed(2)}`,
+          context: calibration.impliedRpmUsd === null
+            ? `We assume $${POLICY.assumedRpmUsd.toFixed(2)} with nothing to check it against`
+            : `We assume $${POLICY.assumedRpmUsd.toFixed(2)} · rent is priced from it`,
+          tone: ['we_over', 'we_under'].includes(calibration.level) ? 'warn' : calibration.level === 'consistent' ? 'good' : '',
+          href: '/admin/earnings',
+        },
         { label: 'Views · 30d', value: Number(reach.views || 0).toLocaleString('en-IN'), context: `${Number(reach.unlocks || 0).toLocaleString('en-IN')} unlocks · ${Number(reach.events || 0).toLocaleString('en-IN')} ad views` },
       ],
       queues: [
@@ -2555,6 +2582,12 @@ APP.get('/admin', async (req, res, next) => {
         { title: 'Files reported', count: counts.reports, note: `${AUTO_HIDE_AFTER} distinct reporters hide a file automatically. Below that, it waits.`, href: '/admin/reports' },
         { title: 'Stores needing a decision', count: counts.moderation, note: 'Restricted, suspended or removed.', href: '/admin/moderation' },
         { title: 'Suspended accounts', count: counts.banned, note: 'Signed out everywhere, stores hidden, nothing deleted.', href: '/admin/users' },
+        {
+          title: 'Rates to correct',
+          count: contradicted,
+          note: calibrationNote,
+          href: '/admin/earnings',
+        },
         { title: 'Connections needing a look', count: counts.silentConnections, note: 'Never called us back, or calling with a secret that does not match.', href: '/admin/connections' },
       ],
       platform: [
