@@ -17,6 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { store, storage, SLOT_DEFS, slugify } from './src/store.js';
+import { assertProductionConfig, readSecret, checkConfig, formatConfigReport } from './src/config.js';
 import { many, scalar, health as dbHealth, close as closeDb } from './src/db.js';
 import { allocateSlots, estimateRentSlotValue, POLICY } from './src/slots.js';
 import { selectableProviders, providerById, loadRegistry } from './src/registry.js';
@@ -1031,7 +1032,7 @@ async function seed({ force = false } = {}) {
   // an unlock — only a verifiable provider can.
   await store.createConnection({
     channelId: alice.id, providerId: 'house', slotKeys: [],
-    secret: process.env.AD_POSTBACK_SECRET || 'dev-postback-secret-change-me',
+    secret: readSecret('AD_POSTBACK_SECRET'),
     callbackBaseUrl: `http://127.0.0.1:${PORT}`,
   });
   // BitLabs protocol on a RANDOM secret with no BitLabs account behind it. This
@@ -1096,6 +1097,10 @@ async function seed({ force = false } = {}) {
 
   return { seeded: true, alice: alice.slug, bob: bob.slug };
 }
+
+// A second line of defence for `node server.js` run directly; scripts/boot.mjs
+// has already done this, and printed it, when that is the entry point.
+assertProductionConfig(process.env, { quiet: true });
 
 const result = await seed();
 if (result.seeded) {

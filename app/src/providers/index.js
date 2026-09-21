@@ -36,7 +36,19 @@ export const ADAPTERS = [bitlabs, pubscale, applixir, house];
 
 const BY_ID = new Map(ADAPTERS.map((a) => [a.id, a]));
 
+/**
+ * The sandbox network.
+ *
+ * Its "signature" is a shared secret in this repository and its whole purpose is
+ * to let a developer mint an unlock without a real provider watching an ad. That
+ * is exactly the capability an attacker wants in production, so it is not merely
+ * unlisted there — it does not resolve. A connection already in the database
+ * pointing at `house` becomes unusable rather than becoming a forgery endpoint.
+ */
+export const SANDBOX_PROVIDER_IDS = new Set(['house']);
+
 export function getAdapter(id) {
+  if (process.env.NODE_ENV === 'production' && SANDBOX_PROVIDER_IDS.has(id)) return null;
   return BY_ID.get(id) || null;
 }
 

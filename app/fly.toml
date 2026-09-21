@@ -1,0 +1,42 @@
+# Fly.io configuration.
+#
+#   fly launch --no-deploy      # then edit this file
+#   fly volumes create bytebikri_data --size 1
+#   fly secrets set SESSION_SECRET=... ACCESS_TOKEN_SECRET=... DATABASE_URL=...
+#   fly deploy
+#
+# Migrations are a release step, not a boot step (DEPLOY.md §2):
+#   fly ssh console -C "node scripts/migrate.mjs"
+app = "bytebikri"
+primary_region = "sin"        # Singapore — closest to Kathmandu of Fly's regions
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "8080"
+  STORAGE_DRIVER = "local"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Kept at 1 until storage is a bucket. Two instances sharing one volume is not
+  # a thing, and two instances with separate volumes means a file that exists on
+  # one machine and not the other — which presents as "the download 404s
+  # sometimes", the worst kind of bug to be told about.
+  min_machines_running = 1
+  max_machines_running = 1
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/readyz"
+
+[[mounts]]
+  source = "bytebikri_data"
+  destination = "/app/.data"

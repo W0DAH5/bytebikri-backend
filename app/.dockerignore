@@ -1,0 +1,10 @@
+# Never ship these into an image.
+node_modules
+.data
+.env
+.env.*
+!.env.example
+test
+*.md
+Dockerfile
+.dockerignore

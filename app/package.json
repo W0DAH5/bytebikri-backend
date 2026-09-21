@@ -3,16 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "ByteBikri — storefronts, ad-gated content unlocks, ad slot allocation",
+  "description": "ByteBikri \u2014 storefronts, ad-gated content unlocks, ad slot allocation",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js",
+    "start": "node scripts/boot.mjs",
+    "dev": "node --watch scripts/boot.mjs",
     "test": "node scripts/test-db.mjs && node --test test/*.test.js",
     "db:start": "node scripts/dev-postgres.mjs",
     "db:migrate": "node scripts/migrate.mjs",
     "db:reset": "node scripts/reset-db.mjs",
-    "db:test": "node scripts/test-db.mjs"
+    "db:test": "node scripts/test-db.mjs",
+    "secrets": "node -e \"import('./src/config.js').then(m=>{for(const n of ['SESSION_SECRET','ACCESS_TOKEN_SECRET','AD_POSTBACK_SECRET'])console.log(n+'='+m.generateSecret())})\"",
+    "check:env": "node -e \"process.env.NODE_ENV=process.env.NODE_ENV||'production';import('./src/config.js').then(m=>{const r=m.checkConfig();console.log(m.formatConfigReport(r)||'  Configuration is complete.');process.exit(r.ok?0:1)})\""
   },
   "dependencies": {
     "express": "^4.19.2",

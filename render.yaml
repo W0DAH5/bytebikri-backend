@@ -1,0 +1,50 @@
+# Render blueprint.
+#
+# Deploy steps, in order:
+#   1. Create the database (Supabase or Neon) and run migrations from your
+#      machine against the DIRECT connection string — see DEPLOY.md §2.
+#   2. Put the secrets in the dashboard. sync: false means Render will not let
+#      this file hold them.
+#   3. Deploy. The health check is /readyz, not /healthz: a process that is
+#      alive while its database is unreachable should be replaced, not promoted.
+services:
+  - type: web
+    name: bytebikri
+    runtime: docker
+    dockerfilePath: ./app/Dockerfile
+    dockerContext: ./app
+    plan: starter
+    healthCheckPath: /readyz
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: ACCESS_TOKEN_SECRET
+        sync: false
+      - key: AD_POSTBACK_SECRET
+        sync: false
+      - key: OPERATOR_LEGAL_NAME
+        sync: false
+      - key: OPERATOR_ADDRESS
+        sync: false
+      - key: OPERATOR_EMAIL
+        sync: false
+      - key: OPERATOR_DISTRICT
+        sync: false
+      - key: STORAGE_DRIVER
+        value: local
+      # Uploads live on this disk. Without it they are lost on every deploy —
+      # see DEPLOY.md §5. A disk means one instance, which is fine for now and
+      # not fine later; the bucket replaces both.
+    disk:
+      name: bytebikri-data
+      mountPath: /app/.data
+      sizeGB: 1

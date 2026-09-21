@@ -22,7 +22,7 @@ import crypto from 'node:crypto';
 import { store } from './store.js';
 import { parsePostback, GRANTS_UNLOCK, getAdapter } from './providers/index.js';
 
-const ACCESS_SECRET = () => process.env.ACCESS_TOKEN_SECRET || 'dev-access-secret-change-me';
+const ACCESS_SECRET = () => readSecret('ACCESS_TOKEN_SECRET');
 const DEFAULT_ACCESS_TTL_MS = 10 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
@@ -123,7 +123,7 @@ export function signHousePostback(rawBody, timestamp = Date.now()) {
   return { timestamp: ts, signature: mac };
 }
 
-const houseSecret = () => process.env.AD_POSTBACK_SECRET || 'dev-postback-secret-change-me';
+const houseSecret = () => readSecret('AD_POSTBACK_SECRET');
 
 /**
  * Step 2 — the network tells us a view completed. Grants the unlock.

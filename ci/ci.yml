@@ -1,0 +1,82 @@
+# Continuous integration.
+#
+# The point of this file is the Postgres service below. Every test that matters
+# in this repository — idempotency, the unlock race, the schema constraints,
+# generated columns — needs a real PostgreSQL, because the bugs those tests
+# exist for are bugs an in-memory stand-in cannot have. A CI that ran them
+# against a fake would be green and worthless.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: bytebikri
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/bytebikri
+      TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/bytebikri_test
+      NODE_ENV: test
+      SESSION_SECRET: ci-session-secret-that-is-long-enough
+      ACCESS_TOKEN_SECRET: ci-access-secret-that-is-long-enough
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install
+        working-directory: app
+        run: npm ci
+
+      - name: Migrate the dev database
+        working-directory: app
+        run: npm run db:migrate
+
+      - name: Migrate again — a second run must be a no-op, not an error
+        working-directory: app
+        run: npm run db:migrate
+
+      - name: Test
+        working-directory: app
+        run: npm test
+
+      - name: The app boots, serves, and stops cleanly
+        working-directory: app
+        run: |
+          node server.js &
+          APP=$!
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:3000/healthz >/dev/null && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:3000/healthz
+          curl -fsS http://127.0.0.1:3000/readyz
+          curl -fsS http://127.0.0.1:3000/ >/dev/null
+          curl -fsS "http://127.0.0.1:3000/s/alice" >/dev/null
+          kill -TERM $APP
+          wait $APP || true
+        env:
+          NODE_ENV: development

@@ -21,6 +21,7 @@
 
 import crypto from 'node:crypto';
 import { one, query } from './db.js';
+import { readSecret } from './config.js';
 
 /**
  * Bump this whenever the notice changes in a way a person would care about:
@@ -90,7 +91,7 @@ export const newVisitorId = () => crypto.randomBytes(16).toString('hex');
 /** Hashed with the app secret so the stored value cannot be re-identified alone. */
 export function hashWithAppSecret(value) {
   if (!value) return null;
-  const secret = process.env.SESSION_SECRET || 'dev-only-secret';
+  const secret = readSecret('SESSION_SECRET');
   return crypto.createHmac('sha256', secret).update(String(value)).digest('hex').slice(0, 32);
 }
 
