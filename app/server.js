@@ -2580,6 +2580,29 @@ APP.get('/admin/stores', async (req, res, next) => {
   } catch (err) { return next(err); }
 });
 
+/**
+ * One store, in full — the page the queues link to.
+ *
+ * Registered after the directory but before `/admin/reports`; the slug is matched
+ * exactly, so a store called `reports` still reaches this page rather than the
+ * one below it (Express matches in registration order, and `/admin/stores/:slug`
+ * cannot collide with `/admin/reports` at all).
+ */
+APP.get('/admin/stores/:slug', async (req, res, next) => {
+  try {
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    if (req.user.role !== 'admin') return res.status(404).send('Not found');
+
+    const data = await store.storeDetail(String(req.params.slug));
+    // A store that does not exist is not a 404 for the operator: "no such store"
+    // is a legitimate answer that deserves a page with a way back.
+    return res.send(views.adminStoreDetail({
+      user: await withBadges(req.user), consent: req.consent, flash: flashFor(req.query),
+      data, rules: await store.policyRules(), actions: MOD_ACTIONS, labels: ACTION_LABELS,
+    }));
+  } catch (err) { return next(err); }
+});
+
 APP.get('/admin/reports', async (req, res, next) => {
   try {
     if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');

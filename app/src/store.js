@@ -1966,6 +1966,91 @@ export const store = {
     };
   },
 
+  /**
+   * Everything an operator needs about ONE store, in four queries.
+   *
+   * The console had a moderation queue and a payments queue, and both of them
+   * ended at the store: to answer "is this seller fine, or is this the third
+   * time?", an operator had to open four pages and hold the answers in their
+   * head. This assembles the picture in one place — who owns it, what they pay,
+   * what they published, what has been reported, and what has been decided about
+   * it — so a decision can be made from evidence rather than from a hunch.
+   *
+   * Deliberately absent: anything a creator was paid. That number belongs to the
+   * network's statement, and a console that displays an estimate next to real
+   * invoices teaches an operator to trust the wrong one.
+   */
+  async storeDetail(slug) {
+    const channel = await one(
+      `select c.*, coalesce(s.plan_code, 'free') as plan_code, s.status as sub_status,
+              s.period_start, s.period_end, s.pending_plan_code,
+              p.display_name as owner_name, p.email as owner_email, p.created_at as owner_since,
+              (select count(*)::int from channel_slots cs
+                where cs.channel_id = c.id and cs.enabled and cs.payout_party = 'platform') as rent_slots,
+              (select count(*)::int from channel_slots cs
+                where cs.channel_id = c.id and cs.enabled and cs.payout_party = 'channel')  as own_slots,
+              (select count(*)::int from ad_connections ac
+                where ac.channel_id = c.id and ac.status = 'active')                       as live_connections
+         from channels c
+         left join lateral (select sub.plan_code, sub.status, sub.period_start, sub.period_end,
+                                   sub.pending_plan_code
+                              from subscriptions sub where sub.channel_id = c.id
+                             order by sub.created_at desc limit 1) s on true
+         left join profiles p on p.id = c.owner_id
+        where c.slug = $1`,
+      [slug],
+    );
+    if (!channel) return null;
+
+    const [files, reports, invoice, history] = await Promise.all([
+      many(
+        `select a.id, a.title, a.slug, a.status, a.unlock_mode, a.created_at,
+                (select count(*)::int from unlocks u
+                  where u.asset_id = a.id and u.revoked_at is null)                       as unlocks,
+                (select count(*)::int from ad_view_events e
+                  where e.asset_id = a.id and e.completed)                                as ad_views,
+                (select count(*)::int from asset_reports r
+                  where r.asset_id = a.id and r.status = 'open')                          as open_reports,
+                (select count(*)::int from asset_reports r where r.asset_id = a.id)       as reports_total,
+                (select count(*)::int from reviews v where v.asset_id = a.id)             as reviews,
+                (select coalesce(avg(v.rating), 0)::numeric(3,2) from reviews v
+                  where v.asset_id = a.id)                                                as rating
+           from assets a where a.channel_id = $1
+          order by a.created_at desc`,
+        [channel.id],
+      ),
+      many(
+        // Postgres has no `count(distinct …) over (…)`. A lateral subquery gives
+        // the same number per file without a window function — the alternative
+        // was one query per row.
+        `select r.id, r.reason, r.note, r.status, r.created_at, r.resolved_at,
+                a.title as asset_title, a.slug as asset_slug, a.status as asset_status,
+                d.reporters
+           from asset_reports r
+           join assets a on a.id = r.asset_id
+           join lateral (select count(distinct x.reporter_id)::int as reporters
+                           from asset_reports x where x.asset_id = r.asset_id) d on true
+          where r.channel_id = $1
+          order by case r.status when 'open' then 0 else 1 end, r.created_at desc
+          limit 40`,
+        [channel.id],
+      ),
+      one(
+        `select * from rent_invoices where channel_id = $1 order by period_end desc limit 1`,
+        [channel.id],
+      ),
+      many(
+        `select l.*, p.display_name as actor_name, p.email as actor_email
+           from audit_logs l left join profiles p on p.id = l.actor_id
+          where l.subject_id = $1 or l.meta->>'channelId' = $2
+          order by l.created_at desc limit 20`,
+        [channel.id, channel.id],
+      ),
+    ]);
+
+    return { channel, files, reports, invoice: invoice || null, history };
+  },
+
   recentAudit(limit = 200) {
     return many(
       `select l.*, p.display_name as actor_name, p.email as actor_email

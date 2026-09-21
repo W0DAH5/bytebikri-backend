@@ -491,7 +491,7 @@ test('every rule code this file uses is a rule the policy table has', async () =
 // Finding a store
 // ---------------------------------------------------------------------------
 
-const { adminStores } = await import('../src/views.js');
+const { adminStores, adminStoreDetail } = await import('../src/views.js');
 
 test('the directory searches names, slugs and the owner, and filters on plan', async () => {
   const { user, ch } = await fixture();
@@ -543,4 +543,31 @@ test('the directory page shows numbers that can be compared and never claims to 
   });
   assert.match(empty, /Nothing matches those filters/, 'an empty result says what to do next');
   assert.match(empty, /href="\/admin\/stores"/, 'and offers the way out');
+});
+
+test('the store detail assembles the evidence and refuses to invent a payout', async () => {
+  const { ch, user } = await fixture();
+  const detail = await store.storeDetail(ch.slug);
+  assert.ok(detail, 'a store that exists comes back');
+  assert.equal(detail.channel.id, ch.id);
+  assert.equal(detail.channel.owner_email, user.email, 'with its owner attached');
+  assert.ok(Array.isArray(detail.files) && Array.isArray(detail.reports) && Array.isArray(detail.history));
+  assert.equal(await store.storeDetail('no-such-store-anywhere'), null, 'and a missing one returns nothing');
+
+  const html = adminStoreDetail({
+    user: { role: 'admin', email: 'op@test.local' }, consent: null,
+    data: detail, rules: [{ code: 'copyright', title: 'Copyright infringement' }],
+    actions: ['approve', 'restrict'], labels: { approve: 'Approve', restrict: 'Restrict' },
+  });
+  assert.match(html, /The store/);
+  assert.match(html, /What it pays us/, 'the charges are on the page, because they are ours to collect');
+  assert.match(html, /What the creator EARNED is not on this page/,
+    'and the number we do not have says so');
+  assert.match(html, /action="\/admin\/moderation\//, 'the decision form is here, in context');
+  assert.match(html, /Reporters are not named here/, 'a moderation tool does not name complainants');
+
+  // A store that is not there gets a page with a way back, not a stack trace.
+  const missing = adminStoreDetail({ user: { role: 'admin', email: 'op@test.local' }, consent: null, data: null });
+  assert.match(missing, /No such store/);
+  assert.match(missing, /href="\/admin\/stores"/);
 });

@@ -2963,9 +2963,9 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
       <tbody>${rows.map((r) => `
         <tr>
           <td>
-            <a href="/s/${esc(r.slug)}" target="_blank" rel="noopener"><strong>${esc(r.name)}</strong> ↗</a>
+            <a href="/admin/stores/${esc(r.slug)}"><strong>${esc(r.name)}</strong></a>
             <div class="fine">/s/${esc(r.slug)} · ${esc(r.owner_name || r.owner_email || 'no owner on file')}${
-    r.listing_mode === 'marketplace' ? ' · listed' : ''}</div>
+    r.listing_mode === 'marketplace' ? ' · listed' : ''} · <a href="/s/${esc(r.slug)}" target="_blank" rel="noopener">open store ↗</a></div>
           </td>
           <td>${stateChip(r.moderation_state)}${r.moderation_reason ? `<div class="fine">${esc(r.moderation_reason)}</div>` : ''}</td>
           <td>${r.plan_code === 'free' ? pill('Free', '') : pill(r.plan_code, 'accent')}${
@@ -2994,6 +2994,187 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
     Views and unlocks are counted from our own tables, so they are exact. What a creator was PAID is not
     on this page on purpose: that number lives in the network's statement, not in our database.
   </p>
+</section>`,
+  });
+}
+
+/**
+ * One store, everything about it.
+ *
+ * The console had a queue per problem and no page per SUBJECT: deciding whether
+ * a report is the first sign of trouble or the third required four pages and a
+ * good memory. This page assembles the evidence — who owns the store, what it
+ * pays, what it published, what has been reported, and what has been decided
+ * about it — and puts the decision form at the end of it, in context.
+ *
+ * The money panel is explicit about what it does NOT know. An operator looking at
+ * a store will want to know what it earned, and the honest answer is that we do
+ * not have that number: the network pays the creator directly, and the statement
+ * belongs to them. Showing our own estimate beside real invoices would teach an
+ * operator to trust the wrong figure.
+ */
+export function adminStoreDetail({ user, consent = null, flash = null, data = null, rules = [], actions = [], labels = {} }) {
+  if (!data) {
+    return adminShell({
+      user, consent, current: 'stores', title: 'No such store',
+      lede: 'Nothing is stored under that address. It may have been removed, or the address may be wrong.',
+      body: `<section class="section"><a class="btn" href="/admin/stores">← Back to stores</a></section>`,
+    });
+  }
+  const { channel: c, files, reports, invoice, history } = data;
+  const openReports = reports.filter((r) => r.status === 'open');
+  const options = (selected = null) => rules
+    .map((r) => `<option value="${esc(r.code)}"${r.code === selected ? ' selected' : ''}>${esc(r.title)} (${esc(r.code)})</option>`)
+    .join('');
+
+  const reportRow = (r) => `
+    <tr>
+      <td>
+        <strong>${esc(r.asset_title)}</strong>
+        <div class="fine">/s/${esc(c.slug)}/a/${esc(r.asset_slug)} · file is ${esc(r.asset_status)}</div>
+      </td>
+      <td>${pill(r.reason, 'warning')}</td>
+      <td class="num">${num(r.reporters)}</td>
+      <td class="fine">${esc(relTime(r.created_at))}${r.note ? `<div>“${esc(r.note.slice(0, 120))}”</div>` : ''}</td>
+      <td>${r.status === 'open' ? pill('open', 'warning') : pill(r.status, 'success')}</td>
+    </tr>`;
+
+  return adminShell({
+    user, consent, current: 'stores',
+    title: c.name,
+    lede: `/s/${esc(c.slug)} — ${esc(c.tagline || 'no tagline')}`,
+    actions: `<a class="btn btn-sm" href="/s/${esc(c.slug)}" target="_blank" rel="noopener">View store ↗</a>
+      <a class="btn btn-sm" href="/admin/stores">All stores</a>`,
+    body: `
+${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)" role="status">${esc(flash.message)}</div>` : ''}
+
+<section class="section">
+  <div class="cols-2">
+    <div class="panel"><div class="panel-body">
+      <h2 style="font-size:var(--text-md)">The store</h2>
+      <dl class="kv" style="margin-top:var(--space-4)">
+        <dt>Owner</dt><dd>${esc(c.owner_name || 'no name')}<div class="fine">${esc(c.owner_email || 'no email on file')}</div></dd>
+        <dt>Opened</dt><dd>${esc(relTime(c.created_at))}</dd>
+        <dt>Listing</dt><dd>${c.listing_mode === 'marketplace' ? 'In the marketplace' : 'Unlisted — link only'}</dd>
+        <dt>State</dt><dd>${pill(c.moderation_state, c.moderation_state === 'approved' ? 'success' : c.moderation_state === 'restricted' ? 'warning' : 'danger')}
+          ${c.moderation_reason ? `<div class="fine">holds reason <span class="mono">${esc(c.moderation_reason)}</span></div>` : ''}</dd>
+        <dt>Ad connections</dt><dd>${c.live_connections ? plural(c.live_connections, 'live connection') : 'none active'}</dd>
+      </dl>
+    </div></div>
+
+    <div class="panel"><div class="panel-body">
+      <h2 style="font-size:var(--text-md)">What it pays us</h2>
+      <dl class="kv" style="margin-top:var(--space-4)">
+        <dt>Plan</dt><dd>${c.plan_code === 'free' ? pill('Free', '') : pill(c.plan_code, 'accent')}${
+    c.pending_plan_code ? `<div class="fine">requested ${esc(c.pending_plan_code)} — awaiting a matched transfer</div>` : ''}</dd>
+        <dt>Subscription</dt><dd>${esc(c.sub_status || 'active')}${c.period_end ? `<div class="fine">through ${esc(String(c.period_end).slice(0, 10))}</div>` : ''}</dd>
+        <dt>Rent slot</dt><dd>${c.rent_slots
+    ? `${plural(c.rent_slots, 'platform slot')}, ${plural(c.own_slots, "slot of the store's own")}`
+    : 'none — the platform does not rent a slot here'}</dd>
+        <dt>Latest invoice</dt><dd>${invoice
+    ? `${npr(invoice.amount_npr)} · ${esc(invoice.status)}<div class="fine">${esc(String(invoice.period_start).slice(0, 10))} to ${esc(String(invoice.period_end).slice(0, 10))}</div>`
+    : 'no invoice has been issued'}</dd>
+      </dl>
+      <p class="fine" style="margin-top:var(--space-4)">
+        What the creator EARNED is not on this page, and not in our database: the ad network pays them
+        directly. Their statement is the authority, not any figure of ours.
+      </p>
+    </div></div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Files</h2>
+    <p>${files.length ? `${plural(files.length, 'file')} published. Unlocks and ad views are counted from our own tables.` : 'Nothing published yet.'}</p>
+  </div>
+  ${files.length ? `<div class="panel"><div class="panel-body panel-body-flush">
+    <table class="table table-directory">
+      <thead><tr>
+        <th>File</th><th>State</th><th>Unlock</th>
+        <th class="num">Unlocks</th><th class="num">Ad views</th><th class="num">Reports</th><th class="num">Rating</th>
+      </tr></thead>
+      <tbody>${files.map((f) => `
+        <tr>
+          <td>
+            <a href="/s/${esc(c.slug)}/a/${esc(f.slug)}" target="_blank" rel="noopener"><strong>${esc(f.title)}</strong> ↗</a>
+            <div class="fine">published ${esc(relTime(f.created_at))}</div>
+          </td>
+          <td>${pill(f.status, f.status === 'live' ? 'success' : '')}</td>
+          <td>${pill(f.unlock_mode === 'ad' ? 'one rewarded ad' : f.unlock_mode, 'info')}</td>
+          <td class="num">${num(f.unlocks)}</td>
+          <td class="num">${num(f.ad_views)}</td>
+          <td class="num">${f.open_reports ? `<strong>${num(f.open_reports)}</strong>` : num(f.reports_total)}</td>
+          <td class="num">${Number(f.reviews) ? `${Number(f.rating).toFixed(1)}<div class="fine">${plural(f.reviews, 'review')}</div>` : '—'}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div></div>` : '<div class="empty">This store has published nothing. There is nothing to moderate yet.</div>'}
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Reports${openReports.length ? ` · ${num(openReports.length)} open` : ''}</h2>
+    <p>Written by people holding an unlock. Reporters are not named here — a decision is about the file, not the complainant.</p>
+  </div>
+  ${reports.length ? `<div class="panel"><div class="panel-body panel-body-flush">
+    <table class="table">
+      <thead><tr><th>File</th><th>Reason</th><th class="num">Reporters</th><th>When</th><th>State</th></tr></thead>
+      <tbody>${reports.map(reportRow).join('')}</tbody>
+    </table>
+  </div></div>` : '<div class="empty">Nothing has been reported on this store.</div>'}
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Record a decision</h2>
+    <p>A reason is a rule code, never a sentence. The seller reads the rule's own wording plus your remedy line.</p>
+  </div>
+  <div class="panel"><div class="panel-body">
+    <form method="post" action="/admin/moderation/${esc(c.slug)}">
+      <div class="row" style="align-items:flex-end;gap:var(--space-4);flex-wrap:wrap">
+        <div class="field" style="flex:1 1 180px">
+          <label for="action">Action</label>
+          <select class="input" id="action" name="action">
+            ${actions.map((a) => `<option value="${esc(a)}">${esc(labels[a] || a)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field" style="flex:2 1 260px">
+          <label for="ruleCode">Reason</label>
+          <select class="input" id="ruleCode" name="ruleCode">
+            <option value="">— none cited —</option>
+            ${options(c.moderation_reason)}
+          </select>
+        </div>
+      </div>
+      <div class="field" style="margin-top:var(--space-4)">
+        <label for="remedy">What should the seller do?</label>
+        <input class="input" id="remedy" name="remedy" maxlength="280"
+               placeholder="One line, in your own words. They read this and nothing else.">
+      </div>
+      <button class="btn btn-primary" type="submit" style="margin-top:var(--space-4)">Record decision</button>
+    </form>
+  </div></div>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>What has been decided</h2>
+    <p>Every audit row that names this store, newest first. <a href="/admin/audit">The whole log →</a></p>
+  </div>
+  <div class="panel"><div class="panel-body panel-body-flush">
+    <table class="table">
+      <thead><tr><th>When</th><th>Action</th><th>Who</th><th>Detail</th></tr></thead>
+      <tbody>${history.length ? history.map((h) => `
+        <tr>
+          <td class="fine" style="white-space:nowrap">${esc(relTime(h.created_at))}</td>
+          <td><span class="mono">${esc(h.action)}</span></td>
+          <td class="fine">${esc(h.actor_name || h.actor_email || 'the platform')}</td>
+          <td class="fine">${esc(briefMeta(h.meta))}</td>
+        </tr>`).join('') : '<tr><td colspan="4" class="muted">Nothing has been recorded about this store yet.</td></tr>'}
+      </tbody>
+    </table>
+  </div></div>
 </section>`,
   });
 }
