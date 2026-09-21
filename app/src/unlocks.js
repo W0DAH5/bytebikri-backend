@@ -20,6 +20,7 @@
  */
 import crypto from 'node:crypto';
 import { store } from './store.js';
+import { readSecret } from './config.js';
 import { parsePostback, GRANTS_UNLOCK, getAdapter } from './providers/index.js';
 
 const ACCESS_SECRET = () => readSecret('ACCESS_TOKEN_SECRET');

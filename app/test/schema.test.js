@@ -24,6 +24,16 @@ const MIGRATIONS = path.join(REPO, 'db/migrations');
 process.env.DATABASE_URL ||= 'postgres://postgres:postgres@127.0.0.1:55432/bytebikri_test';
 const { query, close } = await import('../src/db.js');
 
+/** All migrations, comments stripped, as one body of SQL. */
+const ALL_SQL = fs.readdirSync(MIGRATIONS).filter((f) => f.endsWith('.sql'))
+  .map((f) => fs.readFileSync(path.join(MIGRATIONS, f), 'utf8'))
+  .map((t) => t.replace(/--[^\n]*/g, ''))
+  .join('\n');
+
+const storeSrc = fs.readFileSync(path.join(here, '../src/store.js'), 'utf8');
+const unlockSrc = fs.readFileSync(path.join(here, '../src/unlocks.js'), 'utf8');
+const appSrc = fs.readFileSync(path.join(here, '../server.js'), 'utf8');
+
 after(async () => { await close(); });
 
 // ---------------------------------------------------------------------------
@@ -157,6 +167,46 @@ test('a seller\'s legal name and phone are not in any buyer-facing table', async
      where table_schema = 'public' and column_name in ('legal_name','phone')
        and table_name <> 'profiles'`);
   assert.deepEqual(rows, [], `private identity outside profiles: ${JSON.stringify(rows)}`);
+});
+
+test('every unlock method the app writes is permitted by the constraint', () => {
+  // The failure this prevents: a new way of granting access is added in code,
+  // the CHECK constraint is not widened, and the write fails at the moment a
+  // real person clicks. It happened with 'open' — free downloads were broken and
+  // the ad-gated path they were tested against was fine.
+  const constraint = /unlocks_method_check[\s\S]*?check \(method in \(([^)]+)\)\)/.exec(ALL_SQL);
+  assert.ok(constraint, 'unlocks.method has no CHECK constraint');
+  const allowed = new Set([...constraint[1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]));
+
+  // Only the values that reach `unlocks.method`. Scanning every `method: '...'`
+  // in the codebase also picks up `plan_payments.method` — which is how an
+  // esewa payment for a store upgrade got reported as an invalid unlock method.
+  // The scope is the grantUnlock signature and its call sites.
+  const written = new Set();
+  const scanGrant = (source) => {
+    // The argument object ends at the first `})`. A lazy window that can run
+    // past it picks up whatever function is defined next — which is exactly how
+    // `recordPlanPayment({ method = 'esewa' })` got in.
+    for (const m of source.matchAll(/grantUnlock\s*\(\{([\s\S]*?)\}\)/g)) {
+      for (const v of m[1].matchAll(/method:\s*'([a-z_]+)'/g)) written.add(v[1]);
+    }
+  };
+  scanGrant(storeSrc);
+  scanGrant(unlockSrc);
+  scanGrant(appSrc);
+  // The parameter default on the function itself.
+  for (const v of storeSrc.matchAll(/grantUnlock\(\{[^}]*?method\s*=\s*'([a-z_]+)'/g)) written.add(v[1]);
+  // And the column's own default — from the `unlocks` table only. Scanning the
+  // whole schema also picks up `plan_payments.method`, whose default is 'esewa'
+  // and has nothing to do with unlocking.
+  const unlocksTable = /create table if not exists unlocks\s*\(([\s\S]*?)\n\);/i.exec(ALL_SQL)?.[1] ?? '';
+  for (const v of unlocksTable.matchAll(/method\s+text not null default '([a-z_]+)'/g)) written.add(v[1]);
+
+  const unsupported = [...written].filter((m) => !allowed.has(m));
+  assert.deepEqual(unsupported, [],
+    `the app writes unlock methods the database will refuse: ${unsupported.join(', ')}. `
+    + `Allowed: ${[...allowed].sort().join(', ')}`);
+  assert.ok(allowed.has('open'), "'open' is what a free file records");
 });
 
 test('seeds are present and idempotent to re-apply', async () => {

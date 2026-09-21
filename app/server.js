@@ -702,6 +702,31 @@ APP.get('/api/content/:assetId/file/:fileId', async (req, res, next) => {
       });
       return res.status(403).json({ ok: false, error: 'this link was issued to a different account' });
     }
+
+    /**
+     * Free files get an unlock row on download, rather than a special case here.
+     *
+     * The asset page mints a link for an `open` asset without an ad, so no unlock
+     * row existed and this check refused every free download with "unlock no
+     * longer valid" — the free half of the product was broken while the paid half
+     * worked, which is the kind of bug that survives a demo.
+     *
+     * The alternative was a flag in the signed token saying "this one is open",
+     * which would put a permission decision inside a credential the holder can
+     * replay, and would need re-checking against the asset anyway. Writing the
+     * entitlement instead keeps ONE rule at the trust boundary: the row exists or
+     * it does not. It also means someone who downloaded a free file can review
+     * it, because reviews hang off unlocks.
+     */
+    const asset = await store.assetById(a);
+    if (!asset) return res.status(404).json({ ok: false, error: 'file not found' });
+    if (asset.unlock_mode === 'open' && !await store.isUnlocked(a, u)) {
+      await store.grantUnlock({
+        assetId: a, channelId: asset.channel_id, userId: u, method: 'open', adsCompleted: 0,
+        policy: { unlock_hours: 0 },   // free access does not expire
+      });
+      await store.audit('content.free_grant', { assetId: a, userId: u });
+    }
     if (a !== req.params.assetId || f !== req.params.fileId) {
       return res.status(403).json({ ok: false, error: 'token does not match this file' });
     }

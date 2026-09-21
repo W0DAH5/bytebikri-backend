@@ -141,6 +141,92 @@ test('lockout triggers on a run of failures from the same address', async () => 
   assert.ok(!auth.isLockedOut(0));
 });
 
+// ── download links ───────────────────────────────────────────────────────────
+
+test('a download link signs, verifies, and rejects everything else', async () => {
+  // This path broke in production and no test noticed, because nothing exercised
+  // it: `readSecret` was not imported, every asset page with a downloadable file
+  // threw a ReferenceError, and the suite stayed green. The lesson is that the
+  // download URL is a feature, not glue, and it gets tested like one.
+  const { signAccessToken, verifyAccessToken, issueDownloadUrl } = await import('../src/unlocks.js');
+  const ids = { assetId: '11111111-1111-4111-8111-111111111111',
+    fileId: '22222222-2222-4222-8222-222222222222',
+    userId: '33333333-3333-4333-8333-333333333333' };
+
+  const token = signAccessToken(ids);
+  const check = verifyAccessToken(token);
+  assert.equal(check.ok, true, `a freshly signed token did not verify: ${check.reason}`);
+  assert.equal(check.payload.a, ids.assetId);
+  assert.equal(check.payload.f, ids.fileId);
+  assert.equal(check.payload.u, ids.userId);
+  assert.ok(check.payload.exp > Date.now(), 'the token must carry an expiry');
+
+  // The token is `<base64url payload>.<hmac>`, so a forged token is easy to
+  // build with the right shape and the wrong signature. Two cases, because they
+  // fail differently: an altered payload with the original MAC, and a payload
+  // re-signed with nothing.
+  const [, originalMac] = token.split('.');
+  const tampered = Buffer.from(JSON.stringify({ ...check.payload, u: 'someone-else' })).toString('base64url');
+  assert.equal(verifyAccessToken(`${tampered}.${originalMac}`).ok, false,
+    'a token with a swapped user id verified — the MAC does not cover the whole payload');
+
+  const unsigned = Buffer.from(JSON.stringify({ ...check.payload, exp: Date.now() + 1e9 })).toString('base64url');
+  assert.equal(verifyAccessToken(`${unsigned}.`).ok, false, 'a token with no signature verified');
+  assert.equal(verifyAccessToken(`${unsigned}`).ok, false, 'a token with no signature at all verified');
+
+  assert.equal(verifyAccessToken('').ok, false);
+  assert.equal(verifyAccessToken('not-a-token').ok, false);
+  assert.equal(verifyAccessToken(null).ok, false);
+
+  const url = issueDownloadUrl({ ...ids, file: { id: ids.fileId }, basePath: '' });
+  assert.match(url, /^\/api\/content\/[0-9a-f-]{36}\/file\/[0-9a-f-]{36}\?t=/,
+    'the download URL must be its own route, not a filesystem path');
+});
+
+test('an open asset is downloadable, and the entitlement is recorded', async () => {
+  // The free half of the product was broken and the suite was green: the page
+  // minted a link, no unlock row existed because no ad had run, and the download
+  // route refused with "unlock no longer valid". Only the ad-gated path had ever
+  // been exercised — which is the path a demo shows people.
+  const { store } = await import('../src/store.js');
+  const { grantUnlock } = store;
+  const tag = `${Date.now()}-${Math.round(Math.random() * 1e6)}`;
+
+  const owner = await store.userByEmailOrCreate(`free-owner-${tag}@test.local`);
+  const channel = await store.createChannel({ ownerId: owner.id, slug: `free-${tag}`, name: `Free ${tag}` });
+  const asset = await store.createAsset({
+    channelId: channel.id, title: `Open ${tag}`, slug: `open-${tag}`, unlockMode: 'open',
+  });
+
+  // No unlock exists until someone takes the file.
+  assert.equal(await store.isUnlocked(asset.id, owner.id), false);
+
+  const unlock = await grantUnlock({
+    assetId: asset.id, channelId: channel.id, userId: owner.id,
+    method: 'open', adsCompleted: 0, policy: { unlock_hours: 0 },
+  });
+  assert.equal(unlock.method, 'open', 'the ledger must say WHY access exists');
+  assert.equal(unlock.expires_at, null, 'free access must not expire');
+  assert.equal(await store.isUnlocked(asset.id, owner.id), true);
+
+  // Taking it twice is not two entitlements — the same rule the postback path
+  // depends on, and the reason this is an upsert rather than an insert.
+  await grantUnlock({
+    assetId: asset.id, channelId: channel.id, userId: owner.id,
+    method: 'open', adsCompleted: 0, policy: { unlock_hours: 0 },
+  });
+  const { scalar } = await import('../src/db.js');
+  assert.equal(await scalar('select count(*)::int from unlocks where asset_id = $1', [asset.id]), 1);
+});
+
+test('an expired download link is refused', async () => {
+  const { signAccessToken, verifyAccessToken } = await import('../src/unlocks.js');
+  const token = signAccessToken({ assetId: 'a', fileId: 'b', userId: 'c', ttlMs: -1000 });
+  const check = verifyAccessToken(token);
+  assert.equal(check.ok, false);
+  assert.match(String(check.reason), /expir/i);
+});
+
 // ── origin / CSRF ────────────────────────────────────────────────────────────
 
 /** Minimal req/res doubles — enough for a middleware that only reads headers. */
