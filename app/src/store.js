@@ -965,6 +965,24 @@ export const store = {
       [channelId, enabled]);
   },
 
+  /**
+   * Files and unlocks per asset, for the list of a store's own files.
+   *
+   * Two correlated counts rather than a join and a GROUP BY: the dashboard needs
+   * one row per file, and a join against unlocks would either multiply the rows
+   * or need a DISTINCT that hides the count it is meant to show.
+   */
+  assetStats(channelId) {
+    return many(
+      `select a.id,
+              (select count(*) from asset_files f where f.asset_id = a.id) as files,
+              (select count(*) from unlocks u where u.asset_id = a.id and u.revoked_at is null) as unlocks
+         from assets a
+        where a.channel_id = $1`,
+      [channelId],
+    );
+  },
+
   async updateAsset(assetId, patch = {}) {
     const allowed = {
       title: (v) => String(v).trim().slice(0, 200),

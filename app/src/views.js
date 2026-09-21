@@ -640,6 +640,8 @@ export function assetPage({
     <div class="asset-head">
       <h1>${esc(asset.title)}</h1>
       ${open ? pill('Free', 'success') : unlocked ? pill('Unlocked', 'success') : pill('Ad-gated', 'locked')}
+      ${user && user.id === channel.owner_id
+    ? `<a class="btn btn-sm" href="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}">Edit this file</a>` : ''}
     </div>
     <p class="lede">${esc(asset.description || 'No description yet.')}</p>
     ${markNote}
@@ -784,7 +786,11 @@ export function login({ user, error, next = '', email = '', mode = 'login', cons
 // Dashboard
 // ---------------------------------------------------------------------------
 
-export function dashboard({ channel, slots, connections, providers, plan, estimate, pageviews, adViews, upgrade, user, pendingPayments = [], flash = null, consent = null }) {
+export function dashboard({
+  channel, slots, connections, providers, plan, estimate, pageviews, adViews,
+  upgrade, user, pendingPayments = [], flash = null, consent = null,
+  assets = [], assetStats = [],
+}) {
   const conn = connections[0] || null;
   const provider = conn ? providers.find((p) => p.id === conn.provider_id) : null;
 
@@ -857,6 +863,34 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
     </p>
   </div>
 </div>
+
+${assets.length ? `
+<section class="section">
+  <div class="section-head">
+    <h2>Your files</h2>
+    <p>${plural(assets.length, 'file')} published. Everything here is editable — nothing is
+      reviewed before it appears, and nothing is locked after it does.</p>
+  </div>
+  <div class="panel"><div class="panel-body panel-body-flush">
+    <table class="table">
+      <thead><tr><th>File</th><th>Access</th><th>State</th><th class="num">Unlocks</th><th class="num"></th></tr></thead>
+      <tbody>${assets.map((a) => {
+    const st = assetStats.find((x) => x.id === a.id) || { files: 0, unlocks: 0 };
+    return `<tr>
+        <td><strong>${esc(a.title)}</strong>
+          <div class="fine">${esc(a.slug)} · ${plural(Number(st.files) || 0, 'file')}${
+  a.unlock_mode === 'open' ? ' · open to everyone' : ''}</div></td>
+        <td>${a.unlock_mode === 'open' ? pill('Free', 'success') : pill('Ad-gated', 'locked')}</td>
+        <td>${a.status === 'paused'
+    ? pill('Paused', 'warning')
+    : a.status === 'removed' ? pill('Removed', 'danger') : pill('Live', 'success')}</td>
+        <td class="num">${num(Number(st.unlocks) || 0)}</td>
+        <td class="num"><a class="btn btn-sm" href="/dashboard/${esc(channel.slug)}/assets/${esc(a.id)}">Edit</a></td>
+      </tr>`;
+  }).join('')}</tbody>
+    </table>
+  </div></div>
+</section>` : ''}
 
 <section class="section">
   <div class="section-head">
@@ -1184,7 +1218,10 @@ export function networksPage({
       quiet: 'warning', silent: 'warning', unverified: 'warning', noadapter: 'warning', off: '',
     }[health.level] || '';
     const connector = onboarding.credentials[0] || null;
-    const slotPicker = !sandbox && c.status !== 'revoked';
+    const canVerify = onboarding.mode === 'paste_credentials' || onboarding.mode === 'none';
+    // No slots for a network we cannot serve: assigning one would reserve space
+    // the seller pays rent for and give it to nothing.
+    const slotPicker = !sandbox && canVerify && c.status !== 'revoked';
 
     return `
   <div class="card card-pad-lg network-card">
@@ -1227,7 +1264,11 @@ export function networksPage({
       </p>
     </div>` : ''}` : `
     <p class="small" style="margin-top:var(--space-4)">
-      This network needs no callback URL and no secret. There is nothing to configure.
+      ${canVerify
+    ? 'This network needs no callback URL and no secret. There is nothing to configure.'
+    : `We have no adapter for ${esc(provider.name)}, so there is no callback URL to give it and nothing here to
+       configure. What that costs you: no unlocks through this network. What it does not cost you: the money —
+       they pay your account directly, and you can record what they report on your earnings page.`}
     </p>`}
 
     ${connector ? `

@@ -174,10 +174,12 @@ legal pages, `/login`, `/signup`, `/healthz`, `/readyz` → **all 200**.
 | **Store settings: name, tagline, about, banner, listing, ads** | `/dashboard/:slug/settings` | ✅ **new** |
 | **Reviews: written only against an unlock, one reply each** | `reviews` table, asset + dashboard pages | ✅ **new** |
 | **Single-asset management: edit, pause, unlock terms** | `/dashboard/:slug/assets/:id` | ✅ **new** |
+| **Your files: every published file, its state, unlocks, and an Edit link** | dashboard overview | ✅ **new** |
 | **Search: stores and files, listed stores only** | `store.search()`, `/marketplace?q=` | ✅ **new** |
 | **Earnings: estimate vs statement, payout label, money map** | `src/earnings.js`, `/dashboard/:slug/earnings` | ✅ **new** |
 | **Ad creatives: the store's own message, the house ad** | `src/creatives.js`, `slot_creatives` (0016) | ✅ **new** |
 | **Slot placement: rank 1 at the top, the rent slot last** | `views.placeSlots` | ✅ **new** |
+| **Ad networks: callback URL, secrets, health evidence** | `src/connections.js`, `/dashboard/:slug/networks` | ✅ **new** |
 | Deploy: Docker, CI, config refusal | `Dockerfile`, `ci/` | ✅ |
 | Moderation schema, per-country policy | migrations | 🟡 schema only, no workflow |
 
@@ -189,7 +191,7 @@ legal pages, `/login`, `/signup`, `/healthz`, `/readyz` → **all 200**.
 
 | Missing | Why it matters |
 |---|---|
-| **Network tag render layer** | slots draw now — the store's own message and the house ad — but a real network's tag needs one real network account and an adapter per dialect. Nothing third-party is stored or executed until then |
+| **Network tag render layer** | slots draw now — the store's own message and the house ad — and a network can be connected and verified. Serving a real network's *tag* still needs one real network account: we store no third-party script, and the slot carries only the seam (`data-adapter`) for the adapter that will mount it |
 | **`ads.txt`** | ad networks require it; needs a publisher ID |
 | **Password reset** | no way back into an account. Needs SMTP |
 | **Email verification** | anyone can register any address |
@@ -267,8 +269,8 @@ chore.
 
 ## 9. Tests
 
-`npm test` → **214 pass, 0 fail** (133 three rounds ago; 152 after the player
-round; 184 after the revenue round).
+`npm test` → **232 pass, 0 fail** (133 four rounds ago; 152 after the player
+round; 184 after the revenue round; 214 after the slot round).
 
 | New | What it holds still |
 |---|---|
@@ -278,6 +280,7 @@ round; 184 after the revenue round).
 | `test/billing.test.js` (23) | the two charges and nothing else; rent = monthly estimate × 12 with a zero floor; request-then-pay keeps the paid plan and the renewal date; a payment without an open request is refused; reject leaves the plan alone; matching twice is a no-op; grace is calculated, not stored; **and a write round-trip through every generated `SET` clause** |
 | `test/ui.test.js` (+9) | the billing page states both charges and refuses a third; an unconfigured payment rail says so and names its env var; a pending upgrade never claims the plan changed; no rent invoice explains WHICH reason applies; settings cannot promise a free store the Explore listing; reviews appear only for a buyer with an unlock; the asset page is one form; the operator queue shows what was asked for; search replaces the directory |
 | `test/earnings.test.js` (15) | an open period is shown but never compared; the estimate and the statement are never blended; rent is annualised against annualised statements; a blank payout label is not a label; **and `payout_accounts` is asserted to hold no column that could move money** |
+| `test/networks.test.js` (18) | a network with no adapter has no Connect button and says what still works; the callback URL keeps the network's macros verbatim (a percent-encoded macro is a postback that never arrives); no secret means not verified; "never called back" names the likeliest cause; **and the only field the flow may ever ask for is the verification secret** — asserted against the rendered form, not the code |
 | `test/creatives.test.js` (15) | the store's message can never fill the platform's slot or the reverse; a creative written for one slot does not leak into the others; `javascript:`, `data:` and protocol-relative links are refused; a link label with no link is dropped; one message per slot, corrected in place |
 
 Two of the assertions above exist because the bug they describe shipped: the
@@ -423,3 +426,57 @@ POST   …/slots/clear              → creative deactivated, slot returns to em
   creative is copy and a link rather than an image.
 - Images in creatives are allowed by the schema (`image_url`) and sanitised, but
   the upload path is not wired: a seller pasting a URL is the only way today.
+
+---
+
+## 12. This round: connecting a network, and proving it works
+
+`/dashboard/:slug/networks`. The old surface was one button that POSTed to a
+JSON endpoint, generated a random "secret", and hardcoded the callback base to
+`http://127.0.0.1:3000` — so the URL a network had to call was a URL no network
+could call.
+
+| The flow | Why it is shaped this way |
+|---|---|
+| Sign up there in your own name → paste the callback URL → paste the secret their network signs with | The account is the creator's, and the money is paid to it. We never ask for a network login, a publisher id or an account number, and a test asserts the secret is the *only* field the flow can render |
+| A network with no adapter is listed, with its payout facts, and gets no button | A connection we cannot verify can never grant an unlock. A button that lies is worse than a missing button |
+| The callback URL is generated from the registry's dialect description | So the page cannot drift from the adapter that parses it. The macros (`{uid}`, `{tx}`) are left verbatim; everything else is encoded |
+| Connected is not verified | A network whose callbacks are signed with a secret it issues starts `verifying` and stays there until the secret arrives. Only our own house network starts active, because we sign it |
+| Every connection shows when it last called us and how often (thirty days) | "Connected and nothing unlocks" is the support ticket, and the evidence distinguishes a missing postback URL from a network that reconciles over days |
+
+### Found and fixed while building it
+
+- **Three rewarded networks were missing from the registry.** BitLabs, PubScale
+  and AppLixir all had adapters, tests and dialects — and no registry entry, so
+  they could not be selected, and a connection to one could not resolve a name.
+  They are listed now, with `VERIFY` where we have not confirmed a number,
+  because the registry's own convention is that a `VERIFY` beats an invented
+  figure.
+- **`ad_connection_events` had never been written by anything.** The table exists
+  precisely because onboarding leaves the app and can fail halfway. Every state
+  change writes a row now.
+- **A connected network with no adapter reported "never called back"** — the
+  wrong diagnosis for a network where no callback was ever possible. The status
+  is derived with the adapter in hand, and says which half of the product still
+  works: the earnings half, which never needed us.
+
+### Also this round: the seller's files were an island
+
+`assetManage` — the single-asset page built last round — had **no link to it
+anywhere**. A seller could publish a file and could never reach the page that
+edits it without typing the URL. Two links close it: a *Your files* table on the
+dashboard overview (title, access, state, unlocks, Edit) and an *Edit this file*
+button on the public page, shown only to the store's owner. `assetStats` counts
+files and unlocks per asset in two correlated subqueries rather than a join that
+would either multiply rows or need a `DISTINCT` hiding the count it exists to
+show.
+
+### Verified live
+
+```
+GET  /dashboard/alice/networks            → 200, three connected, 22 listed
+POST /dashboard/alice/networks (bitlabs)  → 302, status verifying, no secret yet
+POST …/bitlabs/secret  'ab'               → 302 error=secret  (too short, not saved)
+POST …/bitlabs/secret  '<32 chars>'       → 302 ?saved=1, status active
+GET  the page again                       → callback URL with {uid}/{tx}/{s1} intact
+```

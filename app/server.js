@@ -652,6 +652,8 @@ APP.get('/dashboard/:slug', async (req, res, next) => {
       plan: store.plan(channel),
       estimate, pageviews,
       adViews: await store.adViews({ channelId: channel.id }),
+      assets: await store.assetsOf(channel.id),
+      assetStats: await store.assetStats(channel.id),
       upgrade: store.upgradeQuote(channel, 'store'),
       // Through the subscription, because a plan payment has no channel of its
       // own: `plan_payments.subscription_id` is the only path back, and the

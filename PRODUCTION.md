@@ -81,7 +81,7 @@ Items marked **BLOCKER** must be filled before real users see the app.
 
 | # | What | Why it's you | Where it goes |
 |---|---|---|---|
-| 1 | **Domain name** | Must be registered by you; ties into AdSense approval, ads.txt, and email | `PUBLIC_BASE_URL` |
+| 1 | **Domain name** | Must be registered by you; ties into AdSense approval, ads.txt, and email. **Set `PUBLIC_BASE_URL` when you have it**: the ad-networks page builds every callback URL from it, and a URL a network cannot reach is a network that can never pay the creator. Until it is set the page says so in orange rather than quietly printing a localhost address | `PUBLIC_BASE_URL` |
 | 2 | **Business entity + PAN/VAT** | Ad networks and payment rails require a legal entity to pay | Not code — paperwork |
 | 3 | **Read the three legal drafts and accept them as the drafts they are** | Written, deployed and rendering at `/legal/privacy`, `/legal/terms`, `/legal/cookies`. They describe what the software actually does, which is the part I can guarantee. Whether they satisfy a jurisdiction is a lawyer's question, and only you can sign off as the operator | `/legal/*` |
 | 4 | **Your legal name, address, contact email, and district** | The pages show a yellow warning listing exactly which of these are empty, because a privacy notice that does not say who is responsible is not one | `OPERATOR_LEGAL_NAME`, `OPERATOR_ADDRESS`, `OPERATOR_EMAIL`, `OPERATOR_DISTRICT` |
