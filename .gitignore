@@ -4,3 +4,8 @@ uploads/
 seed.sql
 .DS_Store
 npm-debug.log
+
+# app
+app/node_modules/
+app/.data/
+app/.data/

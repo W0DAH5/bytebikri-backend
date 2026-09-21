@@ -1,0 +1,28 @@
+{
+  "name": "bytebikri-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ByteBikri \u2014 storefronts, ad-gated content unlocks, ad slot allocation",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node scripts/test-db.mjs && node --test test/*.test.js",
+    "db:start": "node scripts/dev-postgres.mjs",
+    "db:migrate": "node scripts/migrate.mjs",
+    "db:reset": "node scripts/reset-db.mjs",
+    "db:test": "node scripts/test-db.mjs"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1",
+    "pg": "^8.23.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "embedded-postgres": "^18.4.0-beta.17"
+  }
+}

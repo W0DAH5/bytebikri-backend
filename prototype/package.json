@@ -1,0 +1,12 @@
+{
+  "name": "bytebikri-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Runnable proof-of-concept for bytebikri's ad resolution core: deterministic slot allocation, capability-aware adapters, fallback chain, and referral plumbing.",
+  "scripts": {
+    "demo": "node demo.js",
+    "start": "node server.js"
+  },
+  "engines": { "node": ">=20" }
+}

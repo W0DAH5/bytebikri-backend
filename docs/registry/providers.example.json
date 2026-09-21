@@ -1,0 +1,1056 @@
+{
+  "$schema": "./providers.schema.json",
+  "_note": "Seed registry for bytebikri ad adapters. VERIFY every value against each provider's current published terms before enabling — referral rates, payout thresholds and payout methods change frequently, and several fields here are the difference between a Nepali creator getting paid or not. Fields marked VERIFY are best-effort from secondary sources.",
+  "version": "0.3.0",
+  "updated": "2026-09-21",
+  "slotModels": [
+    "per_slot",
+    "per_zone",
+    "per_site_auto",
+    "link_rewrite"
+  ],
+  "providers": [
+    {
+      "id": "house",
+      "name": "bytebikri House Ads",
+      "slotModel": "per_slot",
+      "formats": [
+        "display",
+        "native"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": false,
+      "requiresAdsTxt": false,
+      "requiresCmp": false,
+      "reportingApi": false,
+      "referral": null,
+      "payoutMethods": [],
+      "minPayoutUsd": null,
+      "enabled": true,
+      "priority": 1000,
+      "_note": "The floor of every slot. Ship this first. Never leaves a slot blank."
+    },
+    {
+      "id": "affiliate_generic",
+      "name": "Affiliate link (user-supplied)",
+      "slotModel": "link_rewrite",
+      "formats": [
+        "in_text"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": false,
+      "requiresAdsTxt": false,
+      "requiresCmp": false,
+      "reportingApi": false,
+      "referral": null,
+      "payoutMethods": [
+        {
+          "method": "merchant_direct",
+          "minUsd": null,
+          "nepalUsable": true,
+          "reason": "The merchant pays the user on the merchant's own rails. bytebikri is not in the payment path at all."
+        }
+      ],
+      "minPayoutUsd": null,
+      "enabled": true,
+      "priority": 900,
+      "_note": "Rewrites the user's OWN outbound links. No domain ownership, no site approval, no ads.txt. The most permissive category and the first real adapter to build."
+    },
+    {
+      "id": "propellerads",
+      "name": "PropellerAds",
+      "slotModel": "per_zone",
+      "formats": [
+        "display",
+        "native",
+        "push",
+        "popunder"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": "VERIFY",
+      "requiresAdsTxt": false,
+      "requiresCmp": true,
+      "reportingApi": true,
+      "referral": {
+        "type": "referral_link",
+        "param": "VERIFY",
+        "commissionPct": 5,
+        "duration": "VERIFY",
+        "subIds": "VERIFY",
+        "source": "PropellerAds publisher referral program"
+      },
+      "payoutMethods": [
+        {
+          "method": "PayPal",
+          "minUsd": 5,
+          "nepalUsable": false,
+          "reason": "Receiving funds in Nepal has historically not been supported."
+        },
+        {
+          "method": "Skrill",
+          "minUsd": 5,
+          "nepalUsable": true,
+          "reason": "Skrill reaches NPR via eSewa at ~1.45% - this makes the LOW threshold reachable, not just the high one."
+        },
+        {
+          "method": "Payoneer",
+          "minUsd": 20,
+          "nepalUsable": true,
+          "reason": "Payoneer is fully operational in Nepal: withdraw to any commercial Nepali bank in 1-3 business days, NPR, ~2% conversion. CAVEAT: USD 29.95/yr fee if annual income is under USD 2,000."
+        },
+        {
+          "method": "WebMoney",
+          "minUsd": null,
+          "nepalUsable": "VERIFY"
+        },
+        {
+          "method": "Wire",
+          "minUsd": 550,
+          "nepalUsable": true
+        }
+      ],
+      "minPayoutUsd": 5,
+      "payoutFrequency": "Net30",
+      "enabled": false,
+      "priority": 500,
+      "_note": "Low threshold. VERIFY that PayPal is not the only low-threshold rail and that a listed method actually works for Nepal.",
+      "minPayoutUsdNote": "ADVERTISED cheapest figure across all methods. Usually NOT reachable from Nepal."
+    },
+    {
+      "id": "monetag",
+      "name": "Monetag",
+      "slotModel": "per_zone",
+      "formats": [
+        "display",
+        "native",
+        "push",
+        "popunder",
+        "interstitial"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": "VERIFY",
+      "requiresAdsTxt": false,
+      "requiresCmp": true,
+      "reportingApi": "VERIFY",
+      "referral": {
+        "type": "referral_link",
+        "param": "ref_id",
+        "commissionPct": 5,
+        "duration": "lifetime",
+        "subIds": "VERIFY",
+        "source": "Monetag/PropellerAds referral program — documents a lifetime 5% commission"
+      },
+      "payoutMethods": [
+        {
+          "method": "PayPal",
+          "minUsd": 5,
+          "nepalUsable": false,
+          "reason": "Receiving funds in Nepal has historically not been supported."
+        },
+        {
+          "method": "Payoneer",
+          "minUsd": 5,
+          "nepalUsable": true,
+          "reason": "Payoneer is fully operational in Nepal: withdraw to any commercial Nepali bank in 1-3 business days, NPR, ~2% conversion. CAVEAT: USD 29.95/yr fee if annual income is under USD 2,000."
+        },
+        {
+          "method": "WebMoney",
+          "minUsd": 5,
+          "nepalUsable": "VERIFY"
+        },
+        {
+          "method": "Capitalist",
+          "minUsd": 5,
+          "nepalUsable": "VERIFY"
+        },
+        {
+          "method": "crypto",
+          "minUsd": null,
+          "nepalUsable": false,
+          "reason": "Nepal prohibits cryptocurrency transactions."
+        }
+      ],
+      "minPayoutUsd": 5,
+      "payoutFrequency": "weekly",
+      "enabled": false,
+      "priority": 500,
+      "_note": "Explicitly documented as a LIFETIME referral commission — the strongest referral terms found. WARNING: crypto payout rails are not usable in Nepal.",
+      "minPayoutUsdNote": "ADVERTISED cheapest figure across all methods. Usually NOT reachable from Nepal."
+    },
+    {
+      "id": "adsterra",
+      "name": "Adsterra",
+      "slotModel": "per_zone",
+      "formats": [
+        "display",
+        "native",
+        "push",
+        "popunder",
+        "social_bar"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": "low",
+      "requiresAdsTxt": false,
+      "requiresCmp": true,
+      "reportingApi": true,
+      "referral": {
+        "type": "referral_link",
+        "param": "VERIFY",
+        "commissionPct": 5,
+        "duration": "VERIFY (own page says no limit; a secondary source says 12 months)",
+        "subIds": "VERIFY",
+        "source": "adsterra.com/referral-program"
+      },
+      "payoutMethods": [
+        {
+          "method": "Paxum",
+          "minUsd": 5,
+          "nepalUsable": "VERIFY"
+        },
+        {
+          "method": "PayPal",
+          "minUsd": 100,
+          "nepalUsable": false,
+          "reason": "Receiving funds in Nepal has historically not been supported."
+        },
+        {
+          "method": "Payoneer",
+          "minUsd": 20,
+          "nepalUsable": true,
+          "reason": "Payoneer is fully operational in Nepal: withdraw to any commercial Nepali bank in 1-3 business days, NPR, ~2% conversion. CAVEAT: USD 29.95/yr fee if annual income is under USD 2,000."
+        },
+        {
+          "method": "WebMoney",
+          "minUsd": null,
+          "nepalUsable": "VERIFY"
+        },
+        {
+          "method": "Wire",
+          "minUsd": 100,
+          "nepalUsable": true
+        },
+        {
+          "method": "crypto",
+          "minUsd": null,
+          "nepalUsable": false,
+          "reason": "Nepal prohibits cryptocurrency transactions."
+        }
+      ],
+      "minPayoutUsd": 5,
+      "minPayoutNote": "VERIFY — sources disagree: $5 via Paxum, $100 via PayPal. Threshold is per-method.",
+      "payoutFrequency": "biweekly",
+      "enabled": false,
+      "priority": 500,
+      "_note": "25-48h approval reported. minPayoutUsd is method-dependent — the low number only counts if the method is usable from Nepal.",
+      "minPayoutUsdNote": "ADVERTISED cheapest figure across all methods. Usually NOT reachable from Nepal."
+    },
+    {
+      "id": "popcash",
+      "name": "PopCash",
+      "slotModel": "per_zone",
+      "formats": [
+        "popunder"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": "VERIFY",
+      "requiresAdsTxt": false,
+      "requiresCmp": "VERIFY",
+      "reportingApi": "VERIFY",
+      "referral": {
+        "type": "referral_link",
+        "param": "VERIFY",
+        "commissionPct": 10,
+        "duration": "VERIFY",
+        "subIds": "VERIFY",
+        "source": "secondary comparison sources"
+      },
+      "payoutMethods": [
+        {
+          "method": "PayPal",
+          "minUsd": 10,
+          "nepalUsable": false,
+          "reason": "Receiving funds in Nepal has historically not been supported."
+        },
+        {
+          "method": "Payoneer",
+          "minUsd": 10,
+          "nepalUsable": true,
+          "reason": "Payoneer is fully operational in Nepal: withdraw to any commercial Nepali bank in 1-3 business days, NPR, ~2% conversion. CAVEAT: USD 29.95/yr fee if annual income is under USD 2,000."
+        },
+        {
+          "method": "Skrill",
+          "minUsd": 10,
+          "nepalUsable": true,
+          "reason": "Skrill reaches NPR via eSewa at ~1.45% - this makes the LOW threshold reachable, not just the high one."
+        },
+        {
+          "method": "Wire",
+          "minUsd": null,
+          "nepalUsable": true
+        }
+      ],
+      "minPayoutUsd": 10,
+      "enabled": false,
+      "priority": 400,
+      "_note": "Highest referral commission found (10%), 80% revenue share. Verify before listing.",
+      "minPayoutUsdNote": "ADVERTISED cheapest figure across all methods. Usually NOT reachable from Nepal."
+    },
+    {
+      "id": "adcash",
+      "name": "Adcash",
+      "slotModel": "per_zone",
+      "formats": [
+        "display",
+        "native",
+        "popunder"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": "VERIFY",
+      "requiresAdsTxt": false,
+      "requiresCmp": true,
+      "reportingApi": "VERIFY",
+      "referral": null,
+      "payoutMethods": [
+        {
+          "method": "PayPal",
+          "minUsd": 5,
+          "nepalUsable": false,
+          "reason": "Receiving funds in Nepal has historically not been supported."
+        },
+        {
+          "method": "Skrill",
+          "minUsd": 5,
+          "nepalUsable": true,
+          "reason": "Skrill reaches NPR via eSewa at ~1.45% - this makes the LOW threshold reachable, not just the high one."
+        },
+        {
+          "method": "Revolut",
+          "minUsd": 5,
+          "nepalUsable": "VERIFY"
+        },
+        {
+          "method": "crypto",
+          "minUsd": 5,
+          "nepalUsable": false,
+          "reason": "Nepal prohibits cryptocurrency transactions."
+        },
+        {
+          "method": "Wire",
+          "minUsd": 100,
+          "nepalUsable": true
+        }
+      ],
+      "minPayoutUsd": 5,
+      "enabled": false,
+      "priority": 400,
+      "_note": "$5 threshold via digital methods; $100 via wire.",
+      "minPayoutUsdNote": "ADVERTISED cheapest figure across all methods. Usually NOT reachable from Nepal."
+    },
+    {
+      "id": "bidvertiser",
+      "name": "BidVertiser",
+      "slotModel": "per_zone",
+      "formats": [
+        "display",
+        "native"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": "VERIFY",
+      "requiresAdsTxt": false,
+      "requiresCmp": "VERIFY",
+      "reportingApi": "VERIFY",
+      "referral": {
+        "type": "referral_credit",
+        "param": "VERIFY",
+        "commissionPct": null,
+        "creditUsd": 10,
+        "duration": "VERIFY",
+        "subIds": "VERIFY",
+        "source": "secondary comparison sources — $10 credit per referred publisher who earns $10"
+      },
+      "payoutMethods": [
+        {
+          "method": "PayPal",
+          "minUsd": 10,
+          "nepalUsable": false,
+          "reason": "Receiving funds in Nepal has historically not been supported."
+        },
+        {
+          "method": "Payoneer",
+          "minUsd": 10,
+          "nepalUsable": true,
+          "reason": "Payoneer is fully operational in Nepal: withdraw to any commercial Nepali bank in 1-3 business days, NPR, ~2% conversion. CAVEAT: USD 29.95/yr fee if annual income is under USD 2,000."
+        },
+        {
+          "method": "Wire",
+          "minUsd": null,
+          "nepalUsable": true
+        }
+      ],
+      "minPayoutUsd": 10,
+      "enabled": false,
+      "priority": 300,
+      "minPayoutUsdNote": "ADVERTISED cheapest figure across all methods. Usually NOT reachable from Nepal."
+    },
+    {
+      "id": "adsense",
+      "name": "Google AdSense",
+      "slotModel": "per_slot",
+      "formats": [
+        "display",
+        "native",
+        "video"
+      ],
+      "environments": [
+        "web",
+        "amp"
+      ],
+      "requiresOwnDomain": true,
+      "requiresSiteApproval": true,
+      "requiresAdsTxt": true,
+      "requiresCmp": true,
+      "reportingApi": true,
+      "auth": "oauth",
+      "referral": null,
+      "payoutMethods": [
+        {
+          "method": "Wire",
+          "minUsd": 100,
+          "nepalUsable": true
+        },
+        {
+          "method": "Check",
+          "minUsd": 100,
+          "nepalUsable": "VERIFY"
+        }
+      ],
+      "minPayoutUsd": 100,
+      "payoutFrequency": "monthly, 21st",
+      "enabled": false,
+      "priority": 700,
+      "blockedReason": "requiresOwnDomain — a user cannot use a site they do not own. Domain-level approval and shared publisher code make this unusable as a per-user plugin on bytebikri subdomains. Requires AdSense for Platforms.",
+      "_note": "Nepal: wire + check only, NO EFT, NO Hyperwallet. $100 minimum is a ~2 year wait for a small Nepali creator. Keep as a POWER USER option with a clear warning, not a default.",
+      "minPayoutUsdNote": "ADVERTISED cheapest figure across all methods. Usually NOT reachable from Nepal."
+    },
+    {
+      "id": "ezoic",
+      "name": "Ezoic",
+      "slotModel": "per_site_auto",
+      "formats": [
+        "display",
+        "native",
+        "video"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": true,
+      "requiresSiteApproval": true,
+      "requiresAdsTxt": true,
+      "requiresCmp": true,
+      "reportingApi": true,
+      "referral": null,
+      "payoutMethods": [
+        {
+          "method": "PayPal",
+          "minUsd": 20,
+          "nepalUsable": false,
+          "reason": "Receiving funds in Nepal has historically not been supported."
+        },
+        {
+          "method": "Payoneer",
+          "minUsd": 20,
+          "nepalUsable": true
+        },
+        {
+          "method": "Wire",
+          "minUsd": 20,
+          "nepalUsable": true
+        }
+      ],
+      "minPayoutUsd": 20,
+      "enabled": false,
+      "priority": 600,
+      "blockedReason": "Per-site integration (JS/plugin/nameservers) plus MCM review per site. Not a per-user plug-in.",
+      "minPayoutUsdNote": "ADVERTISED cheapest figure across all methods. Usually NOT reachable from Nepal."
+    },
+    {
+      "id": "bytebikri_direct",
+      "name": "bytebikri Direct (platform-sold)",
+      "slotModel": "per_slot",
+      "formats": [
+        "display",
+        "native",
+        "video"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": false,
+      "requiresAdsTxt": false,
+      "requiresCmp": true,
+      "reportingApi": true,
+      "referral": null,
+      "payoutMethods": [
+        {
+          "method": "eSewa/Khalti/bank (NPR)",
+          "minUsd": null,
+          "nepalUsable": true,
+          "reason": "Domestic NPR settlement — no forex, no wire fees, no $100 floor. The best rail for a Nepali creator."
+        }
+      ],
+      "minPayoutUsd": null,
+      "enabled": false,
+      "priority": 800,
+      "servedBy": "revive",
+      "_note": "Your own campaigns from Nepali advertisers. The only adapter where bytebikri holds the money — and in Nepal, the highest CPM for Nepali traffic. Highest revenue priority when enabled."
+    },
+    {
+      "id": "admaven",
+      "name": "AdMaven",
+      "slotModel": "per_zone",
+      "formats": [
+        "display",
+        "native",
+        "push",
+        "popunder",
+        "interstitial"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": "low",
+      "requiresAdsTxt": false,
+      "requiresCmp": true,
+      "reportingApi": "VERIFY",
+      "referral": null,
+      "minPayoutUsd": null,
+      "minPayoutUsdNote": "Most methods have no stated minimum. Bitcoin is $1. Wire is $1,000.",
+      "payoutMethods": [
+        {
+          "method": "Payoneer",
+          "minUsd": null,
+          "nepalUsable": true
+        },
+        {
+          "method": "PayPal",
+          "minUsd": null,
+          "nepalUsable": false,
+          "reason": "Receiving funds in Nepal has historically not been supported."
+        },
+        {
+          "method": "Bitcoin",
+          "minUsd": 1,
+          "nepalUsable": false,
+          "reason": "Nepal prohibits cryptocurrency transactions."
+        },
+        {
+          "method": "Wire",
+          "minUsd": 1000,
+          "nepalUsable": true
+        }
+      ],
+      "payoutFrequency": "weekly",
+      "enabled": false,
+      "priority": 500,
+      "_note": "No stated minimum on Payoneer — potentially the lowest real Nepal-reachable threshold found. VERIFY tos + fill rate."
+    },
+    {
+      "id": "revenuehits",
+      "name": "RevenueHits",
+      "slotModel": "per_zone",
+      "formats": [
+        "display",
+        "native"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": "low",
+      "requiresAdsTxt": false,
+      "requiresCmp": "VERIFY",
+      "reportingApi": "VERIFY",
+      "referral": null,
+      "minPayoutUsd": 20,
+      "payoutMethods": [
+        {
+          "method": "PayPal",
+          "minUsd": 20,
+          "nepalUsable": false,
+          "reason": "Receiving funds in Nepal has historically not been supported."
+        },
+        {
+          "method": "Payoneer",
+          "minUsd": 20,
+          "nepalUsable": true
+        },
+        {
+          "method": "Wire",
+          "minUsd": 500,
+          "nepalUsable": true
+        }
+      ],
+      "payoutFrequency": "Net30",
+      "enabled": false,
+      "priority": 500,
+      "_note": "Markets itself to AdSense-rejected publishers. Lower quality demand — expect poor Nepal fill."
+    },
+    {
+      "id": "sovrn",
+      "name": "Sovrn",
+      "slotModel": "per_zone",
+      "formats": [
+        "display",
+        "native"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": true,
+      "requiresAdsTxt": true,
+      "requiresCmp": true,
+      "reportingApi": true,
+      "referral": null,
+      "minPayoutUsd": 25,
+      "payoutMethods": [
+        {
+          "method": "Payoneer",
+          "minUsd": 25,
+          "nepalUsable": true
+        },
+        {
+          "method": "Wire",
+          "minUsd": 25,
+          "nepalUsable": true
+        }
+      ],
+      "payoutFrequency": "Net90",
+      "enabled": false,
+      "priority": 500,
+      "_note": "Net-90 is the longest cycle on this list. Low eCPM outside US."
+    },
+    {
+      "id": "infolinks",
+      "name": "Infolinks",
+      "slotModel": "per_zone",
+      "formats": [
+        "in_text",
+        "display"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": true,
+      "requiresAdsTxt": "VERIFY",
+      "requiresCmp": "VERIFY",
+      "reportingApi": false,
+      "referral": null,
+      "minPayoutUsd": 50,
+      "payoutMethods": [
+        {
+          "method": "PayPal",
+          "minUsd": 50,
+          "nepalUsable": false,
+          "reason": "Receiving funds in Nepal has historically not been supported."
+        },
+        {
+          "method": "Payoneer",
+          "minUsd": 50,
+          "nepalUsable": true,
+          "reason": "Payoneer is fully operational in Nepal: withdraw to any commercial Nepali bank in 1-3 business days, NPR, ~2% conversion. CAVEAT: USD 29.95/yr fee if annual income is under USD 2,000."
+        },
+        {
+          "method": "Wire",
+          "minUsd": 500,
+          "nepalUsable": true
+        }
+      ],
+      "payoutFrequency": "Net45",
+      "enabled": false,
+      "priority": 500,
+      "_note": "In-text format — maps to link_rewrite-adjacent rendering, not a display box. VERIFY slotModel fit."
+    },
+    {
+      "id": "hilltopads",
+      "name": "HilltopAds",
+      "slotModel": "per_zone",
+      "formats": [
+        "display",
+        "native",
+        "popunder"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": "low",
+      "requiresAdsTxt": false,
+      "requiresCmp": "VERIFY",
+      "reportingApi": "VERIFY",
+      "referral": null,
+      "minPayoutUsd": 50,
+      "payoutMethods": [
+        {
+          "method": "Payoneer",
+          "minUsd": 50,
+          "nepalUsable": true
+        },
+        {
+          "method": "Wire",
+          "minUsd": 50,
+          "nepalUsable": true
+        }
+      ],
+      "payoutFrequency": "VERIFY",
+      "enabled": false,
+      "priority": 500,
+      "_note": "SOURCES CONFLICT: one aggregator says $10, another $50. Confirm with the network before publishing either."
+    },
+    {
+      "id": "evadav",
+      "name": "Evadav",
+      "slotModel": "per_zone",
+      "formats": [
+        "push",
+        "popunder",
+        "native"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": true,
+      "requiresAdsTxt": false,
+      "requiresCmp": "VERIFY",
+      "reportingApi": "VERIFY",
+      "referral": null,
+      "minPayoutUsd": 50,
+      "payoutMethods": [
+        {
+          "method": "Payoneer",
+          "minUsd": 50,
+          "nepalUsable": true
+        },
+        {
+          "method": "PayPal",
+          "minUsd": 50,
+          "nepalUsable": false,
+          "reason": "Receiving funds in Nepal has historically not been supported."
+        },
+        {
+          "method": "Bitcoin",
+          "minUsd": 50,
+          "nepalUsable": false,
+          "reason": "Nepal prohibits cryptocurrency transactions."
+        },
+        {
+          "method": "Wire",
+          "minUsd": null,
+          "nepalUsable": true
+        }
+      ],
+      "payoutFrequency": "weekly",
+      "enabled": false,
+      "priority": 500,
+      "_note": "Threshold approximate — VERIFY in dashboard."
+    },
+    {
+      "id": "mgid",
+      "name": "MGID",
+      "slotModel": "per_zone",
+      "formats": [
+        "native",
+        "display"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": true,
+      "requiresAdsTxt": true,
+      "requiresCmp": true,
+      "reportingApi": true,
+      "referral": null,
+      "minPayoutUsd": 100,
+      "payoutMethods": [
+        {
+          "method": "PayPal",
+          "minUsd": 100,
+          "nepalUsable": false,
+          "reason": "Receiving funds in Nepal has historically not been supported."
+        },
+        {
+          "method": "Payoneer",
+          "minUsd": 100,
+          "nepalUsable": true
+        },
+        {
+          "method": "BankTransfer",
+          "minUsd": 1000,
+          "nepalUsable": true
+        }
+      ],
+      "payoutFrequency": "Net30",
+      "enabled": false,
+      "priority": 500,
+      "_note": "Traffic floor ~3,000-5,000 uniques/day. Strong on non-English / emerging-market traffic, which fits Nepal."
+    },
+    {
+      "id": "exoclick",
+      "name": "ExoClick",
+      "slotModel": "per_zone",
+      "formats": [
+        "display",
+        "native",
+        "video",
+        "popunder"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": "low",
+      "requiresAdsTxt": "VERIFY",
+      "requiresCmp": "VERIFY",
+      "reportingApi": true,
+      "referral": null,
+      "minPayoutUsd": 20,
+      "payoutMethods": [
+        {
+          "method": "PayPal",
+          "minUsd": 20,
+          "nepalUsable": false,
+          "reason": "Receiving funds in Nepal has historically not been supported."
+        },
+        {
+          "method": "Paxum",
+          "minUsd": 20,
+          "nepalUsable": "VERIFY"
+        },
+        {
+          "method": "Payoneer",
+          "minUsd": 20,
+          "nepalUsable": true
+        },
+        {
+          "method": "WebMoney",
+          "minUsd": 200,
+          "nepalUsable": "VERIFY"
+        },
+        {
+          "method": "Wire",
+          "minUsd": 500,
+          "nepalUsable": true
+        }
+      ],
+      "payoutFrequency": "VERIFY",
+      "enabled": false,
+      "priority": 500,
+      "_note": "Adult-leaning network. Policy collision with brand-safe inventory — likely NOT suitable."
+    },
+    {
+      "id": "adpushup",
+      "name": "AdPushup",
+      "slotModel": "per_site_auto",
+      "formats": [
+        "display",
+        "native",
+        "video"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": true,
+      "requiresSiteApproval": true,
+      "requiresAdsTxt": true,
+      "requiresCmp": true,
+      "reportingApi": true,
+      "referral": null,
+      "minPayoutUsd": 50,
+      "payoutMethods": [
+        {
+          "method": "PayPal",
+          "minUsd": 50,
+          "nepalUsable": false,
+          "reason": "Receiving funds in Nepal has historically not been supported."
+        },
+        {
+          "method": "BankTransfer",
+          "minUsd": 50,
+          "nepalUsable": "VERIFY"
+        }
+      ],
+      "payoutFrequency": "Net45",
+      "enabled": false,
+      "priority": 500,
+      "blockedReason": "per_site_auto takes over placement entirely — incompatible with platform-defined slots, and requires own domain.",
+      "_note": "India-based; reported entry bar ~$1,000/month ad revenue. Not viable at bytebikri's early scale."
+    },
+    {
+      "id": "vdoai",
+      "name": "VDO.AI",
+      "slotModel": "per_site_auto",
+      "formats": [
+        "video",
+        "display"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": true,
+      "requiresSiteApproval": true,
+      "requiresAdsTxt": true,
+      "requiresCmp": true,
+      "reportingApi": "VERIFY",
+      "referral": null,
+      "minPayoutUsd": 100,
+      "payoutMethods": [
+        {
+          "method": "PayPal",
+          "minUsd": 100,
+          "nepalUsable": false,
+          "reason": "Receiving funds in Nepal has historically not been supported."
+        },
+        {
+          "method": "Wire",
+          "minUsd": 100,
+          "nepalUsable": true
+        }
+      ],
+      "payoutFrequency": "Net60",
+      "enabled": false,
+      "priority": 500,
+      "blockedReason": "per_site_auto + requires 40,000 daily pageviews. Not viable at early scale; no Payoneer rail.",
+      "_note": "Needs 40k daily pageviews. India-focused despite Nepal relevance."
+    },
+    {
+      "id": "admana",
+      "name": "AdMana Network",
+      "slotModel": "per_zone",
+      "formats": [
+        "display",
+        "native"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": "VERIFY",
+      "requiresAdsTxt": false,
+      "requiresCmp": "VERIFY",
+      "reportingApi": "VERIFY",
+      "referral": null,
+      "minPayoutUsd": null,
+      "payoutMethods": [
+        {
+          "method": "Bank transfer / NPR",
+          "minUsd": null,
+          "nepalUsable": true,
+          "reason": "Domestic Nepali network. NPR settlement - no forex, no wire fee, no foreign threshold, no Payoneer 2%."
+        }
+      ],
+      "payoutFrequency": "VERIFY",
+      "enabled": false,
+      "priority": 250,
+      "_note": "VERIFIED TO EXIST (admana.net). Nepal's domestic pay-for-performance network; advertisers enter from NPR 50,000. What 'bytebikri_direct' would be if someone else ran it. Highest-priority third-party candidate for Nepal traffic."
+    },
+    {
+      "id": "adgebra",
+      "name": "Adgebra",
+      "slotModel": "per_zone",
+      "formats": [
+        "native",
+        "display",
+        "video"
+      ],
+      "environments": [
+        "web"
+      ],
+      "requiresOwnDomain": false,
+      "requiresSiteApproval": true,
+      "requiresAdsTxt": true,
+      "requiresCmp": true,
+      "reportingApi": "VERIFY",
+      "referral": null,
+      "minPayoutUsd": 60,
+      "payoutMethods": [
+        {
+          "method": "Bank transfer (INR)",
+          "minUsd": 60,
+          "nepalUsable": "VERIFY",
+          "reason": "INR 5,000 minimum. NPR is pegged to INR, but confirm a Nepali bank account is accepted."
+        },
+        {
+          "method": "Wire",
+          "minUsd": 60,
+          "nepalUsable": true
+        },
+        {
+          "method": "PayPal",
+          "minUsd": 60,
+          "nepalUsable": false,
+          "reason": "Receiving funds in Nepal has historically not been supported."
+        }
+      ],
+      "payoutFrequency": "Net60",
+      "enabled": false,
+      "priority": 350,
+      "_note": "Indian, 2,000+ publishers, 30B ads/month, 10 regional Indian languages, pays globally. Vernacular ad-matching is the best fit found for Devanagari/Nepali content. NET-60 is slow."
+    }
+  ],
+  "nepalPayoutWarnings": [
+    "Payoneer IS fully operational in Nepal (verified) - 1-3 business days to a Nepali bank, NPR, ~2% conversion. Earlier caution on this was too strong.",
+    "Payoneer carries a USD 29.95/yr fee if annual income is under USD 2,000. For a micro-creator earning USD 50/yr that is ~60% of earnings. DISCLOSE THIS in the picker.",
+    "Skrill reaches NPR via eSewa at ~1.45% - this makes LOW thresholds reachable. PropellerAds/Adcash are $5 via Skrill, not $20.",
+    "PayPal remains unusable for receiving in Nepal.",
+    "Nepal prohibits cryptocurrency transactions.",
+    "A domestic Nepali ad network exists (AdMana) - NPR rails, no forex.",
+    "INDIA CONTRAST: Indian publishers get AdSense EFT at ~Rs 1,000; Nepal gets wire at $100. Adgebra pays INR 5,000 (~$60) globally.",
+    "Prefer: NPR-domestic rails > Payoneer/Skrill > wire. Avoid: PayPal-only, crypto-only."
+  ],
+  "payoutMethodSemantics": {
+    "_why": "A provider's advertised minimum is almost always the cheapest METHOD, not the method a Nepali user can actually use. PropellerAds advertises $5 (PayPal/Skrill) but Payoneer needs $20; wire needs $550.",
+    "fields": {
+      "payoutMethods[].nepalUsable": "true = evidenced usable from Nepal. false = evidenced unusable. VERIFY = unknown, must not be presented as usable.",
+      "payoutMethods[].minUsd": "Minimum for THAT method. null = no stated minimum.",
+      "minPayoutUsd": "Advertised headline minimum. Reference only — never show this to a Nepali user as their threshold."
+    },
+    "rule": "The provider picker must show the Nepal-reachable minimum, or say 'unknown'. Never the advertised one.",
+    "verified2026": {
+      "payoneer": "Fully operational in Nepal. Withdraw to any commercial Nepali bank, 1-3 business days, NPR, ~2% conversion. INBOUND ONLY - NRB restricts outward remittance. USD 29.95/yr fee under USD 2,000 annual income.",
+      "skrill": "Reaches NPR via eSewa at ~1.45%. Makes low thresholds usable.",
+      "paypal": "Still not usable for RECEIVING in Nepal.",
+      "crypto": "Prohibited in Nepal.",
+      "meta_facebook": "Now pays Nepali creators directly to local NPR bank accounts. Relevant to audience, not to slot inventory."
+    }
+  }
+}

@@ -1,3 +1,10 @@
+-- ============================================================================
+--  SUPERSEDED — do not use.
+--  This is the original coin-based schema (coin_balances, purchases, WebTorrent
+--  info_hash). bytebikri does not run a coin economy: coins were dropped, and
+--  P2P delivery cannot gate a paywall. The live schema is ../db/schema.sql.
+-- ============================================================================
+
 create extension if not exists pgcrypto;
 
 create table IF NOT EXISTS profiles (
