@@ -1249,12 +1249,15 @@ a.kpi:hover { border-color: var(--border-strong); text-decoration: none; box-sha
  * layout per row — is a different information architecture, not a media query.
  */
 @media (max-width: 700px) {
-  .panel-body-flush, .panel-body { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  /* A data table may scroll inside its own box; the PAGE may not scroll
+     sideways. Any table that is not already inside a panel body needs one of
+     these around it, and `.table-scroll` is that wrapper. */
+  .panel-body-flush, .panel-body, .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   /* A table is given a floor only where its container scrolls. Applied to every
      table this made the whole DOCUMENT 520px wide on a phone, because the legal
      pages put tables in prose rather than in a panel — the page scrolled
      sideways and every paragraph moved under a reader's thumb. */
-  .panel-body .table, .panel-body-flush .table { min-width: 520px; }
+  .panel-body .table, .panel-body-flush .table, .table-scroll .table { min-width: 520px; }
 
   /* A hero's 80px of headroom is a third of a phone screen. */
   .hero { padding-block: var(--space-12) var(--space-10); }

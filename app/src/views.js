@@ -2038,14 +2038,21 @@ export function networksPage({
     </div>
 
     ${(onboarding.postback?.params || []).length ? `
-    <table class="table" style="margin-top:var(--space-4)">
+    <!-- Wrapped so the table scrolls inside itself on a phone. Every other table
+         on the site sits in a panel body, which carries that behaviour; this one
+         was written directly into the panel body and pushed the whole page
+         sideways at 390px, which is a bug that only shows up when somebody
+         actually opens the page at that width. -->
+    <div class="table-scroll" style="margin-top:var(--space-4)">
+    <table class="table">
       <thead><tr><th>Parameter</th><th>Their macro</th><th>What it carries</th></tr></thead>
       <tbody>${onboarding.postback.params.map((p) => `<tr>
         <td class="mono">${esc(p.ours)}</td>
         <td class="mono">${esc(p.theirs || p.value || '—')}</td>
         <td class="small">${esc(p.note || '')}</td>
       </tr>`).join('')}</tbody>
-    </table>` : ''}
+    </table>
+    </div>` : ''}
 
     ${onboarding.postback?.signature ? `
     <div class="note" style="margin-top:var(--space-4)">

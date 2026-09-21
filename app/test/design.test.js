@@ -519,3 +519,31 @@ test('a failure answers a browser with a page and an API client with JSON', () =
   // In production the message must not leak the failure itself.
   assert.ok(!/error: err\.message/.test(handler), 'the raw message never reaches the client');
 });
+
+test('every URL the sitemap lists is a URL the app actually serves', () => {
+  // The first version listed /privacy and /terms. The legal documents live under
+  // /legal/, so the sitemap handed crawlers two 404s — the most common sitemap
+  // mistake there is, and invisible unless somebody checks each entry.
+  const server = readFileSync(path.join(root, 'server.js'), 'utf8');
+  const sitemap = server.slice(server.indexOf("APP.get('/sitemap.xml'"));
+  const listed = [...sitemap.matchAll(/loc: '([^']+)'/g)].map((m) => m[1]);
+  assert.ok(listed.length >= 5, 'the sitemap lists the marketing pages');
+  // A route table, not a set: `/legal/privacy` is served by `/legal/:slug`, so
+  // membership is "does some route pattern match this URL".
+  //
+  // Built segment by segment rather than by escaping the whole pattern first:
+  // escaping first turns `:slug` into a literal and no parameterized route ever
+  // matches, which is how the first version of this helper reported a false
+  // failure against a route that exists.
+  const patterns = [...server.matchAll(/APP\.get\('([^']+)'/g)].map((m) => m[1]);
+  const escape = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const routeRegex = (pattern) => `^${pattern.split('/').map((seg) => (
+    seg.startsWith(':') ? '[^/]+' : escape(seg)
+  )).join('/')}$`;
+  const serves = (url) => patterns.some((pattern) => new RegExp(routeRegex(pattern)).test(url));
+  for (const loc of listed) {
+    assert.ok(serves(loc), `sitemap lists ${loc} but no route serves it`);
+  }
+  // And the static list must not name a page whose route takes a parameter.
+  assert.ok(!listed.some((l) => l.includes(':')), 'no route patterns in a sitemap');
+});

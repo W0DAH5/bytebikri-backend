@@ -2949,9 +2949,13 @@ APP.get('/sitemap.xml', async (req, res, next) => {
     const pages = [
       { loc: '/', priority: '1.0', changefreq: 'daily' },
       { loc: '/marketplace', priority: '0.9', changefreq: 'daily' },
-      { loc: '/privacy', priority: '0.3', changefreq: 'monthly' },
-      { loc: '/terms', priority: '0.3', changefreq: 'monthly' },
-      { loc: '/cookies', priority: '0.3', changefreq: 'monthly' },
+      // The legal documents live under /legal/, not at the root. The first version
+      // of this list pointed at /privacy and /terms, which answer 404 — a sitemap
+      // full of broken links, which is the single most common mistake with them and
+      // the one that wastes the crawler's budget on nothing.
+      { loc: '/legal/privacy', priority: '0.3', changefreq: 'monthly' },
+      { loc: '/legal/terms', priority: '0.3', changefreq: 'monthly' },
+      { loc: '/legal/cookies', priority: '0.3', changefreq: 'monthly' },
     ];
     // XML escaping is not HTML escaping: an apostrophe is legal in a URL inside
     // a sitemap and `&#39;` is not, so this escapes the five characters XML
