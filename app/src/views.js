@@ -1179,7 +1179,10 @@ export function networksPage({
   base = '', unusableBase = false, slotDefs = [],
 }) {
   const card = ({ connection: c, provider, onboarding, url, health, sandbox, secretHint, events }) => {
-    const kind = { live: 'success', working: 'success', sandbox: 'info', quiet: 'warning', silent: 'warning', unverified: 'warning', off: '' }[health.level] || '';
+    const kind = {
+      live: 'success', working: 'success', sandbox: 'info',
+      quiet: 'warning', silent: 'warning', unverified: 'warning', noadapter: 'warning', off: '',
+    }[health.level] || '';
     const connector = onboarding.credentials[0] || null;
     const slotPicker = !sandbox && c.status !== 'revoked';
 

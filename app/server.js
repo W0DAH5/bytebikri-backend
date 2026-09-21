@@ -707,7 +707,10 @@ async function networksState(req, channel) {
       // The URL as the network needs it, macros intact.
       url: postbackUrl({ provider, connectionId: c.id, baseUrl: base }),
       secretHint: maskSecret(c.callback_secret),
-      health: connectionHealth({ connection: c, sandbox, ...evidenceFor(c.provider_id, c.id) }),
+      health: connectionHealth({
+        connection: c, sandbox, connectable: connectable(provider),
+        ...evidenceFor(c.provider_id, c.id),
+      }),
       events: await store.connectionEvents(c.id, { limit: 6 }),
     };
   }));

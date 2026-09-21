@@ -119,7 +119,23 @@ export function maskSecret(value) {
  * @param {boolean} [args.sandbox]    our own test network
  * @param {Date}   [args.now]
  */
-export function connectionHealth({ connection = {}, lastPostbackAt = null, postbacks30d = 0, sandbox = false, now = new Date() }) {
+export function connectionHealth({
+  connection = {}, lastPostbackAt = null, postbacks30d = 0, sandbox = false,
+  connectable: canVerify = true, now = new Date(),
+}) {
+  // A network we have no adapter for cannot be verified at all, and the honest
+  // reading of "connected but never called back" would be wrong here: no
+  // callback was ever possible. The dashboard cannot create this state, but a
+  // database can arrive in it (a deployment that enabled a network later, a
+  // registry change), and the page has to say which one it is looking at.
+  if (connection.status !== 'revoked' && !canVerify) {
+    return {
+      level: 'noadapter',
+      label: 'No adapter',
+      detail: 'We cannot serve this network\'s tag or verify its callbacks, so nothing through it will unlock. '
+        + 'It stays in your record, and the earnings side still works: the network pays you directly and you record what it reports.',
+    };
+  }
   if (connection.status === 'revoked') {
     return { level: 'off', label: 'Disconnected', detail: 'Revoked. Anything it gated stops unlocking, and its callbacks are refused.' };
   }
