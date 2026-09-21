@@ -1697,25 +1697,22 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
  * The hero is given two columns on a wide screen and the whole row on a phone,
  * because a hero metric that is one of four is not a hero metric.
  */
-.kpi-row {
-  display: grid; gap: var(--space-4);
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
-}
-.kpi {
-  background: var(--surface-raised);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  padding: var(--space-5);
-  display: flex; flex-direction: column; gap: var(--space-1);
-  min-width: 0;
-}
-.kpi-value {
-  font-size: var(--text-2xl); font-weight: 680; line-height: 1.05;
-  letter-spacing: var(--tracking-tight); font-variant-numeric: tabular-nums;
-}
-.kpi-label { font-size: var(--text-sm); color: var(--text-secondary); }
+/* Two additions to the KPI component above, not a second copy of it.
+ *
+ * The first version of this block redefined `.kpi`, `.kpi-row`, `.kpi-value` and
+ * `.kpi-label` — the same class names the console uses for the same idea — and
+ * because it sat later in the file it silently overrode them. Two definitions of
+ * one component is how a design system rots: the console's labels quietly changed
+ * size, and the next person to edit either block would have had no way to know
+ * which one they were looking at. There is one `.kpi` now, and this file only adds
+ * what the seller's dashboard needs on top of it.
+ */
 .kpi-note { font-size: var(--text-xs); color: var(--text-faint); margin-top: var(--space-2); }
 
+/* The hero is given two columns on a wide screen and one on a phone, because a
+   hero metric that occupies the same space as the three beside it is not a hero
+   metric. The wash is the action colour at 12%, which is enough to make the tile
+   read first without making it look like an alert. */
 .kpi-hero {
   grid-column: span 2;
   background:
@@ -1724,6 +1721,8 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   border-color: var(--border-strong);
 }
 .kpi-hero .kpi-value { font-size: var(--text-4xl); letter-spacing: -0.04em; }
+.kpi-hero .kpi-label { color: var(--text-muted); }
+.kpi-hero .kpi-note { color: var(--text-muted); }
 
 @media (max-width: 700px) {
   .kpi-hero { grid-column: span 1; }
