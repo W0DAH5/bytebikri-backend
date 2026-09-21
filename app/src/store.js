@@ -16,6 +16,11 @@ import { fileURLToPath } from 'node:url';
 import { one, many, scalar, query, withTransaction, isUniqueViolation } from './db.js';
 
 import { rentPeriod, annualRentNpr, rentWorking } from './billing.js';
+// The assumed rate lives in policy, exactly once, and this file reads it rather
+// than repeating it: the rent estimate, the seller's page and the operator's
+// calibration page must all be arithmetic on the SAME assumption, or comparing
+// them is meaningless.
+import { POLICY } from './slots.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -2223,6 +2228,102 @@ export const store = {
         group by c.id, c.slug, c.created_at
         order by last_changed desc
         limit 5000`,
+    );
+  },
+
+  /**
+   * Every statement a creator has entered, with our estimate for the SAME window.
+   *
+   * This is the query behind the operator's calibration page, and the window is
+   * the whole point. The seller's own page compares a month of statements against
+   * the last 30 days of views, which is fine as a rough signal and wrong as a
+   * measurement — the two windows can be different months entirely. Here the
+   * views are counted inside each statement's own period, so the ratio means what
+   * it says.
+   *
+   * `closed` mirrors `periodStatus()` in earnings.js: a period whose end is in the
+   * future, or within the last five days, is not settled and is not counted. A
+   * network closes its books after the month ends and we cannot claim to know a
+   * number it has not published.
+   *
+   * Returns one row per (store, provider), plus the store and owner for the
+   * operator to act on.
+   */
+  statementCalibration({ graceDays = 5 } = {}) {
+    return many(
+      `with closed as (
+         select r.*, c.name as channel_name, c.slug as channel_slug, c.moderation_state,
+                p.email as owner_email, p.display_name as owner_name
+           from provider_reports r
+           join channels c on c.id = r.channel_id
+           left join profiles p on p.id = c.owner_id
+          where r.period_end < (current_date - $1::int)
+       ),
+       -- Views counted only inside the days the statement covers. A period may be
+       -- entered twice for the same store and provider only if the dates differ
+       -- (the unique key is on period_start), so overlapping periods would
+       -- double-count views; the join is a lateral per report instead of a
+       -- straight join so each report's window is measured independently.
+       per_report as (
+         select k.channel_id, k.provider_id, k.id as report_id,
+                k.period_start, k.period_end, k.reported_usd,
+                coalesce(v.views, 0) as views,
+                coalesce(v.events, 0) as events
+           from closed k
+           left join lateral (
+             select count(*) filter (where e.completed)::int as views,
+                    count(*)::int                            as events
+               from ad_view_events e
+              where e.channel_id = k.channel_id
+                and e.provider_id = k.provider_id
+                and e.created_at >= k.period_start
+                and e.created_at < (k.period_end + interval '1 day')
+           ) v on true
+       )
+       select pr.channel_id, c.slug as channel_slug, c.name as channel_name,
+              c.moderation_state, p.email as owner_email, p.display_name as owner_name,
+              pr.provider_id,
+              count(*)::int                        as periods,
+              sum(pr.reported_usd)                 as reported_usd,
+              sum(pr.views)::int                   as views,
+              sum(pr.events)::int                  as events,
+              max(pr.period_end)                   as last_period_end,
+              min(pr.period_start)                 as first_period_start,
+              -- Our arithmetic over the same days, at the rate the platform
+              -- assumes, so the two figures are produced the same way the rent
+              -- estimate is.
+              round((sum(pr.views) / 1000.0 * $2)::numeric, 4) as estimate_usd,
+              -- The rate the statements imply. Null when there is nothing to
+              -- divide, because a rate from zero views is not zero, it is unknown.
+              case when sum(pr.views) > 0
+                   then round((sum(pr.reported_usd) / (sum(pr.views) / 1000.0))::numeric, 4)
+                   else null end                  as implied_rpm_usd
+         from per_report pr
+         join channels c on c.id = pr.channel_id
+         left join profiles p on p.id = c.owner_id
+        group by pr.channel_id, c.slug, c.name, c.moderation_state, p.email, p.display_name, pr.provider_id
+        order by sum(pr.reported_usd) desc`,
+      [graceDays, POLICY.assumedRpmUsd],
+    );
+  },
+
+  /**
+   * The statements a creator has entered but which are not settled yet.
+   *
+   * Shown separately and never counted: the page has to be able to say "two more
+   * months are open" instead of silently leaving them out, because a creator who
+   * entered a figure and does not see it counted will enter it again.
+   */
+  openStatements() {
+    return many(
+      `select r.id, r.period_start, r.period_end, r.reported_usd, r.provider_id,
+              c.slug as channel_slug, c.name as channel_name,
+              (current_date - r.period_end)::int as days_since_end
+         from provider_reports r
+         join channels c on c.id = r.channel_id
+        where r.period_end >= (current_date - 5)
+        order by r.period_end desc
+        limit 50`,
     );
   },
 

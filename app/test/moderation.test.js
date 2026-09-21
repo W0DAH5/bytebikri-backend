@@ -657,3 +657,60 @@ test('the refusal line and the verdict agree with each other', () => {
   assert.match(clean, /Working/);
   assert.match(clean, /nothing refused/);
 });
+
+test('the calibration joins our estimate to the statement\'s own window', async () => {
+  // The whole reason this query is not a rolling 30 days: the statement covers a
+  // period, and views outside it must not be counted into the comparison. This
+  // test builds a view INSIDE the window and one outside it and asserts only the
+  // inside one is measured.
+  const { ch } = await fixture();
+  const user = await store.userByEmailOrCreate(`cal-${Date.now()}@test.local`);
+  const asset = await store.createAsset({
+    channelId: ch.id, title: 'Calibration file', slug: `cal-${Date.now()}`, unlockMode: 'ad_gated',
+  });
+  const provider = 'calnet';
+  const conn = await store.createConnection({
+    channelId: ch.id, providerId: provider, callbackSecret: 's3cret', callbackBaseUrl: null,
+  }).catch(() => null);
+
+  const insertView = (externalId, when) => query(
+    `insert into ad_view_events
+       (channel_id, user_id, asset_id, provider_id, connection_id, external_id,
+        kind, state, completed, signature_ok, created_at)
+     values ($1, $2, $3, $4, $5, $6, 'display', 'complete', true, true, $7)`,
+    [ch.id, user.id, asset.id, provider, conn?.id || null, externalId, when],
+  );
+  await insertView('inside-a', '2026-01-05T10:00:00Z');
+  await insertView('inside-b', '2026-01-20T10:00:00Z');
+  await insertView('outside', '2026-03-15T10:00:00Z');
+
+  await store.addProviderReport({
+    channelId: ch.id, providerId: provider,
+    periodStart: '2026-01-01', periodEnd: '2026-01-31', reportedUsd: 3.5,
+  });
+
+  const rows = await store.statementCalibration();
+  const row = rows.find((r) => r.channel_id === ch.id && r.provider_id === provider);
+  assert.ok(row, 'the store appears in the calibration');
+  assert.equal(Number(row.views), 2, 'only the two views inside the statement window are counted');
+  assert.equal(Number(row.reported_usd), 3.5);
+  // 2 views at the assumed rate, computed the same way the rent estimate is.
+  assert.equal(Number(row.estimate_usd).toFixed(4), '0.0004');
+  // 3.5 / (2/1000) = 1750 per 1000 views — an absurd rate, which is exactly what
+  // a tiny demo window gives, and the page reports it rather than hiding it.
+  assert.equal(Number(row.implied_rpm_usd), 1750);
+});
+
+test('a statement whose period has not settled is shown, and counted nowhere', async () => {
+  const { ch } = await fixture();
+  const future = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);
+  const past = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
+  await store.addProviderReport({
+    channelId: ch.id, providerId: 'openait', periodStart: past, periodEnd: future, reportedUsd: 9,
+  });
+  const open = await store.openStatements();
+  assert.ok(open.some((o) => o.channel_slug === ch.slug), 'it is on the open list');
+  const calibration = await store.statementCalibration();
+  assert.ok(!calibration.some((r) => r.channel_slug === ch.slug && r.provider_id === 'openait'),
+    'and it is absent from every comparison, rather than silently included');
+});

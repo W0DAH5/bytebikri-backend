@@ -36,7 +36,7 @@ import {
 import {
   railDetails, railsReady, payeeName, upgradeExplanation, planBenefits, NOT_CHARGED,
 } from './src/billing.js';
-import { earningsSummary, MONEY_MAP, payoutChecklist, periodStatus } from './src/earnings.js';
+import { earningsSummary, MONEY_MAP, payoutChecklist, periodStatus, calibrationVerdict, calibrationRowState as calibrationState } from './src/earnings.js';
 import { SANDBOX_PROVIDER_IDS } from './src/providers/index.js';
 import { selectableProviders, providerById, payoutVerdict, loadRegistry } from './src/registry.js';
 import {
@@ -2650,6 +2650,56 @@ APP.get('/admin/connections', async (req, res, next) => {
   } catch (err) { return next(err); }
 });
 
+/**
+ * The operator's view of what creators were paid, and the calibration of the rate
+ * this platform prices rent from.
+ *
+ * `?format=csv` exports the comparison rather than the page, for the same reason
+ * the store directory does: the purpose of exporting is to reconcile against
+ * something else, and one page of a moving table reconciles nothing. The export
+ * writes an audit row naming who took it and what it contained.
+ */
+APP.get('/admin/earnings', async (req, res, next) => {
+  try {
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    if (req.user.role !== 'admin') return res.status(404).send('Not found');
+
+    const rows = await store.statementCalibration();
+    const verdict = calibrationVerdict({ rows, assumedRpmUsd: POLICY.assumedRpmUsd });
+
+    if (req.query.format === 'csv') {
+      const head = ['store', 'slug', 'owner_email', 'network', 'periods', 'window_start', 'window_end',
+        'views_in_window', 'reported_usd', 'our_estimate_usd', 'implied_rpm_usd', 'assumed_rpm_usd', 'state'];
+      const cell = (v) => {
+        const str = v === null || v === undefined ? '' : String(v);
+        return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+      };
+      const body = rows.map((r) => {
+        const st = calibrationState(r);
+        return [r.channel_name, r.channel_slug, r.owner_email || '', r.provider_id, r.periods,
+          String(r.first_period_start).slice(0, 10), String(r.last_period_end).slice(0, 10),
+          r.views, Number(r.reported_usd).toFixed(2), Number(r.estimate_usd).toFixed(4),
+          r.implied_rpm_usd === null ? '' : Number(r.implied_rpm_usd).toFixed(4),
+          POLICY.assumedRpmUsd, st.state].map(cell).join(',');
+      });
+      const stamp = new Date().toISOString().slice(0, 10);
+      await store.audit('earnings.calibration_exported',
+        { rows: rows.length, periods: verdict.periods, impliedRpmUsd: verdict.impliedRpmUsd, level: verdict.level },
+        { actorId: req.user.id });
+      res.setHeader('content-type', 'text/csv; charset=utf-8');
+      res.setHeader('content-disposition',
+        `attachment; filename="bytebikri-earnings-${stamp}-${rows.length}.csv"`);
+      return res.send(`${head.join(',')}\n${body.join('\n')}\n`);
+    }
+
+    return res.send(views.adminEarnings({
+      user: await withBadges(req.user), consent: req.consent, flash: flashFor(req.query),
+      rows, verdict, open: await store.openStatements(),
+      assumedRpmUsd: POLICY.assumedRpmUsd, usdToNpr: POLICY.usdToNpr,
+    }));
+  } catch (err) { return next(err); }
+});
+
 APP.get('/admin/reports', async (req, res, next) => {
   try {
     if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
@@ -3161,10 +3211,32 @@ async function seed({ force = false } = {}) {
           `demo-view-${i}`, i % 5 === 0 ? 0.0002 : null, String(i % 14), String(i % 24)],
       );
     }
+    // Views INSIDE the statement's own window, so the comparison on the operator's
+    // calibration page is a rate rather than an artifact. The earlier version put
+    // every demo view in the last fortnight and the statement in August, which
+    // meant the two never overlapped: our estimate in that window was zero by
+    // construction, and the page could only say "no rate to derive". A fixture
+    // whose windows do not meet cannot demonstrate the arithmetic it exists for.
+    //
+    // 220 completed views against a $0.02 statement is an implied rate of about
+    // $0.09 per 1,000 — deliberately well below the $0.20 the platform assumes,
+    // because that gap is the whole point of the page. A demo where the assumed
+    // rate is right teaches nobody what the calibration is for.
+    for (let i = 0; i < 220; i += 1) {
+      await query(
+        `insert into ad_view_events
+           (channel_id, user_id, asset_id, provider_id, connection_id, external_id,
+            kind, state, completed, duration_sec, revenue_usd, signature_ok, created_at)
+         values ($1, $2, $3, 'adsterra', $4, $5, 'display', 'complete', true, 15,
+                 null, true, date '2026-08-01' + ($6 || ' days')::interval + ($7 || ' hours')::interval)`,
+        [alice.id, aliceUser.id, walkthrough.id, adsterraConn.id,
+          `demo-aug-view-${i}`, String(i % 30), String(i % 24)],
+      );
+    }
     await store.addProviderReport({
       channelId: alice.id, providerId: 'adsterra',
-      periodStart: '2026-08-01', periodEnd: '2026-08-31', reportedUsd: 0.11,
-      note: 'From the network portal, August.',
+      periodStart: '2026-08-01', periodEnd: '2026-08-31', reportedUsd: 0.02,
+      note: 'From the network portal, August. Deliberately below our estimate.',
     });
   }
 

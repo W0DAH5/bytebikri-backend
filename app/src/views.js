@@ -16,6 +16,9 @@
  */
 
 import { REPORT_REASONS, REPORT_HONESTY, NOTE_LIMIT, reporterMessage, reportVerdict, AUTO_HIDE_AFTER } from './reports.js';
+// The calibration judgement lives in the domain file next to gapVerdict, so the
+// operator's page and the seller's page can never disagree about what a gap means.
+import { calibrationRowState } from './earnings.js';
 
 const esc = (s) =>
   String(s ?? '')
@@ -26,6 +29,23 @@ const esc = (s) =>
     .replace(/'/g, '&#39;');
 
 const npr = (n) => `NPR ${Number(n).toLocaleString('en-IN')}`;
+
+/**
+ * A calendar date, as `2026-08-31`.
+ *
+ * `date` columns come back from Postgres as `Date` objects at UTC midnight, and
+ * `String(date).slice(0, 10)` — which is what four pages were doing — gives
+ * "Sat Aug 01". It looked like a formatting choice and was actually a bug that
+ * appeared on the store detail page, the period table and the invoice line at
+ * once. ISO is also the unambiguous form: `01/08` is two different days depending
+ * on which side of the world you read it from, and this platform bills on dates.
+ */
+const isoDay = (value) => {
+  if (!value) return '';
+  if (typeof value === 'string') return value.slice(0, 10);
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? String(value) : d.toISOString().slice(0, 10);
+};
 
 /**
  * `plural(1, 'view')` → "1 view"; `plural(3, 'view')` → "3 views".
@@ -3043,7 +3063,7 @@ export function adminShell({ user, consent, current, title, lede = '', actions =
     ${actions}
   </div>
 </div>
-<nav class="console-nav" aria-label="Console">${tab('/admin', 'Overview', 'overview')}${tab('/admin/payments', 'Payments', 'payments', user.adminBadges?.payments)}${tab('/admin/stores', 'Stores', 'stores')}${tab('/admin/connections', 'Connections', 'connections')}${tab('/admin/reports', 'Reports', 'reports', user.adminBadges?.reports)}${tab('/admin/moderation', 'Moderation', 'moderation', user.adminBadges?.moderation)}${tab('/admin/audit', 'Audit log', 'audit')}</nav>
+<nav class="console-nav" aria-label="Console">${tab('/admin', 'Overview', 'overview')}${tab('/admin/payments', 'Payments', 'payments', user.adminBadges?.payments)}${tab('/admin/stores', 'Stores', 'stores')}${tab('/admin/earnings', 'Earnings', 'earnings')}${tab('/admin/connections', 'Connections', 'connections')}${tab('/admin/reports', 'Reports', 'reports', user.adminBadges?.reports)}${tab('/admin/moderation', 'Moderation', 'moderation', user.adminBadges?.moderation)}${tab('/admin/audit', 'Audit log', 'audit')}</nav>
 ${body}`,
   });
 }
@@ -3526,12 +3546,12 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
       <dl class="kv" style="margin-top:var(--space-4)">
         <dt>Plan</dt><dd>${c.plan_code === 'free' ? pill('Free', '') : pill(c.plan_code, 'accent')}${
     c.pending_plan_code ? `<div class="fine">requested ${esc(c.pending_plan_code)} — awaiting a matched transfer</div>` : ''}</dd>
-        <dt>Subscription</dt><dd>${esc(c.sub_status || 'active')}${c.period_end ? `<div class="fine">through ${esc(String(c.period_end).slice(0, 10))}</div>` : ''}</dd>
+        <dt>Subscription</dt><dd>${esc(c.sub_status || 'active')}${c.period_end ? `<div class="fine">through ${esc(isoDay(c.period_end))}</div>` : ''}</dd>
         <dt>Rent slot</dt><dd>${c.rent_slots
     ? `${plural(c.rent_slots, 'platform slot')}, ${plural(c.own_slots, "slot of the store's own")}`
     : 'none — the platform does not rent a slot here'}</dd>
         <dt>Latest invoice</dt><dd>${invoice
-    ? `${npr(invoice.amount_npr)} · ${esc(invoice.status)}<div class="fine">${esc(String(invoice.period_start).slice(0, 10))} to ${esc(String(invoice.period_end).slice(0, 10))}</div>`
+    ? `${npr(invoice.amount_npr)} · ${esc(invoice.status)}<div class="fine">${esc(isoDay(invoice.period_start))} to ${esc(isoDay(invoice.period_end))}</div>`
     : 'no invoice has been issued'}</dd>
       </dl>
       <p class="fine" style="margin-top:var(--space-4)">
@@ -3634,6 +3654,185 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
       </tbody>
     </table>
   </div></div>
+</section>`,
+  });
+}
+
+/**
+ * What creators were paid, against what we assume.
+ *
+ * The seller's earnings page already tells THEM whether our estimate matches
+ * their statement, and it ends by asking them to report a gap so the rate can be
+ * "corrected". There was nowhere for that correction to happen: the operator
+ * could see payments bytebikri receives and nothing about the money the networks
+ * pay creators directly.
+ *
+ * This page is the calibration. It answers one question the platform cannot
+ * answer from its own data — is the assumed rate still right — and it is explicit
+ * about the two things it will never show: a balance and a payout queue. We are
+ * not party to the payment, so the only figure we have is one a creator typed in,
+ * and the page says so above the table rather than in a footnote.
+ *
+ * The verdict function carries the direction and the CONFIDENCE separately, and
+ * this page prints both: "we assume 2.1× the rate the statements imply" is a
+ * finding, and "from one store" is the reason it is a signal rather than a
+ * measurement.
+ */
+export function adminEarnings({
+  user, consent = null, flash = null, rows = [], verdict = null, open = [], assumedRpmUsd = 0.2,
+  usdToNpr = 133, canExport = true,
+}) {
+  const state = (row) => calibrationRowState(row);
+  const toneFor = { no_views: 'warn', measurable: '' };
+  const gapCell = (row) => {
+    const st = state(row);
+    if (st.state === 'no_views') {
+      // A chip as well as the sentence: this column is scanned, and "Nothing to
+      // measure" is the one state where a reader must not think a number is
+      // missing because of a bug.
+      return `${pill(st.label, 'warning')}<div class="fine">${esc(st.why)}</div>`;
+    }
+    if (st.state !== 'measurable') return `<span class="fine">${esc(st.label)}</span>`;
+    const pct = st.gapPct;
+    if (pct === null) return '<span class="fine">no rate to compare</span>';
+    const within = Math.abs(pct) <= 15;
+    return `${pill(`${pct > 0 ? '+' : ''}${pct}%`, within ? 'success' : 'warning')}
+      <div class="fine">${pct > 0 ? 'we estimate higher' : 'we estimate lower'}</div>`;
+  };
+
+  return adminShell({
+    user, consent, current: 'earnings', title: 'Creator earnings',
+    lede: 'What the networks reported to creators, against the arithmetic this platform prices rent from. '
+      + 'The statement is the authority; we never see the money.',
+    actions: canExport ? '<a class="btn btn-sm" href="/admin/earnings?format=csv">Download CSV</a>' : '',
+    body: `
+${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)" role="status">${esc(flash.message)}</div>` : ''}
+
+<section class="section">
+  <div class="kpi-row">
+    <div class="kpi kpi-hero${verdict.level === 'we_over' ? ' kpi-bad' : verdict.level === 'consistent' ? ' kpi-good' : ''}">
+      <div class="kpi-value">${verdict.impliedRpmUsd === null
+    ? '—'
+    : `$${Number(verdict.impliedRpmUsd).toFixed(2)}`}</div>
+      <div class="kpi-label">Per 1,000 views, implied by the statements</div>
+      <div class="kpi-note">${verdict.impliedRpmUsd === null
+    ? 'No statement yet carries a measurable window.'
+    : `The rate we assume is $${Number(assumedRpmUsd).toFixed(2)}. Rent is proportional to it.`}</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-value">${num(verdict.periods)}</div>
+      <div class="kpi-label">Settled periods compared</div>
+      <div class="kpi-note">${verdict.stores
+    ? `Across ${plural(verdict.stores, 'store')}. A period in the last five days is not settled.`
+    : 'Nothing settled yet.'}</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-value">$${Number(verdict.totalReported || 0).toFixed(2)}</div>
+      <div class="kpi-label">Reported by creators</div>
+      <div class="kpi-note">Typed in by them from the network's portal. Not a balance we hold.</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-value">$${Number(verdict.totalEstimate || 0).toFixed(4)}</div>
+      <div class="kpi-label">Our estimate · same windows</div>
+      <div class="kpi-note">Views inside those periods only, at the assumed rate.</div>
+    </div>
+  </div>
+
+  <div class="note note-${verdict.level === 'consistent' ? 'success' : verdict.level === 'we_over' ? 'danger' : 'info'}"
+       style="margin-top:var(--space-6)">
+    <strong>${esc(verdict.headline)}.</strong> ${esc(verdict.detail)}
+  </div>
+</section>
+
+${open.length ? `<section class="section">
+  <div class="section-head">
+    <h2>Not counted yet</h2>
+    <p>A network closes its books a few days after the month ends, so these are shown and left out of every number above — never silently dropped.</p>
+  </div>
+  <div class="panel"><div class="panel-body panel-body-flush">
+    <table class="table">
+      <thead><tr><th>Store</th><th>Network</th><th>Period</th><th class="num">Reported</th><th>Why it is waiting</th></tr></thead>
+      <tbody>${open.map((o) => `<tr>
+        <td><a href="/admin/stores/${esc(o.channel_slug)}">${esc(o.channel_name)}</a></td>
+        <td>${esc(o.provider_id)}</td>
+        <td class="fine nowrap">${esc(isoDay(o.period_start))} → ${esc(isoDay(o.period_end))}</td>
+        <td class="num">$${Number(o.reported_usd).toFixed(2)}</td>
+        <td class="fine">${Number(o.days_since_end) < 0
+    ? 'the period has not ended' : `ended ${plural(Number(o.days_since_end), 'day')} ago — under the five-day settling window`}</td>
+      </tr>`).join('')}
+      </tbody>
+    </table>
+  </div></div>
+</section>` : ''}
+
+<section class="section">
+  <div class="section-head">
+    <h2>Every statement on file</h2>
+    <p>${rows.length
+    ? 'One row per store and network, with our estimate measured over the SAME days the statement covers.'
+    : 'Nothing has been recorded yet.'}</p>
+  </div>
+  ${rows.length ? `<div class="panel"><div class="panel-body panel-body-flush">
+    <table class="table table-directory">
+      <thead><tr>
+        <th>Store</th><th>Network</th><th>Window</th>
+        <th class="num">Periods</th><th class="num">Views in window</th>
+        <th class="num">Reported</th><th class="num">Our estimate</th><th class="num">Implied rate</th><th>Gap</th>
+      </tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td>
+          <a href="/admin/stores/${esc(r.channel_slug)}"><strong>${esc(r.channel_name)}</strong></a>
+          <div class="fine">${esc(r.owner_email || 'no owner on file')}</div>
+        </td>
+        <td>${esc(r.provider_id)}</td>
+        <td class="fine nowrap">${esc(isoDay(r.first_period_start))} → ${esc(isoDay(r.last_period_end))}</td>
+        <td class="num">${num(r.periods)}</td>
+        <td class="num">${num(r.views)}${Number(r.views) === 0 ? '<div class="fine">none recorded</div>' : ''}</td>
+        <td class="num">$${Number(r.reported_usd).toFixed(2)}</td>
+        <td class="num">$${Number(r.estimate_usd).toFixed(4)}</td>
+        <td class="num">${r.implied_rpm_usd === null ? '—' : `$${Number(r.implied_rpm_usd).toFixed(2)}`}</td>
+        <td>${gapCell(r)}</td>
+      </tr>`).join('')}
+      </tbody>
+    </table>
+  </div></div>`
+    : `<div class="empty">
+        No creator has pasted a figure from their network portal yet. Until one does, the assumed rate is unchecked —
+        and this page cannot compute it from our own data, because the network pays the creator directly and we are not a
+        party to that payment.
+      </div>`}
+</section>
+
+<section class="section">
+  <div class="cols-2">
+    <div class="panel"><div class="panel-body">
+      <h2 style="font-size:var(--text-md)">What correcting it would change</h2>
+      <p class="small" style="margin-top:var(--space-3)">
+        Rent is twelve months of the platform slot's value, and that value is arithmetic on the assumed rate:
+      </p>
+      <p class="mono small" style="margin:var(--space-3) 0">
+        pageviews ÷ 1,000 × rent slot × $${Number(assumedRpmUsd).toFixed(2)} × ${Number(usdToNpr)} NPR/USD × 12
+      </p>
+      <p class="small">
+        The assumed rate lives in one place — <span class="mono">POLICY.assumedRpmUsd</span> — read by the rent estimate,
+        the seller's earnings page and this page, so a correction moves all three together. Nothing else is priced from
+        a creator's earnings, and nothing is charged as a share of them.
+      </p>
+      <p class="small">
+        Invoices already issued stand. A rate change applies to the next period, not to a charge somebody has already
+        been told to pay.
+      </p>
+    </div></div>
+
+    <div class="panel"><div class="panel-body">
+      <h2 style="font-size:var(--text-md)">What this page will never show</h2>
+      <dl class="kv" style="margin-top:var(--space-4)">
+        <dt>A balance</dt><dd>Nothing of a creator's ever passes through us, so there is no balance to display.</dd>
+        <dt>A payout queue</dt><dd>The network pays them on its own schedule, to their own account, at its own threshold.</dd>
+        <dt>Their true figure</dt><dd>Only what they chose to enter. A creator who never records a statement is invisible here, and that is their call.</dd>
+      </dl>
+    </div></div>
+  </div>
 </section>`,
   });
 }

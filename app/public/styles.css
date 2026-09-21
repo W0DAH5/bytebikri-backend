@@ -1750,6 +1750,11 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 .filters-foot { display: flex; gap: var(--space-2); align-items: center; padding-bottom: 2px; flex: 0 0 auto; }
 @media (max-width: 700px) { .filters-foot { flex: 1 1 100%; } }
 
+/* A date range is one value, not three words: wrapping "2026-08-01 → 2026-08-31"
+   across three lines makes a reader reassemble it. `nowrap` is opt-in per cell so
+   prose columns keep wrapping, and the table still scrolls inside its box. */
+.nowrap { white-space: nowrap; }
+
 /* Numbers in a directory are compared by eye, column to column. That only works
    if they line up: right-aligned, tabular, and the same width per digit. */
 .table-directory .num { text-align: right; font-variant-numeric: tabular-nums; }

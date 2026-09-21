@@ -167,6 +167,146 @@ export function gapVerdict({ counted = 0, reported = 0, estimateUsd = 0, gapPct 
 }
 
 /**
+ * One statement row, judged for the OPERATOR rather than for the seller.
+ *
+ * The seller's `gapVerdict` answers "should I trust the number on my page". This
+ * answers "is the rate the whole platform prices from still right", and the two
+ * disagree in one case that matters: a statement covering a window in which we
+ * recorded no accepted callback at all. For the seller that is a delivery
+ * problem worth chasing; for the operator the honest answer is that there is no
+ * rate to derive from it — our estimate is zero on that window BY CONSTRUCTION,
+ * not because the model is wrong. Calling that "we under-count" would send
+ * somebody to change a rate that was never measured.
+ */
+export function calibrationRowState(row) {
+  const views = Number(row.views) || 0;
+  const reported = Number(row.reported_usd) || 0;
+  const estimate = Number(row.estimate_usd) || 0;
+  if (!row.periods) return { state: 'none', label: 'No settled period', tone: '' };
+  if (views === 0) {
+    return {
+      state: 'no_views',
+      label: 'Nothing to measure',
+      tone: 'warn',
+      // The reason is not "the model is wrong" but "we have no events in this
+      // window", and the two lead to different work.
+      why: reported > 0
+        ? 'The statement covers a window in which no accepted ad callback was recorded, so there is no rate to derive.'
+        : 'No views and no reported revenue: nothing happened here.',
+    };
+  }
+  // Only rows with views can carry a rate, so only they can be compared.
+  const implied = Number(row.implied_rpm_usd);
+  return {
+    state: 'measurable',
+    label: 'Measurable',
+    tone: '',
+    impliedRpmUsd: Number.isFinite(implied) ? implied : null,
+    gapPct: reported > 0 ? Math.round(((estimate - reported) / reported) * 100) : null,
+    why: `Over the same window: our estimate $${estimate.toFixed(4)} at the assumed rate, their statement $${reported.toFixed(2)}.`,
+  };
+}
+
+/**
+ * What the platform should conclude from every statement on file.
+ *
+ * The output is deliberately two things rather than one: a DIRECTION (is the
+ * assumed rate too high or too low) and a CONFIDENCE (how much evidence is
+ * behind it). Reporting a rate off one store as if it were a measurement is the
+ * failure mode this function exists to prevent — the first store that reports is
+ * a signal, three quarters of stores reporting is a measurement, and the copy has
+ * to say which one it is holding.
+ */
+export function calibrationVerdict({ rows = [], assumedRpmUsd = 0.2, rates = null } = {}) {
+  const assumed = Number(assumedRpmUsd) || 0;
+  const measure = rows.filter((r) => calibrationRowState(r).state === 'measurable');
+  const noViews = rows.filter((r) => calibrationRowState(r).state === 'no_views');
+
+  const totalViews = measure.reduce((a, r) => a + (Number(r.views) || 0), 0);
+  const totalReported = measure.reduce((a, r) => a + (Number(r.reported_usd) || 0), 0);
+  const totalEstimate = measure.reduce((a, r) => a + (Number(r.estimate_usd) || 0), 0);
+  const periods = measure.reduce((a, r) => a + (Number(r.periods) || 0), 0);
+  const stores = new Set(measure.map((r) => r.channel_id || r.channel_slug)).size;
+  const implied = totalViews > 0 ? totalReported / (totalViews / 1000) : null;
+  const coverage = rates?.payingStores ?? null;
+
+  const base = {
+    assumedRpmUsd: assumed,
+    impliedRpmUsd: implied === null ? null : round4(implied),
+    totalViews,
+    totalReported: round4(totalReported),
+    totalEstimate: round4(totalEstimate),
+    periods,
+    stores,
+    noViewRows: noViews.length,
+    // Ratio of what the statements imply to what we assume. 2 means we assume
+    // twice the rate the money actually arrived at.
+    ratio: implied === null || assumed === 0 ? null : round4(implied / assumed),
+    coverage,
+  };
+
+  if (!rows.length) {
+    return {
+      ...base,
+      level: 'no_statements',
+      confidence: 'none',
+      headline: 'No creator has recorded a statement yet',
+      detail: 'Our estimate is arithmetic: completed views × an assumed rate. It can only be corrected against the '
+        + 'network\'s own numbers, and those arrive in the portal the creator signs into — we are not party to the payment, '
+        + 'so we can never fetch them ourselves. Until somebody pastes one, the assumed rate is unchecked.',
+    };
+  }
+  if (!measure.length) {
+    return {
+      ...base,
+      level: 'not_measurable',
+      confidence: 'none',
+      headline: 'A statement is on file, and no rate can be derived from it',
+      detail: `${rows.length} statement${rows.length === 1 ? '' : 's'} recorded, but no accepted ad callback fell inside `
+        + `${rows.length === 1 ? 'its window' : 'their windows'} — so our side of the comparison is zero by construction, `
+        + 'not because the model is wrong. That is a delivery question: the connections page shows whether callbacks are '
+        + 'arriving at all.',
+    };
+  }
+
+  const off = implied !== null && assumed > 0 ? Math.abs(implied - assumed) / assumed : null;
+  // Confidence is about evidence, not direction: it is reported for every level.
+  const confidence = periods >= 12 && stores >= 3 ? 'broad'
+    : (periods >= 3 && stores >= 2) ? 'narrow' : 'single';
+
+  const hedge = confidence === 'broad' ? ''
+    : confidence === 'narrow'
+      ? ' This rests on a handful of periods, so treat it as a direction rather than a measurement.'
+      : ` This rests on ${periods} period${periods === 1 ? '' : 's'} from ${stores} store${stores === 1 ? '' : 's'} — a signal, not a measurement.`;
+
+  if (off === null || off <= 0.15) {
+    return {
+      ...base, level: 'consistent', confidence,
+      headline: 'The statements are consistent with the rate we assume',
+      detail: `Our estimate is within 15% of what the networks reported across ${periods} settled `
+        + `period${periods === 1 ? '' : 's'}.${hedge}`,
+    };
+  }
+  if (implied < assumed) {
+    return {
+      ...base, level: 'we_over', confidence,
+      headline: `We assume ${(assumed / Math.max(implied, 0.0001)).toFixed(1)}× the rate the statements imply`,
+      detail: `We assume $${assumed.toFixed(2)} per 1,000 views; the statements on file imply $${implied.toFixed(2)}. `
+        + 'Rent is proportional to that assumed rate, so every rent figure is priced high by the same factor against what '
+        + 'this traffic has actually been earning. Issued invoices stand — the correction is for future periods. That is '
+        + `the decision this page exists to surface.${hedge}`,
+    };
+  }
+  return {
+    ...base, level: 'we_under', confidence,
+    headline: `The statements imply ${(implied / Math.max(assumed, 0.0001)).toFixed(1)}× the rate we assume`,
+    detail: `We assume $${assumed.toFixed(2)} per 1,000 views; the statements on file imply $${implied.toFixed(2)}. Nothing `
+      + 'is broken for a creator — they were paid what they were paid — but rent is priced below what the traffic earns, '
+      + `and the estimate on every seller's page understates their month.${hedge}`,
+  };
+}
+
+/**
  * Rent next to what the network says the channel earned.
  *
  * Not a ratio that changes the rent: rent is priced from traffic, never from
