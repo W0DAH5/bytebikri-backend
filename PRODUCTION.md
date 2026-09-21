@@ -127,7 +127,7 @@ pulled in; everything else was done without waiting.
 | 4 · Deployment | **done** | Dockerfile, render.yaml, fly.toml, CI, `DEPLOY.md` |
 | 5 · Consent & legal | **drafted** | banner, records, `/legal/*` — **needs you: 1, 3, 4** |
 | 6 · Ads that serve | **blocked** | the render layer needs one real network — **needs you: 8** |
-| 7 · Product design | **in progress** | storefront rebuilt: covers, banners, real token system |
+| 7 · Product design | **in progress** | storefront rebuilt on the 8-pt scale; the player, the watermark and the honest per-platform protection copy shipped (`FEATURE_AUDIT.md`) |
 | 8 · Operations | not started | moderation workflow, rent enforcement, backups |
 
 ### Phase 1 — Persistence ✅

@@ -331,7 +331,7 @@ export function rangeFor(header, total) {
  * What it does NOT survive: a capture that never touches the DOM. If someone
  * grabs the media stream directly, the overlay was never in those pixels.
  */
-export function watermarkSvgDataUri(label, { opacity = 0.16 } = {}) {
+export function watermarkSvgDataUri(label, { opacity = 0.22 } = {}) {
   const safe = String(label).replace(/[<>&"']/g, '');
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="360" height="150">`
     + `<text x="10" y="80" font-family="system-ui,sans-serif" font-size="15" font-weight="600"`

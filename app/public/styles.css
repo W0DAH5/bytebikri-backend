@@ -567,7 +567,15 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
 .stage-mark {
   position: absolute; inset: 0; z-index: 2; pointer-events: none;
   background-repeat: repeat; background-size: 360px 150px;
-  mix-blend-mode: overlay; opacity: 0.9;
+}
+/* No blend mode. `overlay` looked clever and behaved differently on every
+   frame: legible over a dark scene, invisible over a bright one, which is
+   exactly backwards for a mark whose job is to still be readable in a
+   screenshot. A plain translucent white with a dark hairline reads on both. */
+.stage-mark, .stage video, .stage audio, .stage img, .stage-locked img {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .audio-shell { display: flex; align-items: center; gap: var(--space-5); width: 100%; }
