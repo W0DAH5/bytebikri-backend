@@ -21,6 +21,7 @@ import { store, storage, SLOT_DEFS, slugify, PLANS } from './src/store.js';
 import { assertProductionConfig, readSecret, checkConfig, formatConfigReport, isProd } from './src/config.js';
 import { query, many, scalar, health as dbHealth, close as closeDb } from './src/db.js';
 import { allocateSlots, estimateRentSlotValue, POLICY } from './src/slots.js';
+import { composeSlots, HOUSE_CREATIVE, sanitizeUrl } from './src/creatives.js';
 import {
   railDetails, railsReady, payeeName, upgradeExplanation, planBenefits, NOT_CHARGED,
 } from './src/billing.js';
@@ -182,6 +183,47 @@ async function buildSlots(channel, surfaces = ['web']) {
     capabilities: plan.capabilities,
     connections: await store.connectionsOf(channel.id),
     surfaces,
+  });
+}
+
+/**
+ * The channel named in the URL, but only for somebody allowed to change it.
+ *
+ * 404 rather than 403 for a stranger, here as everywhere else: confirming that a
+ * store exists but is not yours still tells a stranger it exists. An operator is
+ * allowed through — the platform has to be able to look at what it hosts.
+ *
+ * @returns {Promise<object|null>} the channel, or null once a response has been sent
+ */
+async function requireOwnChannel(req, res) {
+  if (!req.user) return requireUserPage(req, res);
+  const channel = await store.channelBySlug(req.params.slug);
+  if (!channel) {
+    res.status(404).send('Channel not found');
+    return null;
+  }
+  if (channel.owner_id !== req.user.id && req.user.role !== 'admin') {
+    res.status(404).send('Channel not found');
+    return null;
+  }
+  return channel;
+}
+
+/**
+ * The allocation, with each slot's creative resolved for the viewer.
+ *
+ * `opts.viewer` decides who is looking: the owner of the store gets told to put
+ * something in their empty space, a visitor gets a sentence that is not
+ * addressed to them, and a visitor never gets a link into somebody's dashboard.
+ */
+async function slotsFor(channel, { viewer = null, surface = 'storefront', surfaces = ['web'] } = {}) {
+  const slots = await buildSlots(channel, surfaces);
+  const isOwner = Boolean(viewer) && viewer.id === channel.owner_id;
+  return composeSlots(slots, await store.creativesForChannel(channel.id), {
+    channelName: channel.name,
+    isOwner,
+    surface,
+    editHref: isOwner ? `/dashboard/${channel.slug}/slots` : null,
   });
 }
 
@@ -403,7 +445,11 @@ APP.get('/s/:slug', async (req, res, next) => {
     if (!channel) return res.status(404).send('Channel not found');
     await store.bumpPageView(channel.id);
 
-    const slots = (await buildSlots(channel)).filter((s) => s.serving);
+    // A storefront shows the slots that have something in them. An empty
+    // channel slot is a hole the owner should fill, not a curiosity for a
+    // shopper — so it is rendered where it can be acted on, and here it is not.
+    const allSlots = await slotsFor(channel, { viewer: req.user, surface: 'storefront' });
+    const slots = allSlots.filter((s) => s.creative);
     const rawAssets = await store.assetsOf(channel.id);
     const assets = await Promise.all(rawAssets.map(async (a) => ({
       ...a,
@@ -554,7 +600,11 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
       myReview,
       reviewError: REVIEW_ERRORS[String(req.query.error)] || null,
       policy: await store.unlockPolicy(asset.id),
-      slots: (await buildSlots(channel)).filter((s) => s.serving && s.surface === 'webview'),
+      // On a file page the whole point of the space is to pay for the unlock, so
+      // the platform slot is always here — the creator's own message appears
+      // only if they wrote one.
+      slots: (await slotsFor(channel, { viewer: req.user, surface: 'asset' }))
+        .filter((s) => s.creative && s.surface !== 'app_native'),
     }));
   } catch (err) { next(err); }
 });
@@ -604,7 +654,65 @@ APP.get('/dashboard/:slug', async (req, res, next) => {
       // previous version filtered on a column that does not exist — which is
       // why this counter always read zero.
       pendingPayments: await store.planPaymentsOfChannel(channel.id),
+      flash,
     }));
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// Ad slots — the creator's own space
+// ---------------------------------------------------------------------------
+APP.get('/dashboard/:slug/slots', async (req, res, next) => {
+  try {
+    const channel = await requireOwnChannel(req, res);
+    if (!channel) return;
+    res.send(views.slotsPage({
+      channel, user: req.user, consent: req.consent,
+      slots: await slotsFor(channel, { viewer: req.user, surface: 'dashboard' }),
+      flash: flashFor(req.query),
+    }));
+  } catch (err) { next(err); }
+});
+
+APP.post('/dashboard/:slug/slots', async (req, res, next) => {
+  try {
+    const channel = await requireOwnChannel(req, res);
+    if (!channel) return;
+    const { slotKey, headline, body, linkUrl, linkLabel } = req.body || {};
+
+    // The slot has to exist and has to be the store's. Without this check a
+    // posted slotKey could write a creative "into" the platform's rent slot, and
+    // the store would be filling space it is being paid to leave alone.
+    const allocated = await slotsFor(channel, { viewer: req.user });
+    const target = allocated.find((s) => (s.slotKey || s.key) === slotKey);
+    if (!target || target.owner !== 'channel') {
+      return res.redirect(`/dashboard/${channel.slug}/slots?error=slot`);
+    }
+
+    // A link that cannot be rendered is refused here rather than stored and then
+    // silently dropped at render time. A creator who typed a link and saw it
+    // vanish would reasonably conclude the product is broken.
+    if (linkUrl && !sanitizeUrl(linkUrl)) {
+      return res.redirect(`/dashboard/${channel.slug}/slots?error=link`);
+    }
+
+    const saved = await store.setCreative({
+      channelId: channel.id, slotKey, headline, body, linkUrl, linkLabel,
+    });
+    if (!saved) return res.redirect(`/dashboard/${channel.slug}/slots?error=empty`);
+
+    await store.audit('creative.saved', { channelId: channel.id, slotKey });
+    res.redirect(`/dashboard/${channel.slug}/slots?saved_slot=1`);
+  } catch (err) { next(err); }
+});
+
+APP.post('/dashboard/:slug/slots/clear', async (req, res, next) => {
+  try {
+    const channel = await requireOwnChannel(req, res);
+    if (!channel) return;
+    await store.clearCreative({ channelId: channel.id, slotKey: req.body?.slotKey });
+    await store.audit('creative.cleared', { channelId: channel.id, slotKey: req.body?.slotKey });
+    res.redirect(`/dashboard/${channel.slug}/slots?saved_slot=1`);
   } catch (err) { next(err); }
 });
 
@@ -1138,6 +1246,7 @@ const SUCCESS_FLASH = {
   submitted: () => 'Reference received. An operator matches it against the bank or wallet statement by hand, and your plan changes when it clears.',
   requested: () => 'Upgrade requested. Send the amount to the account shown, then submit the transfer reference.',
   reviewed: () => 'Thank you — your review is on the page.',
+  saved_slot: () => 'Saved. It is on your pages now.',
   responded: () => 'Reply posted.',
 };
 
@@ -1149,6 +1258,9 @@ const ERROR_FLASH = {
   banner: 'The banner must be an image under 5 MB.',
   reference: 'Enter the transaction reference from your transfer — at least four characters.',
   nothing: 'There is nothing waiting to be paid right now.',
+  empty: 'A slot message needs a headline.',
+  slot: 'That is not a position on your pages.',
+  link: 'That link cannot be used. A full https:// address or a path on this store (/s/you) will work.',
   unlock: 'Only someone who has unlocked this file can review it.',
   rating: 'Pick a rating from one to five.',
   media: 'Attach the file people are unlocking. Nothing was published.',
@@ -1414,8 +1526,16 @@ APP.post('/dashboard/:slug/billing/rent-payment', async (req, res, next) => {
     const reference = String(req.body.txnReference || '').trim().slice(0, 120);
     if (reference.length < 4) return res.redirect(`${back}?error=reference`);
 
+    // A uuid check before the query: an empty or malformed id reaches Postgres as
+    // a cast error, and a cast error is a 500 — which tells the seller the page
+    // broke rather than that there is nothing to pay.
+    const invoiceId = String(req.body.invoiceId || '');
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(invoiceId)) {
+      return res.redirect(`${back}?error=nothing`);
+    }
+
     const invoice = await store.submitRentPayment({
-      invoiceId: String(req.body.invoiceId || ''),
+      invoiceId,
       channelId: channel.id,
       method: PAY_METHODS.includes(req.body.method) ? req.body.method : 'esewa',
       txnReference: reference,
@@ -2149,6 +2269,16 @@ async function seed({ force = false } = {}) {
     );
   }
 
+  // A storefront with one of its own slots filled, so the two kinds of space are
+  // both visible on the demo page: the store's own message in the top position,
+  // and the platform's in the last.
+  await store.setCreative({
+    channelId: alice.id, slotKey: 'top_leaderboard',
+    headline: 'The Devanagari kit is out',
+    body: 'Eleven weights, two scripts, print-ready. The free sample pack is still free.',
+    linkUrl: `/s/${alice.slug}`, linkLabel: 'See the store',
+  });
+
   // One buyer who went through the loop: an unlock and the review it earns.
   // Reviews are keyed off unlocks, so a seeded review without one would be a
   // row the product cannot produce.
@@ -2203,6 +2333,16 @@ async function ensureOperator() {
 // A second line of defence for `node server.js` run directly; scripts/boot.mjs
 // has already done this, and printed it, when that is the entry point.
 assertProductionConfig(process.env, { quiet: true });
+
+/**
+ * The platform's own creative, defined in code and written on every boot.
+ *
+ * It is bytebikri's inventory in a slot the store is being paid to hand over, so
+ * it must exist in any database that has rent slots — including one that was
+ * never seeded. Content lives in `src/creatives.js` and is upserted rather than
+ * appended, so changing the copy changes the page instead of stacking versions.
+ */
+await store.ensurePlatformCreative(HOUSE_CREATIVE);
 
 const result = await seed();
 if (result.seeded) {

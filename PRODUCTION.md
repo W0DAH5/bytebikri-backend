@@ -217,10 +217,35 @@ on/off), reviews keyed off unlocks with one seller reply each, single-asset
 management (edit, pause, unlock terms), and search across listed stores and
 their files.
 
-**Still to do:** the asset page's ad placement, the mobile pass, and a look at
-real storefronts in this category rather than at my own reasoning. Rent is
-currently priced from an assumed RPM and FX rate — the working is printed on
-the invoice, but it should read provider-reported revenue instead.
+**The slots, filled.** Rent is charged for one slot per page, and until this
+round that slot rendered as an empty dashed box — when it rendered at all. Two
+defects hid the entire ad surface: the allocator returned `state` while the
+renderer read `serving` (so every storefront filtered its slots away), and the
+rendered surface was derived from the slot *definition* rather than the caller
+(so the two defs that support app and web were labelled `app_native` and dropped
+by the web renderer — the rent slot itself). Both are fixed and both now have a
+test.
+
+What draws in a slot is split by owner: the store's own positions carry the
+creator's message (`slot_creatives`, `src/creatives.js`), the platform's rent
+slot carries the house creative, and a real network's tag is **never** stored —
+a third-party tag is script, and rendering one from our origin would let an
+un-audited network run code under our domain. The slot carries the seam
+(`data-adapter`) for the adapter that will serve it. Copy the seller writes is
+sanitised at write time (`javascript:`, `data:` and protocol-relative links are
+refused with a reason) because a stored XSS in a tenant-written column runs on
+our origin.
+
+Placement is part of the model, not a styling choice: rank 1 sits at the top of
+the page and the platform's slot goes last, so the ordering the slots page
+describes is what a visitor sees. Owners manage the space at
+`/dashboard/:slug/slots`, which previews every position with the real renderer.
+
+**Still to do:** the mobile pass; a look at real storefronts in this category
+rather than at my own reasoning; creative images (the column and the sanitiser
+exist, the upload path does not). Rent is currently priced from an assumed RPM
+and FX rate — the working is printed on the invoice, but it should read
+provider-reported revenue instead.
 
 ### Phase 8 — Operations
 

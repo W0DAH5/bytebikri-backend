@@ -66,7 +66,12 @@ export function allocateSlots({ slotDefs, capabilities, connections, surfaces = 
 
   return eligible.map((slot) => {
     const isRent = slot.key === rentSlotKey
-    const surface = (slot.surfaces ?? []).includes('app') ? 'app_native' : 'webview'
+    // Which surface THIS instance is rendered on, from the surfaces the caller
+    // asked for — not from the definition. A def that supports both (rank 1,
+    // and the footer strip) was previously labelled `app_native` on every web
+    // page, so the web renderer dropped it and the store paid rent for a slot
+    // that never appeared anywhere.
+    const surface = surfaces.includes('web') ? 'webview' : 'app_native'
 
     if (isRent) {
       return {
@@ -80,6 +85,7 @@ export function allocateSlots({ slotDefs, capabilities, connections, surfaces = 
         owner: 'platform',
         connectionId: null,
         state: 'serving',
+        serving: true,
         reason: 'platform rent slot — last position, never rank 1',
       }
     }
@@ -100,6 +106,7 @@ export function allocateSlots({ slotDefs, capabilities, connections, surfaces = 
         owner: 'channel',
         connectionId: null,
         state: 'reserved_empty',   // height reserved; never collapse (no layout shift)
+        serving: false,
         reason: 'no active ad connection — space reserved, nothing rendered',
       }
     }
@@ -116,6 +123,7 @@ export function allocateSlots({ slotDefs, capabilities, connections, surfaces = 
       connectionId: conn.id,
       providerId: conn.provider_id,
       state: 'serving',
+      serving: true,
       reason: `filled by channel connection (${conn.provider_id})`,
     }
   })

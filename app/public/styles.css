@@ -657,25 +657,70 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
 .btn-block { width: 100%; }
 
 /* ── ad slots ────────────────────────────────────────────────────────────── */
-/* Height is reserved whether or not an ad fills it. Without that the page
-   reflows when the tag loads, and everything below the slot jumps. */
+/* Height is reserved whether or not something fills it. Without that the page
+   reflows when a tag loads, and everything below the slot jumps — a layout shift
+   the seller pays for in ranking and the reader pays for in annoyance.
+
+   A slot is one of two things and always says which:
+
+     .slot-platform  bytebikri's inventory, in the space the store rents to us.
+                     Amber, the colour of everything that is about money here.
+     .slot-channel   the store's own message in its own space. Neutral.
+
+   The empty state is deliberately quiet: dashed, tilted hatching, no accent. An
+   unfilled slot is a hole, and it should read as one to the person who can fill
+   it without shouting at the visitors who cannot. */
 .slot {
-  display: grid; place-items: center;
-  border: 1px dashed var(--border-subtle);
+  display: grid; place-items: center; text-align: center;
+  min-height: 90px;
+  padding: var(--space-4);
+  margin-block: var(--space-5);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  color: var(--text-faint);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-snug);
+}
+.slot-empty {
+  border-style: dashed;
   background: repeating-linear-gradient(
     -45deg, transparent, transparent 9px,
     color-mix(in srgb, var(--text-faint) 5%, transparent) 9px,
     color-mix(in srgb, var(--text-faint) 5%, transparent) 18px);
-  color: var(--text-faint);
-  font-size: var(--text-2xs);
-  text-align: center; padding: var(--space-3);
-  margin-block: var(--space-5);
 }
-.slot { display: grid; place-items: center; text-align: center; }
-.slot-inner { padding: var(--space-4); }
-.slot-label { letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; }
-.slot-sub { opacity: 0.75; margin-top: 2px; }
+.slot-filled { border-color: var(--border-strong); }
+.slot-platform.slot-filled { border-color: color-mix(in srgb, var(--amber-500) 32%, transparent); }
+.slot-channel.slot-filled { border-color: color-mix(in srgb, var(--sky-500) 28%, transparent); }
+
+.slot-inner { display: grid; gap: var(--space-2); justify-items: center; max-width: 60ch; }
+.slot-label {
+  font-size: var(--text-2xs); letter-spacing: 0.08em; text-transform: uppercase;
+  font-weight: 650; color: var(--text-muted);
+}
+.slot-channel .slot-label { color: var(--sky-300); }
+.slot-platform .slot-label { color: var(--amber-300); }
+.slot-sub { font-size: var(--text-2xs); color: var(--text-faint); }
+
+/* The creative itself. Not a 300×250 image nobody uploaded — a line of copy from
+   the owner of the space, which is what a self-serve storefront can honestly
+   promise to fill. */
+.slot-creative {
+  display: grid; gap: var(--space-1); justify-items: center;
+  text-decoration: none; color: inherit; border-radius: var(--radius-sm);
+}
+.slot-creative:hover .slot-creative-head { text-decoration: underline; }
+.slot-creative-head {
+  font-size: var(--text-base); font-weight: 600; color: var(--text-primary);
+  line-height: var(--leading-tight);
+}
+.slot-creative-body { font-size: var(--text-xs); color: var(--text-faint); max-width: 46ch; }
+.slot-cta {
+  margin-top: var(--space-1);
+  font-size: var(--text-xs); font-weight: 600; color: var(--accent-hover);
+}
+.slot-empty-note { font-size: var(--text-xs); color: var(--text-faint); max-width: 44ch; }
+.slot-empty-action { font-size: var(--text-xs); font-weight: 600; color: var(--accent-hover); }
 
 /* The line under a store's name: counts and traffic, in one quiet row.
    `tabular-nums` so two stores read the same width for the same number. */
@@ -686,8 +731,6 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
   font-variant-numeric: tabular-nums;
 }
 .store-meta .dot { opacity: 0.6; }
-.slot-serving { border-style: solid; border-color: color-mix(in srgb, var(--emerald-500) 30%, transparent); }
-.slot-platform { border-style: solid; border-color: color-mix(in srgb, var(--amber-500) 30%, transparent); }
 
 /* ── forms ───────────────────────────────────────────────────────────────── */
 .field { display: grid; gap: var(--space-2); margin-bottom: var(--space-4); }

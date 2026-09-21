@@ -1297,6 +1297,84 @@ export const store = {
     return { stores, assets, term };
   },
 
+  // ---- what draws in a slot ----------------------------------------------
+  /**
+   * Every active creative that could fill this channel's slots: the store's own
+   * and the platform's. One query, filtered in the composer rather than here,
+   * because "which creative wins" is a product rule and belongs with the rest of
+   * the product rules.
+   */
+  creativesForChannel(channelId) {
+    return many(
+      `select * from slot_creatives
+        where active and (channel_id = $1 or owner = 'platform')
+        order by owner desc, rank asc, created_at asc`,
+      [channelId],
+    );
+  },
+
+  /**
+   * A store writes one message per slot. Replacing it replaces it — a creative
+   * library is a feature nobody asked for, and a version history of ad copy is a
+   * liability with an audience of one.
+   */
+  async setCreative({ channelId, slotKey, headline, body = null, imageUrl = null, linkUrl = null, linkLabel = null }) {
+    const head = String(headline || '').trim().slice(0, 90);
+    if (!head) return null;
+    return one(
+      `insert into slot_creatives
+         (owner, channel_id, slot_key, headline, body, image_url, link_url, link_label)
+       values ('channel', $1, $2, $3, $4, $5, $6, $7)
+       on conflict (channel_id, slot_key) where owner = 'channel' do update
+         set headline   = excluded.headline,
+             body       = excluded.body,
+             image_url  = excluded.image_url,
+             link_url   = excluded.link_url,
+             link_label = excluded.link_label,
+             active     = true,
+             updated_at = now()
+       returning *`,
+      [channelId, slotKey || '*', head,
+        body ? String(body).trim().slice(0, 220) : null,
+        imageUrl ? String(imageUrl).trim().slice(0, 300) : null,
+        linkUrl ? String(linkUrl).trim().slice(0, 300) : null,
+        linkLabel ? String(linkLabel).trim().slice(0, 40) : null],
+    );
+  },
+
+  async clearCreative({ channelId, slotKey }) {
+    return one(
+      `update slot_creatives set active = false, updated_at = now()
+        where channel_id = $1 and owner = 'channel'
+          and slot_key = $2
+        returning *`,
+      [channelId, slotKey || '*'],
+    );
+  },
+
+  /**
+   * The platform's own creative. Upserted by key rather than appended: the copy
+   * lives in code, so a deploy that changes it should change the page and not
+   * stack a second house ad beside the first.
+   */
+  async ensurePlatformCreative({ slotKey = '*', headline, body = null, linkUrl = null, linkLabel = null }) {
+    return one(
+      `insert into slot_creatives (owner, channel_id, slot_key, headline, body, link_url, link_label)
+       values ('platform', null, $1, $2, $3, $4, $5)
+       on conflict (slot_key) where owner = 'platform' do update
+         set headline = excluded.headline, body = excluded.body,
+             link_url = excluded.link_url, link_label = excluded.link_label,
+             active = true, updated_at = now()
+       returning *`,
+      [slotKey, headline, body, linkUrl, linkLabel],
+    );
+  },
+
+  /** The platform's own inventory. Seeded at boot, never written by a tenant. */
+  platformCreatives() {
+    return many("select * from slot_creatives where owner = 'platform' and active order by rank");
+  },
+
   async audit(action, meta = {}) {
     await query('insert into audit_logs (action, meta) values ($1, $2)', [action, JSON.stringify(meta)]);
   },

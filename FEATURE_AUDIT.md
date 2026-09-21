@@ -175,6 +175,9 @@ legal pages, `/login`, `/signup`, `/healthz`, `/readyz` → **all 200**.
 | **Reviews: written only against an unlock, one reply each** | `reviews` table, asset + dashboard pages | ✅ **new** |
 | **Single-asset management: edit, pause, unlock terms** | `/dashboard/:slug/assets/:id` | ✅ **new** |
 | **Search: stores and files, listed stores only** | `store.search()`, `/marketplace?q=` | ✅ **new** |
+| **Earnings: estimate vs statement, payout label, money map** | `src/earnings.js`, `/dashboard/:slug/earnings` | ✅ **new** |
+| **Ad creatives: the store's own message, the house ad** | `src/creatives.js`, `slot_creatives` (0016) | ✅ **new** |
+| **Slot placement: rank 1 at the top, the rent slot last** | `views.placeSlots` | ✅ **new** |
 | Deploy: Docker, CI, config refusal | `Dockerfile`, `ci/` | ✅ |
 | Moderation schema, per-country policy | migrations | 🟡 schema only, no workflow |
 
@@ -186,7 +189,7 @@ legal pages, `/login`, `/signup`, `/healthz`, `/readyz` → **all 200**.
 
 | Missing | Why it matters |
 |---|---|
-| **Ad render layer** | slots exist; nothing draws a creative. Needs one real network account |
+| **Network tag render layer** | slots draw now — the store's own message and the house ad — but a real network's tag needs one real network account and an adapter per dialect. Nothing third-party is stored or executed until then |
 | **`ads.txt`** | ad networks require it; needs a publisher ID |
 | **Password reset** | no way back into an account. Needs SMTP |
 | **Email verification** | anyone can register any address |
@@ -264,8 +267,8 @@ chore.
 
 ## 9. Tests
 
-`npm test` → **184 pass, 0 fail** (was 133 two rounds ago; 152 after the player
-round).
+`npm test` → **214 pass, 0 fail** (133 three rounds ago; 152 after the player
+round; 184 after the revenue round).
 
 | New | What it holds still |
 |---|---|
@@ -274,6 +277,8 @@ round).
 | `test/android-contract.test.js` (3) | every endpoint the app calls exists server-side; the parked endpoints stay deleted; `FLAG_SECURE` is set, `FLAG_PRESENTATION` is not, and the app does not kill its own process |
 | `test/billing.test.js` (23) | the two charges and nothing else; rent = monthly estimate × 12 with a zero floor; request-then-pay keeps the paid plan and the renewal date; a payment without an open request is refused; reject leaves the plan alone; matching twice is a no-op; grace is calculated, not stored; **and a write round-trip through every generated `SET` clause** |
 | `test/ui.test.js` (+9) | the billing page states both charges and refuses a third; an unconfigured payment rail says so and names its env var; a pending upgrade never claims the plan changed; no rent invoice explains WHICH reason applies; settings cannot promise a free store the Explore listing; reviews appear only for a buyer with an unlock; the asset page is one form; the operator queue shows what was asked for; search replaces the directory |
+| `test/earnings.test.js` (15) | an open period is shown but never compared; the estimate and the statement are never blended; rent is annualised against annualised statements; a blank payout label is not a label; **and `payout_accounts` is asserted to hold no column that could move money** |
+| `test/creatives.test.js` (15) | the store's message can never fill the platform's slot or the reverse; a creative written for one slot does not leak into the others; `javascript:`, `data:` and protocol-relative links are refused; a link label with no link is dropped; one message per slot, corrected in place |
 
 Two of the assertions above exist because the bug they describe shipped: the
 billing page's "renewal date does not move" line had no code behind it for a
@@ -345,3 +350,76 @@ system that changes what a seller has paid for.
 - Grace is 30 days and self-calculated. Nothing is deleted on expiry.
 - No dunning, no reminders, no receipts by email: notifications are delegated and
   unimplemented, so the seller sees their own state on their own billing page.
+
+---
+
+## 11. This round: the slot, and what fills it
+
+The rent is charged for **one slot per page**, and until this round that slot
+rendered as an empty dashed box labelled "Advertisement" — when it rendered at
+all. Two defects made the whole ad surface invisible, and both were found by
+looking at the rendered page rather than the code:
+
+| Defect | Symptom | Cause |
+|---|---|---|
+| `allocateSlots` returned `state`, the render layer read `serving` | **No slot appeared on any page, ever.** The storefront filtered `slots.filter(s => s.serving)`, which is `undefined` for every slot, so the page had no ad space while the seller was charged rent for it | Two names for one fact; nothing asserted they agreed |
+| `surface` was derived from the slot *definition*, not the caller | A def that supports both web and app (rank 1, the footer strip) was labelled `app_native` on every web page, so the web renderer dropped it — the rent slot was the one most likely to vanish | `slots.js` asked "does this def include app?" instead of "what is rendering this?" |
+
+### The creative layer (`src/creatives.js`)
+
+A slot now says whose space it is, and something draws in it:
+
+- **The store's own slots** carry the creator's message — a headline, a line, a
+  link. Their inventory, their voice, nobody paid.
+- **The platform's rent slot** carries bytebikri's house creative when no network
+  is serving it. This is the consideration for the rent: the space is used, not
+  held, and a seller can see what their money bought.
+- **A network's tag is never stored.** A third-party tag is script; keeping it in
+  our database and rendering it from our origin would let a network we have not
+  audited run code under our domain. The slot carries the seam
+  (`data-adapter="<provider>"`), and the adapter serves the tag when there is an
+  account. Until then a connected slot with nothing to show is not rendered at
+  all — an empty box is worse than no box.
+- **Copy the tenant controls is sanitised, not trusted**: `javascript:` and
+  `data:` links are refused at write time with a reason, protocol-relative URLs
+  are refused, plain `http:` is upgraded. A stored XSS in a column the seller
+  writes would run on our origin.
+- **Position is the product.** `placeSlots` puts rank 1 at the top of the page
+  and the platform's slot last, so the ordering the slots page describes is the
+  ordering a visitor sees. Rank 1 is never the platform's — by allocation
+  (`allocateSlots`), not by policy.
+
+### What a visitor now sees
+
+| Page | Order |
+|---|---|
+| Storefront | header → the store's rank-1 message → the content grid → its remaining slots → the platform's advertisement |
+| File page | header → the store's rank-1 message → what you get → the player → reviews → its remaining slots → the advertisement |
+
+A store with nothing written shows no slot boxes at all: the storefront is not a
+place for our empty inventory, and the seller manages the space on
+`/dashboard/:slug/slots`, which renders every position with the real renderer as
+its preview.
+
+### Verified live this round
+
+```
+GET  /s/alice                     → 2 slots: the store's message, then the advertisement
+GET  /s/alice/a/free-sample-pack  → the store's message above the fold, ad last
+GET  /dashboard/alice/slots       → every position, the owner's empty-space note, forms
+POST   …/slots  javascript: link  → ?error=link (refused at write, not silently dropped)
+POST   …/slots  footer_native     → ?error=slot (the rent slot is not the seller's to fill)
+POST   …/slots/clear              → creative deactivated, slot returns to empty
+500 storefront hits               → rent invoice issued at NPR 36 → reference ESEWA-88213
+                                    submitted → operator match → status paid
+```
+
+### Still open
+
+- The house creative is one line of copy for every platform slot. A real ad
+  server would rotate; a `rank` column exists for that and nothing more.
+- A slot's height is reserved whether or not it renders, but only `max_height_px`
+  is enforced — a creative taller than the slot is not yet possible, because the
+  creative is copy and a link rather than an image.
+- Images in creatives are allowed by the schema (`image_url`) and sanitised, but
+  the upload path is not wired: a seller pasting a URL is the only way today.

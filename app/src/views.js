@@ -360,7 +360,7 @@ export function storefront({ channel, assets, slots, user, estimate, pageviews, 
 </a>`;
   }).join('');
 
-  const slotHtml = slots.map(renderSlot).join('');
+  const placed = placeSlots(slots);
 
   return layout({
     title: channel.name, user, activeChannel: channel, consent,
@@ -385,7 +385,7 @@ ${channel.banner_url
   </div>
 </div>
 
-${slotHtml}
+${placed.head}
 
 <section class="section">
   <div class="section-head">
@@ -394,7 +394,10 @@ ${slotHtml}
   </div>
   ${assets.length ? `<div class="grid-assets">${cards}</div>`
     : '<div class="empty">This store has not published anything yet.</div>'}
-</section>`,
+</section>
+
+${placed.mid}
+${placed.foot}`,
   });
 }
 
@@ -620,6 +623,7 @@ export function assetPage({
               style="margin-top:var(--space-3);text-align:center"></div>`;
 
   const kindLabel = { video: 'Video', audio: 'Audio', image: 'Image', file: 'File' }[previewFile?.kind] || null;
+  const placed = placeSlots(slots);
 
   return layout({
     title: asset.title, user, activeChannel: channel, consent,
@@ -640,6 +644,8 @@ export function assetPage({
     <p class="lede">${esc(asset.description || 'No description yet.')}</p>
     ${markNote}
 
+    ${placed.head}
+
     <div class="panel">
       <div class="panel-head"><h2>What you get</h2></div>
       <div class="panel-body">
@@ -655,7 +661,8 @@ export function assetPage({
 
     ${reviewSection({ channel, asset, reviews, reviewStats, canReview, myReview, reviewError })}
 
-    ${slots.map(renderSlot).join('')}
+    ${placed.mid}
+    ${placed.foot}
   </div>
 
   <aside class="unlock-card">
@@ -785,9 +792,9 @@ export function dashboard({ channel, slots, connections, providers, plan, estima
     <tr>
       <td><strong>${esc(s.label)}</strong><div class="fine">rank ${s.rank} of ${slots.length}</div></td>
       <td>${s.owner === 'platform' ? pill('Platform · rent', 'warning') : pill("Channel's own", 'info')}</td>
-      <td>${s.serving
-        ? pill('Serving', 'success')
-        : pill('Reserved — empty', '')}</td>
+      <td>${s.serves
+    ? (s.from === 'house' ? pill('Ours — house ad', 'info') : pill('Filled by you', 'success'))
+    : (s.owner === 'platform' ? pill('Empty', '') : pill('Yours — empty', ''))}</td>
     </tr>`).join('');
 
   const picker = providers.slice(0, 8).map((p) => {
@@ -908,7 +915,8 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
 
 <section class="section">
   <div class="section-head"><h2>Ad slots</h2>
-    <p>Where ads can appear. The platform takes one slot per page, last rank, never rank 1.</p></div>
+    <p>Where ads can appear. The platform takes one slot per page, last rank, never rank 1.
+      <a href="/dashboard/${esc(channel.slug)}/slots">What fills each one →</a></p></div>
   <div class="panel"><div class="panel-body panel-body-flush">
     <table class="table">
       <thead><tr><th>Slot</th><th>Owner</th><th>State</th></tr></thead>
@@ -1005,26 +1013,58 @@ ${conn ? `
  * seller is buying, so it stays the same height and says what it is for. When a
  * slot is serving, the render layer is what fills it.
  */
+/**
+ * Where a slot goes on a page.
+ *
+ * Position is the product here: the rent slot is the last one, and that ordering
+ * is the consideration for the rent rather than a promise in a policy document.
+ * Stacking every slot at the bottom of the page would make the rank labels on
+ * the slots page untrue, so rank 1 is placed at the top and the rest after the
+ * content they sit beside.
+ */
+function placeSlots(slots = []) {
+  const fill = (list) => list.map(renderSlot).join('');
+  const own = slots.filter((s) => s.owner !== 'platform');
+  const platform = slots.filter((s) => s.owner === 'platform');
+  return {
+    head: fill(own.filter((s) => s.rank === 1)),
+    mid: fill(own.filter((s) => s.rank !== 1)),
+    foot: fill(platform),
+  };
+}
+
 export function renderSlot(slot) {
-  const h = Math.min(slot.max_height_px || 250, 280);
+  const h = Math.min(slot.maxHeightPx || slot.max_height_px || 250, 280);
   const owner = slot.owner === 'platform' ? 'platform' : 'channel';
-  const cls = slot.serving ? `slot slot-serving slot-${owner}` : 'slot';
+  const from = slot.from || 'none';
+  const creative = slot.creative || null;
+  const cls = ['slot', `slot-${owner}`, from === 'none' ? 'slot-empty' : 'slot-filled'];
+  if (slot.surface === 'app_native') cls.push('slot-app');
 
-  // The platform slot is rent; the channel slot belongs to the store. Two
-  // different things, and each says so in the visitor's terms.
-  const label = owner === 'platform' ? 'Advertisement' : 'From this store';
-  const sub = owner === 'platform'
-    ? 'This space pays for the servers.'
-    : (slot.serving ? 'A message from the creator.' : 'Reserved for a message from the creator.');
+  // The label is the visitor's answer to "who put this here". It is rendered,
+  // not implied by position: a reader has to be able to tell the store's message
+  // from the platform's advertisement without inspecting the page.
+  const inner = creative ? `
+    <a class="slot-creative" href="${esc(creative.linkUrl || '#')}"
+       ${creative.linkUrl ? '' : 'aria-disabled="true"'}>
+      <div class="slot-creative-head">${esc(creative.headline)}</div>
+      ${creative.body ? `<p class="slot-creative-body">${esc(creative.body)}</p>` : ''}
+      ${creative.linkLabel ? `<span class="slot-cta">${esc(creative.linkLabel)}</span>` : ''}
+    </a>`
+    : `
+    <div class="slot-empty-note">${esc(slot.emptyNote || slot.byline || '')}</div>
+    ${slot.editHref ? `<a class="slot-empty-action" href="${esc(slot.editHref)}">Write one →</a>` : ''}`;
 
-  return `<div class="${cls}" data-slot="${esc(slot.key)}" data-owner="${esc(owner)}"
-       data-serving="${slot.serving ? 'true' : 'false'}"
-       style="min-height:${h}px" role="complementary" aria-label="${esc(label)}">
+  return `<aside class="${cls.join(' ')}" data-slot="${esc(slot.slotKey || slot.key || '')}"
+       data-owner="${esc(owner)}" data-serving="${from === 'none' ? 'false' : 'true'}"
+       data-adapter="${esc(slot.adapter || '')}" data-surface="${esc(slot.surface || 'web')}"
+       style="min-height:${h}px" role="complementary" aria-label="${esc(slot.label || 'Advertisement')}">
   <div class="slot-inner">
-    <div class="slot-label">${esc(label)}</div>
-    <div class="slot-sub">${esc(sub)}</div>
+    <div class="slot-label">${esc(slot.label || 'Advertisement')}</div>
+    <div class="slot-sub">${esc(slot.byline || '')}</div>
+    ${inner}
   </div>
-</div>`;
+</aside>`;
 }
 
 export const m = { esc, npr, num, relTime, pill };
@@ -1116,6 +1156,143 @@ function consentControls({ consent, next }) {
 </form>`;
 }
 
+/**
+ * Ad slots — where a creator decides what goes in the space they own, and sees
+ * what the space they rented out looks like.
+ *
+ * Two kinds of slot and they are not interchangeable, so the page never blurs
+ * them: the store's own positions (the creator's inventory, no network
+ * involved) and the platform's rent slot (our inventory, the consideration for
+ * the rent). The rent slot is shown here but not editable, because it is not
+ * theirs to fill — that is what renting it means.
+ *
+ * The preview is the real renderer. A preview that is a drawing of the thing
+ * rather than the thing is a preview that lies eventually.
+ */
+export function slotsPage({ channel, slots = [], user, consent = null, flash = null }) {
+  const own = slots.filter((s) => s.owner === 'channel');
+  const rented = slots.filter((s) => s.owner === 'platform');
+
+  const card = (slot) => `
+  <div class="card card-pad-lg" id="slot-${esc(slot.slotKey || slot.key)}">
+    <div class="row">
+      <div>
+        <h3 style="font-size:var(--text-md)">${esc(slot.label)}</h3>
+        <div class="fine">rank ${num(slot.rank)} of ${num(slots.length)} · ${esc(slot.formats?.join(' / ') || '')}</div>
+      </div>
+      <span class="spacer"></span>
+      ${slot.owner === 'platform'
+    ? pill('Platform · rented to ByteBikri', 'warning')
+    : slot.serves ? pill('Filled by you', 'success') : pill('Yours · empty', '')}
+    </div>
+
+    ${slot.purpose ? `<p class="fine" style="margin-top:var(--space-3)">${esc(slot.purpose)}</p>` : ''}
+
+    ${renderSlot(slot)}
+
+    ${slot.owner === 'platform' ? `
+    <p class="fine">
+      This is the space the store rents to ByteBikri. You do not fill it: the space itself is what is
+      being rented, and it stays in the same position on every page load. Nothing about it follows a
+      visitor around the web, and no buyer behaviour is sold.
+    </p>` : `
+    <form method="post" action="/dashboard/${esc(channel.slug)}/slots">
+      <input type="hidden" name="slotKey" value="${esc(slot.slotKey || slot.key)}">
+      <div class="field">
+        <label for="head-${esc(slot.slotKey || slot.key)}">Headline</label>
+        <input class="input" id="head-${esc(slot.slotKey || slot.key)}" name="headline" maxlength="90"
+               value="${esc(slot.creative?.owner === 'channel' ? slot.creative.headline : '')}"
+               placeholder="New pack out Friday">
+      </div>
+      <div class="field">
+        <label for="body-${esc(slot.slotKey || slot.key)}">Line under it <span class="hint">optional</span></label>
+        <input class="input" id="body-${esc(slot.slotKey || slot.key)}" name="body" maxlength="220"
+               value="${esc(slot.creative?.owner === 'channel' ? (slot.creative.body || '') : '')}"
+               placeholder="Twelve more textures, free to anyone who already bought the first kit.">
+      </div>
+      <div class="cols-2">
+        <div class="field">
+          <label for="link-${esc(slot.slotKey || slot.key)}">Link <span class="hint">optional</span></label>
+          <input class="input" id="link-${esc(slot.slotKey || slot.key)}" name="linkUrl" maxlength="300"
+                 value="${esc(slot.creative?.owner === 'channel' ? (slot.creative.linkUrl || '') : '')}"
+                 placeholder="/s/${esc(channel.slug)} or https://…">
+        </div>
+        <div class="field">
+          <label for="cta-${esc(slot.slotKey || slot.key)}">Link label</label>
+          <input class="input" id="cta-${esc(slot.slotKey || slot.key)}" name="linkLabel" maxlength="40"
+                 value="${esc(slot.creative?.owner === 'channel' ? (slot.creative.linkLabel || '') : '')}"
+                 placeholder="See it">
+        </div>
+      </div>
+      <div class="row">
+        <button class="btn btn-primary btn-sm" type="submit">Save</button>
+        ${slot.creative?.owner === 'channel'
+    ? `<button class="btn btn-sm" type="submit" formaction="/dashboard/${esc(channel.slug)}/slots/clear">Clear</button>`
+    : ''}
+        <span class="spacer"></span>
+        <span class="fine">Shown to visitors as “From ${esc(channel.name)}”.</span>
+      </div>
+    </form>
+    <p class="fine" style="margin-top:var(--space-3)">
+      Your own message, in your own space. There is nothing to buy here and nobody to pay: this is not
+      an ad slot for sale, and selling this space to someone else off-platform would put a stranger's
+      content on a page you are responsible for.
+    </p>`}
+  </div>`;
+
+  return layout({
+    title: 'Ad slots', user, activeChannel: channel, consent, current: 'dashboard',
+    body: `
+${pageHead(channel, 'slots', 'Ad slots',
+    'The space on your pages, who owns each position, and what fills it today.')}
+
+${flash ? `<div class="note note-${flash.kind}" role="status">${esc(flash.message)}</div>` : ''}
+
+<div class="note">
+  <strong>Two kinds of space, and one rule about position.</strong>
+  <ul class="list-steps" style="margin-top:var(--space-3)">
+    <li><strong>Rank 1 is always yours.</strong> The platform never takes the top position — by
+      allocation, not by promise. The slot you rent out is the last one on the page.</li>
+    <li><strong>Rent is one slot.</strong> One per page, never more, and a page too short to spare a
+      slot is never charged for one.</li>
+    <li><strong>Networks fill their own space.</strong> When a network is connected to a slot, the
+      network serves the ad inside it. We keep no third-party script in our database, and we never run
+      a tag from a network we have not verified.</li>
+  </ul>
+</div>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Your space</h2>
+    <p>${own.length} of ${num(slots.length)} positions, and they appear on every storefront and
+      file page you have. ${own.some((s) => !s.serves) ? 'Empty ones hold their height on the page, so nothing jumps when you fill one.' : ''}</p>
+  </div>
+  <div class="cols-2">${own.length ? own.map(card).join('') : '<p class="fine">No slots allocated on the free-size store yet — they appear when a page is long enough to spare one.</p>'}</div>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Rented to the platform</h2>
+    <p>The space you are paid for. You can see what is in it; you cannot put anything in it.</p>
+  </div>
+  ${rented.length ? rented.map(card).join('') : `<div class="note"><p class="small">None of your pages
+    has a rent slot right now. A rent slot appears only when a page has at least three slots to
+    allocate, so a short page is never taxed for space it does not have.</p></div>`}
+</section>
+
+<div class="note note-warning">
+  <strong>What this page does not do.</strong>
+  <p class="small" style="margin-top:var(--space-2)">
+    Slots on the web are display-class space. Rewarded video — the format that pays several times
+    more — runs in the app, where the platform controls the player and can verify a completed view.
+    A browser cannot do either, so the same position is worth less here, and no page in this product
+    will tell you otherwise.
+  </p>
+</div>
+`,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Dashboard shell — the pages a seller lives in
 // ---------------------------------------------------------------------------
@@ -1133,6 +1310,7 @@ function storeSectionNav(channel, current) {
     ['', 'Overview'],
     ['earnings', 'Earnings'],
     ['billing', 'Billing'],
+    ['slots', 'Ad slots'],
     ['settings', 'Store settings'],
     ['reviews', 'Reviews'],
   ];
