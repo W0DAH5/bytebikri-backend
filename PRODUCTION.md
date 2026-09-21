@@ -83,8 +83,8 @@ Items marked **BLOCKER** must be filled before real users see the app.
 |---|---|---|---|
 | 1 | **Domain name** | Must be registered by you; ties into AdSense approval, ads.txt, and email | `PUBLIC_BASE_URL` |
 | 2 | **Business entity + PAN/VAT** | Ad networks and payment rails require a legal entity to pay | Not code — paperwork |
-| 3 | **Privacy policy + Terms + Cookie policy** | I will **draft** all three; only you can accept them as the operator | `/legal/*` |
-| 4 | **Contact address for legal pages** | Legally required on the pages themselves | `OPERATOR_*` env |
+| 3 | **Read the three legal drafts and accept them as the drafts they are** | Written, deployed and rendering at `/legal/privacy`, `/legal/terms`, `/legal/cookies`. They describe what the software actually does, which is the part I can guarantee. Whether they satisfy a jurisdiction is a lawyer's question, and only you can sign off as the operator | `/legal/*` |
+| 4 | **Your legal name, address, contact email, and district** | The pages show a yellow warning listing exactly which of these are empty, because a privacy notice that does not say who is responsible is not one | `OPERATOR_LEGAL_NAME`, `OPERATOR_ADDRESS`, `OPERATOR_EMAIL`, `OPERATOR_DISTRICT` |
 
 ### To run for real
 
@@ -96,6 +96,7 @@ Items marked **BLOCKER** must be filled before real users see the app.
 | 8 | **At least one ad network account** — start with BitLabs or Adsterra | Their signup is their KYC. You paste the callback secret |
 | 9 | **Plan payment details** — bank/eSewa to receive NPR | Platform revenue only; manual verification at your volume |
 | 10 | **Sentry DSN** (or equivalent) | Optional but you'll want it before real traffic |
+| 10b | **`workflows` permission for the GitHub App**, or run one `cp` by hand | This is why CI lives in `ci/ci.yml` instead of `.github/workflows/`: GitHub refuses a push that creates a workflow file without that permission. `ci/README.md` has the one-line install | GitHub settings |
 
 ### Later, when they become the constraint
 
@@ -107,57 +108,106 @@ Items marked **BLOCKER** must be filled before real users see the app.
 
 **Total to launch: items 1–8.** Everything else I can build around.
 
+Items 3 and 4 are no longer blockers in the "unstarted work" sense — the pages
+exist and are deployed. What is left is you reading them and filling four
+variables.
+
 ---
 
 ## 3. Release sequence
 
-Each phase ends in something that runs. I do the work; the "needs you" column is when you get pulled in.
+Each phase ends in something that runs. The "needs you" column is when you get
+pulled in; everything else was done without waiting.
 
-### Phase 1 — Persistence (in progress)
-Real Postgres, migrations, repository layer replacing the in-memory store.
-→ *Exit: a creator's upload survives a restart.*
+| Phase | State | Evidence in the repo |
+|---|---|---|
+| 1 · Persistence | **done** | 10 migrations, Postgres-only store, survives a restart |
+| 2 · Identity | **done** | scrypt + sessions; `?as=` removed; dashboard 404s for anyone else |
+| 3 · Hardening | **done** | helmet, CSP, rate limits, CSRF, secret policy, storage allowlist |
+| 4 · Deployment | **done** | Dockerfile, render.yaml, fly.toml, CI, `DEPLOY.md` |
+| 5 · Consent & legal | **drafted** | banner, records, `/legal/*` — **needs you: 1, 3, 4** |
+| 6 · Ads that serve | **blocked** | the render layer needs one real network — **needs you: 8** |
+| 7 · Product design | **in progress** | storefront rebuilt: covers, banners, real token system |
+| 8 · Operations | not started | moderation workflow, rent enforcement, backups |
 
-**Done this round:** real Postgres running locally, migrations that apply exactly once, drift detection,
-and `db/schema.sql` validated against a real server for the first time (28 tables — it had never been executed).
+### Phase 1 — Persistence ✅
 
-### Phase 2 — Identity
-Real accounts: password hashing, sessions in Postgres, httpOnly cookies, email verification and password
-reset (stubs until you supply SMTP), channel ownership checks on every route.
-→ *Exit: someone can sign up, log in, and only touch their own channel.*
+Real Postgres, migrations that apply exactly once with checksum drift detection,
+and the whole in-memory store replaced. **The upload survived a restart**, which
+was the entire reason for the rewrite.
 
-### Phase 3 — Security & hardening
-`helmet`, rate limiting on auth and postback endpoints, CSRF, input validation, structured logging,
-graceful shutdown, `/healthz` + `/readyz`, centralised error handling.
-→ *Exit: it survives contact with the open internet.*
+### Phase 2 — Identity ✅
 
-### Phase 4 — Deployment
-Dockerfile, `.env.example`, migrations on boot (advisory-locked), CI that runs the tests, deploy docs for
-Supabase + a host. → *Exit: `git push` produces a running app.* **Needs you: 5.**
+scrypt with a self-describing parameter string, session tokens stored only as
+SHA-256, lockout counted in the database, `burnPasswordTime` so a missing account
+is not measurably faster to probe than a wrong password. The `?as=<email>`
+parameter that let anyone read anyone's dashboard is gone and there is no
+dev-mode replacement, because a flag is one misconfiguration from being a bypass.
 
-### Phase 5 — Consent & legal *(BLOCKER for real ads)*
-Cookie consent with granular purposes and blocking-before-consent, Google Consent Mode v2, GPC support,
-ads.txt serving, privacy/terms/cookie pages.
-→ *Exit: you may legally serve a personalised ad.* **Needs you: 1, 3, 4.**
+### Phase 3 — Security & hardening ✅
 
-> **A finding that changes the unlock model in the EEA:** consent must be *freely given*, and a user who
-> refuses ad cookies cannot be shown a personalised rewarded ad. So "watch an ad to unlock" needs a
-> defined behaviour for a refusing visitor. Contextual (non-personalised) ads are permitted without
-> consent; that is the honest fallback. **Nepal has no such regime**, so this affects only EEA traffic —
-> but the app needs to know which it is serving.
+Content-Security-Policy with `script-src 'self'`; cross-origin state changes
+refused on `Sec-Fetch-Site` rather than `Origin`, because `Origin` is absent on
+legitimate WebView and server-to-server requests; rate limits on login, signup,
+unlock and postback; a storage key allowlist, because a key arrives from a URL and
+a filesystem join on an unchecked key is how `../../` becomes a file read.
 
-### Phase 6 — Ads that actually serve
-Slot rendering for real provider tags (per-zone JS, per-slot IDs, link-rewrite for affiliate), the
-house/fallback adapter, empty-slot behaviour, `ads.txt`, and the policy kill switch.
-→ *Exit: component 4 stops being decoration.* **Needs you: 8.**
+Fixed here: download links were bearer credentials and contradicted their own
+copy about forwarding — they now require the session they were minted for. A
+malformed uuid in a URL was a 500, so a provider would retry it forever; it is a
+400 at the boundary now.
 
-### Phase 7 — Product design
-A real design system and a rebuilt storefront, asset page, dashboard and marketplace — informed by how
-this category actually looks, which I have not yet done.
-→ *Exit: it stops looking like a prototype.*
+### Phase 4 — Deployment ✅
+
+`Dockerfile` (multi-stage, non-root, tini as PID 1 so SIGTERM reaches the
+graceful shutdown), `render.yaml`, `fly.toml`, CI against a real PostgreSQL, and
+`DEPLOY.md`. Secrets no longer have production fallbacks: the app refuses to
+start and names every missing variable at once. The sandbox ad network stops
+resolving in production, because its signature is a shared secret in this
+repository and its purpose is to mint an unlock without an ad.
+
+**Needs you: 5.**
+
+### Phase 5 — Consent & legal 📝
+
+Banner with two equal-weight answers, no pre-ticked boxes, nothing set before an
+answer, and records keyed to the version of the notice. **A refusal removes the
+persistent identifier from what the ad network receives** — the point at which a
+stored preference becomes a fact about what leaves the building. The behavioural
+change was enforced in the unlock API and tested by watching what the network is
+handed, not what the database stored.
+
+Privacy, terms and cookie pages drafted from what the code actually does; the
+operator fields render as a visible warning until filled in.
+
+**Still outstanding, and it is not optional:** `ads.txt` needs a publisher ID
+from a real network, and Consent Mode v2 signals need Google in the path. Both
+arrive with Phase 6. **Needs you: 1, 3, 4.**
+
+### Phase 6 — Ads that actually serve 🔒
+
+The adapter layer verifies four networks and a store can connect one. Nothing
+**renders** a creative yet, which is why unassigned slots are no longer drawn on
+public pages — an empty box where an ad should be is worse than no box. This is
+the one phase that cannot be finished without something only you can get: an
+account with a real network. **Needs you: 8.**
+
+### Phase 7 — Product design 🚧
+
+Rebuilt on a three-layer token system, with contrast measured in tests rather
+than asserted in a comment — the first run failed, on a caption colour at 3.31:1.
+Storefronts now have a banner, listings have cover images, the landing page has a
+hero, and the dashboard can publish a file with a cover and an access mode. Empty
+"reserved" ad slots that pushed the actual files below the fold are gone from
+public pages: unassigned slots are inventory, and inventory belongs on the
+dashboard where the person selling it can see it.
+
+**Still to do:** the asset page's ad placement, the mobile pass, and a look at
+real storefronts in this category rather than at my own reasoning.
 
 ### Phase 8 — Operations
-Pageview counting (component 7), plan/rent enforcement (8), moderation workflow (9), notifications (10),
-listing scan (11), backups and monitoring.
+
+Moderation workflow, rent enforcement, backups, monitoring, notifications.
 
 ---
 
@@ -166,15 +216,32 @@ listing scan (11), backups and monitoring.
 **The engine is sound and unusually well-tested for its age.** The unlock path has verified failure
 behaviour on forged, replayed, stale and cross-connection postbacks — most projects never test those.
 
-**The product is not yet viable**, for reasons that are boring rather than deep:
+**The product is not yet viable**, for reasons that are boring rather than deep.
+Four of the five are now closed:
 
-1. It forgets everything on restart.
-2. There is no login.
-3. It looks like a prototype because it is one.
-4. It cannot legally show an ad to a European visitor.
-5. The slots serve no ads.
+1. ~~It forgets everything on restart.~~ **Fixed** — Postgres, proven across a
+   restart.
+2. ~~There is no login.~~ **Fixed** — accounts, sessions, ownership checks.
+3. ~~It looks like a prototype because it is one.~~ **Being fixed** — real token
+   system, measured contrast, cover art, a publish flow. The honest remaining gap
+   is that I designed it from first principles instead of from looking at what
+   works in this category, and that shows most on the asset page.
+4. ~~It cannot legally show an ad to a European visitor.~~ **Drafted** — consent
+   is recorded, versioned, and enforced at the point where the ad network is
+   handed an identifier. `ads.txt` and Consent Mode wait on a real network.
+5. **The slots still serve no ads.** This one is not a build problem. It needs an
+   account with a real network, and until it has one, ByteBikri is a file host
+   with an advertising model attached to it.
 
-None of these are architectural. They are the work of phases 1–7.
+**Tests went from 41 to 133** while this was being written, and they caught real
+defects rather than confirming known ones: the faint text tier at 3.31:1, free
+downloads refused because no entitlement row existed for content that never had
+an ad, and a download route that threw on every asset page with a file attached.
+
+The most useful thing in that number is not the count. It is that three of those
+bugs were invisible to every check that existed before — one was a colour, one
+was a missing row on a path nobody had exercised, one was a missing import on a
+route with no test. Each is now something a machine checks.
 
 **The one thing I'd flag as a genuine product risk, not a build risk:** ad-gated access works for content
 worth roughly a rewarded video — templates, photos, presets, samples. For something worth NPR 5,000, it

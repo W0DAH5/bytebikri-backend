@@ -24,6 +24,16 @@ const esc = (s) =>
     .replace(/'/g, '&#39;');
 
 const npr = (n) => `NPR ${Number(n).toLocaleString('en-IN')}`;
+
+/**
+ * `plural(1, 'view')` → "1 view"; `plural(3, 'view')` → "3 views".
+ *
+ * Trivial, and the reason it exists is that "1 views in 30 days" is the kind of
+ * detail that makes a product read as unfinished regardless of how well
+ * everything else works. Irregular nouns take an explicit plural.
+ */
+const plural = (n, singular, pluralForm = `${singular}s`) =>
+  `${num(n)} ${Number(n) === 1 ? singular : pluralForm}`;
 const num = (n) => Number(n).toLocaleString('en-IN');
 
 const relTime = (d) => {
@@ -244,7 +254,7 @@ function channelCard(c) {
   </div>
   <p class="small" style="margin:0">${esc(c.tagline || 'A store on ByteBikri.')}</p>
   <div class="row-tight" style="font-size:var(--text-xs);color:var(--text-faint)">
-    <span>${num(c.asset_count || 0)} file${(c.asset_count || 0) === 1 ? '' : 's'}</span>
+    <span>${plural(c.asset_count || 0, 'file')}</span>
     <span>·</span>
     <span>${esc(c.plan_code || 'free')} plan</span>
   </div>
@@ -297,7 +307,7 @@ export function storefront({ channel, assets, slots, user, estimate, pageviews, 
     <h3>${esc(a.title)}</h3>
     <p class="asset-desc">${esc(a.description || 'No description yet.')}</p>
     <div class="asset-foot">
-      <span>${(a.files || []).length} file${(a.files || []).length === 1 ? '' : 's'}</span>
+      <span>${plural((a.files || []).length, 'file')}</span>
       <span>${open ? 'No ad needed' : `${a.ads_required} ad${a.ads_required === 1 ? '' : 's'} to unlock`}</span>
     </div>
   </div>
@@ -321,9 +331,9 @@ ${channel.banner_url
   </div>
   <p class="lede" style="margin-top:var(--space-3)">${esc(channel.tagline || 'A store on ByteBikri.')}</p>
   <div class="row" style="margin-top:var(--space-5);font-size:var(--text-xs);color:var(--text-faint)">
-    <span>${num(pageviews)} views in 30 days</span>
+    <span>${plural(pageviews, 'view')} in 30 days</span>
     <span>·</span>
-    <span>${num(assets.length)} file${assets.length === 1 ? '' : 's'}</span>
+    <span>${plural(assets.length, 'file')}</span>
   </div>
 </div>
 
@@ -332,7 +342,7 @@ ${slotHtml}
 <section class="section">
   <div class="section-head">
     <h2>Files</h2>
-    <p>${assets.length} in this store</p>
+    <p>${plural(assets.length, 'file')} in this store</p>
   </div>
   ${assets.length ? `<div class="grid-assets">${cards}</div>`
     : '<div class="empty">This store has not published anything yet.</div>'}
@@ -589,7 +599,7 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
   <div class="panel-head"><h2 style="font-size:var(--text-md)">What this store rents</h2></div>
   <div class="panel-body">
     <dl class="kv">
-      <dt>Monthly traffic</dt><dd>${num(estimate.pageviews30d || pageviews)} views in 30 days</dd>
+      <dt>Monthly traffic</dt><dd>${plural(estimate.pageviews30d || pageviews, 'view')} in 30 days</dd>
       <dt>Slots you own</dt><dd>${num((estimate.total || 0) - (estimate.rent || 0))} of ${num(estimate.total || 0)}</dd>
       <dt>Platform rent slots</dt><dd>${num(estimate.rent || 0)} — the platform sells these</dd>
       <dt>Assumed ad rate</dt><dd>$${Number(estimate.rpmUsd || 0).toFixed(2)} per 1,000 views</dd>
@@ -718,7 +728,7 @@ ${conn ? `
     ${upgrade ? `
       <div class="note note-info" style="margin-top:var(--space-5)">
         Upgrade to <strong>${esc(upgrade.to.name)}</strong> — ${npr(upgrade.amountNpr)} pro-rated,
-        ${upgrade.daysLeft} days left on this cycle.
+        ${plural(upgrade.daysLeft, 'day')} left on this cycle.
         <div class="fine" style="margin-top:var(--space-2)">
           ${npr(upgrade.to.priceNpr)} − ${npr(upgrade.from.priceNpr)} = ${npr(upgrade.fullDifference)}
           × ${upgrade.daysLeft}/365. Your renewal date does not move.
