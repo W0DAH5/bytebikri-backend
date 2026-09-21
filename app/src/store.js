@@ -1888,6 +1888,84 @@ export const store = {
     );
   },
 
+  /**
+   * Find a store.
+   *
+   * The console could count stores, and moderate one it was already looking at,
+   * but there was no way to FIND one: an operator who needed to act on a store
+   * they had been told about by name, slug or owner had to guess a URL or scroll
+   * Explore. This is the missing index.
+   *
+   * Every filter is a parameter, every sort key is from a fixed list (never
+   * interpolated from the query string), and the total is counted in the same
+   * round trip with `count(*) over ()` so a page never disagrees with the header
+   * that says how many there are.
+   */
+  async storeDirectory({ q = '', state = 'all', plan = 'all', sort = 'traffic', page = 1, perPage = 25 } = {}) {
+    const SORTS = {
+      traffic: 'views_30d desc nulls last, c.created_at desc',
+      unlocks: 'unlocks desc, views_30d desc nulls last',
+      files: 'files_live desc, c.created_at desc',
+      newest: 'c.created_at desc',
+      name: 'lower(c.name) asc',
+    };
+    const order = SORTS[sort] || SORTS.traffic;
+    const term = String(q || '').trim();
+    const limit = Math.min(Math.max(Number(perPage) || 25, 5), 100);
+    const offset = Math.max((Number(page) || 1) - 1, 0) * limit;
+
+    const rows = await many(
+      `select c.id, c.slug, c.name, c.tagline, c.created_at, c.listing_mode, c.moderation_state,
+              c.moderation_reason, c.owner_id,
+              coalesce(s.plan_code, 'free')                                        as plan_code,
+              coalesce(s.status, 'active')                                         as sub_status,
+              (select count(*)::int from assets a
+                where a.channel_id = c.id and a.status = 'live')                   as files_live,
+              (select count(*)::int from assets a where a.channel_id = c.id)       as files_total,
+              (select coalesce(sum(pv.views), 0)::int from page_view_daily pv
+                where pv.channel_id = c.id and pv.day > current_date - 30)         as views_30d,
+              (select count(*)::int from unlocks u
+                join assets a on a.id = u.asset_id
+                where a.channel_id = c.id and u.revoked_at is null)                as unlocks,
+              (select count(*)::int from ad_view_events e
+                join assets a on a.id = e.asset_id
+                where a.channel_id = c.id and e.completed
+                  and e.created_at > now() - interval '30 days')                   as ad_views_30d,
+              (select count(*)::int from reviews r
+                join assets a on a.id = r.asset_id
+                where a.channel_id = c.id)                                        as reviews,
+              (select max(a.created_at) from assets a where a.channel_id = c.id)   as last_file_at,
+              (select max(pv.day) from page_view_daily pv where pv.channel_id = c.id) as last_view_day,
+              p.email as owner_email, p.display_name as owner_name,
+              count(*) over () as total_rows
+         from channels c
+         left join lateral (select sub.plan_code, sub.status
+                              from subscriptions sub
+                             where sub.channel_id = c.id
+                             order by sub.created_at desc limit 1) s on true
+         left join profiles p on p.id = c.owner_id
+        where ($1 = '' or c.name ilike '%' || $1 || '%' or c.slug ilike '%' || $1 || '%'
+               or p.email ilike '%' || $1 || '%' or p.display_name ilike '%' || $1 || '%')
+          and ($2 = 'all'
+               or ($2 = 'held' and c.moderation_state in ('restricted','suspended','removed'))
+               or c.moderation_state = $2)
+          and ($3 = 'all'
+               or ($3 = 'paid' and coalesce(s.plan_code, 'free') <> 'free')
+               or ($3 = 'free' and coalesce(s.plan_code, 'free') = 'free'))
+        order by ${order}
+        limit $4 offset $5`,
+      [term, ['all', 'approved', 'restricted', 'suspended', 'removed', 'held'].includes(state) ? state : 'all',
+        ['all', 'free', 'paid'].includes(plan) ? plan : 'all', limit, offset],
+    );
+
+    return {
+      rows,
+      total: rows.length ? Number(rows[0].total_rows) : 0,
+      page: Math.max(Number(page) || 1, 1),
+      perPage: limit,
+    };
+  },
+
   recentAudit(limit = 200) {
     return many(
       `select l.*, p.display_name as actor_name, p.email as actor_email

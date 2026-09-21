@@ -1728,3 +1728,35 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 @media (max-width: 700px) {
   .kpi-hero { grid-column: span 1; }
 }
+
+/* ── console: find a store ───────────────────────────────────────────────── */
+/* A filter bar is a form that happens to sit above a table. Fields keep their
+   labels (a placeholder is not a label), the row wraps rather than scrolling, and
+   the buttons sit on the same baseline as the inputs by using the same control
+   height. */
+.filters {
+  display: flex; flex-wrap: wrap; gap: var(--space-4); align-items: flex-end;
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+}
+.filters .field { flex: 1 1 160px; min-width: 0; }
+.filters .field label { font-size: var(--text-xs); }
+/* The buttons sit with the last control rather than being thrown to the far
+   right by a spacer: a lone primary button in the corner of a wide bar reads as
+   belonging to the page, not to the form. */
+.filters-foot { display: flex; gap: var(--space-2); align-items: center; padding-bottom: 2px; flex: 0 0 auto; }
+@media (max-width: 700px) { .filters-foot { flex: 1 1 100%; } }
+
+/* Numbers in a directory are compared by eye, column to column. That only works
+   if they line up: right-aligned, tabular, and the same width per digit. */
+.table-directory .num { text-align: right; font-variant-numeric: tabular-nums; }
+.table-directory th.num a { justify-content: flex-end; }
+.table-directory th a { display: inline-flex; gap: 4px; align-items: baseline; color: var(--text-muted); }
+.table-directory th a:hover { color: var(--text-primary); text-decoration: none; }
+.table-directory th a.sorted { color: var(--text-primary); font-weight: 650; }
+.table-directory td { vertical-align: top; }
+.table-directory tbody tr:hover { background: var(--surface-hover); }
+
+.pager { display: flex; align-items: center; gap: var(--space-4); margin-top: var(--space-5); }
+.pager .fine { margin: 0; }

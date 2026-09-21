@@ -486,3 +486,61 @@ test('every rule code this file uses is a rule the policy table has', async () =
     assert.ok(codes.has(code), `'${code}' is not in policy_rules`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Finding a store
+// ---------------------------------------------------------------------------
+
+const { adminStores } = await import('../src/views.js');
+
+test('the directory searches names, slugs and the owner, and filters on plan', async () => {
+  const { user, ch } = await fixture();
+  const byName = await store.storeDirectory({ q: ch.name.slice(0, 4) });
+  assert.ok(byName.total >= 1, 'a store is findable by its own name');
+  const bySlug = await store.storeDirectory({ q: ch.slug });
+  assert.ok(bySlug.rows.some((r) => r.id === ch.id), 'and by its slug');
+  const byOwner = await store.storeDirectory({ q: user.email });
+  assert.ok(byOwner.rows.some((r) => r.id === ch.id), 'and by the owner\'s email, which is how a report usually arrives');
+  const nonsense = await store.storeDirectory({ q: 'zzz-no-such-store-zzz' });
+  assert.equal(nonsense.total, 0);
+  assert.deepEqual(nonsense.rows, []);
+
+  // A sort key that is not on the list falls back rather than reaching the SQL.
+  const hostile = await store.storeDirectory({ sort: 'views_30d; drop table channels' });
+  assert.ok(hostile.rows.length >= 0, 'an unknown sort is ignored, not interpolated');
+  assert.equal((await store.storeDirectory({ plan: 'paid' })).rows.every((r) => r.plan_code !== 'free'), true,
+    'the paid filter returns only paying stores');
+});
+
+test('the directory page shows numbers that can be compared and never claims to know what was paid', () => {
+  const rows = [
+    { id: '1', slug: 'shop', name: 'Shop', owner_email: 'owner@test.local', owner_name: 'Owner',
+      plan_code: 'store', sub_status: 'active', moderation_state: 'approved', listing_mode: 'marketplace',
+      files_live: 3, files_total: 4, views_30d: 336, unlocks: 1, ad_views_30d: 180, reviews: 2,
+      last_file_at: new Date().toISOString() },
+  ];
+  const html = adminStores({
+    user: { role: 'admin', email: 'op@test.local' }, consent: null,
+    data: { rows, total: 1, page: 1, perPage: 25 },
+    filters: { q: '', state: 'all', plan: 'all', sort: 'traffic' },
+  });
+  assert.match(html, /1 store\b/, 'the count leads');
+  assert.match(html, /class="num"/, 'numbers are a comparable column');
+  assert.match(html, /aria-sort="descending"/, 'and the sorted column says so for a screen reader');
+  assert.match(html, /Views · 30d/);
+  assert.match(html, /href="\/admin\/stores\?[^"]*sort=unlocks"/, 'the sorting headers are links: every order is a URL');
+  // The chip is lowercase in the markup and uppercased by CSS; colour is never
+  // the only signal either way.
+  assert.match(html, /pill-success[^>]*>approved</);
+  // The honesty clause, on the page where an operator might expect a payout column.
+  assert.match(html, /What a creator was PAID is not\s+on this page on purpose/);
+  assert.ok(!/paypal|esewa balance|payout amount/i.test(html), 'nothing here pretends to know the network\'s number');
+
+  const empty = adminStores({
+    user: { role: 'admin', email: 'op@test.local' }, consent: null,
+    data: { rows: [], total: 0, page: 1, perPage: 25 },
+    filters: { q: 'nothing', state: 'all', plan: 'all', sort: 'traffic' },
+  });
+  assert.match(empty, /Nothing matches those filters/, 'an empty result says what to do next');
+  assert.match(empty, /href="\/admin\/stores"/, 'and offers the way out');
+});

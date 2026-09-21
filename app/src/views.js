@@ -2764,7 +2764,7 @@ export function adminShell({ user, consent, current, title, lede = '', actions =
     ${actions}
   </div>
 </div>
-<nav class="console-nav" aria-label="Console">${tab('/admin', 'Overview', 'overview')}${tab('/admin/payments', 'Payments', 'payments', user.adminBadges?.payments)}${tab('/admin/reports', 'Reports', 'reports', user.adminBadges?.reports)}${tab('/admin/moderation', 'Moderation', 'moderation', user.adminBadges?.moderation)}${tab('/admin/audit', 'Audit log', 'audit')}</nav>
+<nav class="console-nav" aria-label="Console">${tab('/admin', 'Overview', 'overview')}${tab('/admin/payments', 'Payments', 'payments', user.adminBadges?.payments)}${tab('/admin/stores', 'Stores', 'stores')}${tab('/admin/reports', 'Reports', 'reports', user.adminBadges?.reports)}${tab('/admin/moderation', 'Moderation', 'moderation', user.adminBadges?.moderation)}${tab('/admin/audit', 'Audit log', 'audit')}</nav>
 ${body}`,
   });
 }
@@ -2830,7 +2830,11 @@ ${platform ? `
     <p>Two charges, and neither is a share of a creator's ad revenue.</p></div>
   <div class="panel"><div class="panel-body">
     <dl class="kv">
-      ${platform.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')}
+      ${/* Values are markup on purpose (they carry <strong>), keys are text. The
+            key still has to be escaped, which is why the caller must pass a real
+            apostrophe rather than an entity: an entity passed as text comes out
+            as &#39; on the page, which is what this line healed. */
+      platform.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')}
     </dl>
   </div></div>
 </section>` : ''}
@@ -2858,6 +2862,142 @@ ${platform ? `
  * still live and the row says so — an operator looking at a queue needs to know
  * whether they are interrupting a seller or catching up with one.
  */
+/**
+ * Find a store.
+ *
+ * This is the page the console was missing: you could count stores and moderate
+ * one you were already looking at, but there was no way to find one you had been
+ * told about by name, slug or owner. Three filters, four sort orders, and a
+ * search that reaches the owner's email because that is how a support message
+ * usually arrives ("the person who reported this is alice@…").
+ *
+ * The research is visible in the details rather than in the decoration: numbers
+ * are right-aligned and tabular so two rows can be compared by eye, the columns
+ * are the ones an operator acts on rather than every column that exists, status
+ * never relies on colour alone, and sorting is a link so it works without
+ * JavaScript and every ordering is a URL somebody can send to somebody else.
+ */
+export function adminStores({ user, consent = null, flash = null, data = null, filters = {}, canExport = true }) {
+  const rows = data?.rows || [];
+  const total = data?.total || 0;
+  const page = data?.page || 1;
+  const perPage = data?.perPage || 25;
+  const pages = Math.max(Math.ceil(total / perPage), 1);
+  const { q = '', state = 'all', plan = 'all', sort = 'traffic' } = filters;
+
+  const link = (next) => {
+    const params = new URLSearchParams();
+    const merged = { q, state, plan, sort, ...next };
+    for (const [k, v] of Object.entries(merged)) if (v && v !== 'all' && !(k === 'sort' && v === 'traffic')) params.set(k, v);
+    const qs = params.toString();
+    return `/admin/stores${qs ? `?${qs}` : ''}`;
+  };
+
+  const sortHead = (key, label, numeric = true) => `
+    <th${numeric ? ' class="num"' : ''}${sort === key ? ' aria-sort="descending"' : ''}>
+      <a href="${esc(link({ sort: key, page: undefined }))}"${sort === key ? ' class="sorted"' : ''}>${esc(label)}${
+    sort === key ? ' <span aria-hidden="true">↓</span>' : ''}</a>
+    </th>`;
+
+  const stateChip = (st) => pill(st, st === 'approved' ? 'success' : st === 'restricted' ? 'warning' : st === 'pending' ? '' : 'danger');
+
+  return adminShell({
+    user, consent, current: 'stores', title: 'Stores',
+    lede: 'Everything published, with the numbers an operator needs to judge it. Search reaches the owner\'s name and email.',
+    actions: canExport
+      ? `<a class="btn btn-sm" href="${esc(link({ format: 'csv', page: undefined }))}">Download CSV</a>`
+      : '',
+    body: `
+${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)" role="status">${esc(flash.message)}</div>` : ''}
+
+<section class="section">
+  <form class="filters" method="get" action="/admin/stores" role="search">
+    <div class="field" style="flex:2 1 260px">
+      <label for="q">Search</label>
+      <input class="input" id="q" name="q" type="search" value="${esc(q)}" placeholder="Store, slug, owner name or email">
+    </div>
+    <div class="field">
+      <label for="state">State</label>
+      <select class="input" id="state" name="state">
+        ${[['all', 'Any state'], ['approved', 'Approved'], ['held', 'Held or hidden'], ['restricted', 'Restricted'], ['suspended', 'Suspended'], ['removed', 'Removed']]
+    .map(([v, l]) => `<option value="${v}"${state === v ? ' selected' : ''}>${l}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field">
+      <label for="plan">Plan</label>
+      <select class="input" id="plan" name="plan">
+        ${[['all', 'Any plan'], ['paid', 'Paying'], ['free', 'Free']]
+    .map(([v, l]) => `<option value="${v}"${plan === v ? ' selected' : ''}>${l}</option>`).join('')}
+      </select>
+    </div>
+    <input type="hidden" name="sort" value="${esc(sort)}">
+    <div class="filters-foot">
+      <button class="btn btn-primary" type="submit">Apply</button>
+      ${(q || state !== 'all' || plan !== 'all')
+    ? `<a class="btn btn-sm" href="/admin/stores">Clear</a>` : ''}
+    </div>
+  </form>
+
+  <div class="section-head" style="margin-top:var(--space-6)">
+    <h2>${total ? `${num(total)} store${total === 1 ? '' : 's'}` : 'No store matches'}</h2>
+    <p>${total
+    ? `Page ${num(page)} of ${num(pages)}${sort === 'traffic' ? ' · busiest first' : ''}`
+    : 'Clear the filters, or search for a different word — the search looks at names, slugs, owner names and owner emails.'}</p>
+  </div>
+
+  ${rows.length ? `
+  <div class="panel"><div class="panel-body panel-body-flush">
+    <table class="table table-directory">
+      <thead>
+        <tr>
+          <th>Store</th>
+          <th>State</th>
+          <th>Plan</th>
+          ${sortHead('files', 'Files')}
+          ${sortHead('traffic', 'Views · 30d')}
+          ${sortHead('unlocks', 'Unlocks')}
+          <th class="num">Ad views</th>
+          <th>Last file</th>
+        </tr>
+      </thead>
+      <tbody>${rows.map((r) => `
+        <tr>
+          <td>
+            <a href="/s/${esc(r.slug)}" target="_blank" rel="noopener"><strong>${esc(r.name)}</strong> ↗</a>
+            <div class="fine">/s/${esc(r.slug)} · ${esc(r.owner_name || r.owner_email || 'no owner on file')}${
+    r.listing_mode === 'marketplace' ? ' · listed' : ''}</div>
+          </td>
+          <td>${stateChip(r.moderation_state)}${r.moderation_reason ? `<div class="fine">${esc(r.moderation_reason)}</div>` : ''}</td>
+          <td>${r.plan_code === 'free' ? pill('Free', '') : pill(r.plan_code, 'accent')}${
+    r.sub_status === 'grace' ? '<div class="fine">in grace</div>' : ''}</td>
+          <td class="num">${num(r.files_live)}${r.files_total !== r.files_live ? `<div class="fine">of ${num(r.files_total)}</div>` : ''}</td>
+          <td class="num">${num(r.views_30d)}</td>
+          <td class="num">${num(r.unlocks)}${r.unlocks ? '' : '<div class="fine">none yet</div>'}</td>
+          <td class="num">${num(r.ad_views_30d)}</td>
+          <td class="fine">${r.last_file_at ? esc(relTime(r.last_file_at)) : '—'}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div></div>
+  ${pages > 1 ? `<nav class="pager" aria-label="Pages">
+    ${page > 1 ? `<a class="btn btn-sm" href="${esc(link({ page: page - 1 }))}">← Newer</a>` : ''}
+    <span class="fine">Page ${num(page)} of ${num(pages)}</span>
+    ${page < pages ? `<a class="btn btn-sm" href="${esc(link({ page: page + 1 }))}">Older →</a>` : ''}
+  </nav>` : ''}
+  ` : `<div class="empty">
+    ${q || state !== 'all' || plan !== 'all'
+    ? 'Nothing matches those filters.'
+    : 'No store has been created yet. The first one will appear here with its traffic and unlocks.'}
+  </div>`}
+
+  <p class="fine" style="margin-top:var(--space-5)">
+    Views and unlocks are counted from our own tables, so they are exact. What a creator was PAID is not
+    on this page on purpose: that number lives in the network's statement, not in our database.
+  </p>
+</section>`,
+  });
+}
+
 export function adminReports({ user, consent = null, flash = null, rows = [], ruleTitles = {} }) {
   const row = (r) => {
     const verdict = reportVerdict({ reporters: r.reporters, byReason: r.byReason });

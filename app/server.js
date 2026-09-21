@@ -2516,7 +2516,9 @@ APP.get('/admin', async (req, res, next) => {
       platform: [
         ['Charges', '<strong>Two</strong> — a plan upgrade and annual rent'],
         ['Share of ad earnings', '<strong>0%</strong> — the network pays the creator directly'],
-        ['Held on a creator&#39;s behalf', '<strong>Nothing, ever</strong>'],
+        // A real apostrophe, not an entity: the label is escaped when it is
+        // rendered, so an entity here would reach the page as &#39;.
+        ["Held on a creator's behalf", '<strong>Nothing, ever</strong>'],
         ['Matched by', 'a person, against the bank or wallet statement'],
       ],
       // Decisions, not logins: this strip is the operator's glance at what has
@@ -2524,6 +2526,58 @@ APP.get('/admin', async (req, res, next) => {
       activity: await store.recentDecisions(8),
     }));
   } catch (err) { next(err); }
+});
+
+/**
+ * Find a store — and hand the same rows to a spreadsheet if asked.
+ *
+ * `?format=csv` renders the filtered set rather than the page of it, because the
+ * reason to export is to reconcile against something else, and reconciling a
+ * page of twenty-five reconciles nothing. The CSV carries the columns an
+ * accountant or an operator would join on, and it says in its filename what
+ * filters produced it.
+ */
+APP.get('/admin/stores', async (req, res, next) => {
+  try {
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    if (req.user.role !== 'admin') return res.status(404).send('Not found');
+
+    const filters = {
+      q: String(req.query.q || '').trim().slice(0, 80),
+      state: String(req.query.state || 'all'),
+      plan: String(req.query.plan || 'all'),
+      sort: String(req.query.sort || 'traffic'),
+    };
+
+    if (req.query.format === 'csv') {
+      const all = await store.storeDirectory({ ...filters, perPage: 100, page: 1 });
+      const head = ['store', 'slug', 'owner_email', 'plan', 'subscription', 'state',
+        'listing', 'files_live', 'files_total', 'views_30d', 'unlocks', 'ad_views_30d', 'reviews', 'last_file_at'];
+      const cell = (v) => {
+        const str = v === null || v === undefined ? '' : String(v);
+        return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+      };
+      const body = all.rows.map((r) => [r.name, r.slug, r.owner_email || '', r.plan_code, r.sub_status,
+        r.moderation_state, r.listing_mode, r.files_live, r.files_total, r.views_30d,
+        r.unlocks, r.ad_views_30d, r.reviews, r.last_file_at ? new Date(r.last_file_at).toISOString() : '']
+        .map(cell).join(','));
+      const stamp = new Date().toISOString().slice(0, 10);
+      await store.audit('channel.directory_exported', { filters, rows: all.rows.length },
+        { actorId: req.user.id });
+      res.setHeader('content-type', 'text/csv; charset=utf-8');
+      res.setHeader('content-disposition',
+        `attachment; filename="bytebikri-stores-${stamp}-${all.rows.length}.csv"`);
+      return res.send(`${head.join(',')}\n${body.join('\n')}\n`);
+    }
+
+    const data = await store.storeDirectory({
+      ...filters,
+      page: Number(req.query.page || 1),
+    });
+    return res.send(views.adminStores({
+      user: await withBadges(req.user), consent: req.consent, flash: flashFor(req.query), data, filters,
+    }));
+  } catch (err) { return next(err); }
 });
 
 APP.get('/admin/reports', async (req, res, next) => {
