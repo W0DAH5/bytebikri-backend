@@ -842,6 +842,76 @@ export const store = {
     );
   },
 
+  /**
+   * Every ad connection on the platform, with the evidence of whether it works.
+   *
+   * The seller's networks page answers "is mine connected". Nothing answered
+   * "is ANY of them, and which one is quietly dead" — and a connection that never
+   * receives a signed callback is the most expensive silent failure in this
+   * product: the seller keeps publishing, the buyer keeps watching ads, and no
+   * money moves, because a callback URL was never saved in the network's own
+   * dashboard.
+   *
+   * So the numbers here are the ones that distinguish the failure modes:
+   * callbacks received at all, callbacks in the window, and callbacks whose
+   * signature did not verify. Those three, with the last transition, tell an
+   * operator which of the four things went wrong.
+   */
+  connectionHealth({ days = 30, limit = 200 } = {}) {
+    return many(
+      `select ac.id, ac.status, ac.status_reason, ac.provider_id, ac.created_at,
+              ac.credential_label, ac.payout_verdict, ac.slot_keys,
+              c.id as channel_id, c.name as channel_name, c.slug as channel_slug,
+              (select count(*)::int from ad_view_events e where e.connection_id = ac.id)      as postbacks_total,
+              (select count(*)::int from ad_view_events e
+                where e.connection_id = ac.id
+                  and e.created_at > now() - ($2 || ' days')::interval)                       as callbacks_window,
+              -- A REFUSED callback never reaches ad_view_events: that table records
+              -- views we accepted, and the refusal is written to the audit log
+              -- instead. Counting "not signature_ok" here would therefore have
+              -- returned zero forever — a metric that cannot move, on the page whose
+              -- whole purpose is spotting a network whose secret no longer matches.
+              -- So the refusals are counted where they are actually recorded, and
+              -- split into "the signature did not verify" (a secret problem, the
+              -- seller must paste a new one) and "the callback was otherwise
+              -- unusable" (a view that had expired, a mismatch).
+              (select count(*)::int from audit_logs al
+                where al.action = 'postback.rejected'
+                  and al.meta->>'connectionId' = ac.id::text)                                 as rejections_total,
+              (select count(*)::int from audit_logs al
+                where al.action = 'postback.rejected'
+                  and al.meta->>'connectionId' = ac.id::text
+                  and (al.meta->>'reason') ~* 'signature|hash|no &hash|missing sig|secret')   as signature_failures,
+              (select max(e.created_at) from ad_view_events e
+                where e.connection_id = ac.id and e.signature_ok)                             as last_verified_at,
+              (select max(al.created_at) from audit_logs al
+                where al.action = 'postback.rejected'
+                  and al.meta->>'connectionId' = ac.id::text)                                 as last_rejected_at,
+              (select (al.meta->>'reason') from audit_logs al
+                where al.action = 'postback.rejected'
+                  and al.meta->>'connectionId' = ac.id::text
+                order by al.created_at desc limit 1)                                          as last_rejection_reason,
+              (select max(ev.created_at) from ad_connection_events ev
+                where ev.connection_id = ac.id)                                               as last_transition_at,
+              coalesce(ev.events, '[]'::json)                                                 as history,
+              (select count(*)::int from channel_slots cs
+                where cs.connection_id = ac.id and cs.enabled)                                as slots_filled
+         from ad_connections ac
+         join channels c on c.id = ac.channel_id
+         left join lateral (select json_agg(x) as events from (
+                  select from_status, to_status, detail, created_at
+                    from ad_connection_events ev2
+                   where ev2.connection_id = ac.id
+                   order by ev2.created_at desc limit 4) x) ev on true
+        order by case ac.status
+                   when 'verifying' then 0 when 'failed' then 1 when 'restricted' then 2
+                   when 'active' then 3 else 4 end,
+                 ac.created_at desc
+        limit $1`,
+      [Math.min(Number(limit) || 200, 500), String(days)],
+    );
+  },
+
   /** The active connection a postback belongs to. Revoked connections refuse. */
   async activeConnection(connectionId, providerId) {
     if (!connectionId) return null;

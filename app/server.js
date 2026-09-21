@@ -2442,14 +2442,22 @@ APP.post('/s/:slug/a/:assetSlug/report', async (req, res, next) => {
  * the single most common way an admin console loses an operator's trust.
  */
 async function consoleCounts() {
-  const [payments, invoices, reports, moderation, banned, unmatched] = await Promise.all([
+  const [payments, invoices, reports, moderation, banned, unmatched, connections] = await Promise.all([
     store.unmatchedPayments(),
     store.openRentInvoices(),
     store.reportCounts(),
     store.channelsNeedingModeration(),
     store.bannedUsers(),
     store.planPayments(),
+    store.connectionHealth({ limit: 500 }),
   ]);
+  // A connection needs a look when it has never called back (and is old enough
+  // that "it just connected" is not the explanation) or when its signature is
+  // being refused. A house connection is ours and expects no callbacks at all.
+  const silentConnections = connections.filter((c) => c.provider_id !== 'house' && c.status !== 'revoked'
+    && ((c.postbacks_total === 0 && Date.now() - new Date(c.created_at).getTime() > 6 * 3600_000)
+      || (c.signature_failures > 0 && (!c.last_verified_at || new Date(c.last_rejected_at) > new Date(c.last_verified_at)))
+      || ['restricted', 'failed'].includes(c.status))).length;
   return {
     payments: payments.length,
     invoices: invoices.length,
@@ -2457,6 +2465,7 @@ async function consoleCounts() {
     reportedFiles: reports.files,
     moderation: moderation.length,
     banned: banned.length,
+    silentConnections,
     unmatched: Array.isArray(unmatched) ? unmatched.length : 0,
   };
 }
@@ -2512,6 +2521,7 @@ APP.get('/admin', async (req, res, next) => {
         { title: 'Files reported', count: counts.reports, note: `${AUTO_HIDE_AFTER} distinct reporters hide a file automatically. Below that, it waits.`, href: '/admin/reports' },
         { title: 'Stores needing a decision', count: counts.moderation, note: 'Restricted, suspended or removed.', href: '/admin/moderation' },
         { title: 'Suspended accounts', count: counts.banned, note: 'Signed out everywhere, stores hidden, nothing deleted.', href: '/admin/users' },
+        { title: 'Connections needing a look', count: counts.silentConnections, note: 'Never called us back, or calling with a secret that does not match.', href: '/admin/connections' },
       ],
       platform: [
         ['Charges', '<strong>Two</strong> — a plan upgrade and annual rent'],
@@ -2599,6 +2609,25 @@ APP.get('/admin/stores/:slug', async (req, res, next) => {
     return res.send(views.adminStoreDetail({
       user: await withBadges(req.user), consent: req.consent, flash: flashFor(req.query),
       data, rules: await store.policyRules(), actions: MOD_ACTIONS, labels: ACTION_LABELS,
+    }));
+  } catch (err) { return next(err); }
+});
+
+/**
+ * The money path, watched.
+ *
+ * This is the console's answer to a question no seller can ask: which networks,
+ * across the whole platform, have gone quiet. A dead connection looks exactly
+ * like a quiet week from inside the store, and the difference matters — one is
+ * normal, the other means somebody is publishing for nothing.
+ */
+APP.get('/admin/connections', async (req, res, next) => {
+  try {
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    if (req.user.role !== 'admin') return res.status(404).send('Not found');
+    return res.send(views.adminConnections({
+      user: await withBadges(req.user), consent: req.consent, flash: flashFor(req.query),
+      rows: await store.connectionHealth(),
     }));
   } catch (err) { return next(err); }
 });

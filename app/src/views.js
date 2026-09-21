@@ -2764,7 +2764,7 @@ export function adminShell({ user, consent, current, title, lede = '', actions =
     ${actions}
   </div>
 </div>
-<nav class="console-nav" aria-label="Console">${tab('/admin', 'Overview', 'overview')}${tab('/admin/payments', 'Payments', 'payments', user.adminBadges?.payments)}${tab('/admin/stores', 'Stores', 'stores')}${tab('/admin/reports', 'Reports', 'reports', user.adminBadges?.reports)}${tab('/admin/moderation', 'Moderation', 'moderation', user.adminBadges?.moderation)}${tab('/admin/audit', 'Audit log', 'audit')}</nav>
+<nav class="console-nav" aria-label="Console">${tab('/admin', 'Overview', 'overview')}${tab('/admin/payments', 'Payments', 'payments', user.adminBadges?.payments)}${tab('/admin/stores', 'Stores', 'stores')}${tab('/admin/connections', 'Connections', 'connections')}${tab('/admin/reports', 'Reports', 'reports', user.adminBadges?.reports)}${tab('/admin/moderation', 'Moderation', 'moderation', user.adminBadges?.moderation)}${tab('/admin/audit', 'Audit log', 'audit')}</nav>
 ${body}`,
   });
 }
@@ -2877,6 +2877,186 @@ ${platform ? `
  * never relies on colour alone, and sorting is a link so it works without
  * JavaScript and every ordering is a URL somebody can send to somebody else.
  */
+/**
+ * The money path, watched.
+ *
+ * A connection that is quietly dead is the most expensive failure in this
+ * product: the seller keeps publishing, the buyer keeps watching rewarded ads,
+ * and nothing moves — because a callback URL was never saved in the network's own
+ * dashboard. The seller's networks page answers "is mine connected"; this page
+ * answers "is any of them, and which one is dead", which is a question only the
+ * platform can ask because only the platform sees all of them at once.
+ *
+ * The diagnosis is written out per row rather than left as a status word, because
+ * the four failure modes look identical from the outside (no money) and have
+ * completely different fixes.
+ */
+function connectionDiagnosis(row, now = Date.now()) {
+  const ageHours = (now - new Date(row.created_at).getTime()) / 3_600_000;
+  const lastGood = row.last_verified_at ? new Date(row.last_verified_at) : null;
+  const quietDays = lastGood ? (now - lastGood.getTime()) / 86_400_000 : null;
+
+  if (row.provider_id === 'house') {
+    return { tone: 'info', headline: 'Ours', detail: 'House creatives. No callback is expected, and none is missing.' };
+  }
+  if (row.status === 'revoked') {
+    return { tone: '', headline: 'Disconnected by the seller', detail: 'Nothing to do. The record stays for the audit trail.' };
+  }
+  // Refusals are recorded for their REASON, and the reason decides the fix. A
+  // signature mismatch means the seller must paste a new secret; "no adapter for
+  // provider" means we cannot verify that network at all and the seller should be
+  // told before they publish more files behind it. Both are refusals, and neither
+  // is visible from the storefront.
+  const rejectedAfterGood = row.last_rejected_at && (!lastGood || new Date(row.last_rejected_at) > lastGood);
+  if (rejectedAfterGood && row.signature_failures > 0) {
+    return {
+      tone: 'bad', headline: 'The network is calling and we are refusing it',
+      detail: 'The shared secret here does not match the one in the network\'s dashboard, so every callback '
+        + 'fails verification. The seller has to paste the current secret again — no amount of waiting fixes it.',
+    };
+  }
+  if (rejectedAfterGood && row.last_rejection_reason) {
+    return {
+      tone: 'warn', headline: 'Recent callbacks are being refused',
+      detail: `The network is calling and we are answering 401: ${row.last_rejection_reason}. `
+        + 'This is our side of the integration rather than the seller\'s, and it means nothing is unlocking.',
+    };
+  }
+  if (row.status === 'restricted' || row.status === 'failed') {
+    return {
+      tone: 'warn', headline: 'The network refused this publisher',
+      detail: row.status_reason || 'No reason recorded. Reconnect to see what the network says.',
+    };
+  }
+  if (!row.postbacks_total) {
+    return ageHours < 1
+      ? { tone: 'info', headline: 'Waiting for the first callback', detail: 'Connected under an hour ago. Give it until tomorrow before assuming anything.' }
+      : {
+        tone: 'warn', headline: 'Never called us back',
+        detail: 'Most often the callback URL was never saved in the network\'s own dashboard, which the seller '
+          + 'has to do — or the placement is not live on their side. A verified connection is what turns "waiting" into "earning".',
+      };
+  }
+  if (row.status === 'verifying') {
+    return { tone: 'info', headline: 'Callbacks arriving, still verifying', detail: 'A signed callback has been received; the connection will settle once it repeats.' };
+  }
+  if (quietDays !== null && quietDays > 7) {
+    return {
+      tone: 'warn', headline: `Last signed callback ${Math.floor(quietDays)} days ago`,
+      detail: 'It worked and then went quiet. Usually the placement was paused, or the ad code was removed from the store page.',
+    };
+  }
+  return { tone: 'good', headline: 'Working', detail: 'Signed callbacks are arriving and being accepted.' };
+}
+
+export function adminConnections({ user, consent = null, flash = null, rows = [], days = 30 }) {
+  const now = Date.now();
+  const diagnosed = rows.map((r) => ({ ...r, dx: connectionDiagnosis(r, now) }));
+  const callbacks = rows.reduce((a, r) => a + Number(r.callbacks_window || 0), 0);
+  const rejected = rows.reduce((a, r) => a + Number(r.signature_failures || 0), 0);
+  const talking = diagnosed.filter((r) => r.provider_id !== 'house' && r.status !== 'revoked' && r.postbacks_total > 0).length;
+  const silent = diagnosed.filter((r) => r.dx.tone === 'warn' || r.dx.tone === 'bad').length;
+
+  return adminShell({
+    user, consent, current: 'connections', title: 'Connections',
+    lede: 'Every ad network connected to a store, and whether it is actually calling us back. Nothing on this page moves money; it is how we find out that nothing is.',
+    actions: `<a class="btn btn-sm" href="/admin/stores">Stores</a>`,
+    body: `
+${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)" role="status">${esc(flash.message)}</div>` : ''}
+
+<section class="section">
+  <div class="kpi-row">
+    ${kpi({ label: 'Callbacks · 30d', value: callbacks.toLocaleString('en-IN'), context: 'signed requests from networks', href: null })}
+    ${kpi({ label: 'Talking', value: String(talking), context: 'connections that have called us', tone: talking ? 'good' : '' })}
+    ${kpi({ label: 'Needs a look', value: String(silent), context: silent ? 'never called, or refused signature' : 'every connection is healthy', tone: silent ? 'warn' : '' })}
+    ${kpi({ label: 'Rejected signatures', value: rejected.toLocaleString('en-IN'), context: rejected ? 'a secret does not match' : 'none', tone: rejected ? 'bad' : '' })}
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>${rows.length ? plural(rows.length, 'connection') : 'No connections'}</h2>
+    <p>${rows.length
+    ? `Ordered by how much attention each one needs. Callback counts cover the last ${num(days)} days.`
+    : 'No store has connected an ad network yet. Until one does, nothing can be unlocked and nothing can be earned.'}</p>
+  </div>
+
+  ${rows.length ? diagnosed.map((r) => `
+  <div class="panel" style="margin-top:var(--space-5)">
+    <div class="panel-head">
+      <a href="/admin/stores/${esc(r.channel_slug)}"><strong>${esc(r.channel_name)}</strong></a>
+      <span class="fine">${esc(r.provider_id)}${r.credential_label ? ` · ${esc(r.credential_label)}` : ''}</span>
+      <span class="spacer"></span>
+      ${pill(r.status, r.status === 'active' ? 'success' : r.status === 'verifying' ? 'info' : r.status === 'revoked' ? '' : 'warning')}
+    </div>
+    <div class="panel-body">
+      <p class="small" style="margin:0">
+        <strong>${esc(r.dx.headline)}.</strong> ${esc(r.dx.detail)}
+      </p>
+      <dl class="kv" style="margin-top:var(--space-4)">
+        <dt>Callbacks</dt><dd>${r.callbacks_window
+    ? `${plural(r.callbacks_window, 'callback')} in ${num(days)} days${r.postbacks_total !== r.callbacks_window ? ` · ${num(r.postbacks_total)} ever` : ''}`
+    : (r.postbacks_total ? `none in ${num(days)} days · last ${esc(relTime(r.last_verified_at))}` : 'never')}</dd>
+        <dt>Last verified</dt><dd>${r.last_verified_at ? esc(relTime(r.last_verified_at)) : '—'}</dd>
+        <dt>Refused</dt><dd>${r.rejections_total
+    // The verdict above and this line have to agree. The first version counted
+    // only signature failures here while the verdict counted every refusal, so a
+    // row could say "callbacks are being refused" and "none" in the same breath.
+    ? `${plural(r.rejections_total, 'callback')} answered 401 (last ${esc(relTime(r.last_rejected_at))})`
+      + `${r.signature_failures ? ` · ${num(r.signature_failures)} of them a signature mismatch` : ''}`
+      + `${r.last_rejection_reason ? `<div class="fine">${esc(r.last_rejection_reason)}</div>` : ''}`
+    : 'nothing refused'}</dd>
+        <dt>Slots filled</dt><dd>${r.slots_filled ? plural(r.slots_filled, 'slot') : 'none assigned to this connection'}</dd>
+        <dt>Connected</dt><dd>${esc(relTime(r.created_at))}${r.payout_verdict ? ` · payout check: ${esc(r.payout_verdict)}` : ''}</dd>
+      </dl>
+      ${(r.history || []).length ? `<details class="disclosure" style="margin-top:var(--space-4)">
+        <summary class="disclosure-head">
+          <span class="disclosure-title" style="font-size:var(--text-sm)">Status history</span>
+          <span class="disclosure-note">${plural(r.history.length, 'transition')}, newest first</span>
+          <span class="disclosure-chevron" aria-hidden="true"></span>
+        </summary>
+        <div class="panel-body" style="border-top:1px solid var(--border-subtle)">
+          <ul class="dl-list">
+            ${r.history.map((h) => `<li class="dl-item" style="display:block">
+              <span class="fine">${esc(relTime(h.created_at))} — ${esc(h.from_status || 'new')} → <strong>${esc(h.to_status)}</strong></span>
+              ${h.detail ? `<div class="small">${esc(h.detail)}</div>` : ''}
+            </li>`).join('')}
+          </ul>
+        </div>
+      </details>` : ''}
+    </div>
+  </div>`).join('') : ''}
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Four ways this breaks</h2>
+    <p>They all look the same from the storefront — nothing unlocks, nothing is earned — and they have four different fixes.</p>
+  </div>
+  <div class="panel"><div class="panel-body">
+    <dl class="kv">
+      <dt>Never called us back</dt>
+      <dd>The callback URL was never saved in the network's own dashboard, or the placement is not live.
+        <span class="fine">The seller fixes this; we cannot do it for them, and the secret we generated is already on their connections page.</span></dd>
+      <dt>Signature refused</dt>
+      <dd>The network is calling and our check is failing, which means the secret here and the secret there are different.
+        <span class="fine">Nothing is earned while this is true, and waiting never fixes it.</span></dd>
+      <dt>Went quiet</dt>
+      <dd>Signed callbacks stopped. Usually a paused placement or ad code removed from the page.
+        <span class="fine">This is the one that looks like success from every other page in the console.</span></dd>
+      <dt>Refused by the network</dt>
+      <dd>The network rejected this publisher, and the reason it gave is on the row above.
+        <span class="fine">Payout eligibility is checked at connect time and snapshotted, so a later registry change cannot rewrite what the seller was shown.</span></dd>
+    </dl>
+    <p class="fine" style="margin-top:var(--space-4)">
+      What a creator was PAID is never on this page. We count the callbacks we received and verified;
+      the money is between them and the network, and their statement is the authority.
+    </p>
+  </div></div>
+</section>`,
+  });
+}
+
 export function adminStores({ user, consent = null, flash = null, data = null, filters = {}, canExport = true }) {
   const rows = data?.rows || [];
   const total = data?.total || 0;

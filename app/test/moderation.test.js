@@ -571,3 +571,89 @@ test('the store detail assembles the evidence and refuses to invent a payout', a
   assert.match(missing, /No such store/);
   assert.match(missing, /href="\/admin\/stores"/);
 });
+
+// ---------------------------------------------------------------------------
+// The money path
+// ---------------------------------------------------------------------------
+
+const { adminConnections } = await import('../src/views.js');
+
+test('connection health separates a network that never called from one whose secret is wrong', async () => {
+  const rows = await store.connectionHealth();
+  assert.ok(Array.isArray(rows));
+  for (const r of rows) {
+    assert.ok('postbacks_total' in r && 'callbacks_window' in r && 'signature_failures' in r,
+      'the three numbers that tell the failure modes apart');
+    assert.ok(Array.isArray(r.history), 'and the transitions, for the detail view');
+  }
+});
+
+test('each failure mode gets its own explanation, not a status word', () => {
+  const base = {
+    channel_slug: 'shop', channel_name: 'Shop', provider_id: 'adsterra', status: 'active',
+    created_at: new Date(Date.now() - 10 * 86_400_000).toISOString(),
+    credential_label: 'zone 1234', payout_verdict: 'ok', slot_keys: [], slots_filled: 2,
+    postbacks_total: 40, callbacks_window: 12, signature_failures: 0,
+    last_verified_at: new Date(Date.now() - 3600_000).toISOString(), last_rejected_at: null,
+    last_transition_at: null, history: [], status_reason: null,
+  };
+  const page = (over) => adminConnections({
+    user: { role: 'admin', email: 'op@test.local' }, consent: null, rows: [{ ...base, ...over }],
+  });
+
+  assert.match(page({}), /Working/, 'a healthy connection says so');
+  assert.match(page({ postbacks_total: 0, callbacks_window: 0, last_verified_at: null,
+    created_at: new Date(Date.now() - 3 * 86_400_000).toISOString() }), /Never called us back/);
+  assert.match(page({ signature_failures: 3, rejections_total: 3, last_rejected_at: new Date().toISOString() }),
+    /The network is calling and we are refusing it/);
+  // A refusal with a different reason gets its own sentence, because the fix is
+  // different: this one is ours to correct, not the seller's.
+  assert.match(page({ rejections_total: 2, last_rejected_at: new Date().toISOString(),
+    last_rejection_reason: 'no adapter for provider "adsterra"' }),
+  /Recent callbacks are being refused/);
+  assert.match(page({ rejections_total: 2, last_rejected_at: new Date().toISOString(),
+    last_rejection_reason: 'no adapter for provider "adsterra"' }), /no adapter for provider/);
+  assert.match(page({ status: 'restricted', status_reason: 'Publisher not eligible for Nepal' }),
+    /Publisher not eligible for Nepal/, "the network's own reason is shown verbatim");
+  assert.match(page({ last_verified_at: new Date(Date.now() - 10 * 86_400_000).toISOString() }),
+    /Last signed callback 10 days ago/);
+  assert.match(page({ provider_id: 'house', postbacks_total: 0, last_verified_at: null }),
+    /Ours/, 'a house connection expects no callbacks and is not a failure');
+
+  // And the page never claims to know what anyone was paid.
+  const full = page({});
+  assert.match(full, /What a creator was PAID is never on this page/);
+  // The word "earned" appears in the explanation of a failure ("nothing is earned
+  // while this is true"), which is honest. What must never appear is a FIGURE:
+  // a currency amount or a paid-to-them claim would be our number, and we do not
+  // have that number.
+  assert.ok(!/\$\s?\d/.test(full), 'no currency amounts on a page about callbacks');
+  assert.ok(!/(were|was) paid \$|paid out|earnings of/i.test(full), 'and no payout claims');
+});
+
+test('the refusal line and the verdict agree with each other', () => {
+  const base = {
+    channel_slug: 'shop', channel_name: 'Shop', provider_id: 'adsterra', status: 'active',
+    created_at: new Date(Date.now() - 10 * 86_400_000).toISOString(),
+    credential_label: null, payout_verdict: null, slot_keys: [], slots_filled: 0,
+    postbacks_total: 180, callbacks_window: 180, signature_failures: 0, rejections_total: 0,
+    last_verified_at: new Date(Date.now() - 600_000).toISOString(), last_rejected_at: null,
+    last_rejection_reason: null, last_transition_at: null, history: [], status_reason: null,
+  };
+  const page = (over) => adminConnections({
+    user: { role: 'admin', email: 'op@test.local' }, consent: null, rows: [{ ...base, ...over }],
+  });
+  // The bug this replaces: a row that said "callbacks are being refused" above a
+  // line reading "none", because one counted signature failures and the other
+  // counted every refusal.
+  const refused = page({ rejections_total: 3, last_rejected_at: new Date().toISOString(),
+    last_rejection_reason: 'no adapter for provider "adsterra"' });
+  assert.match(refused, /Recent callbacks are being refused/);
+  assert.ok(!/Refused<\/dt><dd>nothing refused/.test(refused), 'the row cannot contradict its own verdict');
+  assert.match(refused, /3 callbacks answered 401/);
+  assert.match(refused, /no adapter for provider/);
+  // And a clean connection says so on both lines.
+  const clean = page({});
+  assert.match(clean, /Working/);
+  assert.match(clean, /nothing refused/);
+});
