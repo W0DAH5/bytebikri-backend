@@ -23,6 +23,11 @@ import { calibrationRowState } from './earnings.js';
 // definition of "how full is this plan", used by the dashboard, the operator's
 // plans page and the message at the upload wall.
 import { planUsage } from './billing.js';
+// The audit vocabulary and the two renderers that make a row readable: who did it
+// (a person, the platform, or a visitor) and what it was about.
+import { AUDIT_FAMILIES, actorOf, subjectOf } from './audit.js';
+
+const FAMILY_LABELS = Object.fromEntries(AUDIT_FAMILIES.map((f) => [f.key, f.label]));
 
 const esc = (s) =>
   String(s ?? '')
@@ -4453,6 +4458,18 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
  * still searchable, money gets a currency and thousands separators, booleans
  * become yes/no, and the fields that describe a decision come first.
  */
+/**
+ * "a, b and c" — a list as a sentence reads it.
+ *
+ * Written for the audit page's empty state, which lists the controls that are
+ * narrowing the view: "Nothing matches the Money view and actor "bob"."
+ */
+function listing(items) {
+  const parts = items.filter(Boolean).map(String);
+  if (parts.length < 2) return parts[0] || 'anything';
+  return `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`;
+}
+
 const AUDIT_LABELS = {
   plan: 'plan', planCode: 'plan', channelId: 'store', channelSlug: 'store', slug: 'store',
   assetId: 'file', assetSlug: 'file', paymentId: 'payment', invoiceId: 'invoice',
@@ -4487,42 +4504,217 @@ export function briefMeta(meta) {
     const ia = AUDIT_ORDER.indexOf(a[0]); const ib = AUDIT_ORDER.indexOf(b[0]);
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
   });
-  return entries.map(([k, v]) => `${AUDIT_LABELS[k] || k} ${auditValue(k, v, npr)}`).join(' · ').slice(0, 220);
+  // `ads: yes`, not `ads yes`. Two words in a row read as a phrase — the label and
+  // the value blur into each other, and "ads yes" is not a sentence anybody wrote.
+  return entries.map(([k, v]) => `${AUDIT_LABELS[k] || k}: ${auditValue(k, v, npr)}`).join(' · ').slice(0, 220);
 }
 
-export function adminAudit({ user, consent = null, rows = [], q = '', total = 0 }) {
-  const filtered = q ? rows.filter((r) => String(r.action).includes(q)) : rows;
+/**
+ * The audit log, organised around the question it is read to answer.
+ *
+ * What it replaced: the newest 300 rows, filtered by substring in JavaScript, and
+ * a header that said "12 of 300" — a number describing the page's own array. An
+ * operator could not tell a table with 300 rows from one with three million, and
+ * could not filter by who or by when at all. The research on audit UIs is
+ * unanimous that filtering is what keeps a feed usable after the first week, and
+ * that the actor has to be unambiguous — "so admins can tell 'Dana deleted it'
+ * from 'Nightly billing sync updated it'".
+ *
+ * Three things follow from that:
+ *
+ *  - **Families, with counts taken over the whole table.** The default view is the
+ *    families that record a person deciding something, because that is what an
+ *    audit page is read for. It is a filter, not a hiding: the count of every
+ *    family is on the tabs, and the total in the table is printed next to it. The
+ *    one family that will dwarf the rest — sign-ins — says so on its own tab.
+ *  - **Who, without ambiguity.** A person, the platform, or a visitor: three
+ *    kinds, never a dash.
+ *  - **A stated window.** "Showing 50 of 1,204 matching, out of 8,930 in the
+ *    table" — so nobody reads a page of results as the whole history.
+ */
+export function adminAudit({
+  user, consent = null, data = null, filters = {}, canExport = true,
+}) {
+  const rows = data?.rows || [];
+  const counts = data?.counts || {};
+  const allRows = data?.allRows || 0;
+  const total = data?.total || 0;
+  const page = data?.page || 1;
+  const pages = data?.pages || 1;
+  const perPage = data?.perPage || 50;
+  const { family = 'decisions', actor = '', q = '', since = 'all' } = filters;
+
+  const familyCount = (key) => (key === 'decisions'
+    ? AUDIT_FAMILIES.filter((f) => f.decisions).reduce((sum, f) => sum + (counts[f.key]?.n || 0), 0)
+    : key === 'all' ? allRows : (counts[key]?.n || 0));
+
+  const link = (next) => {
+    const params = new URLSearchParams();
+    const merged = { family, actor, q, since, ...next };
+    for (const [k, v] of Object.entries(merged)) {
+      if (!v) continue;
+      // Only the DEFAULTS are dropped. `family=all` is a real view — "Everything" —
+      // and treating it like an empty value sent every pager link from that tab to
+      // the Decisions tab instead, which is a different page of a different log.
+      if (k === 'family' && v === 'decisions') continue;
+      if (k === 'since' && v === 'all') continue;
+      params.set(k, v);
+    }
+    const qs = params.toString();
+    return `/admin/audit${qs ? `?${qs}` : ''}`;
+  };
+
+  const TABS = [
+    { key: 'decisions', label: 'Decisions', note: 'Every row where a person chose something, across the families below.' },
+    ...AUDIT_FAMILIES.map((f) => ({ key: f.key, label: f.label, note: f.note })),
+    { key: 'all', label: 'Everything', note: 'The whole table, including the background noise.' },
+  ];
+  const shown = TABS.find((t) => t.key === family) || TABS[0];
+
+  // Named, so an empty tab tells the operator which control to undo rather than
+  // leaving them to audit their own URL.
+  const narrowing = [
+    family !== 'decisions' ? `${shown.label === 'Everything' ? 'the whole log' : `the ${shown.label} view`}` : null,
+    actor ? `actor "${actor}"` : null,
+    q ? `"${q}"` : null,
+    since !== 'all' ? `the last ${since}` : null,
+  ].filter(Boolean);
+
+  const when = (value) => {
+    const d = new Date(value);
+    // UTC, labelled. The server renders HTML without knowing the reader's
+    // timezone, and a plausible-looking local time that is silently wrong is the
+    // worst of the three options for a record people check against each other.
+    const iso = `${d.toISOString().slice(0, 10)} ${d.toISOString().slice(11, 16)}`;
+    return `<span class="mono small">${esc(iso)}</span><div class="fine">${esc(relTime(value))}</div>`;
+  };
+
   return adminShell({
     user, consent, current: 'audit', title: 'Audit log',
-    lede: 'Every state change that mattered, with who did it. Newest first.',
-    actions: `<form class="search search-inline" method="get" action="/admin/audit" role="search">
-      <label class="sr-only" for="q">Filter by action</label>
-      <input class="input" id="q" name="q" type="search" value="${esc(q)}" placeholder="Filter by action, e.g. rent">
-      <button class="btn" type="submit">Filter</button>
-    </form>`,
+    lede: 'What happened, who did it, and what it was about. Times are UTC — this is the record people check '
+      + 'against each other, so an hour that might be local would be worse than useless.',
+    actions: canExport ? `<a class="btn btn-sm" href="${esc(link({ format: 'csv', page: undefined }))}">Download CSV</a>` : '',
     body: `
 <section class="section">
-  <div class="section-head">
-    <h2>${q ? `Matching “${esc(q)}”` : 'Everything'}</h2>
-    <p>${num(filtered.length)} of ${num(total)} rows</p>
+  <div class="kpi-row">
+    <div class="kpi kpi-hero">
+      <div class="kpi-value">${num(allRows)}</div>
+      <div class="kpi-label">Rows in the log</div>
+      <div class="kpi-note">Never edited and never deleted — the table is append-only, and an audit trail that gets tidied stops being one.</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-value">${num(familyCount('decisions'))}</div>
+      <div class="kpi-label">Decisions by people</div>
+      <div class="kpi-note">Money, moderation, accounts and exports — the rows this page opens on.</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-value">${num(familyCount('signins'))}</div>
+      <div class="kpi-label">Sign-ins</div>
+      <div class="kpi-note">${familyCount('signins') && familyCount('signins') > familyCount('decisions')
+    ? 'More of these than decisions, which is exactly why they have their own tab.'
+    : 'One row each, kept, and kept out of the way.'}</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-value">${counts.delivery?.n ? num(counts.delivery.n) : '—'}</div>
+      <div class="kpi-label">Callbacks and jobs</div>
+      <div class="kpi-note">The platform talking to itself. An empty tab here is the good news.</div>
+    </div>
   </div>
+</section>
+
+<section class="section">
+  <nav class="segments" aria-label="Families">
+    ${TABS.map((t) => `<a href="${esc(link({ family: t.key, page: undefined }))}"
+      ${t.key === family ? 'aria-current="page"' : ''}>${esc(t.label)}<span class="seg-count">${num(familyCount(t.key))}</span></a>`).join('')}
+  </nav>
+  <p class="fine" style="margin-top:var(--space-3)">${esc(shown.note)}</p>
+
+  <form class="filters" method="get" action="/admin/audit" role="search" style="margin-top:var(--space-5)">
+    <input type="hidden" name="family" value="${esc(family)}">
+    <div class="field" style="flex:1 1 200px">
+      <label for="actor">Who</label>
+      <input class="input" id="actor" name="actor" type="search" value="${esc(actor)}" placeholder="Name or email">
+    </div>
+    <div class="field" style="flex:2 1 240px">
+      <label for="q">Action or detail</label>
+      <input class="input" id="q" name="q" type="search" value="${esc(q)}" placeholder="rent, postback, a reference number">
+    </div>
+    <div class="field">
+      <label for="since">When</label>
+      <select class="input" id="since" name="since">
+        ${[['all', 'Any time'], ['day', 'Last 24 hours'], ['week', 'Last 7 days'], ['month', 'Last 30 days']]
+    .map(([v, l]) => `<option value="${v}"${since === v ? ' selected' : ''}>${l}</option>`).join('')}
+      </select>
+    </div>
+    <div class="filters-foot">
+      <button class="btn btn-primary" type="submit">Apply</button>
+      ${(actor || q || since !== 'all' || family !== 'decisions') ? `<a class="btn btn-sm" href="/admin/audit">Clear</a>` : ''}
+    </div>
+  </form>
+
+  <div class="section-head" style="margin-top:var(--space-6)">
+    <h2>${total ? `${num(total)} row${total === 1 ? '' : 's'}` : 'Nothing matches'}</h2>
+    <p>${total
+    ? `Showing ${num(rows.length)} of ${num(total)} matching, out of ${num(allRows)} in the table. `
+      + `${pages > 1 ? `Page ${num(page)} of ${num(pages)}.` : 'That is all of them.'}`
+    : (allRows === 0
+      ? 'The table is empty — nothing has been recorded yet. Every sign-in, decision and callback is written '
+        + 'here the first time it happens, so this is the state before the first one.'
+      // A chosen FAMILY is a filter like any other. Reading the Money tab with no
+      // rows and being told the log is empty is wrong in the one place wrongness is
+      // least affordable — and it was the first thing a real look at the page found.
+      : `Nothing matches ${listing(narrowing)}. The log holds ${num(allRows)} row${allRows === 1 ? '' : 's'} `
+        + 'in total, so widen the time range, drop the family, or clear the search.')}</p>
+  </div>
+
+  ${rows.length ? `
   <div class="panel"><div class="panel-body panel-body-flush">
-    <table class="table">
-      <thead><tr><th>When</th><th>Action</th><th>Who</th><th>Subject</th><th>Detail</th></tr></thead>
-      <tbody>${filtered.map((a) => `
-        <tr>
-          <td class="fine" style="white-space:nowrap">${esc(new Date(a.created_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))}</td>
-          <td><span class="mono">${esc(a.action)}</span></td>
-          <td class="fine">${esc(a.actor_name || a.actor_email || '—')}</td>
-          <td class="fine mono">${esc(a.subject_type ? `${a.subject_type}` : '—')}</td>
-          <td class="fine">${esc(briefMeta(a.meta))}</td>
-        </tr>`).join('') || '<tr><td colspan="5" class="muted">No rows.</td></tr>'}
+    <table class="table table-directory table-audit">
+      <thead><tr><th>When · UTC</th><th>Action</th><th>Who</th><th>What it was about</th><th>Detail</th></tr></thead>
+      <tbody>${rows.map((r) => {
+    const who = actorOf(r);
+    const subject = subjectOf(r);
+    const brief = briefMeta(r.meta);
+    // `data-label` is what the phone layout reads: below 700px the header row is
+    // hidden and each cell carries its own column name, because five columns in
+    // 650px of a 390px screen is a table nobody can read and nobody scrolls.
+    return `<tr>
+        <td data-label="When" style="white-space:nowrap">${when(r.created_at)}</td>
+        <td data-label="Action">
+          <span class="mono small">${esc(r.action)}</span>
+          <div class="fine">${esc(FAMILY_LABELS[r.family] || r.family)}</div>
+        </td>
+        <td data-label="Who">
+          <strong${who.kind === 'person' ? '' : ' class="muted"'} style="font-weight:${who.kind === 'person' ? '600' : '400'}">${esc(who.label)}</strong>
+          <div class="fine">${esc(who.detail || '')}</div>
+        </td>
+        <td data-label="What it was about" class="fine">${subject
+    ? `${subject.href
+      ? `<a href="${esc(subject.href)}">${esc(subject.label || subject.type)}</a>`
+      : esc(subject.label || subject.type)}${
+      subject.label ? `<div class="fine">${esc(subject.label === subject.type ? '' : subject.type)}</div>` : ''}`
+    : '<span class="fine">—</span>'}</td>
+        <td data-label="Detail" class="fine">
+          ${brief ? esc(brief) : '<span class="muted">—</span>'}
+          ${r.meta ? `<details><summary class="fine">raw</summary><pre class="meta-json">${esc(JSON.stringify(r.meta, null, 1))}</pre></details>` : ''}
+        </td>
+      </tr>`;
+  }).join('')}
       </tbody>
     </table>
   </div></div>
+  ${pages > 1 ? `<nav class="pager" aria-label="Pages">
+    ${page > 1 ? `<a class="btn btn-sm" href="${esc(link({ page: page - 1 }))}">← Newer</a>` : ''}
+    <span class="fine">Page ${num(page)} of ${num(pages)}</span>
+    ${page < pages ? `<a class="btn btn-sm" href="${esc(link({ page: page + 1 }))}">Older →</a>` : ''}
+  </nav>` : ''}
+  ` : `<div class="empty">${allRows === 0
+    ? 'Nothing has been written to the log yet.'
+    : 'No rows match. Clear the filters above, or open Everything to see the whole log.'}</div>`}
 </section>`,
   });
 }
+
 
 export function operatorBilling({ user, consent = null, flash = null, payments = [], invoices = [], payee = null, console = false }) {
   const payRows = payments.map((p) => `

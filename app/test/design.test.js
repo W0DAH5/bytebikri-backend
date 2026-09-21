@@ -376,8 +376,8 @@ test('audit metadata reads as a sentence, not as JSON', () => {
   const line = briefMeta({ channelId: 'c6326d55-1cb6-43cb-8e8d-b2cc17ed2e0f', plan: 'pro', amountNpr: 1500, txnReference: 'ESEWA-90122' });
   assert.ok(!line.includes('{'), 'no braces');
   assert.ok(!line.includes('"'), 'no quoted keys');
-  assert.match(line, /amount NPR 1,500/, 'money gets a currency and separators');
-  assert.match(line, /store c6326d55/, 'an id is shortened to something still searchable');
+  assert.match(line, /amount: NPR 1,500/, 'money gets a currency and separators');
+  assert.match(line, /store: c6326d55/, 'an id is shortened to something still searchable');
   assert.ok(!line.includes('1cb6'), 'and the rest of the uuid is not in the way');
   assert.equal(briefMeta(null), '');
   assert.equal(briefMeta('just a note'), 'just a note');

@@ -33,7 +33,10 @@ tool that vanishes whenever the environment is rebuilt stops verifying.
 node check.mjs /admin /admin/plans /dashboard/bob@bob   # named pages, both widths
 node sweep.mjs                                          # every signed-in page
 node anon.mjs /s/ghost-store /nope                      # signed-out pages
+# EYES_BASE=http://127.0.0.1:3100 points every script at a second instance
+# (another port, another database) — sessions are cached per account and port.
 node csvcheck.mjs                                       # the exports, end to end
+node pager.mjs [/admin/audit?family=all]                # a pager that pages
 ```
 
 `page@account` picks who is signed in (`@bob` for a seller dashboard, operator by

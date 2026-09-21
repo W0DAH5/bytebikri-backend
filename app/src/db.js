@@ -45,6 +45,36 @@ pool.on('error', (err) => {
   console.error('[db] idle client error:', err.message);
 });
 
+/**
+ * Refuse to serve the development database to a test.
+ *
+ * This module is the one place every query goes through, so it is the one place
+ * that can make this mistake impossible. The mistake is real: `npm test` ran a
+ * new test file that forgot `DATABASE_URL`, and two fixture channels were written
+ * into the database `npm start` serves — passing tests, a corrupted demo, and a
+ * failure that surfaces later, somewhere else.
+ *
+ * Every other test file sets the URL, but that is discipline, and discipline is
+ * what failed. The subtlety worth knowing: static ESM imports are evaluated
+ * before the importing file's body runs, so `process.env.DATABASE_URL ||= ...`
+ * written above `import { store }` still lands too late. Ordering the file
+ * correctly is therefore not obvious, which is why the check lives here: this
+ * module is evaluated before the file that imports it, so refusing to exist is
+ * early enough to stop the first query and loud enough to explain itself.
+ */
+const databaseName = (() => {
+  try { return new URL(connectionString).pathname.replace(/^\//, ''); }
+  catch { return ''; }
+})();
+
+if (process.env.NODE_TEST_CONTEXT && !/_test$/.test(databaseName)) {
+  throw new Error(
+    `Refusing to run this test against "${databaseName}". A test must set ` +
+    'DATABASE_URL to a database whose name ends in _test (see scripts/test-db.mjs) ' +
+    'before importing anything that queries.',
+  );
+}
+
 export const query = (text, params) => pool.query(text, params);
 
 /** First row, or null. */

@@ -221,6 +221,9 @@ test('every class the views emit has a rule in the stylesheet', () => {
 
 const { billing: billingView, storeSettings, dashboardReviews, assetManage, operatorBilling, marketplace } =
   await import('../src/views.js');
+// store.js loads the pool; the pool refuses to exist under `node --test` unless it
+// points at a test database. This file only reads PLANS, but it still has to say so.
+process.env.DATABASE_URL ||= 'postgres://postgres:postgres@127.0.0.1:55432/bytebikri_test';
 const { PLANS } = await import('../src/store.js');
 const { railDetails, planBenefits, upgradeExplanation, NOT_CHARGED } = await import('../src/billing.js');
 

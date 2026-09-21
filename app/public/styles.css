@@ -712,6 +712,20 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
 .console-nav a:hover { background: var(--surface-hover); color: var(--text-primary); text-decoration: none; }
 .console-nav a[aria-current="page"] { background: var(--surface-overlay); color: var(--text-primary); }
 
+/* Raw event JSON, behind a disclosure.
+   The research is specific: show 1-3 fields inline and put the rest behind a
+   drill-down, because a wall of JSON is what makes an audit feed unreadable. It
+   wraps rather than scrolls: a JSON blob that pushes a table sideways on a phone
+   is the same bug as a table that does. */
+.meta-json {
+  margin: var(--space-2) 0 0; padding: var(--space-3);
+  background: var(--surface-overlay); border-radius: var(--radius-sm);
+  font-size: var(--text-2xs); line-height: 1.5; color: var(--text-muted);
+  white-space: pre-wrap; overflow-wrap: anywhere; max-width: 46ch;
+}
+details > summary { cursor: pointer; color: var(--text-faint); }
+details > summary:hover { color: var(--text-muted); }
+
 /* A plan meter: how full the file allowance is.
    Shown only from 80% up (see the dashboard), so it is a warning rather than
    dashboard decoration — which is also why it is allowed to be this loud. The
@@ -1788,6 +1802,35 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 
 @media (max-width: 700px) {
   .kpi-hero { grid-column: span 1; }
+}
+
+/* ── console: the audit log on a phone ───────────────────────────────────── */
+/* Five columns need about 650px; a phone has 390. The usual answer is to let the
+   table scroll sideways inside its panel, which is what every other table here
+   does — but a log is read by scanning, and a scan that requires horizontal
+   scrolling stops after the first row. So on a phone the audit table stops being a
+   table: the header row goes, and each row becomes a labelled block, read top to
+   bottom. Same cells, same data, one reading direction. */
+@media (max-width: 700px) {
+  /* Two classes deep to beat `.panel-body-flush .table { min-width: 520px }`, which
+     is there for tables that scroll — this one no longer does. */
+  .panel-body-flush .table-audit, .table-audit { min-width: 0; }
+  .table-audit thead { display: none; }
+  .table-audit tbody tr {
+    display: block; padding: var(--space-4) 0;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .table-audit tbody tr:last-child { border-bottom: 0; }
+  .table-audit td { display: block; border-bottom: 0; padding: 0 var(--space-4); }
+  .table-audit td + td { margin-top: var(--space-2); }
+  .table-audit td::before {
+    content: attr(data-label);
+    display: block; font-size: var(--text-2xs); text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--text-faint); font-weight: 600;
+  }
+  /* The timestamp is the one value worth reading first, and it sits last in the
+     DOM on no page — keep it on one line. */
+  .table-audit td[data-label="When"] { white-space: nowrap; }
 }
 
 /* ── console: find a store ───────────────────────────────────────────────── */

@@ -3,13 +3,14 @@
 import { chromium } from 'playwright';
 import { login } from './lib.mjs';
 
-const BASE = 'http://127.0.0.1:3000';
+const BASE = process.env.EYES_BASE || 'http://127.0.0.1:3000';
 const b = await chromium.launch({ executablePath: '/tmp/chromium', args: ['--no-sandbox'] });
 const ctx = await b.newContext();
 const p = await ctx.newPage();
-await login(p, 'operator@bytebikri.local');
+await login(p, 'operator@bytebikri.local', 'bytebikri-demo', BASE);
 
-for (const url of ['/admin/users?format=csv', '/admin/stores?format=csv', '/admin/earnings?format=csv']) {
+for (const url of ['/admin/users?format=csv', '/admin/stores?format=csv', '/admin/earnings?format=csv',
+  '/admin/plans?format=csv', '/admin/audit?format=csv&family=all', '/admin/audit?format=csv&actor=operator']) {
   const res = await p.request.get(BASE + url);
   const body = await res.text();
   const lines = body.replace(/\n$/, '').split('\n');

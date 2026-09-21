@@ -1,8 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { exportAll, csvCell, csvDocument, truncationNote } from '../src/export.js';
-import { store } from '../src/store.js';
 import * as views from '../src/views.js';
+
+// The pool is loaded transitively by store.js; this file never queries, but the
+// pool refuses to exist under `node --test` unless it points at a test database.
+process.env.DATABASE_URL ||= 'postgres://postgres:postgres@127.0.0.1:55432/bytebikri_test';
+const { store } = await import('../src/store.js');
 
 // ---------------------------------------------------------------------------
 // Exports

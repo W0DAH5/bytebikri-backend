@@ -55,7 +55,11 @@ export async function sessionFor(browser, who, { dir = '/tmp/eyes', base = 'http
   // demo keeps near his plan's file ceiling, so his dashboard is the one that
   // exercises the usage meter.
   const email = who.includes('@') ? who : `${who}@bytebikri.local`;
-  const file = `${dir}/state-${who.split('@')[0]}.json`;
+  // Keyed by port as well as account: a session cookie from the demo database is
+  // meaningless against a second instance, and silently reused it would look like
+  // a sign-in that worked and a page that refused you.
+  const port = new URL(base).port || '3000';
+  const file = `${dir}/state-${who.split('@')[0]}-${port}.json`;
   if (existsSync(file)) return JSON.parse(readFileSync(file, 'utf8'));
 
   const ctx = await browser.newContext();

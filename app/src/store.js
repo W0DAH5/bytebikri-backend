@@ -21,6 +21,7 @@ import { rentPeriod, annualRentNpr, rentWorking } from './billing.js';
 // calibration page must all be arithmetic on the SAME assumption, or comparing
 // them is meaningless.
 import { POLICY } from './slots.js';
+import { familyCase, AUDIT_FAMILIES } from './audit.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -2057,16 +2058,34 @@ export const store = {
     const amountNpr = annualRentNpr(estimate);
     if (!amountNpr) return null;
     const period = rentPeriod(channel.created_at, now);
-    await query(
+    // `returning id` is what makes the audit row honest: `on conflict do nothing`
+    // returns no row when the invoice already existed, and this runs on every
+    // dashboard view. Writing an audit row unconditionally would fill the log
+    // with "invoiced" lines for an invoice that was issued once, months ago —
+    // the exact noise that makes an audit log unreadable.
+    const inserted = await query(
       `insert into rent_invoices (channel_id, period_start, period_end, amount_npr, basis)
        values ($1, $2, $3, $4, $5)
-       on conflict (channel_id, period_start) do nothing`,
+       on conflict (channel_id, period_start) do nothing
+       returning id`,
       [channel.id, period.start, period.end, amountNpr, JSON.stringify(rentWorking(estimate, amountNpr))],
     );
-    return one(
+    const invoice = await one(
       'select * from rent_invoices where channel_id = $1 and period_start = $2',
       [channel.id, period.start],
     );
+    if (inserted.rowCount && invoice) {
+      // An invoice is money the platform is owed. Until now it appeared in
+      // `rent_invoices` and nowhere in the record of what happened — so "when did
+      // this charge first appear" had no answer, on a platform whose entire
+      // payment flow is a person matching transfers by hand.
+      await this.audit('rent.invoice_issued', {
+        amountNpr, periodStart: invoice.period_start, periodEnd: invoice.period_end,
+        channelSlug: channel.slug, store: channel.name,
+        pageviews30d: estimate?.pageviews30d ?? null, rentSlots: estimate?.rent ?? null,
+      }, { subjectType: 'channel', subjectId: channel.id });
+    }
+    return invoice;
   },
 
   rentInvoicesOfChannel(channelId) {
@@ -2617,6 +2636,97 @@ export const store = {
     );
   },
 
+  /**
+   * The audit log, searched rather than dumped.
+   *
+   * The page this replaces fetched the newest 300 rows, filtered them in
+   * JavaScript by substring, and printed "12 of 300" — a number that describes
+   * the page's own array, not the table. An operator reading "300" has no way to
+   * know whether the table holds 300 rows or 300,000, and the research on audit
+   * UIs is unanimous that filters are what make a feed usable "after the first
+   * week". So: every filter is SQL, the total is a real count, and the window is
+   * paged.
+   *
+   * The subject is resolved to something a person can read — a store's name, a
+   * profile's email — because `asset 4f2c…` is a row nobody can act on, and the
+   * research asks for "the target (record type plus a human-friendly name)".
+   * Resolution is by id, so it says nothing about a row whose subject has since
+   * been deleted: the name falls back to the type alone, and the row stays.
+   */
+  auditSearch({
+    family = 'decisions', actor = '', q = '', since = 'all', page = 1, perPage = 50,
+  } = {}) {
+    const FAMILY = familyCase();
+    const where = [];
+    const params = [];
+    const bind = (value) => { params.push(value); return `$${params.length}`; };
+
+    // `decisions` is the default view: the families that record a person
+    // choosing something. It is a filter, not a hiding — the count of everything
+    // else is on the page next to it.
+    const decisionKeys = AUDIT_FAMILIES.filter((f) => f.decisions).map((f) => f.key);
+    if (family === 'decisions') {
+      where.push(`${FAMILY} = any(${bind(decisionKeys)})`);
+    } else if (family && family !== 'all') {
+      where.push(`${FAMILY} = ${bind(family)}`);
+    }
+    if (String(actor).trim().length >= 2) {
+      const term = `%${String(actor).trim().toLowerCase()}%`;
+      const a = bind(term);
+      where.push(`(lower(coalesce(p.email, '')) like ${a} or lower(coalesce(p.display_name, '')) like ${a})`);
+    }
+    if (String(q).trim().length >= 2) {
+      const term = `%${String(q).trim().toLowerCase()}%`;
+      const a = bind(term);
+      // The meta blob is searchable too: a store id or a reference number pasted
+      // from an email is exactly how somebody arrives at this page.
+      where.push(`(lower(l.action) like ${a} or lower(coalesce(l.meta::text, '')) like ${a})`);
+    }
+    const SINCE = { day: "now() - interval '24 hours'", week: "now() - interval '7 days'", month: "now() - interval '30 days'" };
+    if (SINCE[since]) where.push(`l.created_at > ${SINCE[since]}`);
+    const clause = where.length ? `where ${where.join(' and ')}` : '';
+
+    const size = Math.min(Math.max(Number(perPage) || 50, 10), 200);
+    const pages = Math.max(Number(page) || 1, 1);
+
+    return withTransaction(async (c) => {
+      const rows = await c.query(
+        `select l.id, l.action, l.subject_type, l.subject_id, l.meta, l.created_at,
+                p.display_name as actor_name, p.email as actor_email, p.role as actor_role,
+                case when l.subject_type = 'channel' then ch.name
+                     when l.subject_type = 'profile' then pr.email
+                     else null end as subject_label,
+                case when l.subject_type = 'channel' then ch.slug else null end as subject_slug,
+                ${FAMILY} as family,
+                count(*) over () as total_rows
+           from audit_logs l
+           left join profiles p on p.id = l.actor_id
+           left join channels ch on l.subject_type = 'channel' and ch.id = l.subject_id
+           left join profiles pr on l.subject_type = 'profile' and pr.id = l.subject_id
+           ${clause}
+          order by l.created_at desc, l.id desc
+          limit ${size} offset ${(pages - 1) * size}`,
+        params,
+      );
+      // Counts over every family, unfiltered, so a tab can never show a number
+      // that depends on the search box.
+      const counts = await c.query(
+        `select ${FAMILY} as family, count(*)::int as n, max(created_at) as last_at from audit_logs group by 1`,
+      );
+      const total = Number(rows.rows[0]?.total_rows || 0);
+      return {
+        rows: rows.rows,
+        total,
+        counts: Object.fromEntries(counts.rows.map((r) => [r.family, { n: r.n, last_at: r.last_at }])),
+        allRows: counts.rows.reduce((sum, r) => sum + r.n, 0),
+        page: pages,
+        pages: Math.max(Math.ceil(total / size), 1),
+        perPage: size,
+      };
+    });
+  },
+
+  /** The newest rows, unfiltered — what the overview's activity strip reads. */
   recentAudit(limit = 200) {
     return many(
       `select l.*, p.display_name as actor_name, p.email as actor_email

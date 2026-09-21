@@ -22,9 +22,13 @@ import { assertProductionConfig, readSecret, checkConfig, formatConfigReport, is
 import { query, many, scalar, health as dbHealth, close as closeDb } from './src/db.js';
 import { allocateSlots, estimateRentSlotValue, POLICY } from './src/slots.js';
 import { csvCell, csvDocument, exportAll, truncationNote } from './src/export.js';
+import { AUDIT_FAMILIES, actorOf } from './src/audit.js';
 // The CSV must print a date the same way the page does, so the export borrows the
 // page's formatter rather than growing a second opinion about it.
 import { isoDay } from './src/views.js';
+// The CSV carries the same one-line detail the page shows, from the same function:
+// an export that says something different from the screen is worse than no export.
+import { briefMeta } from './src/views.js';
 import { composeSlots, HOUSE_CREATIVE, sanitizeUrl } from './src/creatives.js';
 import { exploreRails } from './src/ranking.js';
 import {
@@ -520,7 +524,12 @@ APP.post('/login', limitLogin, async (req, res, next) => {
       ip: req.ip,
     });
     setSessionCookie(res, token, ttl);
-    await store.audit('auth.login', { userId: user.id });
+    // `actorId` is not decoration: a sign-in row with a null actor is a row no
+    // page can attribute, and the whole point of the table is "who did what".
+    // (For months this call put the id in `meta.userId`, which nothing joins on —
+    // so the largest family in the log could not answer its own question.)
+    await store.audit('auth.login', { userId: user.id },
+      { actorId: user.id, subjectType: 'profile', subjectId: user.id });
     res.redirect(back || '/');
   } catch (err) { next(err); }
 });
@@ -556,7 +565,8 @@ APP.post('/signup', limitSignup, async (req, res, next) => {
       userId: user.id, userAgent: req.get('user-agent'), ip: req.ip,
     });
     setSessionCookie(res, token, ttl);
-    await store.audit('auth.signup', { userId: user.id });
+    await store.audit('auth.signup', { userId: user.id },
+      { actorId: user.id, subjectType: 'profile', subjectId: user.id });
     res.redirect('/');
   } catch (err) { next(err); }
 });
@@ -1315,9 +1325,11 @@ async function resolveContentRequest(req, res, { event }) {
   }
   const { a, f, u } = check.payload;
   if (u !== req.user.id) {
+    // The actor here is the account presenting the token — that is the person
+    // doing something — while the token's owner is the subject of the refusal.
     await store.audit('content.denied', {
-      reason: 'token belongs to another account', assetId: a, userId: req.user.id,
-    });
+      reason: 'token belongs to another account', assetId: a, userId: req.user.id, tokenOwnerId: u,
+    }, { actorId: req.user.id, subjectType: 'profile', subjectId: u });
     res.status(403).json({ ok: false, error: 'this link was issued to a different account' });
     return null;
   }
@@ -1344,7 +1356,8 @@ async function resolveContentRequest(req, res, { event }) {
       assetId: a, channelId: asset.channel_id, userId: u, method: 'open', adsCompleted: 0,
       policy: { unlock_hours: 0 },   // free access does not expire
     });
-    await store.audit('content.free_grant', { assetId: a, userId: u });
+    await store.audit('content.free_grant', { assetId: a, userId: u },
+      { actorId: u, subjectType: 'asset', subjectId: a });
   }
   if (a !== req.params.assetId || f !== req.params.fileId) {
     res.status(403).json({ ok: false, error: 'token does not match this file' });
@@ -1359,7 +1372,8 @@ async function resolveContentRequest(req, res, { event }) {
   const file = await store.fileById(f);
   if (!file) { res.status(404).json({ ok: false, error: 'file not found' }); return null; }
 
-  await store.audit(event, { assetId: a, fileId: f, userId: u });
+  await store.audit(event, { assetId: a, fileId: f, userId: u },
+    { actorId: u, subjectType: 'asset', subjectId: a });
   return { asset, file, userId: u };
 }
 
@@ -2822,13 +2836,57 @@ APP.post('/admin/reports/:assetId', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * The audit log, filtered in SQL.
+ *
+ * The version this replaces fetched 300 rows and filtered them in JavaScript, so
+ * the header's "of 300" described the array rather than the table, and the filters
+ * could not reach past the page. Every filter here is a bound parameter, and the
+ * family list is a fixed vocabulary from `src/audit.js` — never a string from the
+ * query interpolated into a `case`.
+ */
 APP.get('/admin/audit', async (req, res, next) => {
   try {
     if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
-    const rows = await store.recentAudit(300);
+    const filters = {
+      family: String(req.query.family || 'decisions'),
+      actor: String(req.query.actor || '').trim().slice(0, 80),
+      q: String(req.query.q || '').trim().slice(0, 80),
+      since: String(req.query.since || 'all'),
+      // Read here, or the page's own "Older →" link goes nowhere: it carries
+      // `?page=2`, the view renders it, and the query it produces would have been
+      // page 1 again. Invisible while the log fits on one page — which is exactly
+      // how long a pager bug survives.
+      page: Math.min(10_000, Math.max(1, Number(req.query.page) || 1)),
+    };
+    // An unknown family falls back to the default view rather than an empty page:
+    // a bad URL should show the log, not look like the log is empty.
+    const known = ['decisions', 'all', ...AUDIT_FAMILIES.map((f) => f.key)];
+    if (!known.includes(filters.family)) filters.family = 'decisions';
+    if (!['all', 'day', 'week', 'month'].includes(filters.since)) filters.since = 'all';
+
+    if (req.query.format === 'csv') {
+      const all = await exportAll(({ page, perPage }) => store.auditSearch({ ...filters, page, perPage }));
+      const head = ['when_utc', 'action', 'family', 'actor', 'actor_email', 'subject_type', 'subject', 'detail'];
+      const body = all.rows.map((r) => {
+        const who = actorOf(r);
+        return [new Date(r.created_at).toISOString(), r.action, r.family,
+          who.kind === 'person' ? (r.actor_name || r.actor_email) : who.label,
+          r.actor_email || '', r.subject_type || '',
+          r.subject_label || '', briefMeta(r.meta)];
+      });
+      const stamp = new Date().toISOString().slice(0, 10);
+      await store.audit('audit.exported', { filters, rows: all.rows.length, total: all.total, truncated: all.truncated },
+        { actorId: req.user.id });
+      res.setHeader('content-type', 'text/csv; charset=utf-8');
+      res.setHeader('content-disposition',
+        `attachment; filename="bytebikri-audit-${stamp}-${all.rows.length}${all.truncated ? `-of-${all.total}` : ''}.csv"`);
+      return res.send(`${csvDocument(head, body)}${truncationNote(all)}`);
+    }
+
     res.send(views.adminAudit({
       user: await withBadges(req.user), consent: req.consent,
-      rows, q: String(req.query.q || '').slice(0, 40), total: rows.length,
+      data: await store.auditSearch(filters), filters,
     }));
   } catch (err) { next(err); }
 });
@@ -2981,7 +3039,10 @@ APP.get('/admin/users/:userId', async (req, res, next) => {
   try {
     if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
     const detail = await store.personDetail(req.params.userId);
-    if (!detail) return res.status(404).send(views.notFound({ user: req.user, consent: req.consent, kind: 'page' }));
+    // `requestedKind`, not `kind`: the wrong name is silently ignored and every
+    // store that never existed would answer with the generic page rather than the
+    // store-shaped one. The parameter name is the contract.
+    if (!detail) return res.status(404).send(views.notFound({ user: req.user, consent: req.consent, requestedKind: 'page' }));
     res.send(views.adminUser({
       user: req.user, consent: req.consent, flash: flashFor(req.query),
       detail, rules: await store.policyRules(), personActions: PERSON_ACTIONS, labels: ACTION_LABELS,
