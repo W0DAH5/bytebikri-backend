@@ -313,9 +313,43 @@ function channelCard(c) {
  * quietly overrule the seller's decision. The empty state now says what the
  * page is for instead of apologising for a section that should not exist.
  */
-export function marketplace({ channels, user, consent = null, q = '', results = null }) {
+export function marketplace({ channels, user, consent = null, q = '', results = null, explore = null }) {
   const listed = channels.filter((c) => c.listing_mode === 'marketplace');
   const searching = String(q || '').trim().length >= 2;
+
+  /**
+   * A store in a rail, with the reason it is in that rail.
+   *
+   * The reason is not a caption. A visitor reading "Popular this week" has to be
+   * able to see what earned it, and a visitor reading "Featured" has to be able
+   * to see that the position was bought — anything else is a dark pattern with
+   * better typography.
+   */
+  const railCard = (entry, paid) => `
+    <a class="card card-interactive rail-card${paid ? ' rail-card-paid' : ''}"
+       href="/s/${esc(entry.channel.slug)}">
+      <div class="row" style="align-items:flex-start">
+        <div style="min-width:0">
+          <h3 style="font-size:var(--text-md)">${esc(entry.channel.name)}</h3>
+          <p class="small" style="margin:var(--space-1) 0 0">${esc(entry.channel.tagline || 'A store on ByteBikri.')}</p>
+        </div>
+        ${!paid && entry.rank ? `<span class="spacer"></span><span class="rank-badge">${num(entry.rank)}</span>` : ''}
+      </div>
+      <div class="rail-why">
+        ${paid ? pill('Paid placement', 'warning') : pill('Earned', 'success')}
+        ${entry.alsoPlaced ? pill('Also featured (paid)', 'warning') : ''}
+        <span class="fine">${esc(entry.why)}</span>
+      </div>
+    </a>`;
+
+  const rail = (r) => `
+  <section class="section">
+    <div class="section-head">
+      <h2>${esc(r.title)}</h2>
+      <p>${esc(r.note)}</p>
+    </div>
+    <div class="grid-rails">${r.entries.map((e) => railCard(e, r.key === 'featured')).join('')}</div>
+  </section>`;
 
   const resultBlock = searching ? `
     <section class="section">
@@ -361,10 +395,14 @@ export function marketplace({ channels, user, consent = null, q = '', results = 
   </form>
 </div>
 ${resultBlock}
-${searching ? '' : `<section class="section">
+${searching ? '' : `
+${explore && explore.rails.length ? explore.rails.map(rail).join('') : ''}
+
+<section class="section">
   <div class="section-head">
-    <h2>Listed stores</h2>
-    <p>${plural(listed.length, 'store')}</p>
+    <h2>${explore && explore.rails.length ? 'All listed stores' : 'Listed stores'}</h2>
+    <p>${plural(listed.length, 'store')}. Listing here is a choice a creator makes — plenty keep to
+      their own address and are found by link.</p>
   </div>
   ${listed.length
     ? `<div class="grid-channels">${listed.map(channelCard).join('')}</div>`

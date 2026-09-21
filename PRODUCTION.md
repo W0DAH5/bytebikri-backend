@@ -252,6 +252,14 @@ than two competing ones. Reduced motion collapses every duration to 0.01 ms so
 `@supports` + `no-preference`, because an animation must never be the only thing
 that makes content appear.
 
+**What "popular" means.** Explore has two rails with two questions. *Popular this
+week* reads traffic, unlocks and breadth over thirty days and cannot read a plan —
+the ranking function never receives one, so no price change can alter it.
+*Featured* is Pro-only paid placement, labelled as paid wherever it appears, and
+it renders below the earned rail while still holding a position the directory
+does not give. A store that both earns and buys keeps one card and an honest pill
+rather than two cards.
+
 **Still to do:** the mobile pass; a look at real storefronts in this category
 rather than at my own reasoning; creative images (the column and the sanitiser
 exist, the upload path does not). Rent is currently priced from an assumed RPM

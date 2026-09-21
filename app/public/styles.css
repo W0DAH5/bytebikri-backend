@@ -620,6 +620,34 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
     var(--surface-overlay);
 }
 
+/* ── Explore rails ───────────────────────────────────────────────────────── */
+/* Three cards wide, not a grid of twelve. A rail is an argument, not an
+   inventory — the full list sits underneath for anyone who wants it. */
+.grid-rails {
+  display: grid; gap: var(--space-6);
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+}
+.rail-card { display: flex; flex-direction: column; gap: var(--space-4); color: inherit; }
+.rail-card:hover { text-decoration: none; }
+.rail-card-paid { border-style: dashed; }
+
+/* The rank is a position, so it is drawn as one: a numeral sized like a figure,
+   not a trophy. */
+.rank-badge {
+  flex: none; min-width: 26px; height: 26px; padding-inline: 6px;
+  border-radius: var(--radius-sm);
+  display: grid; place-items: center;
+  background: var(--surface-overlay); border: 1px solid var(--border-strong);
+  font-size: var(--text-xs); font-weight: 680; font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.rail-why {
+  margin-top: auto; padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+  display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
+}
+
 /* ── asset detail ────────────────────────────────────────────────────────── */
 
 /* The stage: whatever the page is showing, in one frame with one radius.

@@ -235,6 +235,40 @@ export const store = {
         order by c.created_at`,
     );
   },
+  /**
+   * Attention evidence for every store at once, for the Explore rails.
+   *
+   * One query with two lateral aggregates rather than a loop of per-channel
+   * counts: the front page is the most-visited page in a marketplace and it must
+   * not cost one round trip per store.
+   *
+   * `unlocks` counts only non-revoked unlocks inside the window, because a
+   * revoked unlock is attention that was taken back.
+   */
+  channelStats({ days = 30 } = {}) {
+    return many(
+      `select c.id as channel_id,
+              coalesce(v.views, 0)::int   as views_30d,
+              coalesce(u.unlocks, 0)::int as unlocks_30d,
+              coalesce(a.items, 0)::int   as items
+         from channels c
+         left join lateral (
+           select sum(p.views) as views from page_view_daily p
+            where p.channel_id = c.id and p.day > current_date - $1::int
+         ) v on true
+         left join lateral (
+           select count(*) as unlocks from unlocks un
+            where un.channel_id = c.id and un.revoked_at is null
+              and un.granted_at > now() - ($1::int || ' days')::interval
+         ) u on true
+         left join lateral (
+           select count(*) as items from assets as_ where as_.channel_id = c.id and as_.status = 'live'
+         ) a on true
+        where c.moderation_state <> 'removed'`,
+      [days],
+    );
+  },
+
   channelsOf(ownerId) {
     return many('select * from channels where owner_id = $1 order by created_at', [ownerId]);
   },

@@ -296,9 +296,9 @@ chore.
 
 ## 9. Tests
 
-`npm test` → **242 pass, 0 fail** (133 five rounds ago; 152 after the player
+`npm test` → **256 pass, 0 fail** (133 six rounds ago; 152 after the player
 round; 184 after the revenue round; 214 after the slot round; 232 after the
-connection round).
+connection round; 242 after the design pass).
 
 | New | What it holds still |
 |---|---|
@@ -310,6 +310,7 @@ connection round).
 | `test/earnings.test.js` (15) | an open period is shown but never compared; the estimate and the statement are never blended; rent is annualised against annualised statements; a blank payout label is not a label; **and `payout_accounts` is asserted to hold no column that could move money** |
 | `test/design.test.js` (10) | motion lives in tokens and nowhere else; no `transition: all`; no hover that animates layout; reduced motion collapses to 0.01 ms so `animationend` still fires; scroll-driven reveals sit inside their `no-preference` guard; touch targets reach 44 px where the pointer is a finger; the hero has exactly one primary call to action; and **the landing page's money facts are the same strings the earnings page renders**, from the same structure |
 | `test/networks.test.js` (18) | a network with no adapter has no Connect button and says what still works; the callback URL keeps the network's macros verbatim (a percent-encoded macro is a postback that never arrives); no secret means not verified; "never called back" names the likeliest cause; **and the only field the flow may ever ask for is the verification secret** — asserted against the rendered form, not the code |
+| `test/ranking.test.js` (14) | the earned rail cannot read a plan — a Pro store with no traffic stays off it while a free store with traffic leads it; the paid rail is labelled as paid everywhere and never borrows the word "earned"; the score weights an unlock above a pageview; below 20 views a store is not "popular" at all; the rails are disjoint, a store that both earns and buys keeps one card and carries a pill instead of a second; and a store with no rows at all still gets a row from `channelStats`, because a store missing from the page is a store nobody can find |
 | `test/creatives.test.js` (15) | the store's message can never fill the platform's slot or the reverse; a creative written for one slot does not leak into the others; `javascript:`, `data:` and protocol-relative links are refused; a link label with no link is dropped; one message per slot, corrected in place |
 
 Two of the assertions above exist because the bug they describe shipped: the
@@ -509,3 +510,44 @@ POST …/bitlabs/secret  'ab'               → 302 error=secret  (too short, no
 POST …/bitlabs/secret  '<32 chars>'       → 302 ?saved=1, status active
 GET  the page again                       → callback URL with {uid}/{tx}/{s1} intact
 ```
+
+---
+
+## 13. What "popular" means, and what money can buy
+
+The Explore page is the one surface where a marketplace can quietly lie. Two
+orderings were merged into one "top sellers" rail — traffic and a plan flag —
+and nobody could tell which a given store was in.
+
+They are now two rails with two questions, and the difference is structural
+rather than editorial:
+
+| Rail | Question it answers | What it reads | What it cannot read |
+|---|---|---|---|
+| **Popular this week** | What did people actually do here? | pageviews and non-revoked unlocks over thirty days, plus how much there is to unlock | `plan_code`. The function does not receive it, so no schedule of prices can change the ranking |
+| **Featured** | What bought a position? | `canFeature(channel)`, evaluated in the route, not in the ranking | traffic. Ordering inside the rail is by attention, but membership is bought |
+
+The weights are stated in `src/ranking.js` and asserted in `test/ranking.test.js`:
+**pageviews ×1, unlocks ×8, items ×3**. An unlock outweighs eight pageviews
+because an unlock cost the viewer a rewarded ad — it is the only unambiguous
+evidence the platform has that somebody wanted the file, and the whole product is
+built on that transaction. Below **20 views in thirty days** nothing is
+"popular"; below that the ranking is noise, and a front page that shows noise to
+its first visitors teaches them not to return.
+
+Three further decisions, all of them visible on the page:
+
+- **The earned rail renders first**, with the paid rail below it and the full
+  directory underneath. That order is the product statement: the front page leads
+  with what people did.
+- **A store that both earns and buys appears once**, in the earned rail, carrying
+  an "Also featured (paid)" pill. Its placement never vanishes silently, and it
+  does not get a second card to say so.
+- **Every gate the page offers says why it is showing what it is showing** —
+  `240 views and 3 unlocks in thirty days` is a sentence a visitor can check,
+  which a ranking position is not.
+
+`store.channelStats()` is one query with two lateral aggregates, not a loop: the
+front page is the most-visited page in a marketplace and it must not cost one
+round trip per store. It returns a row for every store, zeros included — a store
+missing from the directory is a store nobody can find.

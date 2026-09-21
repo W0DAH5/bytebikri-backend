@@ -22,6 +22,7 @@ import { assertProductionConfig, readSecret, checkConfig, formatConfigReport, is
 import { query, many, scalar, health as dbHealth, close as closeDb } from './src/db.js';
 import { allocateSlots, estimateRentSlotValue, POLICY } from './src/slots.js';
 import { composeSlots, HOUSE_CREATIVE, sanitizeUrl } from './src/creatives.js';
+import { exploreRails } from './src/ranking.js';
 import {
   onboardingFor, connectable, postbackUrl, validateCredential, maskSecret,
   connectionHealth, unconnectableNote,
@@ -305,6 +306,23 @@ APP.get('/', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * The Explore rails.
+ *
+ * `canFeature` is the one place that decides who may buy placement, and it is
+ * evaluated here rather than inside the ranking module — a ranking function that
+ * knew what a plan costs would have to change the day a price changes.
+ */
+async function exploreState(channels) {
+  const rows = await store.channelStats({ days: 30 });
+  const stats = Object.fromEntries(rows.map((r) => [r.channel_id, r]));
+  return exploreRails({
+    channels: channels.filter((c) => c.listing_mode === 'marketplace'),
+    stats,
+    canFeature: (c) => store.plan(c).capabilities.featured_eligible === true,
+  });
+}
+
 APP.get('/marketplace', async (req, res, next) => {
   try {
     const q = String(req.query.q || '').slice(0, 80);
@@ -313,7 +331,10 @@ APP.get('/marketplace', async (req, res, next) => {
     // returns nothing looks broken.
     const results = q.trim().length >= 2 ? await store.search(q) : null;
     const channels = await decorateChannels(await store.channels({ listedOnly: true }));
-    res.send(views.marketplace({ channels, user: req.user, consent: req.consent, q, results }));
+    const explore = results ? null : await exploreState(channels);
+    res.send(views.marketplace({
+      channels, user: req.user, consent: req.consent, q, results, explore,
+    }));
   } catch (err) { next(err); }
 });
 
