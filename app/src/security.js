@@ -92,7 +92,20 @@ export function originCheck({ publicBaseUrl } = {}) {
  * which is why login failures are also counted in the database (see auth.js
  * recentFailures) where a restart cannot erase them.
  */
-export function rateLimit({ windowMs = 60_000, max = 60, key = (req) => req.ip, name = 'requests' } = {}) {
+/**
+ * A limiter, with one rule about how it says no.
+ *
+ * A rate limit is a conversation with whoever is on the other end, and the honest
+ * version of it is a sentence with a wait in it. The first version returned JSON
+ * unconditionally, so a person who mistyped their password twelve times — a normal
+ * thing to do — was shown `{"ok":false,"error":"too many sign-in attempts..."}` as
+ * a page of raw text. Browsers navigate; APIs fetch. `render` is how a route that
+ * serves pages says which one it is talking to, and the JSON path stays for the
+ * postback endpoint, where no human ever reads the answer.
+ */
+export function rateLimit({
+  windowMs = 60_000, max = 60, key = (req) => req.ip, name = 'requests', render = null,
+} = {}) {
   const hits = new Map();
 
   // Bound the map. Without eviction a limiter under attack becomes the memory
@@ -112,11 +125,20 @@ export function rateLimit({ windowMs = 60_000, max = 60, key = (req) => req.ip, 
     const times = (hits.get(id) || []).filter((t) => t > cutoff);
 
     if (times.length >= max) {
-      const retryAfter = Math.ceil((times[0] + windowMs - now) / 1000);
-      res.setHeader('retry-after', String(Math.max(retryAfter, 1)));
+      const retryAfter = Math.max(Math.ceil((times[0] + windowMs - now) / 1000), 1);
+      res.setHeader('retry-after', String(retryAfter));
+      // `accepts` returns the first type the client will take, in the order we
+      // name them — so a browser that sends `text/html,...` gets the page and a
+      // client that sends `application/json` keeps the object it was expecting.
+      if (render && req.accepts?.(['html', 'json']) === 'html') {
+        res.status(429).type('html').send(render({
+          retryAfter, what: name, max, windowMs, user: req.user || null,
+        }));
+        return;
+      }
       return res.status(429).json({
         ok: false,
-        error: `too many ${name}; try again in ${Math.max(retryAfter, 1)}s`,
+        error: `too many ${name}; try again in ${retryAfter}s`,
       });
     }
 

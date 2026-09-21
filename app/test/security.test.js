@@ -369,3 +369,70 @@ test('failures are counted from the database, where a restart cannot erase them'
   assert.equal(await auth.recentFailures(`third-${stamp}@test.local`, ipHash), 2,
     'and the address still answers for the failures that were not mine');
 });
+
+test('a rate limit answers a browser with a page and an API with an object', async () => {
+  const { rateLimit } = await import('../src/security.js');
+  const views = await import('../src/views.js');
+
+  const call = async (accept) => {
+    const limiter = rateLimit({
+      windowMs: 60_000, max: 1, name: 'sign-in attempts',
+      render: (info) => views.tooMany(info),
+    });
+    const res = {
+      headers: {}, statusCode: 200,
+      setHeader(k, v) { this.headers[k] = v; return this; },
+      status(code) { this.statusCode = code; return this; },
+      type(t) { this.headers['content-type'] = t; return this; },
+      json(body) { this.body = body; this.kind = 'json'; return this; },
+      send(body) { this.body = body; this.kind = 'html'; return this; },
+    };
+    const req = { ip: '10.0.0.1', accepts: () => accept, method: 'POST' };
+    await limiter(req, res, () => {});
+    await limiter(req, res, () => {});   // the one over the line
+    limiter.stop();
+    return res;
+  };
+
+  const browser = await call('html');
+  assert.equal(browser.statusCode, 429);
+  assert.equal(browser.kind, 'html', 'a browser navigation is answered with a page');
+  assert.match(browser.body, /Too many sign-in attempts/);
+  assert.match(browser.body, /Try again in about a minute/, 'and the wait is in words a person reads');
+  assert.equal(browser.headers['retry-after'], '60', 'with the header a proxy or client can act on');
+  assert.ok(!/ok:false|"error"/.test(browser.body), 'never the raw object that was going to be shown');
+
+  const api = await call('json');
+  assert.equal(api.kind, 'json', 'a client that asked for JSON still gets JSON');
+  assert.equal(api.body.ok, false);
+  assert.match(api.body.error, /too many sign-in attempts/);
+});
+
+test('the limit lifts on its own, and nothing else is refused while it is on', async () => {
+  const { rateLimit } = await import('../src/security.js');
+  let now = 1_000_000;
+  const realNow = Date.now;
+  Date.now = () => now;
+  try {
+    const limiter = rateLimit({ windowMs: 60_000, max: 2, name: 'requests', key: (req) => req.ip });
+    const res = () => ({
+      headers: {}, statusCode: 200, setHeader(k, v) { this.headers[k] = v; }, status(c) { this.statusCode = c; return this; },
+      json(b) { this.body = b; return this; },
+    });
+    let passed = 0;
+    const run = (req) => { const r = res(); limiter(req, r, () => { passed += 1; }); return r; };
+    run({ ip: 'a' }); run({ ip: 'a' });
+    const third = run({ ip: 'a' });
+    assert.equal(third.statusCode, 429, 'the third call in the window is refused');
+    assert.equal(passed, 2, 'and the handler is not run for it');
+    // A different address is untouched: the limit is a budget per source, and a
+    // shared mobile network is not a reason to refuse a stranger.
+    const other = run({ ip: 'b' });
+    assert.equal(other.statusCode, 200);
+    // After the window, the first address is allowed again.
+    now += 61_000;
+    const later = run({ ip: 'a' });
+    assert.equal(later.statusCode, 200, 'the limit lifts without anybody intervening');
+    limiter.stop();
+  } finally { Date.now = realNow; }
+});

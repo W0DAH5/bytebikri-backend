@@ -347,6 +347,200 @@ export const store = {
     );
   },
 
+  /**
+   * Everyone with an account — built around the four decisions that need people.
+   *
+   * `bannedUsers` and `usersMatching` could only answer "who is suspended" and
+   * "who is this exact person". The questions an operator actually has are staged
+   * ones: who signed up and never opened a store, who opened one and never
+   * published, who published and never got an unlock. Those three are the funnel,
+   * and they were invisible.
+   *
+   * The segment is computed in SQL rather than in the view so that filtering and
+   * counting use the same definition. A CASE in JS would be a second, silently
+   * different answer to the same question — the tabs would say twelve and the
+   * filtered query would return eleven.
+   *
+   * Suspended and operator come FIRST in the CASE: they are states that overlay a
+   * shape, and an operator looking for the suspension queue should not have to
+   * find it inside "files, no unlocks".
+   */
+  peopleDirectory({ segment = 'all', q = '', sort = 'recent', page = 1, perPage = 25 } = {}) {
+    const SEGMENT = `case
+      when p.banned then 'suspended'
+      when p.role <> 'user' then 'operator'
+      when coalesce(st.stores, 0) = 0 then 'no_store'
+      when coalesce(st.files, 0) = 0 then 'store_no_files'
+      when coalesce(st.unlocks, 0) = 0 then 'files_no_unlocks'
+      else 'working' end`;
+    // One lateral per person, so the counts are per-person and cannot multiply
+    // each other the way four independent joins in one FROM would.
+    const STATS = `left join lateral (
+        select
+          (select count(*)::int from channels c where c.owner_id = p.id and c.moderation_state <> 'removed') as stores,
+          (select count(*)::int from assets a
+             join channels c on c.id = a.channel_id
+            where c.owner_id = p.id and a.status = 'live') as files,
+          (select coalesce(sum(v.views), 0)::int from page_view_daily v
+             join channels c on c.id = v.channel_id
+            where c.owner_id = p.id and v.day > current_date - 30) as views_30d,
+          (select count(*)::int from unlocks u
+             join assets a on a.id = u.asset_id
+             join channels c on c.id = a.channel_id
+            where c.owner_id = p.id and u.revoked_at is null) as unlocks
+      ) st on true`;
+    const LIVE = `s.last_seen_at is not null and s.last_seen_at > now() - interval '30 days'`;
+    // The session summary is a lateral, and it must be joined by every query that
+    // mentions `s` — the counts query did not, and Postgres said so with
+    // "missing FROM-clause entry for table s" rather than counting zero and
+    // quietly reporting that nobody had been seen. Shared here so the next query
+    // to need it cannot forget.
+    const SESSIONS = `left join lateral (
+        select max(x.last_seen_at) as last_seen_at,
+               count(*) filter (where x.revoked_at is null and x.expires_at > now())::int as live_sessions
+          from sessions x where x.user_id = p.id
+      ) s on true`;
+
+    const where = [];
+    const params = [];
+    const bind = (value) => { params.push(value); return `$${params.length}`; };
+
+    if (segment && segment !== 'all') where.push(`${SEGMENT} = ${bind(segment)}`);
+    if (String(q).trim().length >= 2) {
+      const term = `%${String(q).trim().toLowerCase()}%`;
+      const a = bind(term);
+      where.push(`(lower(p.email) like ${a} or lower(coalesce(p.display_name, '')) like ${a})`);
+    }
+    const clause = where.length ? `where ${where.join(' and ')}` : '';
+
+    const ORDER = {
+      recent: 'p.created_at desc',
+      active: 's.last_seen_at desc nulls last',
+      views: 'coalesce(st.views_30d, 0) desc',
+      unlocks: 'coalesce(st.unlocks, 0) desc',
+      name: 'lower(coalesce(p.display_name, p.email)) asc',
+    };
+    const order = ORDER[sort] || ORDER.recent;
+
+    const size = Math.min(Math.max(Number(perPage) || 25, 1), 100);
+    const pages = Math.max(Number(page) || 1, 1);
+
+    return withTransaction(async (c) => {
+      const rows = await c.query(
+        `select p.id, p.email, p.display_name, p.role, p.banned, p.created_at, p.locale,
+                (p.password_hash is not null) as has_password,
+                (p.legal_name is not null) as sold_by_on_file,
+                coalesce(st.stores, 0) as stores,
+                coalesce(st.files, 0) as files,
+                coalesce(st.views_30d, 0) as views_30d,
+                coalesce(st.unlocks, 0) as unlocks,
+                s.last_seen_at,
+                coalesce(s.live_sessions, 0) as live_sessions,
+                coalesce(fl.failed_7d, 0) as failed_7d,
+                ${SEGMENT} as segment
+           from profiles p
+           ${STATS}
+           ${SESSIONS}
+           left join lateral (
+             select count(*)::int as failed_7d
+               from login_attempts l
+              where l.email = p.email and l.succeeded = false
+                and l.created_at > now() - interval '7 days'
+           ) fl on true
+           ${clause}
+          order by ${order}
+          limit ${size} offset ${(pages - 1) * size}`,
+        params,
+      );
+
+      const total = await c.query(`select count(*)::int as n from profiles p ${STATS} ${clause}`, params);
+      // Counted over every account, never over the filtered set: a tab that says
+      // "3" and then shows nothing because a search is also active is a lie about
+      // the platform, not about the search.
+      const counts = await c.query(
+        `select ${SEGMENT} as segment, count(*)::int as n, count(*) filter (where ${LIVE})::int as live
+           from profiles p ${STATS} ${SESSIONS}
+          group by 1`,
+      );
+
+      return {
+        rows: rows.rows,
+        total: total.rows[0].n,
+        counts: Object.fromEntries(counts.rows.map((r) => [r.segment, { n: r.n, live: r.live }])),
+        page: pages,
+        pages: Math.max(Math.ceil(total.rows[0].n / size), 1),
+        perPage: size,
+      };
+    });
+  },
+
+  /**
+   * One account, in the detail the directory deliberately leaves out.
+   *
+   * What is NOT here is a design decision: the files this person unlocked as a
+   * BUYER are counted, never listed. What a person reads is theirs, and an
+   * operator page that lists it turns a support tool into a surveillance log the
+   * platform would then have to defend. The seller may not track a buyer, and the
+   * operator does not need to either — a count answers every question moderation
+   * actually asks.
+   */
+  personDetail(userId) {
+    // Read-only, so no transaction: five independent reads through the pool run
+    // concurrently, whereas `Promise.all` over one transaction client is a
+    // deprecated pg pattern (a single connection cannot execute five queries at
+    // once) that would also serialise them anyway.
+    return (async () => {
+      const person = await one(
+        `select p.id, p.email, p.display_name, p.role, p.banned, p.ban_reason, p.locale, p.created_at,
+                (p.password_hash is not null) as has_password,
+                (p.legal_name is not null) as sold_by_on_file,
+                p.phone is not null as phone_on_file
+           from profiles p where p.id = $1`,
+        [userId],
+      );
+      if (!person) return null;
+      const [stores, sessions, attempts, decisions, unlocks] = await Promise.all([
+        many(
+          `select c.id, c.slug, c.name, c.moderation_state, c.listing_mode, c.created_at,
+                  (select count(*)::int from assets a where a.channel_id = c.id and a.status = 'live') as files,
+                  (select coalesce(sum(v.views), 0)::int from page_view_daily v
+                    where v.channel_id = c.id and v.day > current_date - 30) as views_30d
+             from channels c where c.owner_id = $1 order by c.created_at`,
+          [userId],
+        ),
+        one(
+          `select count(*)::int as total,
+                  count(*) filter (where revoked_at is null and expires_at > now())::int as live,
+                  max(last_seen_at) as last_seen,
+                  min(created_at) as first_seen
+             from sessions where user_id = $1`,
+          [userId],
+        ),
+        one(
+          `select count(*) filter (where succeeded = false and created_at > now() - interval '7 days')::int as failed_7d,
+                  count(*) filter (where succeeded = true and created_at > now() - interval '30 days')::int as ok_30d
+             from login_attempts where email = $1`,
+          [person.email],
+        ),
+        many(
+          `select m.id, m.action, m.rule_code, m.reason, m.created_at, r.title as rule_title
+             from moderation_actions m
+             left join policy_rules r on r.code = m.rule_code
+            where m.subject_type = 'profile' and m.subject_id = $1
+            order by m.created_at desc, m.id desc limit 20`,
+          [userId],
+        ),
+        one(
+          `select count(*)::int as held from unlocks u where u.user_id = $1 and u.revoked_at is null`,
+          [userId],
+        ),
+      ]);
+      return {
+        person, stores, sessions, attempts, decisions, unlocksHeld: unlocks.held,
+      };
+    })();
+  },
+
   // ---- moderation ---------------------------------------------------------
   /**
    * The rules a decision can cite. Read from the table, never from a constant in

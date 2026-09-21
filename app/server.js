@@ -21,6 +21,10 @@ import { store, storage, SLOT_DEFS, slugify, PLANS } from './src/store.js';
 import { assertProductionConfig, readSecret, checkConfig, formatConfigReport, isProd } from './src/config.js';
 import { query, many, scalar, health as dbHealth, close as closeDb } from './src/db.js';
 import { allocateSlots, estimateRentSlotValue, POLICY } from './src/slots.js';
+import { csvCell, csvDocument, exportAll, truncationNote } from './src/export.js';
+// The CSV must print a date the same way the page does, so the export borrows the
+// page's formatter rather than growing a second opinion about it.
+import { isoDay } from './src/views.js';
 import { composeSlots, HOUSE_CREATIVE, sanitizeUrl } from './src/creatives.js';
 import { exploreRails } from './src/ranking.js';
 import {
@@ -120,9 +124,21 @@ APP.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h', etag: tru
 APP.set('trust proxy', 1);   // behind Cloudflare/Vercel, so req.ip is the client
 
 // Rate limits. Named per purpose so a flood of one does not exhaust another.
-const limitLogin = rateLimit({ windowMs: 15 * 60_000, max: 12, name: 'sign-in attempts' });
-const limitSignup = rateLimit({ windowMs: 60 * 60_000, max: 10, name: 'signups' });
-const limitUnlock = rateLimit({ windowMs: 60_000, max: 20, name: 'unlock attempts' });
+// The three a person can reach from a page get a page back when they hit the
+// limit; the postback limiter stays JSON, because a network's server is the only
+// client and it reads the response.
+const limitLogin = rateLimit({
+  windowMs: 15 * 60_000, max: 12, name: 'sign-in attempts',
+  render: (info) => views.tooMany({ ...info, consent: null }),
+});
+const limitSignup = rateLimit({
+  windowMs: 60 * 60_000, max: 10, name: 'signups',
+  render: (info) => views.tooMany({ ...info, consent: null }),
+});
+const limitUnlock = rateLimit({
+  windowMs: 60_000, max: 20, name: 'unlock attempts',
+  render: (info) => views.tooMany({ ...info, consent: null }),
+});
 const limitPostback = rateLimit({ windowMs: 60_000, max: 600, name: 'postbacks' });
 
 const upload = multer({
@@ -2578,24 +2594,20 @@ APP.get('/admin/stores', async (req, res, next) => {
     };
 
     if (req.query.format === 'csv') {
-      const all = await store.storeDirectory({ ...filters, perPage: 100, page: 1 });
+      const all = await exportAll(({ page, perPage }) => store.storeDirectory({ ...filters, page, perPage }));
       const head = ['store', 'slug', 'owner_email', 'plan', 'subscription', 'state',
         'listing', 'files_live', 'files_total', 'views_30d', 'unlocks', 'ad_views_30d', 'reviews', 'last_file_at'];
-      const cell = (v) => {
-        const str = v === null || v === undefined ? '' : String(v);
-        return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
-      };
       const body = all.rows.map((r) => [r.name, r.slug, r.owner_email || '', r.plan_code, r.sub_status,
         r.moderation_state, r.listing_mode, r.files_live, r.files_total, r.views_30d,
-        r.unlocks, r.ad_views_30d, r.reviews, r.last_file_at ? new Date(r.last_file_at).toISOString() : '']
-        .map(cell).join(','));
+        r.unlocks, r.ad_views_30d, r.reviews, r.last_file_at ? new Date(r.last_file_at).toISOString() : '']);
       const stamp = new Date().toISOString().slice(0, 10);
-      await store.audit('channel.directory_exported', { filters, rows: all.rows.length },
+      await store.audit('channel.directory_exported',
+        { filters, rows: all.rows.length, total: all.total, truncated: all.truncated },
         { actorId: req.user.id });
       res.setHeader('content-type', 'text/csv; charset=utf-8');
       res.setHeader('content-disposition',
-        `attachment; filename="bytebikri-stores-${stamp}-${all.rows.length}.csv"`);
-      return res.send(`${head.join(',')}\n${body.join('\n')}\n`);
+        `attachment; filename="bytebikri-stores-${stamp}-${all.rows.length}${all.truncated ? `-of-${all.total}` : ''}.csv"`);
+      return res.send(`${csvDocument(head, body)}${truncationNote(all)}`);
     }
 
     const data = await store.storeDirectory({
@@ -2670,17 +2682,13 @@ APP.get('/admin/earnings', async (req, res, next) => {
     if (req.query.format === 'csv') {
       const head = ['store', 'slug', 'owner_email', 'network', 'periods', 'window_start', 'window_end',
         'views_in_window', 'reported_usd', 'our_estimate_usd', 'implied_rpm_usd', 'assumed_rpm_usd', 'state'];
-      const cell = (v) => {
-        const str = v === null || v === undefined ? '' : String(v);
-        return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
-      };
       const body = rows.map((r) => {
         const st = calibrationState(r);
         return [r.channel_name, r.channel_slug, r.owner_email || '', r.provider_id, r.periods,
-          String(r.first_period_start).slice(0, 10), String(r.last_period_end).slice(0, 10),
+          isoDay(r.first_period_start), isoDay(r.last_period_end),
           r.views, Number(r.reported_usd).toFixed(2), Number(r.estimate_usd).toFixed(4),
           r.implied_rpm_usd === null ? '' : Number(r.implied_rpm_usd).toFixed(4),
-          POLICY.assumedRpmUsd, st.state].map(cell).join(',');
+          POLICY.assumedRpmUsd, st.state];
       });
       const stamp = new Date().toISOString().slice(0, 10);
       await store.audit('earnings.calibration_exported',
@@ -2689,7 +2697,7 @@ APP.get('/admin/earnings', async (req, res, next) => {
       res.setHeader('content-type', 'text/csv; charset=utf-8');
       res.setHeader('content-disposition',
         `attachment; filename="bytebikri-earnings-${stamp}-${rows.length}.csv"`);
-      return res.send(`${head.join(',')}\n${body.join('\n')}\n`);
+      return res.send(csvDocument(head, body));
     }
 
     return res.send(views.adminEarnings({
@@ -2834,15 +2842,63 @@ APP.post('/admin/moderation/:slug', async (req, res, next) => {
 APP.get('/admin/users', async (req, res, next) => {
   try {
     if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
-    const q = String(req.query.q || '').slice(0, 80);
-    const [rules, banned] = await Promise.all([store.policyRules(), store.bannedUsers()]);
-    const matches = q.trim().length >= 2 ? await store.usersMatching(q) : [];
-    const history = Object.fromEntries(await Promise.all(
-      banned.slice(0, 25).map(async (u) => [u.id, await store.userModerationHistory(u.id, 3)]),
-    ));
+    const filters = {
+      q: String(req.query.q || '').trim().slice(0, 80),
+      segment: String(req.query.segment || 'all'),
+      sort: String(req.query.sort || 'recent'),
+    };
+    // An unknown segment is not an error worth a 400: it falls back to Everyone,
+    // and the tabs show which segment is actually being displayed.
+    if (!views.PERSON_SEGMENTS.some((x) => x.key === filters.segment)) filters.segment = 'all';
+
+    if (req.query.format === 'csv') {
+      const all = await exportAll(({ page, perPage }) => store.peopleDirectory({ ...filters, page, perPage }));
+      const head = ['email', 'display_name', 'role', 'state', 'segment', 'stores', 'files_live',
+        'views_30d', 'unlocks', 'joined', 'last_seen', 'failed_signins_7d', 'live_sessions',
+        'sold_by_on_file', 'locale'];
+      const body = all.rows.map((r) => [r.email, r.display_name || '', r.role,
+        r.banned ? 'suspended' : 'active', r.segment, r.stores, r.files, r.views_30d, r.unlocks,
+        new Date(r.created_at).toISOString(), r.last_seen_at ? new Date(r.last_seen_at).toISOString() : '',
+        r.failed_7d, r.live_sessions, r.sold_by_on_file ? 'yes' : 'no', r.locale || '']);
+      const stamp = new Date().toISOString().slice(0, 10);
+      await store.audit('people.directory_exported',
+        { filters, rows: all.rows.length, total: all.total, truncated: all.truncated },
+        { actorId: req.user.id });
+      res.setHeader('content-type', 'text/csv; charset=utf-8');
+      res.setHeader('content-disposition',
+        `attachment; filename="bytebikri-people-${stamp}-${all.rows.length}${all.truncated ? `-of-${all.total}` : ''}.csv"`);
+      return res.send(`${csvDocument(head, body)}${truncationNote(all)}`);
+    }
+
+    const [data, rules] = await Promise.all([
+      store.peopleDirectory(filters),
+      store.policyRules(),
+    ]);
     res.send(views.adminUsers({
       user: req.user, consent: req.consent, flash: flashFor(req.query),
-      rules, banned, matches, q, history, personActions: PERSON_ACTIONS, labels: ACTION_LABELS,
+      data, filters, rules, personActions: PERSON_ACTIONS, labels: ACTION_LABELS,
+    }));
+  } catch (err) { next(err); }
+});
+
+/**
+ * One account, in detail — the record behind a directory row.
+ *
+ * The suspension decision is taken HERE rather than from the list, and for a
+ * reason the old page got wrong: the old page put a suspend button on every row
+ * of a list. A destructive action that sits inside a scanning surface gets hit by
+ * a mis-click while somebody is reading, so the act moved to the page you only
+ * reach on purpose. The POST below still accepts the account id, so nothing about
+ * the API changed.
+ */
+APP.get('/admin/users/:userId', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    const detail = await store.personDetail(req.params.userId);
+    if (!detail) return res.status(404).send(views.notFound({ user: req.user, consent: req.consent, kind: 'page' }));
+    res.send(views.adminUser({
+      user: req.user, consent: req.consent, flash: flashFor(req.query),
+      detail, rules: await store.policyRules(), personActions: PERSON_ACTIONS, labels: ACTION_LABELS,
     }));
   } catch (err) { next(err); }
 });

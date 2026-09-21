@@ -40,7 +40,7 @@ const npr = (n) => `NPR ${Number(n).toLocaleString('en-IN')}`;
  * once. ISO is also the unambiguous form: `01/08` is two different days depending
  * on which side of the world you read it from, and this platform bills on dates.
  */
-const isoDay = (value) => {
+export const isoDay = (value) => {
   if (!value) return '';
   if (typeof value === 'string') return value.slice(0, 10);
   const d = new Date(value);
@@ -999,6 +999,53 @@ function accessExpiry(until) {
  * echo the requested path back into the page — a 404 that reflects the URL is a
  * reflected-XSS with extra steps, and the browser already shows the address.
  */
+/**
+ * The page a rate limit shows a person.
+ *
+ * Modelled on what the limit actually is: a wait, a reason, and no accusation. A
+ * shared office address, a phone on a train, a person who mistyped their password
+ * twice — all of those are ordinary, and none of them deserve a page that reads
+ * like an incident. It also names the wait in minutes rather than seconds, because
+ * "try again in 900s" is a puzzle and "about 15 minutes" is an instruction.
+ */
+export function tooMany({ user = null, consent = null, retryAfter = 60, what = 'requests', max = 0, windowMs = 60_000 }) {
+  const minutes = Math.ceil(retryAfter / 60);
+  const wait = minutes <= 1 ? 'about a minute' : `about ${minutes} minutes`;
+  const windowMinutes = Math.round(windowMs / 60_000);
+  const per = windowMinutes >= 60
+    ? `${Math.round(windowMinutes / 60)} hour${windowMinutes >= 120 ? 's' : ''}`
+    : `${windowMinutes} minute${windowMinutes === 1 ? '' : 's'}`;
+  return layout({
+    title: 'Slow down', user, consent, current: null,
+    // A panel, not `.empty`: this is not an empty state, it is an answer, and three
+    // paragraphs of prose centred on a wide screen read ragged from both edges.
+    body: `
+<section class="section">
+  <div class="panel" style="max-width:64ch">
+    <div class="panel-body">
+      <h1 style="font-size:var(--text-2xl)">Too many ${esc(what)}</h1>
+      <p style="margin-top:var(--space-4)">
+        This address has made more than ${num(max)} ${esc(what)} in the last ${esc(per)}, so the next one
+        is being refused. Try again in ${esc(wait)}.
+      </p>
+      <p class="fine" style="margin-top:var(--space-4)">
+        Nothing is broken and nothing has been lost. If you are signing in and this followed a few
+        mistyped passwords, your password is unchanged — waiting is the whole fix. If several people
+        share this connection, someone else may have used the allowance.
+      </p>
+      <p class="fine" style="margin-top:var(--space-4)">
+        The limit exists because a password is guessable and a script can guess quickly. It is per
+        address, it counts successes as well as failures, and it lifts on its own.
+      </p>
+      <p style="margin-top:var(--space-5)">
+        <a class="btn" href="/">Back to ByteBikri</a>
+      </p>
+    </div>
+  </div>
+</section>`,
+  });
+}
+
 export function notFound({ user = null, consent = null, requestedKind = null }) {
   const kind = requestedKind === 'store'
     ? 'That store is not here'
@@ -1236,97 +1283,367 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
  * about it. A ban is not a deletion, and the page says so above the button
  * rather than after it.
  */
+/**
+ * Segments are decisions, not fields.
+ *
+ * Each one exists because it is a different next action, and the note under the
+ * tabs says which. "Signed up, no store" and "store, no files" are both stalls,
+ * but they stall in different places and are fixed by different things — which is
+ * exactly why a single "unactivated" bucket would be useless.
+ */
+export const PERSON_SEGMENTS = [
+  { key: 'all', label: 'Everyone', note: 'Every account, in the order you choose. The baseline to filter down from.' },
+  { key: 'no_store', label: 'Signed up, no store', note: 'They made an account and never opened a store. Nothing is broken — this is where a first step goes missing.' },
+  { key: 'store_no_files', label: 'Store, no files', note: 'A store exists and is empty. The seller got as far as the shopfront and stopped before publishing anything.' },
+  { key: 'files_no_unlocks', label: 'Files, no unlocks', note: 'Something is published and nobody has unlocked it. That is a distribution problem, not a product one.' },
+  { key: 'working', label: 'Has unlocks', note: 'The loop closed at least once: published, unlocked, and whatever follows from that.' },
+  { key: 'suspended', label: 'Suspended', note: 'Accounts that are switched off. Everything they had is still here; reinstating gives all of it back.' },
+  { key: 'operator', label: 'Operators', note: 'Accounts with power over other people\'s. Worth reading as its own list rather than trusting that it is short.' },
+];
+
 export function adminUsers({
-  user, rules, banned = [], matches = [], q = '', history = {},
-  personActions = [], labels = {}, flash = null, consent = null,
+  user, consent = null, flash = null, data = null, filters = {}, rules = [],
+  personActions = [], labels = {}, canExport = true,
 }) {
-  const options = (selected = null) => rules
-    .map((r) => `<option value="${esc(r.code)}"${r.code === selected ? ' selected' : ''}>${esc(r.title)} (${esc(r.code)})</option>`)
-    .join('');
+  const rows = data?.rows || [];
+  const total = data?.total || 0;
+  const page = data?.page || 1;
+  const pages = data?.pages || 1;
+  const counts = data?.counts || {};
+  const { q = '', segment = 'all', sort = 'recent' } = filters;
+  const shown = PERSON_SEGMENTS.find((x) => x.key === segment) || PERSON_SEGMENTS[0];
+  const segmentCount = (key) => (key === 'all'
+    ? Object.values(counts).reduce((sum, c) => sum + c.n, 0)
+    : (counts[key]?.n || 0));
 
-  const form = (u, { heading = true } = {}) => `
-  <form method="post" action="/admin/users/${esc(u.id)}" class="user-form">
-    ${heading ? `<div class="row" style="align-items:baseline">
-      <strong>${esc(u.display_name || u.email)}</strong>
-      <span class="fine">${esc(u.email)}</span>
-      <span class="spacer"></span>
-      ${u.banned ? pill('suspended', 'danger') : pill('active', 'success')}
-      <span class="fine">${plural(u.stores || 0, 'store')}</span>
-    </div>` : ''}
-    <div class="row" style="align-items:flex-end;gap:var(--space-4);flex-wrap:wrap;margin-top:var(--space-4)">
-      <div class="field" style="flex:1 1 160px;margin:0">
-        <label for="a-${esc(u.id.slice(0, 8))}">Action</label>
-        <select class="input" id="a-${esc(u.id.slice(0, 8))}" name="action">
-          ${personActions.map((a) => `<option value="${esc(a)}">${esc(labels[a] || a)}</option>`).join('')}
-        </select>
-      </div>
-      <div class="field" style="flex:2 1 240px;margin:0">
-        <label for="r-${esc(u.id.slice(0, 8))}">Reason</label>
-        <select class="input" id="r-${esc(u.id.slice(0, 8))}" name="ruleCode">
-          <option value="">— none cited —</option>
-          ${options(null)}
-        </select>
-      </div>
-      <button class="btn ${u.banned ? '' : 'btn-danger'}" type="submit">
-        ${u.banned ? 'Record decision' : 'Suspend this account'}
-      </button>
-    </div>
-    <div class="field" style="margin-top:var(--space-3)">
-      <input class="input" name="remedy" maxlength="280"
-             placeholder="One line to the person. They read this and nothing else.">
-    </div>
-  </form>`;
+  const link = (next) => {
+    const params = new URLSearchParams();
+    const merged = { q, segment, sort, ...next };
+    for (const [k, v] of Object.entries(merged)) {
+      if (!v || v === 'all' || (k === 'sort' && v === 'recent')) continue;
+      params.set(k, v);
+    }
+    const qs = params.toString();
+    return `/admin/users${qs ? `?${qs}` : ''}`;
+  };
 
-  return layout({
-    title: 'People', user, current: 'admin', consent,
+  const sortHead = (key, label) => `
+    <th class="num"${sort === key ? ' aria-sort="descending"' : ''}>
+      <a href="${esc(link({ sort: key, page: undefined }))}"${sort === key ? ' class="sorted"' : ''}>${esc(label)}${
+    sort === key ? ' <span aria-hidden="true">↓</span>' : ''}</a>
+    </th>`;
+
+  const stateOf = (r) => {
+    if (r.banned) return pill('suspended', 'danger');
+    if (r.role !== 'user') return `${pill(r.role, 'accent')}<div class="fine">can act on others</div>`;
+    return pill('active', 'success');
+  };
+
+  return adminShell({
+    user, consent, current: 'people', title: 'People',
+    lede: 'Accounts, not stores. Suspending one signs it out everywhere and takes its stores off the public '
+      + 'site — and deletes nothing.',
+    actions: canExport
+      ? `<a class="btn btn-sm" href="${esc(link({ format: 'csv', page: undefined }))}">Download CSV</a>`
+      : '',
     body: `
-<div class="section" style="margin-bottom:0">
-  <h1>People</h1>
-  <p class="lede" style="margin-top:var(--space-3)">Accounts, not stores. Suspending one signs it out
-  everywhere and takes its stores off the public site — and deletes nothing.</p>
-</div>
-
 ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)" role="status">${esc(flash.message)}</div>` : ''}
 
 <section class="section">
-  <div class="panel"><div class="panel-body">
-    <h2 style="font-size:var(--text-md)">What a suspension does</h2>
-    <dl class="kv" style="margin-top:var(--space-4)">
-      <dt>Sign-in</dt><dd>Refused, with the reason and where to reply. Checked after the password, so it is not a way to discover which addresses exist.</dd>
-      <dt>Sessions</dt><dd>Every live session is revoked in the same transaction. A banned account's token is refused even if one survived.</dd>
-      <dt>Their stores</dt><dd>Hidden from Explore, from search, and from their own addresses — 404 to everyone but the seller and an operator.</dd>
-      <dt>Their files</dt><dd>Untouched. Nothing is deleted, and reinstating restores everything exactly as it was.</dd>
-    </dl>
-  </div></div>
+  <div class="kpi-row">
+    <div class="kpi kpi-hero">
+      <div class="kpi-value">${num(segmentCount('all'))}</div>
+      <div class="kpi-label">Accounts</div>
+      <div class="kpi-note">${num(Object.values(counts).reduce((sum, c) => sum + c.live, 0))} signed in during the last 30 days.</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-value">${num(segmentCount('no_store') + segmentCount('store_no_files'))}</div>
+      <div class="kpi-label">Stalled before publishing</div>
+      <div class="kpi-note">An account with no store, or a store with no files.</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-value">${num(segmentCount('files_no_unlocks'))}</div>
+      <div class="kpi-label">Published, never unlocked</div>
+      <div class="kpi-note">Live files, zero unlocks — reach, not product.</div>
+    </div>
+    <div class="kpi${segmentCount('suspended') ? ' kpi-bad' : ''}">
+      <div class="kpi-value">${num(segmentCount('suspended'))}</div>
+      <div class="kpi-label">Suspended</div>
+      <div class="kpi-note">Nothing deleted. Reinstating restores everything.</div>
+    </div>
+  </div>
 </section>
 
 <section class="section">
-  <div class="section-head"><h2>Find an account</h2></div>
-  <div class="panel"><div class="panel-body">
-    <form method="get" action="/admin/users" role="search" class="search" style="margin-top:0">
-      <label class="sr-only" for="q">Email or name</label>
-      <input class="input" id="q" name="q" type="search" value="${esc(q)}"
-             placeholder="alice@example.com" autocomplete="off">
-      <button class="btn btn-primary" type="submit">Search</button>
-    </form>
-    ${q.trim().length >= 2 && !matches.length
-      ? `<p class="fine" style="margin-top:var(--space-4)">Nothing matches “${esc(q)}”.</p>` : ''}
-    ${matches.map((u) => `<div class="user-row">${form(u)}
-      ${historyOf(u.id, history)}</div>`).join('')}
+  <nav class="segments" aria-label="Segments">
+    ${PERSON_SEGMENTS.map((seg) => `<a href="${esc(link({ segment: seg.key, page: undefined }))}"
+      ${seg.key === segment ? 'aria-current="page"' : ''}>${esc(seg.label)}<span class="seg-count">${num(segmentCount(seg.key))}</span></a>`).join('')}
+  </nav>
+  <p class="fine" style="margin-top:var(--space-3)">${esc(shown.note)}</p>
+
+  <form class="filters" method="get" action="/admin/users" role="search" style="margin-top:var(--space-5)">
+    <input type="hidden" name="segment" value="${esc(segment)}">
+    <div class="field" style="flex:2 1 260px">
+      <label for="q">Search</label>
+      <input class="input" id="q" name="q" type="search" value="${esc(q)}" placeholder="Email or display name">
+    </div>
+    <div class="field">
+      <label for="sort">Order</label>
+      <select class="input" id="sort" name="sort">
+        ${[['recent', 'Newest accounts'], ['active', 'Seen most recently'], ['views', 'Most views · 30d'],
+    ['unlocks', 'Most unlocks'], ['name', 'Name A→Z']]
+    .map(([v, l]) => `<option value="${v}"${sort === v ? ' selected' : ''}>${l}</option>`).join('')}
+      </select>
+    </div>
+    <div class="filters-foot">
+      <button class="btn btn-primary" type="submit">Apply</button>
+      ${(q || segment !== 'all' || sort !== 'recent') ? `<a class="btn btn-sm" href="/admin/users">Clear</a>` : ''}
+    </div>
+  </form>
+
+  <div class="section-head" style="margin-top:var(--space-6)">
+    <h2>${total ? `${num(total)} account${total === 1 ? '' : 's'}` : 'Nothing here'}</h2>
+    <p>${total
+    ? `Page ${num(page)} of ${num(pages)}${q ? ` · matching “${esc(q)}”` : ''}`
+    : q || segment !== 'all'
+      ? 'Nobody matches that. The search looks at email addresses and display names, and the segment tabs count every account.'
+      : 'No account exists yet. The first sign-up will appear here.'}</p>
+  </div>
+
+  ${rows.length ? `
+  <div class="panel"><div class="panel-body panel-body-flush">
+    <table class="table table-directory">
+      <thead>
+        <tr>
+          <th>Person</th>
+          <th>State</th>
+          <th class="num">Stores</th>
+          <th class="num">Files</th>
+          ${sortHead('views', 'Views · 30d')}
+          ${sortHead('unlocks', 'Unlocks')}
+          <th>Joined</th>
+          <th>Last seen</th>
+          <th class="num">Failed sign-ins</th>
+        </tr>
+      </thead>
+      <tbody>${rows.map((r) => `
+        <tr>
+          <td>
+            <a href="/admin/users/${esc(r.id)}"><strong>${esc(r.display_name || r.email)}</strong></a>
+            <div class="fine">${esc(r.email)}${r.sold_by_on_file ? ' · sold-by details on file' : ''}</div>
+          </td>
+          <td>${stateOf(r)}</td>
+          <td class="num">${num(r.stores)}${r.stores ? '' : '<div class="fine">none</div>'}</td>
+          <td class="num">${num(r.files)}${r.files ? '' : '<div class="fine">none</div>'}</td>
+          <td class="num">${num(r.views_30d)}</td>
+          <td class="num">${num(r.unlocks)}</td>
+          <td class="fine">${esc(isoDay(r.created_at))}</td>
+          <td class="fine">${r.last_seen_at ? esc(relTime(r.last_seen_at)) : 'never'}</td>
+          <td class="num">${r.failed_7d
+    ? `${num(r.failed_7d)}<div class="fine">in 7 days</div>`
+    : '<span class="fine">—</span>'}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
   </div></div>
+  ${pages > 1 ? `<nav class="pager" aria-label="Pages">
+    ${page > 1 ? `<a class="btn btn-sm" href="${esc(link({ page: page - 1 }))}">← Back</a>` : ''}
+    <span class="fine">Page ${num(page)} of ${num(pages)}</span>
+    ${page < pages ? `<a class="btn btn-sm" href="${esc(link({ page: page + 1 }))}">Next →</a>` : ''}
+  </nav>` : ''}
+  ` : `<div class="empty">
+    ${q || segment !== 'all' ? `Nobody is in this segment${q ? ` and matching “${esc(q)}”` : ''}.`
+    : 'No account exists yet.'}
+  </div>`}
+
+  <div class="cols-2" style="margin-top:var(--space-6)">
+    <div class="panel"><div class="panel-body">
+      <h2 style="font-size:var(--text-md)">What a suspension does</h2>
+      <dl class="kv" style="margin-top:var(--space-4)">
+        <dt>Sign-in</dt><dd>Refused, with the reason and where to reply. Checked after the password, so it is not a way to discover which addresses exist.</dd>
+        <dt>Sessions</dt><dd>Every live session is revoked in the same transaction. A suspended account's token is refused even if one survived.</dd>
+        <dt>Their stores</dt><dd>Hidden from Explore, from search, and from their own addresses — 404 to everyone but the seller and an operator.</dd>
+        <dt>Their files</dt><dd>Untouched. Nothing is deleted, and reinstating restores everything exactly as it was.</dd>
+      </dl>
+    </div></div>
+
+    <div class="panel"><div class="panel-body">
+      <h2 style="font-size:var(--text-md)">What this page counts, and what it will not</h2>
+      <p class="small" style="margin-top:var(--space-3)">
+        Unlocks here are what a person's files earned them as a seller. What somebody unlocks as a
+        <em>reader</em> is counted on their own record and never listed — not here, not anywhere an
+        operator can browse. A count answers every question moderation asks; a list would turn a
+        support tool into a log of what people read, and the platform would then have to defend having it.
+      </p>
+      <p class="small">
+        There is no money column, and that is not an omission: nothing of a creator's ever passes through
+        bytebikri, so an account has no balance to show. There is also no “verified” chip yet — this
+        platform has no KYC step, and inventing a badge for one that does not exist would be worse than
+        the empty column.
+      </p>
+    </div></div>
+  </div>
+</section>`,
+  });
+}
+
+/**
+ * One account, in full — the half the directory leaves out on purpose.
+ *
+ * A directory that showed all of this inline would be a spreadsheet nobody reads,
+ * so the table carries the columns you scan and this page carries the ones you
+ * read one at a time. It is also where the decision gets made, which is why the
+ * suspension form lives here rather than on the row.
+ */
+export function adminUser({
+  user, consent = null, flash = null, detail = null, rules = [],
+  personActions = [], labels = {},
+}) {
+  if (!detail) {
+    return adminShell({
+      user, consent, title: 'No such account', current: 'overview',
+      body: `<section class="section"><div class="empty">That account does not exist. It may have been
+        typed into the address bar rather than reached from the list.
+        <div style="margin-top:var(--space-4)"><a class="btn btn-sm" href="/admin/users">← All accounts</a></div>
+      </div></section>`,
+    });
+  }
+  const p = detail.person;
+  const options = (selected = null) => rules
+    .map((r) => `<option value="${esc(r.code)}"${r.code === selected ? ' selected' : ''}>${esc(r.title)} (${esc(r.code)})</option>`)
+    .join('');
+  const id8 = esc(p.id.slice(0, 8));
+
+  return adminShell({
+    user, consent, flash, title: p.display_name || p.email,
+    lede: p.email,
+    body: `
+<section class="section">
+  <div class="row" style="align-items:center;gap:var(--space-3);flex-wrap:wrap">
+    <a class="btn btn-sm" href="/admin/users">← All accounts</a>
+    ${p.banned ? pill('suspended', 'danger') : pill('active', 'success')}
+    ${p.role !== 'user' ? pill(p.role, 'accent') : ''}
+    ${p.banned && p.ban_reason ? `<span class="fine">${esc(p.ban_reason)}</span>` : ''}
+    <span class="spacer"></span>
+    <a class="btn btn-sm" href="/admin/users?q=${encodeURIComponent(p.email)}">Find their rows in the list</a>
+  </div>
+
+  <div class="kpi-row" style="margin-top:var(--space-6)">
+    <div class="kpi">
+      <div class="kpi-value">${num(detail.stores.length)}</div>
+      <div class="kpi-label">Stores</div>
+      <div class="kpi-note">${detail.stores.length ? 'Listed below, with their traffic.' : 'They have not opened one.'}</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-value">${num(detail.unlocksHeld)}</div>
+      <div class="kpi-label">Unlocks they hold</div>
+      <div class="kpi-note">As a reader. Counted, never listed — see the note on the list page.</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-value">${num(detail.sessions.live)}</div>
+      <div class="kpi-label">Live sessions</div>
+      <div class="kpi-note">${detail.sessions.total
+    ? `${num(detail.sessions.total)} ever, last seen ${esc(relTime(detail.sessions.last_seen))}.`
+    : 'This account has never signed in.'}</div>
+    </div>
+    <div class="kpi${detail.attempts.failed_7d >= 10 ? ' kpi-bad' : ''}">
+      <div class="kpi-value">${num(detail.attempts.failed_7d)}</div>
+      <div class="kpi-label">Failed sign-ins · 7d</div>
+      <div class="kpi-note">${detail.attempts.failed_7d >= 10
+    ? 'High enough to be worth reading as an attack on this address rather than a forgotten password.'
+    : `${num(detail.attempts.ok_30d)} succeeded in the last 30 days.`}</div>
+    </div>
+  </div>
+</section>
+
+${detail.stores.length ? `<section class="section">
+  <div class="section-head"><h2>Their stores</h2><p>A person can own more than one; each is judged on its own.</p></div>
+  <div class="panel"><div class="panel-body panel-body-flush">
+    <table class="table">
+      <thead><tr><th>Store</th><th>State</th><th class="num">Files</th><th class="num">Views · 30d</th><th>Opened</th></tr></thead>
+      <tbody>${detail.stores.map((c) => `<tr>
+        <td>
+          <a href="/admin/stores/${esc(c.slug)}"><strong>${esc(c.name)}</strong></a>
+          <div class="fine">/s/${esc(c.slug)}${c.listing_mode === 'marketplace' ? ' · listed' : ''}</div>
+        </td>
+        <td>${pill(c.moderation_state, c.moderation_state === 'approved' ? 'success' : c.moderation_state === 'pending' ? '' : 'warning')}</td>
+        <td class="num">${num(c.files)}</td>
+        <td class="num">${num(c.views_30d)}</td>
+        <td class="fine">${esc(isoDay(c.created_at))}</td>
+      </tr>`).join('')}
+      </tbody>
+    </table>
+  </div></div>
+</section>` : ''}
+
+<section class="section">
+  <div class="cols-2">
+    <div class="panel"><div class="panel-body">
+      <h2 style="font-size:var(--text-md)">On file</h2>
+      <dl class="kv" style="margin-top:var(--space-4)">
+        <dt>Joined</dt><dd>${esc(isoDay(p.created_at))} <span class="fine">· ${esc(relTime(p.created_at))}</span></dd>
+        <dt>Signs in with</dt><dd>${p.has_password ? 'an email and a password' : '<span class="fine">no password set — this account cannot sign in yet</span>'}</dd>
+        <dt>First session</dt><dd>${detail.sessions.first_seen ? esc(isoDay(detail.sessions.first_seen)) : '<span class="fine">never</span>'}</dd>
+        <dt>Sold-by details</dt><dd>${p.sold_by_on_file
+    ? 'A legal name is on file, which an annual rent invoice needs.'
+    : '<span class="fine">Not given yet. This is the field an invoice uses, and it stays private from buyers and sellers.</span>'}</dd>
+        <dt>Phone</dt><dd>${p.phone_on_file ? 'On file, private' : '<span class="fine">not given</span>'}</dd>
+        <dt>Locale</dt><dd>${esc(p.locale || 'ne')}</dd>
+      </dl>
+      <p class="fine" style="margin-top:var(--space-4)">
+        Their legal name and phone are stored, and are not rendered here even for an operator: this page
+        is about what to do, and the fields that identify a person to the tax office live on the invoice
+        that needs them.
+      </p>
+    </div></div>
+
+    <div class="panel"><div class="panel-body">
+      <h2 style="font-size:var(--text-md)">${p.banned ? 'Reinstate or record a decision' : 'Suspend or record a decision'}</h2>
+      <form method="post" action="/admin/users/${esc(p.id)}">
+        <div class="row" style="align-items:flex-end;gap:var(--space-4);flex-wrap:wrap;margin-top:var(--space-4)">
+          <div class="field" style="flex:1 1 160px;margin:0">
+            <label for="a-${id8}">Action</label>
+            <select class="input" id="a-${id8}" name="action">
+              ${personActions.map((a) => `<option value="${esc(a)}">${esc(labels[a] || a)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field" style="flex:2 1 220px;margin:0">
+            <label for="r-${id8}">Reason</label>
+            <select class="input" id="r-${id8}" name="ruleCode">
+              <option value="">— none cited —</option>
+              ${options(null)}
+            </select>
+          </div>
+          <button class="btn ${p.banned ? '' : 'btn-danger'}" type="submit">${p.banned ? 'Record decision' : 'Suspend this account'}</button>
+        </div>
+        <div class="field" style="margin-top:var(--space-3)">
+          <input class="input" name="remedy" maxlength="280" placeholder="One line to the person. They read this and nothing else.">
+        </div>
+      </form>
+      <p class="fine" style="margin-top:var(--space-4)">
+        A suspension is a state, not a deletion. It is also reversible without a support request, which is
+        why the record is a history rather than a flag on a row.
+      </p>
+    </div>
+  </div>
 </section>
 
 <section class="section">
   <div class="section-head">
-    <h2>Suspended accounts</h2>
-    <p>${banned.length ? plural(banned.length, 'account') : 'Nothing is suspended'}</p>
+    <h2>Decisions about this account</h2>
+    <p>${detail.decisions.length ? 'Newest first, with the rule each one cited.' : 'Nothing has been decided about this account.'}</p>
   </div>
-  ${banned.length
-    ? banned.map((u) => `<div class="panel" style="margin-top:var(--space-4)"><div class="panel-body">
-        ${form(u)}
-        ${historyOf(u.id, history)}
-      </div></div>`).join('')
-    : '<div class="empty">No account is suspended.</div>'}
+  ${detail.decisions.length
+    ? `<div class="panel"><div class="panel-body decisions">${detail.decisions.map((h) => `
+        <div class="decision">
+          <div class="row" style="align-items:baseline;gap:var(--space-3);flex-wrap:wrap">
+            <span class="mono small">${esc(h.action)}</span>
+            ${h.rule_title ? pill(h.rule_title, 'warning') : '<span class="fine">no rule cited</span>'}
+            <span class="fine">${esc(relTime(h.created_at))}</span>
+          </div>
+          ${h.reason ? `<p class="small" style="margin-top:var(--space-2)">“${esc(h.reason)}”</p>` : ''}
+        </div>`).join('')}</div></div>`
+    : '<div class="empty">No suspension, reinstatement or note has been recorded for this account — which is the normal state of an account nobody has had to think about.</div>'}
 </section>`,
   });
 }
@@ -3063,7 +3380,7 @@ export function adminShell({ user, consent, current, title, lede = '', actions =
     ${actions}
   </div>
 </div>
-<nav class="console-nav" aria-label="Console">${tab('/admin', 'Overview', 'overview')}${tab('/admin/payments', 'Payments', 'payments', user.adminBadges?.payments)}${tab('/admin/stores', 'Stores', 'stores')}${tab('/admin/earnings', 'Earnings', 'earnings')}${tab('/admin/connections', 'Connections', 'connections')}${tab('/admin/reports', 'Reports', 'reports', user.adminBadges?.reports)}${tab('/admin/moderation', 'Moderation', 'moderation', user.adminBadges?.moderation)}${tab('/admin/audit', 'Audit log', 'audit')}</nav>
+<nav class="console-nav" aria-label="Console">${tab('/admin', 'Overview', 'overview')}${tab('/admin/payments', 'Payments', 'payments', user.adminBadges?.payments)}${tab('/admin/stores', 'Stores', 'stores')}${tab('/admin/users', 'People', 'people')}${tab('/admin/earnings', 'Earnings', 'earnings')}${tab('/admin/connections', 'Connections', 'connections')}${tab('/admin/reports', 'Reports', 'reports', user.adminBadges?.reports)}${tab('/admin/moderation', 'Moderation', 'moderation', user.adminBadges?.moderation)}${tab('/admin/audit', 'Audit log', 'audit')}</nav>
 ${body}`,
   });
 }
