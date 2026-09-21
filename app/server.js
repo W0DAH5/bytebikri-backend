@@ -19,12 +19,14 @@ import { fileURLToPath } from 'node:url';
 
 import { store, storage, SLOT_DEFS, slugify, PLANS } from './src/store.js';
 import { assertProductionConfig, readSecret, checkConfig, formatConfigReport, isProd } from './src/config.js';
-import { many, scalar, health as dbHealth, close as closeDb } from './src/db.js';
+import { query, many, scalar, health as dbHealth, close as closeDb } from './src/db.js';
 import { allocateSlots, estimateRentSlotValue, POLICY } from './src/slots.js';
 import {
   railDetails, railsReady, payeeName, upgradeExplanation, planBenefits, NOT_CHARGED,
 } from './src/billing.js';
-import { selectableProviders, providerById, loadRegistry } from './src/registry.js';
+import { earningsSummary, MONEY_MAP, payoutChecklist, periodStatus } from './src/earnings.js';
+import { SANDBOX_PROVIDER_IDS } from './src/providers/index.js';
+import { selectableProviders, providerById, payoutVerdict, loadRegistry } from './src/registry.js';
 import {
   startUnlock, unlockStatus, handlePostback, signHousePostback,
   verifyAccessToken, issueDownloadUrl, issueStreamUrl,
@@ -1430,6 +1432,170 @@ APP.post('/dashboard/:slug/billing/rent-payment', async (req, res, next) => {
 });
 
 // ---------------------------------------------------------------------------
+// Earnings — whose money it is
+//
+// Not a wallet and not a balance. The network pays the creator's own account;
+// this page is where that is stated, where our estimate is put next to their
+// statement, and where the creator records which of their own accounts the
+// network pays into. Nothing here can move money, because bytebikri never has
+// any of it.
+// ---------------------------------------------------------------------------
+
+/** Everything the earnings page shows, assembled once. */
+async function earningsState(channel, days = 30) {
+  // Names come from the WHOLE registry, not from the picker: a channel keeps
+  // whatever it connected, and a provider gets disabled in the registry the
+  // moment its account terms change. Reading names from the picker meant a
+  // connected network rendered as its raw id the day it stopped being offered.
+  const registry = await loadRegistry();
+  const nameOf = (id) => registry.providers.find((p) => p.id === id)?.name || id;
+  const provOf = (id) => registry.providers.find((p) => p.id === id) || null;
+  const providers = await selectableProviders();
+  const connections = await store.connectionsOf(channel.id);
+  const plan = store.plan(channel);
+
+  // The assumed rate and FX are read from slot policy, not re-declared here:
+  // the earnings estimate and the rent estimate are arithmetic on the same
+  // assumption, and this page exists to let a creator check that assumption.
+  const rpmUsd = POLICY.assumedRpmUsd;
+  const usdToNpr = POLICY.usdToNpr;
+
+  const rows = await store.earningsByProvider({ channelId: channel.id, days, rpmUsd });
+  const reports = await store.reportsOfChannel(channel.id);
+  const withNames = rows.map((r) => ({
+    ...r,
+    provider_name: nameOf(r.provider_id),
+    connected: connections.some((c) => c.provider_id === r.provider_id),
+  }));
+
+  const reportRows = reports.map((r) => ({ ...r, closed: periodStatus(r.period_end).closed }));
+
+  const slots = await buildSlots(channel);
+  const pageviews = await store.pageviews30d(channel.id);
+  const estimate = estimateRentSlotValue({ pageviews30d: pageviews, slots });
+  const invoice = await store.ensureRentInvoice({ channel, estimate });
+
+  const totalViews = withNames.reduce((a, r) => a + Number(r.views), 0);
+
+  // Every provider the channel is connected to, with its payout verdict, plus
+  // the suggestion list of ones it could add.
+  const providerCards = [...new Set(connections.map((c) => c.provider_id))]
+    .map((id) => provOf(id)).filter(Boolean)
+    .map((p) => ({ ...p, verdict: payoutVerdict(p), sandbox: SANDBOX_PROVIDER_IDS.has(p.id) }));
+
+  return {
+    plan, providers: providerCards, suggestions: providers, connections, reports: reportRows, rpmUsd, usdToNpr,
+    invoice,
+    summary: earningsSummary({
+      rows: withNames,
+      reports,
+      rpmUsd,
+      estimateUsd: (totalViews / 1000) * rpmUsd,
+      rent: invoice?.amount_npr ?? 0,
+      usdToNpr,
+    }),
+    byAsset: await store.earningsByAsset({ channelId: channel.id, days, rpmUsd }),
+    payoutAccounts: await store.payoutAccountsOf(channel.id),
+    days,
+  };
+}
+
+APP.get('/dashboard/:slug/earnings', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    const state = await earningsState(channel);
+
+    // The checklist is written for a provider the creator has actually
+    // connected: telling somebody the sign-up steps for a network they are
+    // already on is how a page reads as boilerplate.
+    const activeProvider = state.providers.find((p) => state.connections.some((c) => c.provider_id === p.id));
+
+    res.send(views.earnings({
+      channel, user: req.user, consent: req.consent, flash: flashFor(req.query),
+      plan: state.plan, summary: state.summary, byAsset: state.byAsset, days: state.days,
+      connections: state.connections, providers: state.providers, suggestions: state.suggestions,
+      sandboxIds: [...SANDBOX_PROVIDER_IDS],
+      payoutAccounts: state.payoutAccounts, reports: state.reports,
+      rent: state.invoice, usdToNpr: state.usdToNpr, rpmUsd: state.rpmUsd,
+      moneyMap: MONEY_MAP,
+      checklist: payoutChecklist(activeProvider?.name || 'the ad network you choose'),
+    }));
+  } catch (err) { return next(err); }
+});
+
+/** Record which of the creator's OWN accounts the network pays into. */
+APP.post('/dashboard/:slug/earnings/payout', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    const back = `/dashboard/${encodeURIComponent(channel.slug)}/earnings`;
+
+    const providerId = String(req.body.providerId || '').trim().slice(0, 60);
+    // Only a network the channel has actually connected: a payout label for a
+    // provider that pays them nothing is a note about nothing.
+    const connected = (await store.connectionsOf(channel.id)).some((c) => c.provider_id === providerId);
+    if (!connected) return res.redirect(`${back}?error=nothing`);
+
+    const account = await store.setPayoutAccount({
+      channelId: channel.id,
+      providerId,
+      accountLabel: req.body.accountLabel,
+      payoutMethod: req.body.payoutMethod,
+    });
+    if (!account) return res.redirect(`${back}?error=reference`);
+
+    await store.audit('payout_account.declared', { channelId: channel.id, providerId });
+    return res.redirect(`${back}?saved=1`);
+  } catch (err) { return next(err); }
+});
+
+APP.post('/dashboard/:slug/earnings/payout/clear', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    const back = `/dashboard/${encodeURIComponent(channel.slug)}/earnings`;
+    await store.clearPayoutAccount({
+      channelId: channel.id, providerId: String(req.body.providerId || '').slice(0, 60),
+    });
+    await store.audit('payout_account.cleared', { channelId: channel.id });
+    return res.redirect(`${back}?saved=1`);
+  } catch (err) { return next(err); }
+});
+
+/** The creator pastes what their statement said, so our estimate can be checked. */
+APP.post('/dashboard/:slug/earnings/report', limitUnlock, async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    const back = `/dashboard/${encodeURIComponent(channel.slug)}/earnings`;
+
+    const periodEnd = String(req.body.periodEnd || '');
+    // A figure for a period that has not closed is not a figure: the network is
+    // still adding to it, and comparing it against a full month of our counting
+    // is how a creator concludes we over-count when we do not.
+    if (periodStatus(periodEnd).closed === false && periodEnd >= new Date().toISOString().slice(0, 10)) {
+      return res.redirect(`${back}?error=nothing`);
+    }
+
+    const report = await store.addProviderReport({
+      channelId: channel.id,
+      providerId: req.body.providerId,
+      periodStart: req.body.periodStart,
+      periodEnd,
+      reportedUsd: req.body.reportedUsd,
+      note: req.body.note,
+    });
+    if (!report) return res.redirect(`${back}?error=nothing`);
+
+    await store.audit('provider_report.recorded', {
+      channelId: channel.id, providerId: report.provider_id, reportedUsd: Number(report.reported_usd),
+    });
+    return res.redirect(`${back}?saved=1`);
+  } catch (err) { return next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // Operator — matching money against the statement
 //
 // A page and not an API: this is the one place a human decision changes what
@@ -1873,6 +2039,7 @@ async function seed({ force = false } = {}) {
    * Skipped silently if the file is missing: a deployment that did not ship the
    * demo clip should still come up.
    */
+  let walkthrough = null;
   try {
     const clip = await fs.readFile(path.resolve(__dirname, 'seed-assets/store-walkthrough.mp4'));
     const videoAsset = await store.createAsset({
@@ -1886,6 +2053,7 @@ async function seed({ force = false } = {}) {
       checksum: crypto.createHash('sha256').update(clip).digest('hex'),
     });
     await store.setAdMinSeconds(videoAsset.id, 5);
+    walkthrough = videoAsset;
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;
   }
@@ -1935,6 +2103,68 @@ async function seed({ force = false } = {}) {
     if (err.code !== 'ENOENT') throw err;
   }
   await store.setAdMinSeconds(bobAsset.id, 5);
+
+  // ---------------------------------------------------------------------
+  // Demo earnings, so the earnings page shows its own arithmetic instead of
+  // three empty states: completed views across the last fortnight, roughly a
+  // fifth of them carrying per-view revenue the way a network that reports per
+  // view does, and one closed statement figure the creator "pasted".
+  //
+  // The statement is deliberately NOT our estimate. A demo where the two agree
+  // teaches nobody what the page is for, and the reconciliation is the whole
+  // point of the feature.
+  // ---------------------------------------------------------------------
+  const adsterraConn = (await store.connectionsOf(alice.id)).find((c) => c.provider_id === 'adsterra');
+  if (adsterraConn && walkthrough) {
+    for (let i = 0; i < 180; i += 1) {
+      await query(
+        `insert into ad_view_events
+           (channel_id, user_id, asset_id, provider_id, connection_id, external_id,
+            kind, state, completed, duration_sec, revenue_usd, signature_ok, created_at)
+         values ($1, $2, $3, 'adsterra', $4, $5, 'display', 'complete', true, 15,
+                 $6, true, now() - ($7 || ' days')::interval - ($8 || ' hours')::interval)`,
+        [alice.id, aliceUser.id, walkthrough.id, adsterraConn.id,
+          `demo-view-${i}`, i % 5 === 0 ? 0.0002 : null, String(i % 14), String(i % 24)],
+      );
+    }
+    await store.addProviderReport({
+      channelId: alice.id, providerId: 'adsterra',
+      periodStart: '2026-08-01', periodEnd: '2026-08-31', reportedUsd: 0.11,
+      note: 'From the network portal, August.',
+    });
+  }
+
+  // Traffic for the last fortnight, written the way the counter writes it, so a
+  // fresh database can show the rent invoice being issued rather than only the
+  // "nothing is due" state. Server-side counting, never a client ping — the
+  // demo goes through the same table the real one does.
+  for (let day = 0; day < 14; day += 1) {
+    await query(
+      `insert into page_view_daily (channel_id, day, views, web_views, unique_visitors)
+       values ($1, current_date - $2::int, $3, $3, $4)
+       on conflict (channel_id, day) do update
+         set views = excluded.views, web_views = excluded.web_views,
+             unique_visitors = excluded.unique_visitors`,
+      [alice.id, day, 22 + (day % 4), 12 + (day % 5)],
+    );
+  }
+
+  // One buyer who went through the loop: an unlock and the review it earns.
+  // Reviews are keyed off unlocks, so a seeded review without one would be a
+  // row the product cannot produce.
+  const carolUser = await store.userByEmailOrCreate('carol@bytebikri.local');
+  await auth.setPassword(carolUser.id, demoPassword);
+  if (sampleAsset) {
+    const carolUnlock = await store.grantUnlock({
+      assetId: sampleAsset.id, channelId: alice.id, userId: carolUser.id,
+      method: 'open', adsCompleted: 0,
+    });
+    await store.addReview({
+      unlockId: carolUnlock.id, assetId: sampleAsset.id, channelId: alice.id,
+      buyerId: carolUser.id, rating: 5,
+      body: 'Downloaded it for a client deck and it covered the whole thing. The weights are the part I bought it for.',
+    });
+  }
 
   return { seeded: true, alice: alice.slug, bob: bob.slug };
 }

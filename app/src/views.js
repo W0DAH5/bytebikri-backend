@@ -962,6 +962,7 @@ ${conn ? `
       <dt>Current</dt><dd>${esc(plan.name)} · ${npr(plan.priceNpr)}/year</dd>
       <dt>Files</dt><dd>${plan.capabilities.max_assets === -1 ? 'Unlimited' : plan.capabilities.max_assets}</dd>
       <dt>Slots</dt><dd>${plan.capabilities.slot_count}</dd>
+      <dt>Earnings</dt><dd><a href="/dashboard/${esc(channel.slug)}/earnings">Who pays you, and how much →</a></dd>
       <dt>Billing</dt><dd><a href="/dashboard/${esc(channel.slug)}/billing">Plans, rent and payments →</a></dd>
       <dt>Store settings</dt><dd><a href="/dashboard/${esc(channel.slug)}/settings">Name, banner, listing →</a></dd>
       <dt>Reviews</dt><dd><a href="/dashboard/${esc(channel.slug)}/reviews">What buyers wrote →</a></dd>
@@ -1130,6 +1131,7 @@ function consentControls({ consent, next }) {
 function storeSectionNav(channel, current) {
   const items = [
     ['', 'Overview'],
+    ['earnings', 'Earnings'],
     ['billing', 'Billing'],
     ['settings', 'Store settings'],
     ['reviews', 'Reviews'],
@@ -1839,5 +1841,311 @@ ${flashNote(flash)}
     </div></div>`
     : '<div class="empty">Nothing outstanding. Rent invoices are only issued where a page is long enough to spare a slot.</div>'}
 </section>`,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Earnings — whose money, and who is holding it
+// ---------------------------------------------------------------------------
+
+/**
+ * The page where a creator finds out how they get paid.
+ *
+ * It leads with the counterparty, not the number, because that is the fact a
+ * creator has to understand: the money on this page is being paid by an ad
+ * network into their account, and bytebikri is not in the path. A dashboard that
+ * puts a dollar figure at the top and mentions the payer in a footnote is how
+ * people come to believe a platform is holding their earnings.
+ *
+ * The two numbers that can appear here are deliberately kept apart:
+ *
+ *   our estimate — arithmetic, `completed views ÷ 1000 × assumed rate`
+ *   their report — a figure the creator pasted from the network's statement
+ *
+ * When they disagree the network is right, and the page says which direction it
+ * disagrees in, because rent is priced from the same model that produced the
+ * estimate.
+ */
+export function earnings({
+  channel, user, consent = null, flash = null, summary, byAsset = [], days = 30,
+  connections = [], providers = [], suggestions = [], sandboxIds = [], payoutAccounts = [], reports = [], rent = null, plan = null,
+  usdToNpr = 133, moneyMap, checklist = [], rpmUsd = 0.2,
+}) {
+  const accountOf = (id) => payoutAccounts.find((p) => p.provider_id === id) || null;
+
+  const providerRows = summary.lines.map((l) => {
+    const account = accountOf(l.providerId);
+    const provider = providers.find((p) => p.id === l.providerId);
+    const verdict = provider?.verdict || null;
+    const gapPill = l.reported === null
+      ? pill('no statement yet')
+      : l.verdict.level === 'consistent' ? pill('matches', 'success')
+        : l.verdict.level === 'we_over' ? pill('we count higher', 'warning')
+          : l.verdict.level === 'we_under' ? pill('statement higher', 'info')
+            : pill('disagrees', 'danger');
+
+    return `<tr>
+      <td>
+        <strong>${esc(l.providerName)}</strong>
+        ${provider ? `<div class="fine">${verdict?.usableMethods?.length
+          ? `Pays out via ${esc(verdict.usableMethods.join(', '))}`
+          : esc(verdict?.message || '')}</div>` : ''}
+      </td>
+      <td class="num">${num(l.views)}</td>
+      <td class="num">$${l.estimateUsd.toFixed(2)}
+        ${l.postbackUsd > 0 ? `<div class="fine">$${l.postbackUsd.toFixed(2)} in postbacks</div>` : ''}</td>
+      <td class="num">${l.reported === null ? '—' : `$${l.reported.toFixed(2)}`}</td>
+      <td>${gapPill}</td>
+      <td>${account
+        ? `<div class="small">${esc(account.account_label)}</div>
+           <div class="fine">${esc(account.payout_method || 'method not noted')}${
+    account.status === 'changed' ? ' · you said this changed' : ''}</div>`
+        : `<span class="fine">Not recorded — and we do not need it. It is your account at the network.</span>`}</td>
+    </tr>`;
+  }).join('');
+
+  const assetRows = byAsset.slice(0, 12).map((a) => `
+    <tr>
+      <td>
+        <a href="/s/${esc(channel.slug)}/a/${esc(a.slug)}">${esc(a.title)}</a>
+        ${a.status !== 'live' ? `<div class="fine">${esc(a.status)}</div>` : ''}
+      </td>
+      <td class="num">${num(a.unlocks)}</td>
+      <td class="num">${num(a.views)}</td>
+      <td class="num">$${Number(a.estimate_usd).toFixed(2)}</td>
+    </tr>`).join('');
+
+  const connectedIds = new Set(connections.map((c) => c.provider_id));
+  const unconnected = suggestions.filter((p) => !connectedIds.has(p.id)).slice(0, 4);
+
+  const reportForm = `
+<form class="card card-pad-lg" method="post" action="/dashboard/${esc(channel.slug)}/earnings/report">
+  <h3 style="margin-top:0">Paste your statement figure</h3>
+  <p class="small">One closed period from one network. This is the only way our estimate can be
+  checked against reality — and the only evidence that would correct the traffic model your rent is
+  priced from.</p>
+  <div class="row" style="gap:var(--space-4);align-items:flex-start">
+    <div class="field" style="flex:2 1 200px">
+      <label for="rp-provider">Network</label>
+      <select class="input" id="rp-provider" name="providerId">
+        ${summary.lines.filter((l) => !sandboxIds.includes(l.providerId))
+    .map((l) => `<option value="${esc(l.providerId)}">${esc(l.providerName)}</option>`).join('')}
+        <option value="other">Another network</option>
+      </select>
+    </div>
+    <div class="field" style="flex:1 1 140px">
+      <label for="rp-start">Period start</label>
+      <input class="input" id="rp-start" name="periodStart" type="date" required>
+    </div>
+    <div class="field" style="flex:1 1 140px">
+      <label for="rp-end">Period end</label>
+      <input class="input" id="rp-end" name="periodEnd" type="date" required>
+    </div>
+    <div class="field" style="flex:1 1 140px">
+      <label for="rp-usd">Statement total (USD)</label>
+      <input class="input" id="rp-usd" name="reportedUsd" type="number" min="0" step="0.01" required>
+      <span class="hint">As printed. Not converted, not rounded up.</span>
+    </div>
+  </div>
+  <button class="btn" type="submit">Save the figure</button>
+  <p class="fine" style="margin-top:var(--space-3)">
+    Nothing is paid from this form and nothing changes hands. It records what the statement said.
+  </p>
+</form>`;
+
+  const reportHistory = reports.length
+    ? `<div class="panel" style="margin-top:var(--space-6)"><div class="panel-body panel-body-flush">
+        <table class="table">
+          <thead><tr><th>Network</th><th>Period</th><th class="num">Statement</th><th>Counted?</th></tr></thead>
+          <tbody>${reports.map((r) => `<tr>
+            <td>${esc(r.provider_id)}</td>
+            <td>${day(r.period_start)} → ${day(r.period_end)}</td>
+            <td class="num">$${Number(r.reported_usd).toFixed(2)}</td>
+            <td>${r.closed ? pill('yes', 'success') : pill('not closed yet', 'info')}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div></div>`
+    : '';
+
+  return layout({
+    title: 'Earnings', user, activeChannel: channel, consent, current: 'dashboard',
+    body: `
+${pageHead(channel, 'earnings', 'Earnings', `Where the money goes, and who is holding it.
+      It is not us.`)}
+
+${flashNote(flash)}
+
+<div class="section">
+  <div class="cols-2">
+    <div class="panel panel-creator">
+      <div class="panel-head">
+        <h2>${esc(moneyMap.toCreator.label)}</h2>
+        <span class="spacer"></span>
+        ${pill(moneyMap.toCreator.cut, 'success')}
+      </div>
+      <div class="panel-body">
+        <p class="small">${esc(moneyMap.toCreator.detail)}</p>
+        <dl class="kv" style="margin-top:var(--space-4)">
+          <dt>Paid by</dt><dd>${esc(moneyMap.toCreator.payer)}</dd>
+          <dt>Into</dt><dd>${esc(moneyMap.toCreator.account)}</dd>
+          <dt>Held by bytebikri</dt><dd><strong>Nothing, ever</strong></dd>
+        </dl>
+        <div class="amount-line">
+          <span>What the network reported, ${plural(days, 'day')}</span>
+          <strong>${summary.reportedTotal === null ? '—' : `$${summary.reportedTotal.toFixed(2)}`}</strong>
+        </div>
+        <p class="fine">${esc(summary.headline.headline)}. ${esc(summary.headline.detail)}</p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>${esc(moneyMap.toPlatform.label)}</h2>
+        <span class="spacer"></span>
+        ${pill(moneyMap.toPlatform.cut, 'accent')}
+      </div>
+      <div class="panel-body">
+        <p class="small">${esc(moneyMap.toPlatform.detail)}</p>
+        <dl class="kv" style="margin-top:var(--space-4)">
+          <dt>Plan</dt><dd>${esc(plan?.name || 'Free')}</dd>
+          <dt>Rent</dt><dd>${rent && Number(rent.amount_npr)
+    ? `${npr(rent.amount_npr)} · ${esc(rent.status)}`
+    : 'Nothing due — no rentable traffic'}</dd>
+          <dt>Our share of your ad earnings</dt><dd><strong>0%</strong></dd>
+        </dl>
+        ${summary.rent ? `<div class="amount-line">
+          <span>Rent as a share of reported earnings</span>
+          <strong>${summary.rent.pct === null ? '—' : `${summary.rent.pct}%`}</strong>
+        </div>
+        <p class="fine">${esc(summary.rent.sentence)}</p>` : ''}
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:var(--space-6)">
+    <div class="panel-head">
+      <h2>Our estimate, next to the statement</h2>
+      <span class="spacer"></span>
+      <span class="fine">assumed $${Number(rpmUsd).toFixed(2)} per 1,000 views</span>
+    </div>
+    <div class="panel-body panel-body-flush">
+      <table class="table">
+        <thead><tr>
+          <th>Network</th><th class="num">Views</th><th class="num">Our estimate</th>
+          <th class="num">Statement</th><th>Verdict</th><th>Your account there</th>
+        </tr></thead>
+        <tbody>${providerRows || '<tr><td colspan="6" class="muted">No completed ad views in this window yet — there is nothing for a network to pay.</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div class="panel-body">
+      <p class="fine">
+        The estimate is arithmetic on the rate above. The statement is what you told us the network
+        said. Where they disagree, the network is right — and the same traffic model prices your rent,
+        so an over-estimate is the direction that costs you.
+      </p>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:var(--space-6)">
+    <div class="panel-head"><h2>Which files earn</h2>
+      <span class="spacer"></span><span class="fine">last ${num(days)} days</span></div>
+    <div class="panel-body panel-body-flush">
+      <table class="table">
+        <thead><tr><th>File</th><th class="num">Unlocks</th><th class="num">Ad views</th><th class="num">Est.</th></tr></thead>
+        <tbody>${assetRows || '<tr><td colspan="4" class="muted">Nothing published yet.</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div class="panel-body">
+      <p class="fine">
+        Unlocks are our count of “somebody watched an ad for this file”. Views are the network’s count
+        of the same event. They usually differ, and the difference is worth a look if it is large.
+      </p>
+    </div>
+  </div>
+
+  <section class="section">
+    <div class="section-head">
+      <h2>Your accounts at the networks</h2>
+      <p>The account has to be yours. We record which one so you can find it again — never a number
+      we could use.</p>
+    </div>
+    ${connections.length ? `<div class="panel"><div class="panel-body panel-body-flush">
+      <table class="table">
+        <thead><tr><th>Network</th><th>Your account</th><th>Payout method</th><th></th></tr></thead>
+        <tbody>${connections.map((c) => {
+    const account = accountOf(c.provider_id);
+    const provider = providers.find((p) => p.id === c.provider_id);
+    const verdict = provider?.verdict || null;
+    // The sandbox network exists so the unlock loop can run with no
+    // credentials. It pays nobody, so it gets no payout field: asking a creator
+    // which of their accounts our own test provider pays into is the kind of
+    // row that makes a page feel auto-generated.
+    if (verdict?.level === 'unknown' && sandboxIds.includes(c.provider_id)) {
+      return `<tr>
+            <td><strong>${esc(provider?.name || c.provider_id)}</strong></td>
+            <td colspan="3" class="fine">Sandbox network — it completes the unlock loop with no
+              credentials and pays nobody. There is nothing to record.</td>
+          </tr>`;
+    }
+    return `<tr>
+            <td><strong>${esc(provider?.name || c.provider_id)}</strong>
+              ${verdict?.thresholdLabel && verdict.level !== 'unknown'
+    ? `<div class="fine">Threshold ${esc(verdict.thresholdLabel)}</div>` : ''}</td>
+            <td>
+              <form class="inline-form" method="post" action="/dashboard/${esc(channel.slug)}/earnings/payout">
+                <input type="hidden" name="providerId" value="${esc(c.provider_id)}">
+                <input class="input input-sm" name="accountLabel" maxlength="120" required
+                       placeholder="e.g. Payoneer ending 4417" value="${esc(account?.account_label || '')}">
+                <input class="input input-sm" name="payoutMethod" maxlength="60"
+                       placeholder="method" value="${esc(account?.payout_method || '')}">
+                <button class="btn btn-sm" type="submit">Save</button>
+              </form>
+            </td>
+            <td class="fine">${account
+      ? (account.status === 'changed' ? 'You said this changed' : 'On file')
+      : 'Not recorded'}</td>
+            <td class="fine">Only you can see this. It is not the network's record and we cannot check it.</td>
+          </tr>`;
+  }).join('')}</tbody>
+      </table>
+    </div></div>` : `<div class="empty">No network connected yet, so nothing is being served and
+      nothing can be earned. Connect one first — the account you connect is your own.</div>`}
+  </section>
+
+  <div class="cols-2" style="margin-top:var(--space-6)">
+    <div>
+      ${reportForm}
+      ${reportHistory}
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Before the network pays you</h2></div>
+      <div class="panel-body">
+        <ol class="list-steps">
+          ${checklist.map((step) => `<li>${esc(step)}</li>`).join('')}
+        </ol>
+        <p class="fine" style="margin-top:var(--space-4)">
+          None of this passes through bytebikri. There is no balance on this page, no withdrawal
+          button and no minimum: the money is between you, the network and your own bank.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  ${unconnected.length ? `<section class="section">
+    <div class="section-head"><h2>Networks you could add</h2>
+      <p>Every one of these pays the creator directly. None of them pays bytebikri.</p></div>
+    <div class="panel"><div class="panel-body panel-body-flush">
+      <table class="table">
+        <thead><tr><th>Network</th><th>Reachable from Nepal</th><th class="num">Minimum</th></tr></thead>
+        <tbody>${unconnected.map((p) => `<tr>
+          <td><strong>${esc(p.name)}</strong>${p.note ? `<div class="fine">${esc(p.note)}</div>` : ''}</td>
+          <td>${pill(p.verdict.level, p.verdict.level === 'ok' ? 'success' : p.verdict.level === 'caution' ? 'warning' : '')}</td>
+          <td class="num">${p.verdict.thresholdLabel ? esc(p.verdict.thresholdLabel) : '—'}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div></div>
+  </section>` : ''}
+</div>`,
   });
 }

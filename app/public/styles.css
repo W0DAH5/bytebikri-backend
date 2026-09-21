@@ -1001,3 +1001,17 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 
 /* ── operator queue ──────────────────────────────────────────────────────── */
 .inline-form { display: inline-flex; gap: var(--space-2); }
+
+/* ── earnings: whose money it is ────────────────────────────────────────── */
+/* The creator's side of the money map is marked with a left edge rather than a
+   different colour: the panel holds no money, and a tinted "balance" panel is
+   exactly the thing this page exists to avoid implying. */
+.panel-creator { border-left: 3px solid var(--success-text); }
+
+/* Numbered steps, because the order is the point: sign up, pass KYC, set the
+   rail, then earn. */
+.list-steps { margin: 0; padding-left: var(--space-6); display: grid; gap: var(--space-3); }
+.list-steps > li { font-size: var(--text-sm); color: var(--text-secondary); line-height: var(--leading-snug); }
+.list-steps > li::marker { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+
+.input-sm { min-height: 36px; padding-block: var(--space-2); font-size: var(--text-sm); }

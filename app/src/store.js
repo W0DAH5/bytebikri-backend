@@ -606,6 +606,172 @@ export const store = {
       [channelId ?? null, limit],
     );
   },
+  // ---- earnings: what the network says, never what we hold ----------------
+  /**
+   * Completed views and provider-reported revenue, per provider, for a window.
+   *
+   * `estimate_usd` is OURS and is arithmetic on the configured assumed rate —
+   * `revenue_usd` is whatever a provider put in a signed postback, and is
+   * frequently null because most networks settle monthly in a portal rather than
+   * per view. The two are returned side by side, never blended: a single
+   * "earnings" number that mixes a real report with our own arithmetic is how a
+   * dashboard starts lying without a line of it being false.
+   *
+   * Unlocks are joined in because they are the creator's own measure of value —
+   * "someone watched an ad for this file" — and views are the network's count of
+   * the same event. When they diverge, that is information.
+   */
+  earningsByProvider({ channelId, days = 30, rpmUsd = 0.2 }) {
+    return many(
+      `with win as (
+         select now() - ($2 || ' days')::interval as since
+       ),
+       views as (
+         select e.provider_id,
+                count(*)::int                     as views,
+                coalesce(sum(e.revenue_usd), 0)   as reported_usd
+           from ad_view_events e, win
+          where e.channel_id = $1 and e.completed and e.created_at >= win.since
+          group by e.provider_id
+       ),
+       unlocks as (
+         select u.method,
+                count(*)::int as unlocks
+           from unlocks u, win
+          where u.channel_id = $1 and u.revoked_at is null
+            and u.granted_at >= win.since
+          group by u.method
+       )
+       select coalesce(v.provider_id, 'unreported') as provider_id,
+              coalesce(v.views, 0)                  as views,
+              coalesce(v.reported_usd, 0)           as reported_usd,
+              round((coalesce(v.views, 0) / 1000.0 * $3)::numeric, 4) as estimate_usd,
+              -- Unlocks are the creator's own count of "somebody watched an ad
+              -- for this"; views are the network's count of the same event. Both
+              -- are shown, and neither is presented as the other.
+              (select coalesce(sum(unlocks)::int, 0) from unlocks) as unlocks
+         from views v
+        where v.provider_id is not null
+        order by views desc`,
+      [channelId, String(days), rpmUsd],
+    );
+  },
+
+  /**
+   * Per-asset breakdown: which file people watch an ad for.
+   *
+   * The seller's only real question is which of their files is worth making
+   * more of, and the answer is not total views — it is views per file, with the
+   * files that have none visible too. Left-joining assets keeps the zeroes.
+   */
+  earningsByAsset({ channelId, days = 30, rpmUsd = 0.2, limit = 50 }) {
+    return many(
+      `select a.id as asset_id, a.title, a.slug, a.unlock_mode, a.status,
+              coalesce(v.views, 0)::int      as views,
+              coalesce(u.unlocks, 0)::int    as unlocks,
+              round((coalesce(v.views, 0) / 1000.0 * $3)::numeric, 4) as estimate_usd
+         from assets a
+         left join (
+           select asset_id, count(*)::int as views
+             from ad_view_events
+            where channel_id = $1 and completed
+              and created_at >= now() - ($2 || ' days')::interval
+            group by asset_id
+         ) v on v.asset_id = a.id
+         left join (
+           select asset_id, count(*)::int as unlocks
+             from unlocks
+            where channel_id = $1 and revoked_at is null
+              and granted_at >= now() - ($2 || ' days')::interval
+            group by asset_id
+         ) u on u.asset_id = a.id
+        where a.channel_id = $1 and a.status <> 'removed'
+        order by coalesce(v.views, 0) desc, a.created_at desc
+        limit $4`,
+      [channelId, String(days), rpmUsd, limit],
+    );
+  },
+
+  // ---- payout accounts: a note, not an account ---------------------------
+  /**
+   * Which of the creator's OWN accounts the network pays into.
+   *
+   * A label they typed and the method name, and nothing else. This row cannot
+   * move money, cannot be used to authenticate anywhere, and is not the
+   * network's record — it is so that a creator can look at this page in six
+   * months and remember which account they set up, which is the question every
+   * support ticket about ad revenue actually asks.
+   */
+  payoutAccountsOf(channelId) {
+    return many(
+      'select * from payout_accounts where channel_id = $1 order by provider_id',
+      [channelId],
+    );
+  },
+
+  async setPayoutAccount({ channelId, providerId, accountLabel, payoutMethod = null, note = null }) {
+    const label = String(accountLabel || '').trim().slice(0, 120);
+    if (!label) return null;
+    return one(
+      `insert into payout_accounts (channel_id, provider_id, account_label, payout_method, note)
+       values ($1, $2, $3, $4, $5)
+       on conflict (channel_id, provider_id) do update
+         set account_label = excluded.account_label,
+             payout_method = excluded.payout_method,
+             note          = excluded.note,
+             status        = case when payout_accounts.account_label is distinct from excluded.account_label
+                                  then 'changed' else payout_accounts.status end,
+             updated_at    = now()
+       returning *`,
+      [channelId, String(providerId).slice(0, 60), label,
+        payoutMethod ? String(payoutMethod).trim().slice(0, 60) : null,
+        note ? String(note).trim().slice(0, 300) : null],
+    );
+  },
+
+  async clearPayoutAccount({ channelId, providerId }) {
+    return one(
+      'delete from payout_accounts where channel_id = $1 and provider_id = $2 returning *',
+      [channelId, providerId],
+    );
+  },
+
+  // ---- what the network actually paid ------------------------------------
+  reportsOfChannel(channelId, { limit = 60 } = {}) {
+    return many(
+      `select * from provider_reports
+        where channel_id = $1 order by period_start desc limit $2`,
+      [channelId, limit],
+    );
+  },
+
+  /**
+   * Record a figure from the creator's statement.
+   *
+   * One figure per provider per period start, so a correction replaces the
+   * earlier number instead of sitting beside it. A reconciliation that can hold
+   * two answers for one month is a reconciliation nobody can act on.
+   */
+  async addProviderReport({ channelId, providerId, periodStart, periodEnd, reportedUsd, note = null }) {
+    const amount = Number(reportedUsd);
+    if (!Number.isFinite(amount) || amount < 0) return null;
+    const start = String(periodStart || '').slice(0, 10);
+    const end = String(periodEnd || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) return null;
+    if (end < start) return null;
+    return one(
+      `insert into provider_reports (channel_id, provider_id, period_start, period_end, reported_usd, note)
+       values ($1, $2, $3, $4, $5, $6)
+       on conflict (channel_id, provider_id, period_start) do update
+         set period_end   = excluded.period_end,
+             reported_usd = excluded.reported_usd,
+             note         = excluded.note
+       returning *`,
+      [channelId, String(providerId).slice(0, 60), start, end,
+        Math.round(amount * 100) / 100, note ? String(note).trim().slice(0, 300) : null],
+    );
+  },
+
   async adViewsOfUser(userId, sinceHours = 24) {
     return many(
       `select * from ad_view_events

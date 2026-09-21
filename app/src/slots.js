@@ -24,6 +24,18 @@ export const POLICY = {
   minTenantSlotsBeforeTax: 3,
   maxTotalSlots: 8,
   releasedBy: 'ad_free', // capability flag; all plans default false for now
+
+  /**
+   * The rate and the exchange rate our ESTIMATES use.
+   *
+   * Here, in policy, exactly once. Both the rent estimate and the earnings page
+   * are arithmetic on this number, and they must not be able to drift apart:
+   * a creator checking their rent against their statement is comparing two
+   * figures that came from the same assumption, and that is only meaningful if
+   * there is one assumption. It is displayed on both pages for the same reason.
+   */
+  assumedRpmUsd: 0.2,
+  usdToNpr: 133,
 }
 
 /**
@@ -116,7 +128,7 @@ export function allocateSlots({ slotDefs, capabilities, connections, surfaces = 
  * Shown to the channel as OUR ESTIMATE. Their real earnings number lives in the
  * ad network's dashboard, and we must never present ours as theirs.
  */
-export function estimateRentSlotValue({ pageviews30d, rpmUsd = 0.2, slots, usdToNpr = 133 }) {
+export function estimateRentSlotValue({ pageviews30d, rpmUsd = POLICY.assumedRpmUsd, slots, usdToNpr = POLICY.usdToNpr }) {
   const total = slots?.length || 0
   const rent = (slots || []).filter((s) => s.payoutParty === 'platform').length
   if (!total || !rent) return { estNpr: 0, total, rent, rpmUsd, pageviews30d }

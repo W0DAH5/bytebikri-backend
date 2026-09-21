@@ -1,0 +1,285 @@
+/**
+ * Earning, and who is holding the money.
+ *
+ * This module exists because of one sentence in the product's own rules:
+ * **bytebikri does not touch a creator's ad earnings.** The network pays the
+ * creator's own account directly. bytebikri is not in that path, takes 0%, and
+ * never holds a balance — which also means there is no withdrawal button to
+ * build, no minimum to enforce, and no payout run to operate.
+ *
+ * What is left to do, and what this file is:
+ *
+ *   1. Say where the money goes, in the place where a creator looks for it. An
+ *      earnings page that shows a number and no counterparty is how a platform
+ *      ends up with a user who believes the number is a balance.
+ *   2. Compare OUR estimate with the NETWORK'S report. Ours is arithmetic
+ *      (`views × assumed RPM`); theirs is the statement. When they disagree, the
+ *      network is right — and the disagreement matters because the same traffic
+ *      model prices the rent. A creator who can show our estimate is 3× the
+ *      statement is a creator who can argue about their rent with evidence.
+ *   3. Never present either number as money we owe. There is no third state.
+ *
+ * The comparison is deliberately conservative about periods: a month the network
+ * has not closed yet is marked partial and excluded from the verdict, because
+ * "our estimate is higher than your statement" is a false alarm when the
+ * statement simply stops before the month does.
+ */
+
+/** @typedef {{ period_start: string, period_end: string, reported_usd: number }} Report */
+
+/** Today, in the timezone a billing period is not in — dates here are dates. */
+const iso = (d) => new Date(d).toISOString().slice(0, 10);
+
+/**
+ * How many days of a period have actually happened.
+ *
+ * The whole point is to avoid comparing a closed month against a partial one.
+ * The window ends today, so a period whose end is in the future is partial, and
+ * so is a period that started yesterday.
+ */
+export function periodStatus(periodEnd, { now = new Date() } = {}) {
+  const end = iso(periodEnd);
+  const today = iso(now);
+  if (end >= today) return { closed: false, daysShort: null };
+  const short = Math.round((Date.parse(today) - Date.parse(end)) / 86400000);
+  // A network closes its books a few days after the month ends. Treating the last
+  // week as settled is a claim we cannot make.
+  return { closed: short > 5, daysShort: short };
+}
+
+/**
+ * One provider's line: what we counted, what they reported, and the gap.
+ *
+ * `views` and `estimateUsd` are ours. `reportedUsd` is the sum of what the
+ * creator entered, over CLOSED periods only — a partial month is shown but not
+ * counted, and the number of excluded rows is returned so the page can say so
+ * rather than silently dropping them.
+ */
+/**
+ * How many months of statement the closed periods add up to.
+ *
+ * Counted in days against a 365.25/12 month, so a 31-day month is one month and
+ * a quarter is three — close enough for a ratio a human reads, and derived from
+ * the dates the creator entered rather than assumed.
+ */
+export function closedMonths(reports = [], now = new Date()) {
+  const DAYS_PER_MONTH = 30.44;
+  return reports.reduce((sum, r) => {
+    if (!periodStatus(r.period_end, { now }).closed) return sum;
+    const days = Math.round((Date.parse(iso(r.period_end)) - Date.parse(iso(r.period_start))) / 86400000) + 1;
+    return sum + Math.max(0, days) / DAYS_PER_MONTH;
+  }, 0);
+}
+
+export function providerLine({
+  providerId, providerName = null, views = 0, estimateUsd = 0,
+  postbackUsd = 0, reports = [], rpmUsd = 0.2, connected = false, now = new Date(),
+}) {
+  let reported = 0;
+  let counted = 0;
+  let excluded = 0;
+  let latest = null;
+
+  for (const r of reports) {
+    const status = periodStatus(r.period_end, { now });
+    if (!status.closed) { excluded += 1; continue; }
+    reported += Number(r.reported_usd) || 0;
+    counted += 1;
+    const start = iso(r.period_start);
+    if (!latest || start > latest) latest = start;
+  }
+
+  const gap = counted ? reported - estimateUsd : null;
+  const gapPct = counted && reported > 0 ? (gap / reported) * 100 : null;
+
+  return {
+    providerId,
+    providerName: providerName || providerId,
+    connected,
+    views,
+    estimateUsd: round4(estimateUsd),
+    // What arrived IN the signed postbacks, if the network sends per-view
+    // revenue at all. Most settle in a portal monthly, so this is often zero
+    // while real money was earned — which is exactly why it is never shown as
+    // the earnings figure.
+    postbackUsd: round4(postbackUsd),
+    rpmUsd,
+    reported: counted ? round4(reported) : null,
+    periodsCompared: counted,
+    periodsExcluded: excluded,
+    latestPeriod: latest,
+    gap: gap === null ? null : round4(gap),
+    gapPct: gapPct === null ? null : Math.round(gapPct),
+    verdict: gapVerdict({ counted, reported, estimateUsd, gapPct }),
+  };
+}
+
+/**
+ * What the gap means, and what to do about it.
+ *
+ * Direction matters both ways:
+ *
+ *   we over-count — our estimate is above the statement. Either the assumed RPM
+ *     is too high or the views are inflated. This is the dangerous direction,
+ *     because rent is priced off the same model: the creator is being charged
+ *     from a number that is too large.
+ *   we under-count — our estimate is below the statement. The creator is being
+ *     under-sold on their own performance and the rent is too cheap. Nothing is
+ *     broken for them, but the pricing is not describing the business.
+ *
+ * A 15% band is called "consistent": an estimate is an estimate, and a page that
+ * cries about 4% is a page nobody reads twice.
+ */
+export function gapVerdict({ counted = 0, reported = 0, estimateUsd = 0, gapPct = null }) {
+  if (!counted) {
+    return {
+      level: 'no_report',
+      headline: 'Nothing to compare yet',
+      detail: 'Our estimate is arithmetic: completed views × an assumed rate. Paste one closed period from your statement and the two numbers appear side by side.',
+    };
+  }
+  if (reported === 0 && estimateUsd > 0) {
+    return {
+      level: 'disagree',
+      headline: 'Our estimate says you earned something; the statement says nothing',
+      detail: 'That usually means a delivery problem at the network, a payment threshold that has not been crossed, or a provider whose reports we are not seeing. Worth checking the statement directly.',
+    };
+  }
+  if (gapPct !== null && Math.abs(gapPct) <= 15) {
+    return {
+      level: 'consistent',
+      headline: 'Our estimate matches your statement closely',
+      detail: `Within ${Math.abs(gapPct)}% over ${counted} period${counted === 1 ? '' : 's'}. The assumed rate used for estimates, and for pricing rent, is describing your traffic honestly.`,
+    };
+  }
+  if (estimateUsd > reported) {
+    return {
+      level: 'we_over',
+      headline: 'Our estimate is higher than your statement',
+      detail: 'We are counting more value than you were paid. Rent is priced from the same model, so this is the direction that matters: tell us and the assumed rate for your store gets corrected.',
+    };
+  }
+  return {
+    level: 'we_under',
+    headline: 'Your statement is higher than our estimate',
+    detail: 'You are earning more than our model credits you with. Nothing is broken for you, and the rent — priced from that same model — is cheaper than it would be if we priced it off the statement.',
+  };
+}
+
+/**
+ * Rent next to what the network says the channel earned.
+ *
+ * Not a ratio that changes the rent: rent is priced from traffic, never from
+ * earnings, and it stays predictable across a bad month. But a creator is
+ * entitled to see the two numbers together, because a charge that is 60% of
+ * earnings is a different business decision from one that is 4%, and only the
+ * person paying it can decide whether it is worth it.
+ */
+export function rentInContext({ rentNpr, reportedUsd, monthsCovered = 0, usdToNpr = 133 }) {
+  const rentUsd = Number(rentNpr || 0) / usdToNpr;
+
+  // ANNUAL, both sides. Rent is charged once a year; a statement period is
+  // almost always a month. Comparing them directly reported a rent twelve times
+  // its real share — a page that shouts "164% of what you earned" when the
+  // honest answer is 14% is worse than no comparison at all, because the seller
+  // has no way to know which number to trust.
+  const annualUsd = monthsCovered > 0 ? reportedUsd * (12 / monthsCovered) : null;
+
+  if (!annualUsd || annualUsd <= 0) {
+    return {
+      rentUsd: round4(rentUsd),
+      annualEarningsUsd: null,
+      pct: null,
+      sentence: 'No closed statement to compare against yet. When you add one, your rent appears as a share of a year at that rate.',
+    };
+  }
+
+  const pct = Math.round((rentUsd / annualUsd) * 100);
+  const sentence = pct <= 10
+    ? `${pct}% of what the network reported, annualised — the rest is yours.`
+    : pct <= 25
+      ? `${pct}% of what the network reported, annualised. Worth watching, and worth telling us about if it holds.`
+      : `${pct}% of what the network reported, annualised. That is high: rent is priced from measured traffic at an assumed rate, and a share this size usually means the assumption does not fit your store.`;
+  return { rentUsd: round4(rentUsd), annualEarningsUsd: round4(annualUsd), pct, sentence };
+}
+
+/** Everything the earnings page needs, from the rows the store returns. */
+export function earningsSummary({
+  rows = [], estimateUsd = 0, reports = [], rpmUsd = 0.2, rent = null, usdToNpr = 133, now = new Date(),
+}) {
+  const lines = rows.map((r) => providerLine({
+    providerId: r.provider_id,
+    providerName: r.provider_name,
+    views: Number(r.views) || 0,
+    estimateUsd: Number(r.estimate_usd) || 0,
+    postbackUsd: Number(r.reported_usd) || 0,
+    reports: reports.filter((x) => x.provider_id === r.provider_id),
+    rpmUsd: r.rpm_usd ?? rpmUsd,
+    connected: Boolean(r.connected),
+    now,
+  }));
+
+  const reportedTotal = lines.reduce((a, l) => a + (l.reported || 0), 0);
+  const compared = lines.filter((l) => l.reported !== null);
+
+  // How many months of statements are actually behind that total. Without it,
+  // rent (annual) would be compared against a month and reported as a share
+  // twelve times too large.
+  const monthsCovered = closedMonths(reports, now);
+
+  return {
+    lines,
+    estimateUsd: round4(estimateUsd),
+    reportedTotal: compared.length ? round4(reportedTotal) : null,
+    comparedProviders: compared.length,
+    monthsCovered: round4(monthsCovered),
+    rent: rent
+      ? rentInContext({ rentNpr: rent, reportedUsd: reportedTotal, monthsCovered, usdToNpr })
+      : null,
+    // The single sentence the page leads with. When there is nothing to compare,
+    // it says that instead of showing a ratio of zero.
+    headline: compared.length
+      ? gapVerdict({
+        counted: compared.length,
+        reported: reportedTotal,
+        estimateUsd,
+        gapPct: reportedTotal > 0 ? Math.round(((reportedTotal - estimateUsd) / reportedTotal) * 100) : null,
+      })
+      : gapVerdict({ counted: 0 }),
+  };
+}
+
+/**
+ * The two directions money moves, stated once so every page can repeat it.
+ *
+ * `NOT_CHARGED` in `billing.js` is the list of what we do not charge for. This
+ * is the same fact from the earning side: what we do not take, and who pays it.
+ */
+export const MONEY_MAP = {
+  toCreator: {
+    label: 'Your ad earnings',
+    payer: 'The ad network',
+    account: 'Your own account, at the network',
+    cut: '0% to bytebikri',
+    detail: 'The advertiser pays the network. The network pays your account. bytebikri is not a party to either leg and cannot see the balance.',
+  },
+  toPlatform: {
+    label: 'What you pay bytebikri',
+    payer: 'You',
+    account: 'bytebikri',
+    cut: 'Two charges only',
+    detail: 'A plan upgrade and annual rent for the platform ad slot. Neither is a share of what you earn, and neither is charged on a sale — there is no sale.',
+  },
+};
+
+/** The four things a creator must do at the network, in the order that matters. */
+export function payoutChecklist(providerName = 'the network') {
+  return [
+    `Sign up at ${providerName} in your own name. The account has to be yours — we cannot open it, verify it, or hold it for you.`,
+    'Complete their KYC. Ad networks run their own checks; the documents you loaded here do not satisfy them.',
+    'Set the payout method there, and watch the minimum: a rail that needs $100 is a wait, not a payout.',
+    'Add plenty of traffic before expecting anything. A store with a few hundred views a month earns cents, and cents do not clear a threshold.',
+  ];
+}
+
+const round4 = (n) => Math.round((Number(n) || 0) * 10000) / 10000;
