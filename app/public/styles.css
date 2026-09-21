@@ -125,10 +125,14 @@
   --border-strong: var(--gray-600);
   --border-focus: var(--indigo-500);
 
+  /* Hierarchy by luminance, and every step readable. The faint tier carries
+     captions, file sizes and the whole `.fine` class, so 4.5:1 is the floor —
+     the previous gray-400 sat at 3.3:1, which is the difference between a
+     caption and decoration nobody can read. */
   --text-primary: var(--gray-50);
-  --text-secondary: var(--gray-200);
-  --text-muted: var(--gray-300);
-  --text-faint: var(--gray-400);
+  --text-secondary: var(--gray-100);
+  --text-muted: var(--gray-200);
+  --text-faint: var(--gray-300);
   --text-on-accent: #fff;
 
   --accent: var(--indigo-600);
@@ -164,9 +168,9 @@
     --border-strong: #cfd4de;
 
     --text-primary: #12151c;
-    --text-secondary: #3a4150;
-    --text-muted: #5a6273;
-    --text-faint: #868d9c;
+    --text-secondary: #333b48;
+    --text-muted: #4a5262;
+    --text-faint: #616a7c;
 
     --accent: var(--indigo-600);
     --accent-hover: var(--indigo-700);
