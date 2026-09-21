@@ -157,6 +157,33 @@ function consentBanner(consent) {
 </div>`;
 }
 
+/**
+ * The entrance-reveal bootstrap, as ONE fixed piece of inline JavaScript.
+ *
+ * This is a landing-page device, so it is switched on by the page that wants it
+ * and by nothing else. A dashboard is a tool: its cards, tables and panels are
+ * the thing the person came for, and fading them in as they scroll reads as the
+ * interface being slow rather than as movement. Storefronts and Explore get it;
+ * every signed-in page does not.
+ *
+ * Two conditions, both necessary: the page carries `data-reveal`, and motion is
+ * welcome. With no JavaScript at all nothing is ever hidden, because the class
+ * that hides things is only ever added by this script.
+ *
+ * It is a CONSTANT — the same bytes on every page, with the decision moved into
+ * an attribute on the html element — for one reason: script-src 'self' in the
+ * CSP blocks inline scripts, and the way to allow one without opening the door
+ * to every injected script is to name its hash. A hash only matches if the text
+ * never varies. server.js computes the hash from this same constant at boot and
+ * a test asserts the two agree; the earlier version, which interpolated
+ * "true" or "false" into the script, was blocked in every browser — the reveal
+ * never ran anywhere, and nothing looked broken because the content simply
+ * appeared without moving.
+ */
+export const REVEAL_BOOTSTRAP =
+  "if(!matchMedia('(prefers-reduced-motion: reduce)').matches&&document.documentElement.hasAttribute('data-reveal'))" +
+  "document.documentElement.classList.add('reveal-ready');";
+
 export function layout({
   title, user, body, activeChannel = null, wide = false, current = '', consent = null,
   reveal = false,
@@ -176,7 +203,7 @@ export function layout({
        <a class="btn btn-sm btn-primary" href="/signup">Start a store</a>`;
 
   return `<!doctype html>
-<html lang="en">
+<html lang="en"${reveal ? ' data-reveal' : ''}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -184,24 +211,7 @@ export function layout({
 <title>${esc(title)} · ByteBikri</title>
 <meta name="description" content="Watch an ad, unlock the file. Creators keep their own ad revenue.">
 <link rel="stylesheet" href="/styles.css">
-<script>
-/*
- * Entrance reveals, and where they are allowed.
- *
- * This is a LANDING-PAGE device, so it is switched on by the page that wants it
- * and by nothing else. A dashboard is a tool: its cards, tables and panels are
- * the thing the person came for, and fading them in as they scroll reads as the
- * interface being slow rather than as movement. Storefronts and Explore get it;
- * every signed-in page does not.
- *
- * Two conditions, both necessary: the page asked for it, and motion is welcome.
- * With no JavaScript at all the class is never added, nothing is ever hidden,
- * and the page simply renders.
- */
-if (${reveal ? 'true' : 'false'} && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
-  document.documentElement.classList.add('reveal-ready');
-}
-</script>
+<script>${REVEAL_BOOTSTRAP}</script>
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
@@ -313,7 +323,44 @@ export function landing({ channels, user, stats, consent = null, moneyMap = null
   ${featured ? `<div class="grid-channels">${featured}</div>` : '<div class="empty">No stores yet.</div>'}
 </section>
 
+<!--
+  The step that actually moves money is the one to design around, so it is
+  numbered and the other two are not. The ordered list carries the sequence; the numerals
+  are decoration and say so with aria-hidden, because announcing "one" twice is
+  noise for a screen reader.
+-->
 <section class="section">
+  <div class="section-head">
+    <h2>How a file gets unlocked</h2>
+    <p>Three steps, and the money moves in exactly one of them — from the network to you.</p>
+  </div>
+  <ol class="steps">
+    <li class="step">
+      <span class="step-num" aria-hidden="true">01</span>
+      <h3>You publish a file</h3>
+      <p class="small">Attach it, set it to <strong>one rewarded ad</strong>, done. No price to set,
+      because nobody is buying it with money.</p>
+    </li>
+    <li class="step">
+      <span class="step-num" aria-hidden="true">02</span>
+      <h3>Someone watches the ad</h3>
+      <p class="small">The network serves the ad inside your page. When it completes, the network
+      calls our server with a signature — the browser's word counts for nothing here.</p>
+    </li>
+    <li class="step">
+      <span class="step-num" aria-hidden="true">03</span>
+      <h3>The network pays you</h3>
+      <p class="small">Your own account at the network, on the network's own schedule. We are not a
+      party to that payment and we cannot see the balance.</p>
+    </li>
+  </ol>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>What this costs, and what it never costs</h2>
+    <p>Two charges and no share of anything. If a number appears anywhere on this site, it is one of these.</p>
+  </div>
   <div class="grid-channels">
     <div class="card card-pad-lg">
       <h3>No price on the file</h3>
@@ -1255,15 +1302,41 @@ ${moderation ? `<div style="margin-top:var(--space-6)">${moderationNotice(modera
 
 ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)" role="status">${esc(flash.message)}</div>` : ''}
 
-<div class="stat-row" style="margin-top:var(--space-8)">
-  <div class="stat"><div class="stat-value">${num(pageviews)}</div><div class="stat-label">Views · 30d</div></div>
-  <div class="stat"><div class="stat-value">${num(adViews.length)}</div><div class="stat-label">Ad views</div></div>
-  <div class="stat"><div class="stat-value">${num(estimate.unlocks || 0)}</div><div class="stat-label">Unlocks</div></div>
-  <div class="stat"><div class="stat-value">$${earnings.toFixed(3)}</div><div class="stat-label">Est. earned</div></div>
+<!--
+  Four equal numbers answered no question. A seller opens this page to find out
+  whether what they published is being used, so that is the hero — at the largest
+  size, spanning two columns — and the three figures that explain it are sized
+  down from it. Nothing here is a number we profit from, and the estimate says so
+  in its own note rather than in a paragraph underneath.
+-->
+<div class="kpi-row" style="margin-top:var(--space-8)">
+  <div class="kpi kpi-hero">
+    <div class="kpi-value">${num(estimate.unlocks || 0)}</div>
+    <div class="kpi-label">Files unlocked · last 30 days</div>
+    <div class="kpi-note">${estimate.unlocks
+    ? 'Each one is a person who watched a rewarded ad for something you published.'
+    : 'Nobody has unlocked a file yet. It starts the moment your first visitor watches an ad.'}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-value">${num(pageviews)}</div>
+    <div class="kpi-label">Views · 30d</div>
+    <div class="kpi-note">What rent is priced from.</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-value">${num(adViews.length)}</div>
+    <div class="kpi-label">Ad views served</div>
+    <div class="kpi-note">Across every network.</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-value">$${earnings.toFixed(3)}</div>
+    <div class="kpi-label">Est. earned</div>
+    <div class="kpi-note">Our estimate, not the network's statement.</div>
+  </div>
 </div>
 <p class="fine" style="margin-top:var(--space-3)">
   Estimated earned is <strong>our</strong> figure from provider-reported revenue, not your statement.
   The network is the authority on what you were paid, and it pays your own account directly.
+  <a href="/dashboard/${esc(channel.slug)}/earnings">Where the money goes →</a>
 </p>
 
 <div class="panel" style="margin-top:var(--space-5)">
@@ -2838,6 +2911,53 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
 }
 
 /** The audit log: a filter and a table, because that is all it is. */
+/**
+ * Audit metadata, written the way a person would read it out.
+ *
+ * The first version printed `JSON.stringify(meta).slice(0, 120)`, which produced
+ * things like `{"channelId":"c6326d55-1cb6-43cb-8e8d-b2cc17ed2e0f","plan":"pro"}`
+ * — half a UUID, no currency, and a field order that came from object insertion
+ * rather than from what matters. Ids are shortened to a fingerprint that is
+ * still searchable, money gets a currency and thousands separators, booleans
+ * become yes/no, and the fields that describe a decision come first.
+ */
+const AUDIT_LABELS = {
+  plan: 'plan', planCode: 'plan', channelId: 'store', channelSlug: 'store', slug: 'store',
+  assetId: 'file', assetSlug: 'file', paymentId: 'payment', invoiceId: 'invoice',
+  connectionId: 'connection', creativeId: 'ad', slotKey: 'slot', amountNpr: 'amount',
+  txnReference: 'reference', reference: 'reference', method: 'method', ruleCode: 'rule',
+  state: 'state', from: 'was', to: 'now', reason: 'reason', provider: 'network',
+  days: 'days', email: 'email', kind: 'kind', outcome: 'outcome', count: 'count',
+};
+const AUDIT_ORDER = ['channelSlug', 'channelId', 'slug', 'email', 'plan', 'planCode', 'kind',
+  'from', 'to', 'state', 'ruleCode', 'reason', 'provider', 'slotKey', 'assetSlug', 'assetId',
+  'paymentId', 'invoiceId', 'connectionId', 'method', 'amountNpr', 'txnReference', 'reference'];
+
+function auditValue(key, value, nprFmt) {
+  if (typeof value === 'boolean') return value ? 'yes' : 'no';
+  if (key === 'amountNpr' || key === 'amount') return nprFmt(Number(value));
+  if (key === 'days') return `${value} days`;
+  const str = String(value);
+  if (/^\d{4}-\d{2}-\d{2}T/.test(str)) return relTime(str);
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(str)) return str.slice(0, 8);
+  return str.length > 48 ? `${str.slice(0, 47)}…` : str;
+}
+
+export function briefMeta(meta) {
+  if (!meta) return '';
+  let value = meta;
+  if (typeof value === 'string') {
+    try { value = JSON.parse(value); } catch { return value.slice(0, 140); }
+  }
+  if (typeof value !== 'object' || value === null) return String(value).slice(0, 140);
+  const entries = Object.entries(value).filter(([, v]) => v !== null && v !== undefined && v !== '');
+  entries.sort((a, b) => {
+    const ia = AUDIT_ORDER.indexOf(a[0]); const ib = AUDIT_ORDER.indexOf(b[0]);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  });
+  return entries.map(([k, v]) => `${AUDIT_LABELS[k] || k} ${auditValue(k, v, npr)}`).join(' · ').slice(0, 220);
+}
+
 export function adminAudit({ user, consent = null, rows = [], q = '', total = 0 }) {
   const filtered = q ? rows.filter((r) => String(r.action).includes(q)) : rows;
   return adminShell({
@@ -2863,7 +2983,7 @@ export function adminAudit({ user, consent = null, rows = [], q = '', total = 0 
           <td><span class="mono">${esc(a.action)}</span></td>
           <td class="fine">${esc(a.actor_name || a.actor_email || '—')}</td>
           <td class="fine mono">${esc(a.subject_type ? `${a.subject_type}` : '—')}</td>
-          <td class="fine">${esc(JSON.stringify(a.meta || {}).slice(0, 120))}</td>
+          <td class="fine">${esc(briefMeta(a.meta))}</td>
         </tr>`).join('') || '<tr><td colspan="5" class="muted">No rows.</td></tr>'}
       </tbody>
     </table>

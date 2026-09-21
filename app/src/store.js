@@ -1896,6 +1896,29 @@ export const store = {
       [Math.min(Number(limit) || 200, 500)],
     );
   },
+
+  /**
+   * Audit rows somebody DECIDED, newest first.
+   *
+   * `recentAudit` is the raw log and it is mostly `auth.login` and
+   * `consent.recorded`. That is right for the audit page, which says it is
+   * everything and has a filter — but it is noise on the operator's overview,
+   * where the first few rows should be the most recent decisions about money, a
+   * store or a connection. No fallback to the raw log on purpose: eight sign-ins
+   * dressed up as an activity feed is worse than an empty one, because it looks
+   * like evidence of supervision while showing none.
+   */
+  recentDecisions(limit = 8) {
+    const prefixes = ['plan.', 'rent.', 'moderation.', 'ad_connection.', 'creative.',
+      'asset.', 'review.', 'report.', 'channel.', 'user.'];
+    return many(
+      `select l.*, p.display_name as actor_name, p.email as actor_email
+         from audit_logs l left join profiles p on p.id = l.actor_id
+        where ${prefixes.map((_, i) => `l.action like $${i + 2}`).join(' or ')}
+        order by l.created_at desc, l.id desc limit $1`,
+      [Math.min(Number(limit) || 8, 200), ...prefixes.map((pfx) => `${pfx}%`)],
+    );
+  },
 };
 
 export function slugify(s) {

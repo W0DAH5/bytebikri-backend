@@ -50,6 +50,16 @@ import {
 } from './src/media.js';
 import { selfTest as adapterSelfTest, advisories as adapterAdvisories, ADAPTERS } from './src/providers/index.js';
 import * as views from './src/views.js';
+import { REVEAL_BOOTSTRAP } from './src/views.js';
+
+/**
+ * The CSP hash of that one inline script.
+ *
+ * Computed, never typed: a hand-copied hash that stops matching does not fail
+ * loudly — it simply stops the reveal from running, which is invisible in every
+ * way except that nothing moves.
+ */
+const REVEAL_HASH = `sha256-${crypto.createHash('sha256').update(REVEAL_BOOTSTRAP, 'utf8').digest('base64')}`;
 import * as auth from './src/auth.js';
 import { originCheck, rateLimit, cookieParser, setSessionCookie, clearSessionCookie } from './src/security.js';
 import {
@@ -72,7 +82,12 @@ APP.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'"],
+      // One inline script is allowed, and only because its exact bytes are named
+      // here: the reveal bootstrap in the head must run before first paint, and
+      // it must run as inline. The hash is computed from the constant the view
+      // renders, so the two cannot drift — a hash that stops matching does not
+      // fail loudly, it silently stops the reveal from ever running.
+      scriptSrc: ["'self'", `'${REVEAL_HASH}'`],
       styleSrc: ["'self'", "'unsafe-inline'"],
       // Ad networks load their own scripts and frames from their own origins.
       // Locked to 'self' for now because no tag is rendered yet; this list grows
@@ -2504,7 +2519,9 @@ APP.get('/admin', async (req, res, next) => {
         ['Held on a creator&#39;s behalf', '<strong>Nothing, ever</strong>'],
         ['Matched by', 'a person, against the bank or wallet statement'],
       ],
-      activity: await store.recentAudit(8),
+      // Decisions, not logins: this strip is the operator's glance at what has
+      // been decided lately, and the audit page is where the raw log lives.
+      activity: await store.recentDecisions(8),
     }));
   } catch (err) { next(err); }
 });

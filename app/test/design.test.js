@@ -30,6 +30,8 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -131,10 +133,16 @@ test('reduced motion is honoured, and animations still complete', () => {
   for (const m of CSS.matchAll(/\.reveal-ready[^{]*\{([^}]*)\}/g)) {
     assert.ok(!/display:\s*none/.test(m[1]), 'a reveal must not remove content from the page');
   }
-  const inline = /<script>([\s\S]*?)<\/script>/.exec(views)?.[1] || '';
-  assert.ok(/reveal-ready/.test(inline), 'the head script is what turns reveals on');
-  assert.ok(/prefers-reduced-motion: reduce/.test(inline),
+  // The head script is a constant now, so read it as one rather than guessing
+  // its position in the rendered page.
+  const bootstrap = /export const REVEAL_BOOTSTRAP =\s*([\s\S]*?);\n/.exec(views)?.[1] || '';
+  assert.ok(bootstrap, 'the reveal bootstrap is a named constant the CSP hash is computed from');
+  assert.ok(/reveal-ready/.test(CSS), 'the stylesheet is what hides and reveals');
+  assert.match(bootstrap, /reveal-ready/, 'and the head script is what turns reveals on');
+  assert.match(bootstrap, /prefers-reduced-motion: reduce/,
     'and it must refuse to add the class when reduced motion is requested');
+  assert.match(bootstrap, /hasAttribute\('data-reveal'\)/,
+    'and it only acts on a page that asked for it');
 
   // Belt and braces: a reveal that never fires is a blank section, so the client
   // reveals everything after a timeout regardless of what the observer did.
@@ -204,8 +212,20 @@ test('scroll reveals are opt-in per page, and only on the marketing surfaces', (
   const { layout } = viewsModule;
   const on = layout({ title: 'x', user: null, body: '', reveal: true });
   const off = layout({ title: 'x', user: null, body: '' });
-  assert.match(on, /if \(true && !matchMedia/, 'the page that wants reveals says so');
-  assert.match(off, /if \(false && !matchMedia/, 'and every other page does not');
+  assert.match(on, /<html lang="en" data-reveal>/, 'the page that wants reveals says so, on the html element');
+  // The script mentions the attribute it looks for, so test the html tag itself.
+  assert.ok(!/<html[^>]*data-reveal/.test(off), 'and every other page does not');
+  // The script itself must be byte-identical on every page, because the CSP
+  // allows it by hash. A hash that stops matching does not error — it silently
+  // stops the reveal from ever running, which looks exactly like "nothing
+  // changed".
+  const { REVEAL_BOOTSTRAP } = viewsModule;
+  for (const page of [on, off]) {
+    assert.ok(page.includes(`<script>${REVEAL_BOOTSTRAP}</script>`),
+      'the inline script is the same bytes everywhere, and the page carries one copy of it');
+  }
+  assert.ok(!/if \(true/.test(on) && !/if \(false/.test(off),
+    'nothing is interpolated into the script any more: that is what broke the hash');
 
   // A dashboard is a tool: its panels must not fade in as somebody scrolls to
   // find what they came for.
@@ -214,9 +234,9 @@ test('scroll reveals are opt-in per page, and only on the marketing surfaces', (
     plan: { name: 'Free', code: 'free', capabilities: {} }, estimate: {}, pageviews: 0, adViews: [],
     upgrade: null, user: null,
   });
-  assert.match(dashboardShell, /if \(false && !matchMedia/);
+  assert.ok(!/<html[^>]*data-reveal/.test(dashboardShell), 'a dashboard does not animate its panels in');
   const storeShell = storefront({ channel: MARKET, assets: [], slots: [], estimate: {}, pageviews: 0 });
-  assert.match(storeShell, /if \(true && !matchMedia/, 'a storefront is the shelf, so it may animate');
+  assert.match(storeShell, /<html lang="en" data-reveal>/, 'a storefront is the shelf, so it may animate');
 });
 
 test('the hero has one primary action, not a choice of three', () => {
@@ -291,4 +311,91 @@ test('every new class the design pass introduced has a rule', () => {
   }
   assert.ok(/@view-transition/.test(CSS), 'same-document navigations cross-fade instead of flashing white');
   assert.ok(/\.header-pinned/.test(CSS) && /header-pinned/.test(client), 'the header lifts once it is floating over content');
+});
+
+test('no HTML comment in a view contains a backtick', () => {
+  // Views are template literals, so a backtick anywhere inside one — including
+  // inside an HTML comment, which is exactly where it feels safe — ends the
+  // literal and turns the rest of the sentence into JavaScript. It has now
+  // happened twice: once as the details tag while writing the publish
+  // disclosure, once as aria-hidden while writing the landing steps. Both times
+  // the only symptom was a module that would not load.
+  const src = readFileSync(path.join(root, 'src/views.js'), 'utf8');
+  const offenders = [];
+  let cursor = 0;
+  for (;;) {
+    const open = src.indexOf('<!--', cursor);
+    if (open < 0) break;
+    const close = src.indexOf('-->', open);
+    if (close < 0) break;
+    const body = src.slice(open + 4, close);
+    if (body.includes('\u0060')) offenders.push(body.trim().split('\u000a')[0].slice(0, 60));
+    cursor = close + 3;
+  }
+  assert.deepEqual(offenders, [], 'a backtick in an HTML comment ends the template literal around it');
+});
+
+test('the landing explains the unlock in three steps, and the money in one', () => {
+  const page = viewsModule.landing({ channels: [], user: null, stats: STATS, moneyMap: MONEY_MAP });
+  assert.match(page, /<ol class="steps">/, 'the three steps are a list, so the order is in the markup');
+  assert.equal((page.match(/class="step-num"/g) || []).length, 3);
+  assert.match(page, /aria-hidden="true">01</, 'the numerals are decoration: the ordered list already says the order');
+  assert.match(page, /Someone watches the ad/);
+  // Every step that claims money says who pays whom, and step three says we are not a party.
+  assert.match(page, /The network pays you/);
+  assert.match(page, /We are not a\s+party to that payment and we cannot see the balance/);
+  // And the two charges are named as a set, with what they are not.
+  assert.match(page, /What this costs, and what it never costs/);
+  assert.match(page, /Two charges and no share of anything/);
+});
+
+test('the dashboard leads with one verdict, not four equal numbers', () => {
+  const { dashboard } = viewsModule;
+  const page = dashboard({
+    channel: MARKET, slots: [], connections: [], providers: [],
+    plan: { code: 'free', name: 'Free', capabilities: { max_assets: 20 } },
+    estimate: { unlocks: 0, total: 5, rent: 1, rpmUsd: 0.02, estNpr: 0 },
+    pageviews: 120, adViews: [], upgrade: null, user: null,
+  });
+  assert.match(page, /class="kpi-row"/);
+  assert.match(page, /class="kpi kpi-hero"/, 'exactly one figure is the hero');
+  assert.equal((page.match(/kpi-hero/g) || []).length, 1);
+  assert.match(page, /Files unlocked · last 30 days/);
+  // The zero state is designed, not blank: it says what will happen.
+  assert.match(page, /Nobody has unlocked a file yet/);
+  // Supporting figures are labelled as such, and the estimate keeps its caveat.
+  assert.match(page, /Our estimate, not the network's statement/);
+  assert.match(page, /Our estimate, not the network's statement\.<\/div>/, 'the caveat belongs to the number it qualifies');
+  assert.match(page, /href="\/dashboard\/shop\/earnings"/, 'and the figure links to where money is explained');
+  // The old flat row is gone from this page.
+  assert.ok(!/class="stat-row"/.test(page), 'four equal stats answered no question');
+});
+
+test('audit metadata reads as a sentence, not as JSON', () => {
+  const { briefMeta } = viewsModule;
+  const line = briefMeta({ channelId: 'c6326d55-1cb6-43cb-8e8d-b2cc17ed2e0f', plan: 'pro', amountNpr: 1500, txnReference: 'ESEWA-90122' });
+  assert.ok(!line.includes('{'), 'no braces');
+  assert.ok(!line.includes('"'), 'no quoted keys');
+  assert.match(line, /amount NPR 1,500/, 'money gets a currency and separators');
+  assert.match(line, /store c6326d55/, 'an id is shortened to something still searchable');
+  assert.ok(!line.includes('1cb6'), 'and the rest of the uuid is not in the way');
+  assert.equal(briefMeta(null), '');
+  assert.equal(briefMeta('just a note'), 'just a note');
+});
+
+test('the CSP hash is computed from the script the page renders', () => {
+  // The reveal bootstrap is inline and script-src is 'self', so the ONLY thing
+  // letting it run is its hash. If the hash and the bytes ever disagree the
+  // browser blocks the script, nothing throws, and the reveal silently stops
+  // existing. Typing the hash into server.js by hand is therefore a bug waiting
+  // to happen, and this is the assertion that says so.
+  const server = readFileSync(path.join(root, 'server.js'), 'utf8');
+  assert.match(server, /crypto\.createHash\('sha256'\)\.update\(REVEAL_BOOTSTRAP/,
+    'the hash is derived from the constant the view renders, not pasted in');
+  assert.match(server, /import \{ REVEAL_BOOTSTRAP \} from '\.\/src\/views\.js'/);
+  const expected = `sha256-${createHash('sha256').update(viewsModule.REVEAL_BOOTSTRAP, 'utf8').digest('base64')}`;
+  assert.ok(expected.startsWith('sha256-') && expected.length > 20, 'and it is a real digest');
+  // The page must not carry a second, different copy of that script.
+  const page = viewsModule.layout({ title: 'x', user: null, body: '', reveal: true });
+  assert.equal((page.match(/reveal-ready/g) || []).length, 1, 'one copy of the bootstrap, in one place');
 });
