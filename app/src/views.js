@@ -79,6 +79,40 @@ function pill(text, kind = '') {
   return `<span class="pill${kind ? ` pill-${kind}` : ''}">${esc(text)}</span>`;
 }
 
+/**
+ * A moderation notice, for the one person who can act on it.
+ *
+ * Three parts, in the order a seller needs them: what state the store is in,
+ * what the rule says, and when it was decided. The rule's sentence comes from
+ * `policy_rules` — written before the argument started — and the operator's own
+ * line is the remedy, not the charge. Nothing here is free text standing alone,
+ * and every field is escaped like any other input.
+ *
+ * It is rendered ONLY to the owner. A visitor to a suspended store gets a 404,
+ * which is the point.
+ */
+function moderationNotice(m, { heading = null } = {}) {
+  if (!m) return '';
+  const kind = m.state === 'restricted' ? 'warning' : 'danger';
+  return `<div class="note note-${kind} moderation-notice" role="status">
+  <div class="row" style="align-items:baseline">
+    <strong>${esc(heading || 'This store is not public right now')}</strong>
+    <span class="spacer"></span>
+    ${pill(m.state, kind)}
+  </div>
+  <p class="small" style="margin:var(--space-3) 0 0">${esc(m.note)}</p>
+  ${m.ruleCode ? `<p class="fine" style="margin:var(--space-2) 0 0">
+    Rule: <span class="mono">${esc(m.ruleCode)}</span>${m.decidedAt
+      ? ` · decided ${esc(relTime(m.decidedAt))}`
+      : ''}
+  </p>` : ''}
+  <p class="fine" style="margin:var(--space-3) 0 0">
+    Nothing has been deleted, your files are untouched, and you can still read every page here.
+    Reply to the message you were sent if this is wrong.
+  </p>
+</div>`;
+}
+
 function avatar(name) {
   return `<span class="avatar" aria-hidden="true">${esc(initials(name))}</span>`;
 }
@@ -413,7 +447,7 @@ ${explore && explore.rails.length ? explore.rails.map(rail).join('') : ''}
   });
 }
 
-export function storefront({ channel, assets, slots, user, estimate, pageviews, unlockedIds = new Set(), consent = null }) {
+export function storefront({ channel, assets, slots, user, estimate, pageviews, unlockedIds = new Set(), consent = null, moderation = null }) {
   const cards = assets.map((a) => {
     const open = a.unlock_mode === 'open';
     const unlocked = open || (user && unlockedIds.has(a.id));
@@ -446,6 +480,8 @@ ${channel.banner_url
   <img class="store-banner" src="${esc(channel.banner_url)}" alt="" decoding="async">
 </div>`
     : ''}
+${moderation ? `<div class="section" style="margin-bottom:0">${moderationNotice(moderation, { heading: 'Only you can see this page right now' })}</div>` : ''}
+
 <div class="section" style="margin-bottom:0">
   <div class="row">
     <h1>${esc(channel.name)}</h1>
@@ -859,6 +895,106 @@ export function login({ user, error, next = '', email = '', mode = 'login', cons
 }
 
 /**
+ * The operator's moderation queue.
+ *
+ * Deliberately plain, and deliberately not a report queue: nothing here tells an
+ * operator WHICH store to look at, because a seller-report button is a separate
+ * feature with its own design. What this page does is make the mechanism
+ * reachable, so `moderation_state` stops being a column nobody sets.
+ *
+ * The form is a real form — no JavaScript, and the reason is a `<select>` of the
+ * rule codes the database actually has, so a typo cannot become a rule that does
+ * not exist.
+ */
+export function adminModeration({ user, rows, rules, actions = [], labels = {}, flash = null, consent = null }) {
+  const rulesByCode = new Map(rules.map((r) => [r.code, r]));
+  const options = (selected = null) => rules
+    .map((r) => `<option value="${esc(r.code)}"${r.code === selected ? ' selected' : ''}>${esc(r.title)} (${esc(r.code)})</option>`)
+    .join('');
+
+  const row = (c) => `
+  <div class="panel moderation-row" style="margin-top:var(--space-5)">
+    <div class="panel-head">
+      <a href="/s/${esc(c.slug)}"><strong>${esc(c.name)}</strong></a>
+      <span class="fine">/s/${esc(c.slug)}</span>
+      <span class="spacer"></span>
+      ${pill(c.moderation_state, c.moderation_state === 'restricted' ? 'warning' : 'danger')}
+    </div>
+    <div class="panel-body">
+      <p class="small" style="margin:0">
+        ${c.owner_name ? `${esc(c.owner_name)} · ` : ''}${esc(c.owner_email || 'no email on file')}
+        · opened ${esc(relTime(c.created_at))}
+      </p>
+      ${c.moderation_reason ? `<p class="fine" style="margin:var(--space-2) 0 0">
+        Last cited rule: <span class="mono">${esc(c.moderation_reason)}</span>
+        ${rulesByCode.get(c.moderation_reason) ? ` — ${esc(rulesByCode.get(c.moderation_reason).title)}` : ' (not a rule this platform has)'}
+      </p>` : ''}
+
+      <form method="post" action="/admin/moderation/${esc(c.slug)}" style="margin-top:var(--space-4)">
+        <div class="row" style="align-items:flex-end;gap:var(--space-4);flex-wrap:wrap">
+          <div class="field" style="flex:1 1 180px">
+            <label for="a-${esc(c.slug)}">Action</label>
+            <select class="input" id="a-${esc(c.slug)}" name="action">
+              ${actions.map((a) => `<option value="${esc(a)}">${esc(labels[a] || a)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field" style="flex:2 1 260px">
+            <label for="r-${esc(c.slug)}">Reason</label>
+            <select class="input" id="r-${esc(c.slug)}" name="ruleCode">
+              <option value="">— none cited —</option>
+              ${options(c.moderation_reason)}
+            </select>
+          </div>
+        </div>
+        <div class="field" style="margin-top:var(--space-4)">
+          <label for="m-${esc(c.slug)}">What should the seller do?</label>
+          <input class="input" id="m-${esc(c.slug)}" name="remedy" maxlength="280"
+                 placeholder="One line, in your own words. They read this and nothing else.">
+          <span class="hint">Up to 280 characters. It is shown to the owner with the rule's own wording.</span>
+        </div>
+        <button class="btn btn-primary" type="submit" style="margin-top:var(--space-4)">Record decision</button>
+      </form>
+    </div>
+  </div>`;
+
+  return layout({
+    title: 'Moderation', user, current: 'admin', consent,
+    body: `
+<div class="section" style="margin-bottom:0">
+  <h1>Moderation</h1>
+  <p class="lede" style="margin-top:var(--space-3)">Stores that are not in the default state, and the one
+  form that changes it. Every decision records who made it, when, and which rule it cites.</p>
+</div>
+
+${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)" role="status">${esc(flash.message)}</div>` : ''}
+
+<section class="section">
+  <div class="panel"><div class="panel-body">
+    <h2 style="font-size:var(--text-md)">What the states do</h2>
+    <dl class="kv" style="margin-top:var(--space-4)">
+      <dt>approved</dt><dd>Public. The default.</dd>
+      <dt>restricted</dt><dd>Public and writable, with a note to the owner. For presentation problems, not files.</dd>
+      <dt>suspended</dt><dd>Hidden from every visitor and every listing. The owner still sees the whole dashboard, and every page tells them nothing was deleted. Writes stop.</dd>
+      <dt>removed</dt><dd>The address returns 404, byte for byte the same as a store that never existed. The record stays.</dd>
+    </dl>
+    <p class="fine" style="margin-top:var(--space-4)">
+      A reason is a rule code, never a sentence. The seller reads the rule's own wording plus your
+      remedy line, so the charge and the explanation cannot drift apart.
+    </p>
+  </div></div>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Needs a decision</h2>
+    <p>${rows.length ? `${rows.length} store${rows.length === 1 ? '' : 's'} not in the default state` : 'Nothing is waiting'}</p>
+  </div>
+  ${rows.length ? rows.map(row).join('') : '<div class="empty">No store is restricted, suspended or removed.</div>'}
+</section>`,
+  });
+}
+
+/**
  * One proof figure.
  *
  * `data-count` makes it animate from zero on first paint — the client reads the
@@ -882,7 +1018,7 @@ function proof(value, label, literal = null) {
 export function dashboard({
   channel, slots, connections, providers, plan, estimate, pageviews, adViews,
   upgrade, user, pendingPayments = [], flash = null, consent = null,
-  assets = [], assetStats = [],
+  assets = [], assetStats = [], moderation = null,
 }) {
   const conn = connections[0] || null;
   const provider = conn ? providers.find((p) => p.id === conn.provider_id) : null;
@@ -895,19 +1031,6 @@ export function dashboard({
     ? (s.from === 'house' ? pill('Ours — house ad', 'info') : pill('Filled by you', 'success'))
     : (s.owner === 'platform' ? pill('Empty', '') : pill('Yours — empty', ''))}</td>
     </tr>`).join('');
-
-  const picker = providers.slice(0, 8).map((p) => {
-    const v = p.payoutVerdict;
-    const kind = v?.level === 'ok' ? 'success' : v?.level === 'caution' ? 'warning' : v?.level === 'blocked' ? 'danger' : '';
-    return `<tr>
-      <td><strong>${esc(p.name)}</strong>${p.note ? `<div class="fine">${esc(p.note)}</div>` : ''}</td>
-      <td>${v ? pill(v.level, kind) : pill('unknown')}</td>
-      <td class="num">${v?.thresholdLabel ? esc(v.thresholdLabel) : '—'}</td>
-      <td>${p.enabled
-        ? `<button class="btn btn-sm" data-connect="${esc(p.id)}">Connect</button>`
-        : `<span class="fine">${esc(p.blockedReason || 'not enabled')}</span>`}</td>
-    </tr>`;
-  }).join('');
 
   const earnings = adViews.filter((v) => v.completed).reduce((a, v) => a + (Number(v.revenue_usd) || 0), 0);
 
@@ -925,6 +1048,8 @@ export function dashboard({
 </div>
 
 ${storeSectionNav(channel, 'overview')}
+
+${moderation ? `<div style="margin-top:var(--space-6)">${moderationNotice(moderation)}</div>` : ''}
 
 ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)" role="status">${esc(flash.message)}</div>` : ''}
 
@@ -1060,11 +1185,12 @@ ${conn ? `
       ${pill(provider?.name || conn.provider_id, 'success')}
       <span class="small">Connected ${relTime(conn.connected_at)}</span>
       <span class="spacer"></span>
-      <button class="btn btn-sm btn-danger" data-revoke="${esc(conn.id)}">Disconnect</button>
+      <a class="btn btn-sm" href="/dashboard/${esc(channel.slug)}/networks">Credentials and health →</a>
     </div>
     ${provider ? `<dl class="kv" style="margin-top:var(--space-5)">
       <dt>Formats</dt><dd>${esc((provider.formats || []).join(', '))}</dd>
-      <dt>Callback</dt><dd class="mono">/api/ads/postback/${esc(conn.provider_id)}/${esc(conn.id.slice(0, 8))}…</dd>
+      <dt>Callback</dt>
+      <dd><a href="/dashboard/${esc(channel.slug)}/networks">Your exact URL, with the macros to leave alone →</a></dd>
     </dl>` : ''}
     <p class="fine" style="margin-top:var(--space-4)">
       Rewarded ads are served by the network inside your own page. When one completes, the network
@@ -1080,13 +1206,20 @@ ${conn ? `
 </section>`}
 
 <section class="section">
-  <div class="section-head"><h2>Connect a network</h2>
-    <p>Ranked by whether a Nepali creator can actually withdraw the money.</p></div>
-  <div class="panel"><div class="panel-body panel-body-flush">
-    <table class="table">
-      <thead><tr><th>Network</th><th>Payout check</th><th class="num">Reachable at</th><th></th></tr></thead>
-      <tbody>${picker}</tbody>
-    </table>
+  <div class="section-head"><h2>Connect a network</h2></div>
+  <div class="panel"><div class="panel-body">
+    <p class="small" style="margin:0">
+      The networks are ranked by whether a Nepali creator can actually withdraw the money,
+      and each one is set up in your own name: we show you the four steps, you paste the
+      verification secret, and the page gives you the callback URL to paste back at them.
+    </p>
+    <p class="fine" style="margin-top:var(--space-4)">
+      Nothing is stored except that secret, and a connection stays unverified until a real
+      callback arrives.
+    </p>
+    <div class="row" style="margin-top:var(--space-5)">
+      <a class="btn btn-primary" href="/dashboard/${esc(channel.slug)}/networks">Open networks →</a>
+    </div>
   </div></div>
 </section>
 

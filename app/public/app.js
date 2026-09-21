@@ -197,21 +197,6 @@
     });
   });
 
-  // ── dashboard actions ────────────────────────────────────────────────────
-  document.querySelectorAll('[data-connect]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const slug = location.pathname.split('/').pop();
-      btn.disabled = true;
-      btn.textContent = 'Connecting…';
-      const r = await api('/api/ad-connections/start', {
-        method: 'POST',
-        body: JSON.stringify({ slug, providerId: btn.dataset.connect }),
-      });
-      if (r.ok) location.reload();
-      else { btn.disabled = false; btn.textContent = r.error || 'Failed'; }
-    });
-  });
-
   // ── the page itself ──────────────────────────────────────────────────────
   /**
    * Presentation only, and every piece of it degrades to the markup already
@@ -285,15 +270,15 @@
     }
   }
 
-  document.querySelectorAll('[data-revoke]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      if (!confirm('Disconnect this ad network? Anything it gates stops unlocking.')) return;
-      btn.disabled = true;
-      await api('/api/ad-connections/revoke', {
-        method: 'POST',
-        body: JSON.stringify({ connectionId: btn.dataset.revoke }),
-      });
-      location.reload();
-    });
-  });
+  // ── dashboard actions ────────────────────────────────────────────────────
+  /*
+   * No handlers for `[data-connect]` or `[data-revoke]` any more.
+   *
+   * They posted to `/api/ad-connections/*`, which issued its own secret and
+   * called the result active — the dashboard could show a verified connection
+   * that had never verified anything, and revoke had no ownership check. The
+   * network page does all of it as a real form post, which also means it works
+   * without JavaScript.
+   */
+
 })();

@@ -24,6 +24,10 @@ import { allocateSlots, estimateRentSlotValue, POLICY } from './src/slots.js';
 import { composeSlots, HOUSE_CREATIVE, sanitizeUrl } from './src/creatives.js';
 import { exploreRails } from './src/ranking.js';
 import {
+  ACTIONS as MOD_ACTIONS, ACTION_LABELS, behaviour, canWrite, changesVisibility,
+  decisionNote, isPublic, normaliseState, stateFor, validateDecision,
+} from './src/moderation.js';
+import {
   onboardingFor, connectable, postbackUrl, validateCredential, maskSecret,
   connectionHealth, unconnectableNote,
 } from './src/connections.js';
@@ -200,6 +204,44 @@ async function buildSlots(channel, surfaces = ['web']) {
  *
  * @returns {Promise<object|null>} the channel, or null once a response has been sent
  */
+/**
+ * A store hidden by moderation is a 404 to the public.
+ *
+ * The owner still sees it — they are the only person who can fix it — and an
+ * operator sees it because the platform has to be able to look at what it hosts.
+ * Everyone else gets exactly what a store that never existed returns: confirming
+ * that a store exists but is suspended tells a stranger something nobody decided
+ * to publish.
+ */
+function maySeeHidden(req, channel) {
+  if (!req.user) return false;
+  return req.user.id === channel.owner_id || req.user.role === 'admin';
+}
+
+/**
+ * Refuse a WRITE while a store is suspended or removed.
+ *
+ * Reads stay open: the owner can see their own dashboard, files and history, and
+ * an operator can see what they are deciding about. Publishing, editing, filling
+ * a slot and connecting an account all stop — a store that is hidden from the
+ * public is not one that should be collecting new content, and letting an owner
+ * keep publishing into a storefront nobody can reach is the cruellest possible
+ * version of this feature.
+ *
+ * @returns {boolean} true when the response has already been sent
+ */
+function refuseWrite(req, res, channel) {
+  if (canWrite(channel.moderation_state)) return false;
+  const wantsJson = req.path.startsWith('/api/') || req.get('accept')?.includes('application/json');
+  const note = behaviour(channel.moderation_state).ownerNote;
+  if (wantsJson) {
+    res.status(403).json({ ok: false, error: 'store is not writable', detail: note });
+  } else {
+    res.redirect(`/dashboard/${encodeURIComponent(channel.slug)}?error=moderated`);
+  }
+  return true;
+}
+
 async function requireOwnChannel(req, res) {
   if (!req.user) return requireUserPage(req, res);
   const channel = await store.channelBySlug(req.params.slug);
@@ -471,7 +513,15 @@ APP.get('/s/:slug', async (req, res, next) => {
   try {
     const channel = await store.channelBySlug(req.params.slug);
     if (!channel) return res.status(404).send('Channel not found');
-    await store.bumpPageView(channel.id);
+    const owner = Boolean(req.user) && req.user.id === channel.owner_id;
+    if (!isPublic(channel.moderation_state) && !maySeeHidden(req, channel)) {
+      // Byte for byte the same answer a store that never existed gets.
+      return res.status(404).send('Channel not found');
+    }
+    // A page view by the owner while the store is hidden is not a view by the
+    // public, and counting it would flatter the rent estimate with the owner's
+    // own refreshes.
+    if (isPublic(channel.moderation_state)) await store.bumpPageView(channel.id);
 
     // A storefront shows the slots that have something in them. An empty
     // channel slot is a hole the owner should fill, not a curiosity for a
@@ -504,6 +554,9 @@ APP.get('/s/:slug', async (req, res, next) => {
     res.send(views.storefront({
       channel, assets, slots, user: req.user, estimate, pageviews, unlockedIds,
       consent: req.consent,
+      // Only the owner ever sees this banner, and only on a store that is not
+      // public — it is a message about their own shop, not a public notice.
+      moderation: owner && !isPublic(channel.moderation_state) ? moderationBrief(channel) : null,
     }));
   } catch (err) { next(err); }
 });
@@ -561,6 +614,9 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
   try {
     const channel = await store.channelBySlug(req.params.slug);
     if (!channel) return res.status(404).send('Channel not found');
+    if (!isPublic(channel.moderation_state) && !maySeeHidden(req, channel)) {
+      return res.status(404).send('Channel not found');
+    }
     const asset = await store.assetBySlug(channel.id, req.params.assetSlug);
     if (!asset) return res.status(404).send('Asset not found');
     await store.bumpPageView(channel.id);
@@ -669,6 +725,12 @@ APP.get('/dashboard/:slug', async (req, res, next) => {
     const flash = flashFor(req.query);
 
     res.send(views.dashboard({
+      // Only when the state is not the default. A banner that says "nothing is
+      // wrong" on every store is a banner nobody reads.
+      moderation: normaliseState(channel.moderation_state) === 'approved'
+        || normaliseState(channel.moderation_state) === 'pending'
+        ? null
+        : await moderationBrief(channel),
       flash, consent: req.consent,
       channel, slots, user: req.user,
       connections: await store.connectionsOf(channel.id),
@@ -774,6 +836,7 @@ APP.post('/dashboard/:slug/slots', async (req, res, next) => {
   try {
     const channel = await requireOwnChannel(req, res);
     if (!channel) return;
+    if (refuseWrite(req, res, channel)) return;
     const { slotKey, headline, body, linkUrl, linkLabel } = req.body || {};
 
     // The slot has to exist and has to be the store's. Without this check a
@@ -806,6 +869,7 @@ APP.post('/dashboard/:slug/slots/clear', async (req, res, next) => {
   try {
     const channel = await requireOwnChannel(req, res);
     if (!channel) return;
+    if (refuseWrite(req, res, channel)) return;
     await store.clearCreative({ channelId: channel.id, slotKey: req.body?.slotKey });
     await store.audit('creative.cleared', { channelId: channel.id, slotKey: req.body?.slotKey });
     res.redirect(`/dashboard/${channel.slug}/slots?saved_slot=1`);
@@ -839,6 +903,7 @@ APP.post('/dashboard/:slug/networks', async (req, res, next) => {
   try {
     const channel = await requireOwnChannel(req, res);
     if (!channel) return;
+    if (refuseWrite(req, res, channel)) return;
     const back = `/dashboard/${channel.slug}/networks`;
     const provider = await providerById(String(req.body?.providerId || ''));
     if (!provider) return res.redirect(`${back}?error=provider`);
@@ -888,6 +953,7 @@ APP.post('/dashboard/:slug/networks/:connectionId/secret', async (req, res, next
   try {
     const channel = await requireOwnChannel(req, res);
     if (!channel) return;
+    if (refuseWrite(req, res, channel)) return;
     const back = `/dashboard/${channel.slug}/networks`;
     const conn = await store.connectionById(req.params.connectionId);
     if (!conn || conn.channel_id !== channel.id) return res.redirect(`${back}?error=nope`);
@@ -919,6 +985,7 @@ APP.post('/dashboard/:slug/networks/:connectionId/slots', async (req, res, next)
   try {
     const channel = await requireOwnChannel(req, res);
     if (!channel) return;
+    if (refuseWrite(req, res, channel)) return;
     const back = `/dashboard/${channel.slug}/networks`;
     const conn = await store.connectionById(req.params.connectionId);
     if (!conn || conn.channel_id !== channel.id) return res.redirect(`${back}?error=nope`);
@@ -935,6 +1002,7 @@ APP.post('/dashboard/:slug/networks/:connectionId/revoke', async (req, res, next
   try {
     const channel = await requireOwnChannel(req, res);
     if (!channel) return;
+    if (refuseWrite(req, res, channel)) return;
     const back = `/dashboard/${channel.slug}/networks`;
     const conn = await store.connectionById(req.params.connectionId);
     if (!conn || conn.channel_id !== channel.id) return res.redirect(`${back}?error=nope`);
@@ -1480,6 +1548,7 @@ const SUCCESS_FLASH = {
   saved_connection: () => 'Saved.',
   revoked: () => 'Disconnected. Its callbacks are refused from now on, and anything it gated stops unlocking.',
   responded: () => 'Reply posted.',
+  saved_moderation: () => 'Decision recorded. The seller sees the reason and the note on their dashboard.',
 };
 
 const ERROR_FLASH = {
@@ -1496,6 +1565,9 @@ const ERROR_FLASH = {
   provider: 'That is not a network we know.',
   noadapter: 'We have no adapter for that network, so connecting it would produce a connection that can never verify a callback.',
   already: 'That network is already connected to this store.',
+  moderated: 'This store is not in a state where it can publish. Nothing was changed, and nothing has been deleted.',
+  action: 'That is not a moderation action.',
+  rule: 'That reason is not one of our rules. Pick one from the list.',
   secret: 'That secret did not look right — copy it again from the network dashboard, with no spaces at either end.',
   nope: 'That connection is not yours.',
   unlock: 'Only someone who has unlocked this file can review it.',
@@ -1506,6 +1578,28 @@ const ERROR_FLASH = {
   size: 'That file is larger than the 25 MB upload limit.',
   toobig: 'That file is larger than the 25 MB upload limit.',
 };
+
+/**
+ * What a store owner is told about their own store's moderation state.
+ *
+ * The note is built from the policy rule's own title and description — the
+ * sentence that was written before the argument started — plus the operator's
+ * remedy line. Nothing here is free text standing alone, and nothing here is
+ * rendered unescaped: `views.js` escapes every field of it.
+ */
+async function moderationBrief(channel) {
+  const latest = await store.latestModerationAction(channel.id).catch(() => null);
+  const state = normaliseState(channel.moderation_state);
+  return {
+    state,
+    stateLabel: state,
+    ruleCode: latest?.rule_code || channel.moderation_reason || null,
+    ruleTitle: latest?.rule_title || null,
+    decidedAt: latest?.created_at || null,
+    note: decisionNote({ title: latest?.rule_title, description: latest?.rule_description }, latest?.reason || ''),
+    ownerNote: behaviour(state).ownerNote,
+  };
+}
 
 function flashFor(query = {}) {
   for (const [key, build] of Object.entries(SUCCESS_FLASH)) {
@@ -1529,6 +1623,7 @@ APP.post('/dashboard/:slug/assets', upload.fields([
 
     const channel = await store.channelBySlug(req.params.slug);
     if (!channel || channel.owner_id !== req.user.id) return res.status(404).send('Channel not found');
+    if (refuseWrite(req, res, channel)) return;
 
     const fail = (code) => res.redirect(`${back}?error=${encodeURIComponent(code)}`);
 
@@ -1694,6 +1789,7 @@ APP.post('/dashboard/:slug/upgrade', async (req, res, next) => {
   try {
     const channel = await ownerChannel(req, res);
     if (!channel) return undefined;
+    if (refuseWrite(req, res, channel)) return undefined;
     const back = `/dashboard/${encodeURIComponent(channel.slug)}/billing`;
 
     const code = String(req.body.plan || '');
@@ -1715,6 +1811,7 @@ APP.post('/dashboard/:slug/billing/plan-payment', async (req, res, next) => {
   try {
     const channel = await ownerChannel(req, res);
     if (!channel) return undefined;
+    if (refuseWrite(req, res, channel)) return undefined;
     const back = `/dashboard/${encodeURIComponent(channel.slug)}/billing`;
 
     // Refuse when there is no OPEN request. The first version tested the
@@ -1758,6 +1855,7 @@ APP.post('/dashboard/:slug/billing/rent-payment', async (req, res, next) => {
   try {
     const channel = await ownerChannel(req, res);
     if (!channel) return undefined;
+    if (refuseWrite(req, res, channel)) return undefined;
     const back = `/dashboard/${encodeURIComponent(channel.slug)}/billing`;
 
     const reference = String(req.body.txnReference || '').trim().slice(0, 120);
@@ -1886,6 +1984,7 @@ APP.post('/dashboard/:slug/earnings/payout', async (req, res, next) => {
   try {
     const channel = await ownerChannel(req, res);
     if (!channel) return undefined;
+    if (refuseWrite(req, res, channel)) return undefined;
     const back = `/dashboard/${encodeURIComponent(channel.slug)}/earnings`;
 
     const providerId = String(req.body.providerId || '').trim().slice(0, 60);
@@ -1911,6 +2010,7 @@ APP.post('/dashboard/:slug/earnings/payout/clear', async (req, res, next) => {
   try {
     const channel = await ownerChannel(req, res);
     if (!channel) return undefined;
+    if (refuseWrite(req, res, channel)) return undefined;
     const back = `/dashboard/${encodeURIComponent(channel.slug)}/earnings`;
     await store.clearPayoutAccount({
       channelId: channel.id, providerId: String(req.body.providerId || '').slice(0, 60),
@@ -1925,6 +2025,7 @@ APP.post('/dashboard/:slug/earnings/report', limitUnlock, async (req, res, next)
   try {
     const channel = await ownerChannel(req, res);
     if (!channel) return undefined;
+    if (refuseWrite(req, res, channel)) return undefined;
     const back = `/dashboard/${encodeURIComponent(channel.slug)}/earnings`;
 
     const periodEnd = String(req.body.periodEnd || '');
@@ -2027,6 +2128,7 @@ APP.post('/dashboard/:slug/settings', upload.single('banner'), async (req, res, 
   try {
     const channel = await ownerChannel(req, res);
     if (!channel) return undefined;
+    if (refuseWrite(req, res, channel)) return undefined;
     const fail = (code) => res.redirect(`${back()}?error=${encodeURIComponent(code)}`);
 
     const name = String(req.body.name || '').trim();
@@ -2115,6 +2217,7 @@ APP.post('/dashboard/:slug/reviews/:reviewId', async (req, res, next) => {
   try {
     const channel = await ownerChannel(req, res);
     if (!channel) return undefined;
+    if (refuseWrite(req, res, channel)) return undefined;
     const response = String(req.body.response || '').trim();
     if (response) {
       await store.respondToReview({
@@ -2149,6 +2252,7 @@ APP.post('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
   try {
     const channel = await ownerChannel(req, res);
     if (!channel) return undefined;
+    if (refuseWrite(req, res, channel)) return undefined;
     const back = `/dashboard/${encodeURIComponent(channel.slug)}/assets/${encodeURIComponent(req.params.assetId)}`;
     const asset = await store.assetById(req.params.assetId);
     if (!asset || asset.channel_id !== channel.id) return res.status(404).send('Not found');
@@ -2174,39 +2278,84 @@ APP.post('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
 
 // Ad connections
 // ---------------------------------------------------------------------------
-APP.post('/api/ad-connections/start', async (req, res, next) => {
+/*
+ * There is no `POST /api/ad-connections/start` here any more, and there should
+ * not be.
+ *
+ * It minted the verification secret ITSELF — a random string the network has
+ * never seen — and then marked the connection `active`, which is a connection
+ * that can never verify a single callback while the dashboard shows a green
+ * tick. It also hardcoded its own callback base to `127.0.0.1`, so the URL it
+ * handed out was unreachable by the network from the first minute.
+ *
+ * The real flow is `POST /dashboard/:slug/networks`: it walks the network's own
+ * onboarding steps, accepts only the secret the network issued, keeps the
+ * connection `verifying` until one arrives, and builds the callback URL from the
+ * registry's dialect. Its revoke checks ownership; the old one did not, which is
+ * how a stranger could disconnect somebody else's account.
+ */
+
+// ---------------------------------------------------------------------------
+// Moderation — the operator side
+// ---------------------------------------------------------------------------
+/**
+ * The operator's queue.
+ *
+ * This page exists because a mechanism nobody can invoke is the same problem as
+ * a column nobody sets — which is exactly what `moderation_state` was before
+ * this round. It is deliberately plain: what the states mean, every store that is
+ * not in the default one, and one form per store.
+ *
+ * It is not a report queue and it does not pretend to be: nothing here tells an
+ * operator which store to look at, because a seller report button is a separate
+ * feature with a separate design.
+ */
+APP.get('/admin/moderation', async (req, res, next) => {
   try {
-    const { slug, providerId } = req.body || {};
-    const channel = await store.channelBySlug(slug);
-    if (!channel) return res.json({ ok: false, error: 'channel not found' });
-    if (!req.user || channel.owner_id !== req.user.id) {
-      return res.status(403).json({ ok: false, error: 'not your channel' });
-    }
-
-    const provider = await providerById(providerId);
-    if (!provider) return res.json({ ok: false, error: 'unknown provider' });
-    if (!provider.enabled) {
-      return res.json({ ok: false, error: provider.blockedReason || 'provider not enabled — verification outstanding' });
-    }
-
-    const conn = await store.createConnection({
-      channelId: channel.id, providerId, payoutVerdict: null,
-      slotKeys: SLOT_DEFS.slice(0, 3).map((s) => s.key),
-      // Issued per connection. In production this comes from the provider's
-      // dashboard by way of a secrets manager; generated here so the postback
-      // path is exercisable end to end.
-      secret: crypto.randomBytes(24).toString('base64url'),
-      callbackBaseUrl: `http://127.0.0.1:${PORT}`,
-    });
-    await store.audit('ad_connection.created', { channelId: channel.id, providerId, connectionId: conn.id });
-    res.json({ ok: true, connectionId: conn.id });
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    res.send(views.adminModeration({
+      user: req.user, consent: req.consent,
+      rules: await store.policyRules(),
+      rows: await store.channelsNeedingModeration(),
+      actions: MOD_ACTIONS,
+      labels: ACTION_LABELS,
+      flash: flashFor(req.query),
+    }));
   } catch (err) { next(err); }
 });
 
-APP.post('/api/ad-connections/revoke', async (req, res, next) => {
+APP.post('/admin/moderation/:slug', async (req, res, next) => {
   try {
-    const c = await store.revokeConnection(req.body?.connectionId);
-    res.json({ ok: Boolean(c) });
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    const channel = await store.channelBySlug(req.params.slug);
+    if (!channel) return res.status(404).send('Channel not found');
+
+    const ruleCodes = new Set((await store.policyRules()).map((r) => r.code));
+    const decision = validateDecision({
+      action: req.body?.action,
+      ruleCode: req.body?.ruleCode || null,
+      remedy: req.body?.remedy || '',
+    });
+    if (!decision.ok) return res.redirect(`/admin/moderation?error=${decision.error}`);
+    // The code has to be a rule this database actually has: `moderation_actions
+    // .rule_code` is a foreign key, and a clear refusal beats a 23503.
+    if (decision.ruleCode && !ruleCodes.has(decision.ruleCode)) {
+      return res.redirect('/admin/moderation?error=rule');
+    }
+
+    await store.setChannelModeration({
+      channelId: channel.id,
+      action: decision.action,
+      state: decision.state,
+      ruleCode: decision.ruleCode,
+      remedy: decision.remedy,
+      actorId: req.user.id,
+    });
+    await store.audit('moderation.channel', {
+      channelId: channel.id, action: decision.action,
+      state: decision.state, ruleCode: decision.ruleCode, actorId: req.user.id,
+    });
+    res.redirect('/admin/moderation?saved_moderation=1');
   } catch (err) { next(err); }
 });
 
@@ -2221,6 +2370,7 @@ APP.post('/api/assets', upload.single('file'), async (req, res, next) => {
     const user = req.user;
     if (!user) return requireUser(res);
     if (channel.owner_id !== user.id) return res.status(403).json({ ok: false, error: 'not your channel' });
+    if (refuseWrite(req, res, channel)) return undefined;
 
     const plan = store.plan(channel);
     const limit = plan.capabilities.max_assets;

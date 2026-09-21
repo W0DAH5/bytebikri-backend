@@ -260,6 +260,17 @@ it renders below the earned rail while still holding a position the directory
 does not give. A store that both earns and buys keeps one card and an honest pill
 rather than two cards.
 
+**Moderation has a mechanism.** `channels.moderation_state` is enforced:
+`suspended` hides a store from every listing and returns 404 at its own address
+while its owner still sees the whole dashboard and reads why, `removed` is a 404
+indistinguishable from never having existed, and both refuse seller writes while
+leaving reads open. A decision cites a `policy_rules` row (a real foreign key),
+never a sentence; the operator's remedy line is the only free text and it is
+capped at 280 characters and escaped. State change and record are one
+transaction. The operator page is `/admin/moderation`, deliberately plain.
+Still missing: a seller-facing report button, an asset-level queue, and country
+rules.
+
 **Still to do:** the mobile pass; a look at real storefronts in this category
 rather than at my own reasoning; creative images (the column and the sanitiser
 exist, the upload path does not). Rent is currently priced from an assumed RPM

@@ -222,7 +222,7 @@ had two primaries, and the scroll-driven block was written outside its guard.
 | **`ads.txt`** | ad networks require it; needs a publisher ID |
 | **Password reset** | no way back into an account. Needs SMTP |
 | **Email verification** | anyone can register any address |
-| **Moderation workflow** | the schema has states; no UI, no queue, no report button |
+| **Moderation workflow** | the states are enforced and the operator page exists (§14); still missing: a seller-facing report button, an asset-level queue, country rules |
 | **A second app-facing auth path** | the app signs in through the web form; sign-up in the app needs a JSON endpoint or a WebView |
 
 ### Missing product surface
@@ -296,9 +296,9 @@ chore.
 
 ## 9. Tests
 
-`npm test` → **256 pass, 0 fail** (133 six rounds ago; 152 after the player
+`npm test` → **272 pass, 0 fail** (133 six rounds ago; 152 after the player
 round; 184 after the revenue round; 214 after the slot round; 232 after the
-connection round; 242 after the design pass).
+connection round; 242 after the design pass; 256 after the Explore round).
 
 | New | What it holds still |
 |---|---|
@@ -310,6 +310,7 @@ connection round; 242 after the design pass).
 | `test/earnings.test.js` (15) | an open period is shown but never compared; the estimate and the statement are never blended; rent is annualised against annualised statements; a blank payout label is not a label; **and `payout_accounts` is asserted to hold no column that could move money** |
 | `test/design.test.js` (10) | motion lives in tokens and nowhere else; no `transition: all`; no hover that animates layout; reduced motion collapses to 0.01 ms so `animationend` still fires; scroll-driven reveals sit inside their `no-preference` guard; touch targets reach 44 px where the pointer is a finger; the hero has exactly one primary call to action; and **the landing page's money facts are the same strings the earnings page renders**, from the same structure |
 | `test/networks.test.js` (18) | a network with no adapter has no Connect button and says what still works; the callback URL keeps the network's macros verbatim (a percent-encoded macro is a postback that never arrives); no secret means not verified; "never called back" names the likeliest cause; **and the only field the flow may ever ask for is the verification secret** — asserted against the rendered form, not the code |
+| `test/moderation.test.js` (16) | **the code's vocabulary is read out of `pg_constraint` and compared with the schema's CHECK constraints** — a state the code can write but the database rejects fails here rather than at runtime; every state has behaviour and no state hides a store without telling its owner; a restriction must cite a real rule and `moderation_actions.rule_code` refuses a made-up one with 23503; the state change and the record are one transaction, so a failed decision leaves nothing behind; the remedy is the only free text, capped and flattened; the notice is escaped and rendered to the owner only |
 | `test/ranking.test.js` (14) | the earned rail cannot read a plan — a Pro store with no traffic stays off it while a free store with traffic leads it; the paid rail is labelled as paid everywhere and never borrows the word "earned"; the score weights an unlock above a pageview; below 20 views a store is not "popular" at all; the rails are disjoint, a store that both earns and buys keeps one card and carries a pill instead of a second; and a store with no rows at all still gets a row from `channelStats`, because a store missing from the page is a store nobody can find |
 | `test/creatives.test.js` (15) | the store's message can never fill the platform's slot or the reverse; a creative written for one slot does not leak into the others; `javascript:`, `data:` and protocol-relative links are refused; a link label with no link is dropped; one message per slot, corrected in place |
 
@@ -551,3 +552,67 @@ Three further decisions, all of them visible on the page:
 front page is the most-visited page in a marketplace and it must not cost one
 round trip per store. It returns a row for every store, zeros included — a store
 missing from the directory is a store nobody can find.
+
+---
+
+## 14. The moderation state, and who it serves
+
+`channels.moderation_state` has existed since migration 0001 and nothing ever
+wrote to it, which made it look like decoration. It is the one place a store can
+be stopped, and the interesting decisions are not about stopping — they are about
+what the store's OWNER sees while it is stopped.
+
+The vocabulary is the schema's, not this file's. `channels.moderation_state` is
+`pending | approved | restricted | suspended | removed` and
+`moderation_actions.action` is `approve | restrict | remove | suspend | reinstate
+| warn`; both are CHECK constraints, and `test/moderation.test.js` reads them out
+of `pg_constraint` and fails if `src/moderation.js` ever drifts from them. A
+CHECK constraint and the code that writes to it do not fail loudly — they fail
+later, at runtime, on a store that needed stopping.
+
+| State | Public | Owner | Writes | Owner is told |
+|---|---|---|---|---|
+| `pending` | shown | normal | allowed | nothing. It exists in the schema and is reachable; sign-up writes `approved`, and nothing is reviewed before it appears |
+| `approved` | shown | normal | allowed | nothing |
+| `restricted` | shown — the files are not the problem | normal | allowed | what is restricted, and that publishing still works |
+| `suspended` | **hidden from every listing, 404 at its own address** | full dashboard, banner at the top | refused | that nothing was deleted, and that every page still reads |
+| `removed` | 404, indistinguishable from a store that never existed | full dashboard, banner | refused | that the record and the files are still there |
+
+Four rules, each a promise rather than a permission check:
+
+- **A decision cites a rule, not a sentence.** The reasons are rows in
+  `policy_rules` — nine seeded (copyright, malware, counterfeit, financial_scam,
+  personal_data, weapons, gambling, adult, health_claims) — and
+  `moderation_actions.rule_code` is a foreign key to them. A made-up code is
+  refused by the database: the test asserts the 23503 rather than trusting the
+  form to have been honest.
+- **The charge's wording is the policy table's.** The seller reads the rule's own
+  title and description plus the operator's remedy line, so what was decided and
+  what it is called cannot drift apart — and no sentence an operator types is
+  ever the reason on its own.
+- **Every decision records who, when and what**, in the same transaction as the
+  state change. A store that vanishes with no record is indistinguishable from a
+  bug, and the seller is the one who has to argue about it.
+- **Only restrictions need a rule.** `reinstate` and `approve` do not, because
+  demanding a code to *clear* a charge is how a reinstatement ends up citing the
+  charge it cleared.
+
+Reads stay open while a store is suspended: the owner sees the dashboard, the
+files and the history, an operator sees what they are deciding about. Publishing,
+editing, filling a slot, connecting a network and paying rent all stop. Letting a
+seller publish into a storefront nobody can reach would be the cruellest version
+of this feature.
+
+The operator page at `/admin/moderation` exists because a mechanism nobody can
+invoke is the same problem as a column nobody sets. It is plain on purpose and it
+is **not** a report queue: nothing in it says which store to look at, because a
+seller-facing report button is a separate feature with its own design. Still
+missing: that report button, an asset-level queue, and country rules
+(`policy_rules.scope = 'country'` is modelled and unused).
+
+Verified live: a bogus rule code came back `?error=rule`, a suspension with no
+rule came back `?error=reason`, a real one saved; `/s/bob` then answered **404 to
+a stranger, 200 to its owner**, disappeared from Explore, showed the owner the
+rule and the remedy on both the storefront and the dashboard, refused a slot
+write with `?error=moderated`, and still served the earnings page. A reinstate
+put it back, and the queue returned to "Nothing is waiting".

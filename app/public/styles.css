@@ -620,6 +620,13 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
     var(--surface-overlay);
 }
 
+/* ── moderation ──────────────────────────────────────────────────────────── */
+/* A notice about the seller's own store. It sits above everything because it is
+   the first thing they need to know, and it is deliberately not styled like an
+   error toast: this is a decision, not a glitch. */
+.moderation-notice { border-left: 3px solid currentColor; }
+.moderation-row .panel-head { gap: var(--space-3); }
+
 /* ── Explore rails ───────────────────────────────────────────────────────── */
 /* Three cards wide, not a grid of twelve. A rail is an argument, not an
    inventory — the full list sits underneath for anyone who wants it. */

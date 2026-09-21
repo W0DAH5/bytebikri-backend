@@ -230,11 +230,96 @@ export const store = {
               and sub.status in ('active','grace')
             order by sub.created_at desc limit 1
          ) s on true
-        where c.moderation_state <> 'removed'
+        -- Public reads see public states only. 'removed' and 'suspended' are the
+        -- two states a visitor must not learn about, and the storefront route
+        -- enforces the same rule for a store reached by its own address.
+        where c.moderation_state not in ('removed', 'suspended')
           ${listedOnly ? "and c.listing_mode = 'marketplace'" : ''}
         order by c.created_at`,
     );
   },
+  // ---- moderation ---------------------------------------------------------
+  /**
+   * The rules a decision can cite. Read from the table, never from a constant in
+   * JS: the policy table is the one place the codes and their wording live, and
+   * `test/moderation.test.js` fails if this file's vocabulary and the schema's
+   * CHECK constraints ever drift apart.
+   */
+  policyRules() {
+    return many('select code, title, description, default_state, severity from policy_rules where active = true order by severity desc, code');
+  },
+  policyRule(code) {
+    return one('select code, title, description, default_state, severity from policy_rules where code = $1 and active = true', [String(code ?? '')]);
+  },
+
+  /**
+   * Change a store's moderation state, and record who did it and why.
+   *
+   * Both writes are in ONE transaction. A state change with no `moderation_actions`
+   * row is a store that vanished with no explanation, and an action row with no
+   * state change is a queue that lies about what it did.
+   */
+  async setChannelModeration({ channelId, action, state = null, ruleCode = null, remedy = '', actorId = null, automated = false }) {
+    return withTransaction(async (client) => {
+      const res = await client.query(
+        `update channels
+            set moderation_state = coalesce($2, moderation_state),
+                moderation_reason = $3,
+                updated_at = now()
+          where id = $1
+          returning *`,
+        [channelId, state, ruleCode],
+      );
+      const channel = res.rows[0] ?? null;
+      await client.query(
+        `insert into moderation_actions
+           (subject_type, subject_id, action, rule_code, reason, actor_id, automated)
+         values ('channel', $1, $2, $3, $4, $5, $6)`,
+        [channelId, action, ruleCode, remedy ? String(remedy) : null, actorId, Boolean(automated)],
+      );
+      return channel;
+    });
+  },
+
+  /** The newest decision about a store, with the rule it cited. */
+  latestModerationAction(channelId) {
+    return one(
+      `select m.*, r.title as rule_title, r.description as rule_description
+         from moderation_actions m
+         left join policy_rules r on r.code = m.rule_code
+        where m.subject_type = 'channel' and m.subject_id = $1
+        order by m.created_at desc, m.id desc
+        limit 1`,
+      [channelId],
+    );
+  },
+
+  moderationHistory(channelId, limit = 20) {
+    return many(
+      `select m.*, r.title as rule_title, p.display_name as actor_name
+         from moderation_actions m
+         left join policy_rules r on r.code = m.rule_code
+         left join profiles p on p.id = m.actor_id
+        where m.subject_type = 'channel' and m.subject_id = $1
+        order by m.created_at desc, m.id desc
+        limit $2`,
+      [channelId, limit],
+    );
+  },
+
+  /** Stores an operator may need to look at: everything not in the default state. */
+  channelsNeedingModeration() {
+    return many(
+      `select c.id, c.slug, c.name, c.moderation_state, c.moderation_reason, c.created_at,
+              p.display_name as owner_name, p.email as owner_email
+         from channels c left join profiles p on p.id = c.owner_id
+        where c.moderation_state <> 'approved'
+        order by case c.moderation_state
+                   when 'suspended' then 1 when 'removed' then 2 when 'restricted' then 3 else 4 end,
+                 c.created_at desc`,
+    );
+  },
+
   /**
    * Attention evidence for every store at once, for the Explore rails.
    *
