@@ -1312,3 +1312,36 @@ example of the shape.
 
 Both found by looking. Neither would have failed a test — and the second one had
 been on that page since the console round.
+
+### The walks moved into the repository, and then had to be made true again
+
+`ci/walk-country.sh` and `ci/walk-first-upload.sh` are the two round-trip
+verifications, and until this round they lived in `/tmp` and were destroyed by
+every workspace rebuild — which is how they were discovered to have gone stale. Two
+things in them were only ever true of one machine:
+
+- **Hardcoded UUIDs.** The two demo files were addressed by literal id. The
+  database is recreated on a rebuild with fresh ids, so every step answered
+  `?error=file` or 404 — step by step, the feature looked broken rather than the
+  script looking old. They are looked up by slot now, and the walk refuses to run
+  with an explanation if the demo files are missing.
+- **Leftover session jars.** `/tmp/op.txt` was assumed to exist from an earlier
+  run, so a fresh workspace produced *"not signed in"* in the middle of a country
+  test: a session problem wearing the costume of a country problem. Each walk signs
+  in what it needs.
+
+And once the walks ran on every verification, they tripped the **sign-in rate
+limiter** — six attempts an hour per address, which is the feature working
+correctly. The failure mode is worth naming: a 429 sets no cookie, so the *next*
+five steps fail for reasons unrelated to what they test. `signin()` now reuses a
+live session when there is one, logs in when there is not, and stops with an
+explanation when the limiter is in the way rather than producing a cascade of
+zeros that reads like broken code.
+
+Both walks were then run end to end, twice, on a freshly reseeded database: the
+country walk green on every step (451 + no-store, the sentence present, unknown
+country failing open, the creator refused `allowed` and refused the operator's row,
+the carve-out at 200 behind a 451 storefront, the lift restoring the world), and
+the review walk green on all eight (waiting → **200** at the link, listed,
+**absent from search**, one queue item, approved → found, the next file not waiting,
+removed → gone from search, 404 for a stranger and 200 for its owner).
