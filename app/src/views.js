@@ -1968,11 +1968,16 @@ export function adminModerationFile({
     const r = rules.find((x) => x.code === code);
     return r ? r.title : code;
   };
+  // Three questions, not one (see ASSET_BEHAVIOUR): an operator deciding about a
+  // waiting file needs to know that approving it is what puts it in search, and
+  // that its absence from search right now is not a bug in the read path.
   const effects = !behaviour.publicVisible
     ? 'Not listed anywhere: the file page answers 404 to everybody except its owner, an operator, and anyone who already unlocked it.'
-    : behaviour.canUnlock
-      ? 'Listed, and unlockable — except in the countries below.'
-      : 'Listed, and NOT unlockable anywhere. The store still shows it.';
+    : !behaviour.searchable
+      ? 'Listed and unlockable at its own address, and NOT in search: nothing has been decided about it yet, and approving it is what puts it in front of strangers.'
+      : behaviour.canUnlock
+        ? 'Listed, unlockable, and findable in search — except in the countries below.'
+        : 'Listed, and NOT unlockable anywhere. The store still shows it.';
 
   const ruleOptions = (selected = null) => rules
     .map((r) => `<option value="${esc(r.code)}"${r.code === selected ? ' selected' : ''}>${esc(r.title)}${r.country_code ? ` — ${esc(r.country_code)}` : ''} (${esc(r.code)})</option>`)
@@ -4320,6 +4325,17 @@ export function assetManage({
     body: `
 ${pageHead(channel, 'overview', asset.title, `Published at <a href="${esc(publicHref)}">${esc(publicHref)}</a>.`)}
 ${flashNote(flash)}
+
+${asset.moderation_state === 'pending' ? `
+<section class="section" style="margin-bottom:0">
+  <div class="note note-info" role="status">
+    <strong>Waiting for its first review.</strong> ${esc(assetBehaviour('pending').ownerNote)}
+    <div class="fine" style="margin-top:var(--space-2)">
+      A store's first file is looked at by a person before it joins search, and there is nothing
+      for you to do about it: the link above already works, and your store page lists it.
+    </div>
+  </div>
+</section>` : ''}
 
 ${decision ? `
 <section class="section" style="margin-bottom:0">

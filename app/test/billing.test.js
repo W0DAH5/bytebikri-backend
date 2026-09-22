@@ -254,6 +254,11 @@ test('the paid plans can be found; a free one cannot, whatever it asks for', asy
 
 test('updateAsset writes what it was given, and refuses what it was not', async () => {
   const { channel, asset } = await fixture();
+  // Whatever the file came out of creation as — `pending` for a store's first
+  // file, `approved` after one has been reviewed. The assertion at the end is
+  // that this does not move, which is the promise; naming a value would only
+  // pin today's default.
+  const before = asset.moderation_state;
 
   const updated = await store.updateAsset(asset.id, {
     title: 'Renamed', description: 'A new description', unlock_mode: 'open', status: 'paused',
@@ -270,8 +275,8 @@ test('updateAsset writes what it was given, and refuses what it was not', async 
   });
   assert.equal(after_.slug, asset.slug, 'a slug survives an update that tries to change it');
   assert.equal(after_.channel_id, channel.id);
-  assert.equal(after_.moderation_state, 'approved',
-    "a seller cannot mark their own asset removed — that is the moderator's column");
+  assert.equal(after_.moderation_state, before,
+    "a seller cannot move their own file's moderation state — that is the moderator's column");
 
   // An empty patch is a read, not an error.
   const same = await store.updateAsset(asset.id, {});
@@ -390,7 +395,13 @@ test('search finds listed stores and their files, and nothing private', async ()
     tagline: 'Poster kits and type',
   });
   await store.updateChannel(channel.id, { listing_mode: 'marketplace', name: `Devanagari Studio ${tag}` });
-  await store.createAsset({ channelId: channel.id, title: `Nepali Poster Kit ${tag}`, slug: `kit-${tag}` });
+  // Approved explicitly: search answers with files somebody has decided about, and
+  // a brand-new store's file is `pending` on purpose (see test/moderation.test.js).
+  // This test is about the marketplace filter, so the file starts decided.
+  await store.createAsset({
+    channelId: channel.id, title: `Nepali Poster Kit ${tag}`, slug: `kit-${tag}`,
+    moderationState: 'approved',
+  });
 
   const results = await store.search('Devanagari');
   assert.ok(results.stores.some((c) => c.id === channel.id), 'a listed store is findable by name');

@@ -285,11 +285,16 @@ async function fixture() {
   const ch = await store.createChannel({
     ownerId: user.id, slug: `geo-${tag}`, name: `Geo ${tag}`, listingMode: 'marketplace',
   });
+  // Approved, because these tests are about countries: a file waiting for its
+  // first review is a different question (`test/moderation.test.js` owns it), and
+  // mixing the two would make a country failure look like a review failure.
   const asset = await store.createAsset({
     channelId: ch.id, title: `File ${tag}`, slug: `file-${tag}`, description: 'x',
+    moderationState: 'approved',
   });
   const other = await store.createAsset({
     channelId: ch.id, title: `Other ${tag}`, slug: `other-${tag}`, description: 'x',
+    moderationState: 'approved',
   });
   return { user, ch, asset, other };
 }

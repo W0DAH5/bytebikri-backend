@@ -29,6 +29,10 @@
  * confirmation that says what will happen next, and they are never promised an
  * outcome we do not control.
  */
+// The one import: `canAppeal` has to know whether a PERSON has decided anything
+// about the file, and that vocabulary belongs to the moderation module rather
+// than being re-derived here from a list of states. Domain to domain, no cycle.
+import { isAssetDecided } from './moderation.js';
 
 /**
  * Distinct reporters before a file is hidden automatically.
@@ -171,8 +175,22 @@ export function canAppeal({ asset = null, openAppeal = null } = {}) {
   if (openAppeal) {
     return { ok: false, why: 'You have already appealed this file. An operator reads it before your next one.' };
   }
-  if (asset.moderation_state && asset.moderation_state !== 'approved') {
-    return { ok: false, why: 'An operator has restricted this file. That is a separate decision, and it is not reopened by an appeal here.' };
+  // A decision by a person supersedes the report question, so an appeal is
+  // refused — and the refusal names the decision that is actually standing.
+  //
+  // This said "not approved" rather than "decided", which made `pending` an
+  // operator decision too: a store's first file, hidden by three reports before
+  // anybody had looked at it, was refused an appeal with the words "an operator
+  // has restricted this file" — a sentence about a decision nobody had made, on
+  // the one file where nobody has looked yet and an appeal is the seller's only
+  // move.
+  if (isAssetDecided(asset.moderation_state)) {
+    return {
+      ok: false,
+      why: asset.moderation_state === 'removed'
+        ? 'An operator has removed this file. That is a separate decision, and it is not reopened by an appeal here.'
+        : 'An operator has restricted this file. That is a separate decision, and it is not reopened by an appeal here.',
+    };
   }
   if (!asset.hidden_by_reports) {
     return { ok: false, why: asset.status === 'paused'

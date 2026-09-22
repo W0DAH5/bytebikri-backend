@@ -248,7 +248,7 @@ cannot hover.
 | **Network tag render layer** | slots draw now — the store's own message and the house ad — and a network can be connected and verified. Serving a real network's *tag* still needs one real network account: we store no third-party script, and the slot carries only the seam (`data-adapter`) for the adapter that will mount it |
 | **`ads.txt`** | ad networks require it; needs a publisher ID |
 | **A mail sender on a domain we own** | both flows that need mail are built and tested (§18): password reset and address confirmation. Production refuses to boot on `EMAIL_DRIVER=console` or with no driver, so the last thing between this and sending anything is `EMAIL_DRIVER=resend`/`smtp` plus an `EMAIL_FROM` on a domain you control |
-| **Moderation workflow** | the states are enforced, the operator page exists (§14), the seller can answer a report-driven hiding (§14a), and a file now has its own queue and its own country rules (§19). Still missing: nothing that blocks a launch — the country list is the edge's, and a whole-store legal takedown is still expressed as a block per country |
+| **Moderation workflow** | the states are enforced, the operator page exists (§14), the seller can answer a report-driven hiding (§14a), a file has its own queue and its own country rules (§19), and a new store's first file now genuinely waits for a person (§20). Still missing: nothing that blocks a launch — the country list is the edge's, and a whole-store legal takedown is still expressed as a block per country |
 | **A second app-facing auth path** | the app signs in through the web form; sign-up in the app needs a JSON endpoint or a WebView |
 
 ### Missing product surface
@@ -999,7 +999,8 @@ and the country as a second axis that is not the same axis.
 out of `pg_constraint` by the tests and matched by `src/moderation.js`. There is
 no `suspended` for a file, on purpose: suspending is what a store does (it stops
 writes and keeps the shop reachable to its owner while a question is settled),
-and a file has no writes to stop. The operator page **refuses** `suspend` with
+and a file has no writes to stop. `pending` is answered in §20 — for two rounds it
+was a state nothing could reach. The operator page **refuses** `suspend` with
 `?error=action` rather than silently mapping it to the nearest thing, because a
 mapping that quiet is a decision nobody made.
 
@@ -1175,3 +1176,108 @@ written and still recorded, so nothing a test asserts on moved — and the suite
 then ran **446/446** four times in a row where it had failed in half the attempts
 before. This is written down because the failure looked like flakiness in the
 product for two days, and it was flakiness in the harness.
+
+---
+
+## 20. This round: a state that meant nothing, and a search that answered wrongly
+
+`pending` was in `assets.moderation_state`, in `ASSET_STATES`, in
+`ASSET_BEHAVIOUR` — and unreachable. `createAsset` hardcoded `approved`, so no
+file was ever waiting, the operator's "Files needing a decision" queue could not
+contain a new file, and the state a store's first upload was supposed to be in was
+decoration. The baseline table in §14 said so in as many words: *"`pending` …
+nothing is reviewed before it appears."*
+
+### The question is three questions, not one
+
+Writing the rule forced the vocabulary apart, because `pending` changes **one** of
+the three things a state can change and the table could only say two of them:
+
+| | `publicVisible` | `canUnlock` | `searchable` |
+|---|---|---|---|
+| `pending` | yes | yes | **no** |
+| `approved` | yes | yes | yes |
+| `restricted` | yes | **no** | yes |
+| `removed` | **no** | **no** | **no** |
+
+`restricted` staying searchable is deliberate: a visitor who looks for a limited
+file should reach the page that explains the limit, not a dead end. `pending`
+leaving search is the whole rule.
+
+**What a new store gets is one review, not one review per file.** The first file
+waits; a store that has had one file approved publishes immediately afterwards
+(`createAsset` counts approved siblings inside the same transaction, so two
+uploads at once cannot both decide they are the first). That is a promise one
+operator can keep, and it is the difference between a review queue and a dam.
+
+**What waits is search, not the file.** The file is live at its own address and
+listed in its own store from the second it is uploaded — so a creator's launch is
+never blocked by an operator being asleep, and the only thing a stranger cannot do
+yet is *find* it without being told the link. This is itch.io's model, and they
+write it down: a new seller's first published project "is placed in a queue for
+review… it is still published and fully functional via your profile and URL" while
+it waits ([their indexing docs](https://itch.io/docs/creators/getting-indexed)).
+The alternative — holding the file back until reviewed — was rejected on the
+research as well as on taste: the pre-moderation model buys control with slower
+publication and more human cost, and the post-moderation model leaves harmful
+content visible; holding the URL is the hybrid that costs the creator nothing they
+need on day one. The claim is stated honestly to the creator rather than implied:
+the review is a person reading one file, it does not classify anything, and it is
+not a safety guarantee about the store afterwards.
+
+### The bug underneath: search never read the file's state
+
+While wiring `searchable` into `store.search()` it became obvious that the file
+branch of that query had **never filtered `moderation_state` at all**:
+
+    and (a.title ilike $1 or a.description ilike $1)
+
+No state filter, so a **removed** file stayed in search results and its link
+answered **404** — the same read-path hole §19 closed on the storefront, in the
+one surface nobody had looked at, and the same one that had already been fixed for
+stores (`c.moderation_state not in ('removed','suspended')`) a few lines above it.
+Verified before and after: a removed file was found by title, then was not.
+The filter is `SEARCHABLE_ASSET_STATES`, derived from the table above rather than
+written out again in SQL, so a state added to the module is filtered here without
+anyone remembering to.
+
+### And a sentence about a decision nobody had made
+
+`canAppeal` refused every state that was not `approved`, with the words *"an
+operator has restricted this file"*. Harmless while nothing could be `pending` —
+and a lie the moment a store's first file could be. It landed on the worst
+possible file: the one three reports had just hidden, where nobody has looked at
+the store yet and the appeal is the seller's only move. `isAssetDecided(state)`
+now answers the question `canAppeal` was actually asking, `pending` is a file with
+no decision to defer to, and a removal is no longer described as a restriction.
+
+### The demo state now lives in the repository
+
+`ci/demo-state.mjs` — the script that puts the preview into the two states this
+round is about (a creator's country rule, and a new store whose file is waiting)
+lived in `/tmp` for two rounds and was destroyed both times the workspace was
+rebuilt. The database survives a rebuild; the script explaining it does not, and
+the result is a preview whose interesting states are several manual steps away from
+existing. It is in `ci/` now and idempotent.
+
+### Tests, and what was actually run
+
+`test/moderation.test.js` (36) gained three: the three questions answered for every
+state with `SEARCHABLE_ASSET_STATES` derived from the table; a store's first file
+waiting while a second upload from the same store does not; and search returning
+decisions rather than questions — a pending file absent, an approved file found, a
+removed file absent again. `test/reports.test.js` (27) pins the appeal fix, and
+`test/ui.test.js` (22) pins the creator's sentence. Four existing tests failed on
+the change and each was answered rather than adjusted: two fixtures now say
+`moderationState: 'approved'` because a search fixture has to be a file somebody
+has decided about, and one assertion now compares against the state the fixture
+came out of creation with, because the property is that a seller cannot move that
+column — not that the column holds one particular word.
+
+Verified live, end to end, through the real signup form: a new store's first
+upload → the creator reads *"Waiting for its first review"* with the promise that
+the link works and the shop lists it → a stranger gets **200** at that link → the
+store page lists it → **search returns nothing** → the operator's queue holds
+exactly one item → approved → **search returns it** → the next upload from the same
+store does not wait → and removing it takes it out of search again with **404** for
+a stranger and **200** for its owner. Full suite **452/452**.

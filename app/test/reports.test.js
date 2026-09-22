@@ -478,3 +478,30 @@ test('a file that is not live is off the public web, with three exceptions', asy
   }), false, 'an ad started after the hide releases nothing');
   assert.equal(viewSurvivesHiding({ view: {}, asset: live }), true, 'and a live file is business as usual');
 });
+
+test('a file nobody has decided about is not refused an appeal on the operator\'s behalf', async () => {
+  /**
+   * The bug this pins: `canAppeal` refused every state that was not `approved`,
+   * and the refusal read "an operator has restricted this file".
+   *
+   * That was harmless while nothing could be `pending` — and `createAsset` wrote
+   * `approved` for every file, so nothing ever was. The moment a store's first
+   * file began to wait for review, the sentence became a lie about a decision
+   * nobody had made, and it landed on the one file where nobody has looked yet:
+   * the file three reports had just hidden, where the appeal is the seller's only
+   * move and the operator's first look at the store.
+   */
+  const { canAppeal } = await import('../src/reports.js');
+  const hidden = { hidden_by_reports: true, status: 'paused' };
+
+  const waiting = canAppeal({ asset: { ...hidden, moderation_state: 'pending' } });
+  assert.equal(waiting.ok, true, 'a waiting file with no decision against it can be appealed');
+
+  // A real decision still closes the appeal, and the refusal names which one.
+  const restricted = canAppeal({ asset: { ...hidden, moderation_state: 'restricted' } });
+  assert.equal(restricted.ok, false);
+  assert.match(restricted.why, /restricted this file/);
+  const removed = canAppeal({ asset: { ...hidden, moderation_state: 'removed' } });
+  assert.equal(removed.ok, false);
+  assert.match(removed.why, /removed this file/, 'a removal is not described as a restriction');
+});

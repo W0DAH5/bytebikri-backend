@@ -714,3 +714,108 @@ test('a statement whose period has not settled is shown, and counted nowhere', a
   assert.ok(!calibration.some((r) => r.channel_slug === ch.slug && r.provider_id === 'openait'),
     'and it is absent from every comparison, rather than silently included');
 });
+
+// ---------------------------------------------------------------------------
+// A file: listed, indexed, and unlockable are three different questions
+// ---------------------------------------------------------------------------
+
+/**
+ * `pending` used to mean nothing at all.
+ *
+ * It was in the schema, it was in `ASSET_STATES`, and it behaved exactly like
+ * `approved` — public, unlockable, and set by nobody, because `createAsset`
+ * hardcoded `approved`. So the operator's "Files needing a decision" queue could
+ * not contain a new file, and the state that was supposed to hold a store's first
+ * upload was decoration.
+ *
+ * It now means the one thing that can be promised to a creator by a platform with
+ * one operator: the file is live at its link and in the store's own shop, and it
+ * is SEARCH that waits for a person. itch.io ships the same shape for a new
+ * seller's first project — published and fully functional by URL, held out of
+ * browse until reviewed.
+ */
+test('a file that is waiting is listed, unlockable, and kept out of search', async () => {
+  const mod = await import('../src/moderation.js');
+  const pending = mod.assetBehaviour('pending');
+  assert.equal(pending.publicVisible, true, 'a waiting file must not be a dead link');
+  assert.equal(pending.canUnlock, true, 'and its creator must not be blocked from publishing');
+  assert.equal(pending.searchable, false, 'but it must not be the answer to a stranger\'s search');
+  assert.ok(pending.ownerNote, 'a file that waits tells its owner so');
+  // The three questions are answered for every state, or a caller reads undefined.
+  for (const state of mod.ASSET_STATES) {
+    const b = mod.assetBehaviour(state);
+    for (const key of ['publicVisible', 'canUnlock', 'searchable']) {
+      assert.equal(typeof b[key], 'boolean', `${state}.${key} is not a boolean`);
+    }
+  }
+  // Removed is out of search as well, and that is not the same fact as pending:
+  // one is a decision, the other is the absence of one.
+  assert.equal(mod.assetBehaviour('removed').searchable, false);
+  assert.equal(mod.assetBehaviour('approved').searchable, true);
+  assert.deepEqual(mod.SEARCHABLE_ASSET_STATES, ['approved', 'restricted'],
+    'searchable states must be derived from the table, not written out again');
+});
+
+test('a store\'s files wait until a person has approved one of them', async () => {
+  const owner = await store.createUser({
+    email: `unreviewed-${Date.now()}@bytebikri.local`, password: 'bytebikri-demo', role: 'seller',
+  });
+  const channel = await store.createChannel({
+    ownerId: owner.id, name: 'First Upload', slug: `first-upload-${Date.now()}`,
+  });
+
+  const first = await store.createAsset({
+    channelId: channel.id, title: 'The very first file', slug: 'first',
+  });
+  assert.equal(first.moderation_state, 'pending', 'a new store\'s first file waits for a person');
+  // The rule is not "one file per store": a creator uploading five files at signup
+  // does not get four published unreviewed files while the queue is asleep.
+  const second = await store.createAsset({
+    channelId: channel.id, title: 'Second file', slug: 'second',
+  });
+  assert.equal(second.moderation_state, 'pending', 'nothing has been approved yet');
+
+  // A person looks. That is the whole promise, kept once per store.
+  await store.setAssetModeration({
+    assetId: first.id, action: 'approve', state: 'approved', ruleCode: null,
+    remedy: null, actorId: owner.id,
+  });
+  const third = await store.createAsset({
+    channelId: channel.id, title: 'Third file', slug: 'third',
+  });
+  assert.equal(third.moderation_state, 'approved',
+    'after one approval the store publishes without waiting again');
+});
+
+test('search returns files that are decisions, not files that are questions', async () => {
+  const stamp = Date.now();
+  const owner = await store.createUser({
+    email: `searchable-${stamp}@bytebikri.local`, password: 'bytebikri-demo', role: 'seller',
+  });
+  const channel = await store.createChannel({
+    ownerId: owner.id, name: 'Searchable Studio', slug: `searchable-${stamp}`,
+    listingMode: 'marketplace',
+  });
+  const term = `zebrafile${stamp}`;
+  const fresh = await store.createAsset({
+    channelId: channel.id, title: `Zebra file ${term}`, slug: `zebra-${stamp}`,
+  });
+  const found = async () => (await store.search(term)).assets.map((a) => a.id);
+
+  assert.deepEqual(await found(), [], 'a file nobody has looked at is not a search result');
+
+  await store.setAssetModeration({
+    assetId: fresh.id, action: 'approve', state: 'approved', ruleCode: null,
+    remedy: null, actorId: owner.id,
+  });
+  assert.deepEqual(await found(), [fresh.id], 'once approved, it is findable');
+
+  // And the bug this test was written beside: a removed file kept appearing in
+  // search results, and its link landed on a 404 — the same read-path hole the
+  // storefront had, one surface over.
+  await store.setAssetModeration({
+    assetId: fresh.id, action: 'remove', state: 'removed', ruleCode: 'copyright',
+    remedy: 'Removed for a test.', actorId: owner.id,
+  });
+  assert.deepEqual(await found(), [], 'a removed file must not be advertised in search');
+});

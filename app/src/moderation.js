@@ -292,12 +292,41 @@ export const ASSET_ACTIONS = Object.freeze(Object.keys(ASSET_ACTION_TO_STATE));
  * sense, and the unlock refuses. Nothing is deleted either way, and the owner is
  * told both times.
  */
+/**
+ * What each state of a file means, to a visitor, a searcher, and its owner.
+ *
+ * Three questions, and they are genuinely three. `publicVisible` is whether the
+ * file's address answers a stranger; `searchable` is whether the platform puts
+ * it in front of one who was not looking for this store in particular; and
+ * `canUnlock` is whether the bytes can be earned. A state that changed only one
+ * of them is the reason they are listed separately — `pending` changes the
+ * second and nothing else, and the first version of this table could not have
+ * said that.
+ */
 export const ASSET_BEHAVIOUR = {
-  pending: { publicVisible: true, canUnlock: true, ownerNote: null },
-  approved: { publicVisible: true, canUnlock: true, ownerNote: null },
+  pending: {
+    publicVisible: true,
+    canUnlock: true,
+    // The one state that is listed but not indexed. A store's first file waits
+    // for a person, and the wait costs the creator nothing they need on day one:
+    // the file works at its link and in their own shop, so a launch is never
+    // blocked by an operator being asleep. What waits is search — the surface
+    // where a stranger looks for a thing they already want, and therefore the
+    // one where unreviewed content must not be the answer.
+    //
+    // This is itch.io's model, which they write down: a new seller's first
+    // published project "is placed in a queue for review… it is still published
+    // and fully functional via your profile and URL" while it waits.
+    searchable: false,
+    ownerNote: 'Nobody has reviewed this file yet. It works at its link and in your store; it joins search once the platform has looked at it.',
+  },
+  approved: { publicVisible: true, canUnlock: true, searchable: true, ownerNote: null },
   restricted: {
     publicVisible: true,
     canUnlock: false,
+    // Findable, because it is listed: a visitor who searches for it should reach
+    // the page that explains why the unlock is refused, rather than a dead end.
+    searchable: true,
     ownerNote: 'This file stays listed, but it cannot be unlocked. Nothing has been deleted and you can still see it here.',
     // What a VISITOR is told, which is not the same message: the owner is told
     // nothing was deleted, and the visitor is told why the button is missing.
@@ -306,6 +335,7 @@ export const ASSET_BEHAVIOUR = {
   removed: {
     publicVisible: false,
     canUnlock: false,
+    searchable: false,
     ownerNote: 'This file has been removed from your store and its address is now a 404. The record and the files stay on this dashboard.',
   },
 };
@@ -327,6 +357,37 @@ export function isAssetPublic(state) {
 export function isAssetUnlockable(state) {
   return assetBehaviour(state).canUnlock;
 }
+
+/** May the platform put this file in front of somebody who was not looking for it? */
+export function isAssetSearchable(state) {
+  return assetBehaviour(state).searchable;
+}
+
+/**
+ * Has a person decided anything about this file at all?
+ *
+ * `pending` is the state of not having been looked at, which is not the same as
+ * being left alone — and the difference matters wherever a rule is written as
+ * "not approved yet". `canAppeal` was written that way: any state but `approved`
+ * returned "an operator has restricted this file", so a seller whose first file
+ * was hidden by three reports was refused an appeal and told a thing that had not
+ * happened. A file waiting for its first look has had no decision to defer to.
+ */
+export function isAssetDecided(state) {
+  return normaliseAssetState(state) !== 'pending';
+}
+
+/**
+ * The same rule as `isAssetSearchable`, as values a query can compare against.
+ *
+ * Search is SQL, and a filter written out by hand in a query is a second copy of
+ * the rule that drifts the first time a state is added — which is exactly how a
+ * removed file kept appearing in search results while its own page answered 404.
+ * Derived from the table above, so there is one place to change.
+ */
+export const SEARCHABLE_ASSET_STATES = Object.freeze(
+  ASSET_STATES.filter((state) => ASSET_BEHAVIOUR[state].searchable),
+);
 
 export function assetStateFor(action) {
   if (!ASSET_ACTIONS.includes(String(action ?? ''))) return null;

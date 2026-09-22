@@ -486,3 +486,39 @@ test('the creator sees the note they wrote, and who set a rule they did not', ()
   assert.ok(!/Your note: Position of a platform rule/.test(html),
     "the platform's sentence is shown as the creator's own note");
 });
+
+test('a file that is waiting for review says so, and says what it does not block', () => {
+  /**
+   * The creator's side of the rule in `test/moderation.test.js`: their store's
+   * first file is live but not in search. Left unsaid, that is a creator
+   * refreshing the marketplace, finding nothing, and filing a bug against a
+   * platform that looks broken — the same failure the country pages were built to
+   * avoid. So the page states the wait, and states the thing the creator actually
+   * cares about: the link works and the shop lists it.
+   */
+  const asset = {
+    id: '66666666-6666-4666-8666-666666666666', slug: 'kit', title: 'Kit',
+    description: 'd', unlock_mode: 'ad_gated', status: 'live', moderation_state: 'pending',
+  };
+  const waiting = assetManage({
+    channel: CHANNEL, user: null, asset,
+    files: [{ filename: 'kit.zip', mime_type: 'application/zip', size_bytes: 1024 }],
+    policy: { ads_required: 1, ad_min_seconds: 15, unlock_hours: 24 },
+    stats: { count: 0, average: 0 }, unlocks: 0,
+  });
+  assert.match(waiting, /Waiting for its first review\./);
+  // The promise, in the creator's words rather than the schema's.
+  assert.match(waiting, /the link above already works, and your store page lists it/);
+  assert.ok(!/pending/.test(waiting.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')),
+    'the state word is shown to the creator instead of a sentence');
+
+  // An approved file says nothing about review, because there is nothing to say.
+  const approved = assetManage({
+    channel: CHANNEL, user: null, asset: { ...asset, moderation_state: 'approved' },
+    files: [{ filename: 'kit.zip', mime_type: 'application/zip', size_bytes: 1024 }],
+    policy: { ads_required: 1, ad_min_seconds: 15, unlock_hours: 24 },
+    stats: { count: 0, average: 0 }, unlocks: 0,
+  });
+  assert.ok(!/Waiting for its first review/.test(approved),
+    'an approved file is still announced as waiting');
+});

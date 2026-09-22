@@ -32,6 +32,7 @@ export const OPEN_RENT_STATUSES = ['issued', 'submitted'];
 // them is meaningless.
 import { POLICY } from './slots.js';
 import { familyCase, AUDIT_FAMILIES } from './audit.js';
+import { SEARCHABLE_ASSET_STATES } from './moderation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1500,13 +1501,44 @@ export const store = {
   },
 
   // ---- assets ------------------------------------------------------------
-  async createAsset({ channelId, title, slug, description, unlockMode = 'ad_gated', coverUrl = null }) {
+  /**
+   * Create a file, and decide whether a person has to look at it first.
+   *
+   * The state was hardcoded to `approved`, which made `pending` a state nothing
+   * could reach and a queue that could never have anything in it. The rule now:
+   * **a store's files wait until a person has approved one of them.** A new store
+   * gets one review, not one review per file — that is a promise one operator can
+   * keep — and a store that was looked at publishes immediately afterwards.
+   *
+   * `pending` does not hide the file (see ASSET_BEHAVIOUR): it stays at its link
+   * and in the store's own shop, and it is search that waits. The creator is told
+   * so on the file's page rather than left to wonder why nobody is finding it.
+   *
+   * `moderationState` is for the one caller that is not a creator: the seed, which
+   * is building a demonstration of a store that has already been reviewed.
+   */
+  async createAsset({
+    channelId, title, slug, description, unlockMode = 'ad_gated', coverUrl = null, moderationState = null,
+  }) {
     return withTransaction(async (c) => {
+      let state = moderationState;
+      if (!state) {
+        // Read inside the transaction, so two files uploaded at the same instant
+        // by a brand-new store cannot both find "no approved file yet" and race
+        // their way to an unpublishable pair. One of them wins the row lock and
+        // the other sees its sibling.
+        const { rows: [seen] } = await c.query(
+          `select count(*)::int as n from assets
+            where channel_id = $1 and moderation_state = 'approved'`,
+          [channelId],
+        );
+        state = seen.n > 0 ? 'approved' : 'pending';
+      }
       const { rows } = await c.query(
         `insert into assets (channel_id, title, slug, description, kind, unlock_mode, status, moderation_state, cover_url)
-         values ($1, $2, $3, $4, 'digital', $5, 'live', 'approved', $6)
+         values ($1, $2, $3, $4, 'digital', $5, 'live', $6, $7)
          returning *`,
-        [channelId, title, slug || slugify(title), description || '', unlockMode, coverUrl],
+        [channelId, title, slug || slugify(title), description || '', unlockMode, state, coverUrl],
       );
       const asset = rows[0];
       await c.query(
@@ -2877,9 +2909,15 @@ export const store = {
             and c.moderation_state not in ('removed', 'suspended')
             and coalesce(o.banned, false) = false
             and c.listing_mode = 'marketplace'
+            -- The file's own state, which this query never used to read: a removed
+            -- file stayed in search results and its link landed on a 404, and a
+            -- file nobody has looked at yet had no business being the answer to a
+            -- stranger's search. The list comes from src/moderation.js, so a state
+            -- added there is filtered here without anyone remembering to.
+            and a.moderation_state = any($3)
             and (a.title ilike $1 or a.description ilike $1)
           order by a.created_at desc limit $2`,
-        [like, limit],
+        [like, limit, SEARCHABLE_ASSET_STATES],
       ),
     ]);
     return { stores, assets, term };

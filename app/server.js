@@ -4354,6 +4354,11 @@ async function seed({ force = false } = {}) {
 
   const asset = await store.createAsset({
     channelId: alice.id, title: 'Devanagari Poster Kit', slug: 'devanagari-poster-kit',
+    // Already reviewed, deliberately: the seed is a demonstration of a platform
+    // that has been running, not of one where nobody has looked at anything yet.
+    // Left to the rule, every demo file would wait in the queue and search would
+    // answer nothing — a demo of the queue rather than of the product.
+    moderationState: 'approved',
     coverUrl: '/img/demo/devanagari-poster-kit.jpg',
     description: '18 layered poster templates with Devanagari type pairings. Unlock with one ad.',
   });
@@ -4386,6 +4391,7 @@ async function seed({ force = false } = {}) {
     const clip = await fs.readFile(path.resolve(__dirname, 'seed-assets/store-walkthrough.mp4'));
     const videoAsset = await store.createAsset({
       channelId: alice.id, title: 'Poster kit walkthrough', slug: 'poster-kit-walkthrough',
+      moderationState: 'approved',
       coverUrl: '/img/demo/devanagari-poster-kit.jpg',
       description: 'Five minutes through the kit — layers, type pairings, and how to export for print.',
     });
@@ -4402,6 +4408,7 @@ async function seed({ force = false } = {}) {
 
   const sampleAsset = await store.createAsset({
     channelId: alice.id, title: 'Free sample pack', slug: 'free-sample-pack',
+    moderationState: 'approved',
     coverUrl: '/img/demo/sample-pack.jpg',
     description: 'Open access — no ad needed. Proves the lock is per-asset, not per-channel.',
     unlockMode: 'open',
@@ -4422,6 +4429,7 @@ async function seed({ force = false } = {}) {
   // provider routing.
   const bobAsset = await store.createAsset({
     channelId: bob.id, title: 'Kathmandu Street Set', slug: 'kathmandu-street-set',
+    moderationState: 'approved',
     coverUrl: '/img/demo/kathmandu-street.jpg',
     description: '40 edited street frames from Kathmandu. Unlock with one ad.',
   });
@@ -4459,6 +4467,7 @@ async function seed({ force = false } = {}) {
     const body = Buffer.from(`ByteBikri demo file ${i} (Bob's studio).\n`);
     const asset = await store.createAsset({
       channelId: bob.id, title: `Studio print ${String(i).padStart(2, '0')}`,
+      moderationState: 'approved',
       slug: `studio-print-${String(i).padStart(2, '0')}`,
       description: 'Part of a deliberately full free plan.', unlockMode: 'ad_gated',
     });
