@@ -22,6 +22,7 @@ import crypto from 'node:crypto';
 import { store } from './store.js';
 import { readSecret } from './config.js';
 import { parsePostback, GRANTS_UNLOCK, getAdapter } from './providers/index.js';
+import { availabilityFor, resolveCountry } from './geo.js';
 
 const ACCESS_SECRET = () => readSecret('ACCESS_TOKEN_SECRET');
 const DEFAULT_ACCESS_TTL_MS = 10 * 60 * 1000;
@@ -34,9 +35,36 @@ const DEFAULT_ACCESS_TTL_MS = 10 * 60 * 1000;
  * Step 1 — the browser starts an unlock. We mint a nonce and hand back the ad
  * config. Nothing is unlocked yet; this grants nothing.
  */
-export async function startUnlock({ assetId, userId, providerId, personalised = false }) {
+export async function startUnlock({ assetId, userId, providerId, personalised = false, country = null }) {
   const asset = await store.assetById(assetId);
   if (!asset) return { ok: false, error: 'asset not found' };
+
+  /**
+   * The refusal comes before anything else, and nobody is exempt.
+   *
+   * A country rule and a file's own state are both statements that the unlock
+   * does not exist here: showing an ad for a file whose bytes are then refused
+   * would spend the viewer's attention on nothing, which is the one thing this
+   * platform cannot do. The owner and an operator are not exempt either — they
+   * can read and manage the file from the dashboard, but an unlock row granted
+   * to an operator would be a way around the rule they are meant to be applying.
+   */
+  const channelBlock = await store.channelCountryBlock(asset.channel_id, country);
+  const assetRule = country ? (await store.countryRulesFor([asset.id], country))[0] ?? null : null;
+  const availability = availabilityFor({
+    assetState: asset.moderation_state,
+    resolved: resolveCountry({ assetRule, channelBlock }),
+  });
+  if (!availability.unlockable) {
+    return {
+      ok: false,
+      country,
+      reason: availability.reason,
+      error: availability.reason === 'country'
+        ? 'this file is not available in your country'
+        : 'this file cannot be unlocked',
+    };
+  }
 
   const policy = await store.unlockPolicy(assetId);
   if (!policy) return { ok: false, error: 'asset has no unlock policy' };

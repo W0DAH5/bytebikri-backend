@@ -275,9 +275,20 @@ indistinguishable from never having existed, and both refuse seller writes while
 leaving reads open. A decision cites a `policy_rules` row (a real foreign key),
 never a sentence; the operator's remedy line is the only free text and it is
 capped at 280 characters and escaped. State change and record are one
-transaction. The operator page is `/admin/moderation`, deliberately plain.
-Still missing: a seller-facing report button, an asset-level queue, and country
-rules.
+transaction. The operator page is `/admin/moderation`, deliberately plain, and a
+seller-facing report button plus the appeal surface it feeds are built.
+
+**A file, and a country.** Files have their own states (`pending | approved |
+restricted | removed` — no `suspend`, and the page refuses one rather than
+mapping it), their own operator queue at `/admin/moderation`, and their own
+country rules. A block cites a rule and answers **451**; a creator's own
+withholding answers **403**; a removed file is a 404. Every country-dependent
+response is `private, no-store` — `Vary` is sent too, but CDNs are documented
+ignoring it, and a cached block served to the wrong country is indistinguishable
+from a broken site. The country comes from `cf-ipcountry`, so **the origin must
+sit behind the edge**: a direct connection can claim any country, and the
+operator page prints the rest of the limits (VPNs, satellite egress, unknown
+codes failing open) next to the rules themselves.
 
 **A browser, finally.** Chromium was not obtainable in this environment until
 this round: `storage.googleapis.com` and `deb.debian.org` are unreachable and
@@ -328,8 +339,8 @@ rejected payment leaves the seller's paid plan exactly as it was. There is no
 automatic suspension to operate, because a cron job that failed to run must
 never be the reason a paying seller loses their storefront.
 
-What is left here: the moderation queue (schema has the states, no UI), a report
-button, backups, and any notification at all.
+What is left here: backups, notifications of any kind, and an ad network's tag
+layer.
 
 ---
 

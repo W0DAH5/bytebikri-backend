@@ -30,6 +30,11 @@ import { MIN_PASSWORD_LENGTH } from './security.js';
 // plans page and the message at the upload wall.
 import { planUsage, rentAge, AGE_BUCKETS, RENT_TERMS } from './billing.js';
 import { isoDay, daysBetween } from './dates.js';
+import { COUNTRY_OPTIONS, countryIn, countryName } from './countries.js';
+// The asset vocabulary lives in one place. `moderation.js` is pure — no database
+// import — so a view may read it, which is what keeps the console from inventing
+// its own words for `restricted`.
+import { assetBehaviour } from './moderation.js';
 // The audit vocabulary and the two renderers that make a row readable: who did it
 // (a person, the platform, or a visitor) and what it was about.
 import { AUDIT_FAMILIES, actorOf, subjectOf } from './audit.js';
@@ -592,13 +597,21 @@ ${explore && explore.rails.length ? explore.rails.map(rail).join('') : ''}
   });
 }
 
-export function storefront({ channel, assets, slots, user, estimate, pageviews, unlockedIds = new Set(), consent = null, moderation = null }) {
+export function storefront({ channel, assets, slots, user, estimate, pageviews, unlockedIds = new Set(), consent = null, moderation = null, countryBlocked = null }) {
   const cards = assets.map((a) => {
     const open = a.unlock_mode === 'open';
     const unlocked = open || (user && unlockedIds.has(a.id));
-    const badge = open
-      ? pill('Free', 'success')
-      : unlocked ? pill('Unlocked', 'success') : pill('Ad-gated', 'locked');
+    // A listed file the viewer cannot unlock does not get an unlock badge — it
+    // gets the reason. The badge is the one place a card can lie, and "Ad-gated"
+    // on a file that refuses every unlock is the lie this round removed.
+    const badge = a.availability && !a.availability.unlockable
+      ? pill(a.availability.reason === 'country' ? 'Not here' : 'Not unlockable', 'warning')
+      : open
+        ? pill('Free', 'success')
+        : unlocked ? pill('Unlocked', 'success') : pill('Ad-gated', 'locked');
+    const foot = a.availability && !a.availability.unlockable
+      ? (a.availability.reason === 'country' ? 'Not unlockable in your country' : 'Listed, not unlockable')
+      : open ? 'No ad needed' : `${a.ads_required} ad${a.ads_required === 1 ? '' : 's'} to unlock`;
     return `<a class="asset" href="/s/${esc(channel.slug)}/a/${esc(a.slug)}">
   <div style="position:relative">
     ${thumb({ title: a.title, coverUrl: a.cover_url })}
@@ -609,7 +622,7 @@ export function storefront({ channel, assets, slots, user, estimate, pageviews, 
     <p class="asset-desc">${esc(a.description || 'No description yet.')}</p>
     <div class="asset-foot">
       <span>${plural((a.files || []).length, 'file')}</span>
-      <span>${open ? 'No ad needed' : `${a.ads_required} ad${a.ads_required === 1 ? '' : 's'} to unlock`}</span>
+      <span>${foot}</span>
     </div>
   </div>
 </a>`;
@@ -627,6 +640,13 @@ ${channel.banner_url
 </div>`
     : ''}
 ${moderation ? `<div class="section" style="margin-bottom:0">${moderationNotice(moderation, { heading: 'Only you can see this page right now' })}</div>` : ''}
+${countryBlocked ? `<div class="section" style="margin-bottom:0">
+  <div class="note note-warning" role="status">
+    <strong>Visitors in ${esc(countryBlocked.country)} cannot open this store.</strong>
+    ${esc(countryBlocked.why)}
+    You can see it because it is yours — nothing was deleted, and the decision is recorded.
+  </div>
+</div>` : ''}
 
 <div class="section" style="margin-bottom:0">
   <div class="row">
@@ -864,6 +884,14 @@ export function assetPage({
   markUri = '', markLabel = '', accessUntil = null, consent = null,
   reviews = [], reviewStats = {}, canReview = false, myReview = null, reviewError = null,
   reported = null, alreadyReported = false, reportError = null,
+  // What this viewer is refused, and why — a country rule, or the file's own
+  // state. Decided on the server (see src/geo.js and src/moderation.js) and
+  // rendered here: the page never works out for itself who may do what.
+  refusal = null,
+  // One sentence for the owner when their file is not available to everyone.
+  // The owner always sees the page; the sentence is the difference between
+  // "somebody decided something about my file" and a support ticket.
+  ownerNotice = null,
 }) {
   const open = asset.unlock_mode === 'open';
   const needsAd = !open && !unlocked;
@@ -919,7 +947,22 @@ export function assetPage({
          </p>`
       : '';
 
-  const actionBlock = open
+  /**
+   * A refusal replaces the unlock affordance, and only that.
+   *
+   * The file's name, its description, its files and its reviews all stay: what is
+   * refused is the unlock, in one country or for one reason, and a page that
+   * disappeared entirely would tell the visitor less than the sentence does.
+   */
+  const refusalBlock = refusal
+    ? `<div class="note note-warning" role="status">
+         <strong>${esc(refusal.headline)}</strong>
+         <p class="small" style="margin:var(--space-2) 0 0">${esc(refusal.why)}</p>
+         ${refusal.appeal ? `<p class="fine" style="margin:var(--space-2) 0 0">${esc(refusal.appeal)}</p>` : ''}
+       </div>${filesPanel}`
+    : null;
+
+  const actionBlock = refusalBlock || (open
     ? `<div class="note note-success">Free — no ad needed.</div>${filesPanel}`
     : unlocked
       ? `<div class="note note-success"><strong>Unlocked.</strong>
@@ -933,7 +976,7 @@ export function assetPage({
            confirms server-to-server that the view completed.
          </p>
          <div id="unlock-status" class="fine" role="status" aria-live="polite"
-              style="margin-top:var(--space-3);text-align:center"></div>`;
+              style="margin-top:var(--space-3);text-align:center"></div>`);
 
   const kindLabel = { video: 'Video', audio: 'Audio', image: 'Image', file: 'File' }[previewFile?.kind] || null;
   const placed = placeSlots(slots);
@@ -957,6 +1000,9 @@ export function assetPage({
     ? `<a class="btn btn-sm" href="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}">Edit this file</a>` : ''}
     </div>
     <p class="lede">${esc(asset.description || 'No description yet.')}</p>
+    ${ownerNotice ? `<div class="note note-warning" style="margin-top:var(--space-5)" role="status">
+      <strong>Not everyone sees this file.</strong> ${esc(ownerNotice)}
+    </div>` : ''}
     ${markNote}
 
     ${placed.head}
@@ -1015,6 +1061,59 @@ ${reportBlock({ channel, asset, user, alreadyReported, reported })}
       signed, and is verified on our side before your access appears.
     </p>
   </div>
+</div>`,
+  });
+}
+
+/**
+ * The page a visitor gets when a country rule applies to them.
+ *
+ * 404 was the wrong answer here, and the schema's own vocabulary says why: a
+ * REMOVED store answers 404 because confirming that it exists is information
+ * nobody decided to publish. A country rule is the opposite — a decision
+ * somebody stands behind, addressed to a visitor who is owed a reason. The
+ * status code follows the source (451 for a rule, 403 for a creator's own
+ * licence; see `blockStatus` in src/geo.js), and this page is what makes the
+ * code legible: what happened, why, and who to ask.
+ *
+ * It says one more thing out loud that a block page usually hides: the rule
+ * follows the COUNTRY the request came from, not the person. Saying that is not
+ * a loophole, it is the truth, and a visitor who is told the truth does not file
+ * a bug against a platform that looks broken.
+ */
+export function countryBlocked({ user = null, sentence, country = null, store = null, asset = null, consent = null }) {
+  const back = store
+    ? `<a class="back-link" href="/s/${esc(store.slug)}">← ${esc(store.name)}</a>`
+    : '<a class="back-link" href="/">← Explore</a>';
+
+  return layout({
+    title: sentence.headline, user, consent,
+    body: `
+${back}
+
+<div class="section" style="max-width:62ch">
+  <span class="pill pill-warning">Not available${country ? ` in ${esc(countryIn(country))}` : ''}</span>
+  <h1 style="margin-top:var(--space-4)">${esc(sentence.headline)}</h1>
+  <p class="lede" style="margin-top:var(--space-3)">${esc(sentence.why)}</p>
+  ${sentence.appeal ? `<p class="small" style="margin-top:var(--space-3)">${esc(sentence.appeal)}</p>` : ''}
+
+  <div class="panel" style="margin-top:var(--space-6)">
+    <div class="panel-head"><h2 style="font-size:var(--text-md)">Why this is about where you are, not who you are</h2></div>
+    <div class="panel-body">
+      <p class="small" style="margin:0">
+        We read the country from the network the request arrived over, and we apply the rule to
+        that country. Nothing is recorded about you beyond that, and nothing about this decision
+        follows you to another country.
+      </p>
+      ${store?.channel_contact ? `<p class="small" style="margin:var(--space-3) 0 0">
+        The store's own contact: <span class="mono">${esc(store.channel_contact)}</span>
+      </p>` : ''}
+    </div>
+  </div>
+
+  ${asset ? `<p class="fine" style="margin-top:var(--space-5)">
+    ${esc(asset.title)} is one file. The rest of ${esc(store?.name || 'the store')} may be available to you.
+  </p>` : ''}
 </div>`,
   });
 }
@@ -1567,7 +1666,12 @@ export function login({ user, error, next = '', email = '', mode = 'login', cons
  * rule codes the database actually has, so a typo cannot become a rule that does
  * not exist.
  */
-export function adminModeration({ user, rows, rules, actions = [], labels = {}, flash = null, consent = null }) {
+export function adminModeration({
+  user, rows, rules, actions = [], labels = {}, flash = null, consent = null,
+  // Files that need a decision, every country where something is blocked, the
+  // stores withheld from a country, and the channel list the add-form offers.
+  files = [], countries = [], storeBlocks = [], channels = [], limits = [],
+}) {
   const rulesByCode = new Map(rules.map((r) => [r.code, r]));
   const options = (selected = null) => rules
     .map((r) => `<option value="${esc(r.code)}"${r.code === selected ? ' selected' : ''}>${esc(r.title)} (${esc(r.code)})</option>`)
@@ -1618,6 +1722,30 @@ export function adminModeration({ user, rows, rules, actions = [], labels = {}, 
     </div>
   </div>`;
 
+  // A file in the queue is not a file with a wrong state; it may be a file whose
+  // state is fine and whose availability is not. The row says which, because
+  // "approved + blocked in two countries" is the case this queue was built for.
+  const fileRow = (f) => `
+  <a class="queue-row" href="/admin/moderation/files/${esc(f.id)}">
+    <span class="queue-count">${f.moderation_state === 'approved' ? '·' : '!'}</span>
+    <span class="queue-body">
+      <strong>${esc(f.title)}</strong>
+      <span class="fine">${esc(f.channel_name)} · ${esc(f.owner_email || 'no email on file')}
+        ${f.country_summary ? ` · <span class="mono">${esc(f.country_summary)}</span>` : ''}</span>
+    </span>
+    <span class="spacer"></span>
+    ${pill(f.moderation_state, f.moderation_state === 'approved' ? 'warning' : 'danger')}
+    <span class="fine">${esc(relTime(f.decided_at || f.created_at))}</span>
+  </a>`;
+
+  const countryRow = (c) => `
+  <tr>
+    <td><strong>${esc(countryName(c.country_code))}</strong> <span class="fine mono">${esc(c.country_code)}</span></td>
+    <td>${c.blocked_files ? `${c.blocked_files} file${c.blocked_files === 1 ? '' : 's'}` : '—'}</td>
+    <td>${c.restricted_files ? `${c.restricted_files} file${c.restricted_files === 1 ? '' : 's'}` : '—'}</td>
+    <td>${c.blocked_stores ? `${c.blocked_stores} store${c.blocked_stores === 1 ? '' : 's'}` : '—'}</td>
+  </tr>`;
+
   return layout({
     title: 'Moderation', user, current: 'admin', consent,
     body: `
@@ -1651,6 +1779,325 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
     <p>${rows.length ? `${rows.length} store${rows.length === 1 ? '' : 's'} not in the default state` : 'Nothing is waiting'}</p>
   </div>
   ${rows.length ? rows.map(row).join('') : '<div class="empty">No store is restricted, suspended or removed.</div>'}
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Files</h2>
+    <p>${files.length
+    ? (() => {
+      // The same split the console counts, in the same words. One list, two
+      // numbers, two meanings is how a queue starts lying to the person who
+      // reads it every morning.
+      const open = files.filter((f) => f.moderation_state !== 'removed').length;
+      const gone = files.length - open;
+      return `${open} waiting on a decision${gone ? `, ${gone} removed and waiting on the owner` : ''}`;
+    })()
+    : 'Nothing is waiting'}</p>
+  </div>
+  ${files.length
+    ? files.map(fileRow).join('')
+    : '<div class="empty">No file is restricted or removed, and no file is withheld from a country.</div>'}
+  <p class="fine" style="margin-top:var(--space-4)">
+    A file can be in this list while its state reads <span class="mono">approved</span>: a country rule is
+    a decision about availability, not about the file. Open a file to decide its state, its countries,
+    and to read every decision already made about it.
+    A file that reads <span class="mono">removed</span> is down already and appears here so you can put it
+    back, not because it is waiting on us — the count on the console leaves those out for that reason.
+  </p>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Where content is blocked</h2>
+    <p>Every country with a rule in force, counted from the enforcement index.</p>
+  </div>
+  ${countries.length ? `<div class="table-scroll"><table class="table">
+    <thead><tr><th>Country</th><th>Files blocked</th><th>Files listed, not unlockable</th><th>Stores withheld</th></tr></thead>
+    <tbody>${countries.map(countryRow).join('')}</tbody>
+  </table></div>` : '<div class="empty">No country rule is in force anywhere.</div>'}
+  <p class="fine" style="margin:var(--space-6) 0 var(--space-2)">
+    What these rules can do, and what none of them can:
+  </p>
+  <ul class="fine" style="padding-left:1.1em">
+    ${limits.map((l) => `<li>${esc(l)}</li>`).join('')}
+  </ul>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Stores withheld from a country</h2>
+    <p>A rule about a shop's contents reaches every file in it. One file can still be carved back out on its own page.</p>
+  </div>
+  ${storeBlocks.length ? `<div class="table-scroll"><table class="table">
+    <thead><tr><th>Store</th><th>Country</th><th>Rule</th><th>Decided</th><th></th></tr></thead>
+    <tbody>${storeBlocks.map((b) => `<tr>
+      <td><a href="/s/${esc(b.slug)}">${esc(b.name)}</a></td>
+      <td>${esc(countryName(b.country_code))}</td>
+      <td>${esc(b.rule_title || b.rule_code || 'a platform rule')}</td>
+      <td class="fine">${esc(relTime(b.created_at))}</td>
+      <td><form method="post" action="/admin/moderation/${esc(b.slug)}/country">
+        <input type="hidden" name="countryCode" value="${esc(b.country_code)}">
+        <input type="hidden" name="clear" value="1">
+        <button class="btn btn-sm" type="submit">Clear</button>
+      </form></td>
+    </tr>`).join('')}</tbody>
+  </table></div>` : '<div class="empty">No store is withheld from any country.</div>'}
+
+  <form method="post" action="/admin/moderation/blocks" class="panel" style="margin-top:var(--space-5)">
+    <div class="panel-body">
+      <h3 style="font-size:var(--text-md);margin:0">Withhold a store from one country</h3>
+      <div class="row" style="align-items:flex-end;gap:var(--space-4);flex-wrap:wrap;margin-top:var(--space-4)">
+        <div class="field" style="flex:1 1 200px">
+          <label for="block-slug">Store</label>
+          <select class="input" id="block-slug" name="slug">
+            ${channels.map((c) => `<option value="${esc(c.slug)}">${esc(c.name)} — /s/${esc(c.slug)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field" style="flex:0 1 200px">
+          <label for="block-country">Country</label>
+          <select class="input" id="block-country" name="countryCode">
+            ${countrySelectOptions()}
+          </select>
+        </div>
+        <div class="field" style="flex:1 1 240px">
+          <label for="block-rule">Rule</label>
+          <select class="input" id="block-rule" name="ruleCode">
+            ${rules.map((r) => `<option value="${esc(r.code)}">${esc(r.title)}${r.country_code ? ` (${esc(r.country_code)})` : ''}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="field" style="margin-top:var(--space-4)">
+        <label for="block-remedy">What should the owner do?</label>
+        <input class="input" id="block-remedy" name="remedy" maxlength="280"
+               placeholder="One line. Nothing here means they did something wrong.">
+      </div>
+      <button class="btn btn-primary" type="submit" style="margin-top:var(--space-4)">Withhold from this country</button>
+    </div>
+  </form>
+</section>`,
+  });
+}
+
+/**
+ * How a decision reads to the person it happened to.
+ *
+ * The action names are the database's (`restrict`, `remove`, `reinstate`) and
+ * they are perfect for a queue and useless in a sentence: "restrict" is what an
+ * operator did, "restricted" is what the seller's file now is.
+ */
+const DECISION_VERB = {
+  restrict: 'An operator has restricted this file',
+  remove: 'An operator has removed this file',
+  approve: 'An operator has approved this file',
+  reinstate: 'An operator has put this file back',
+  warn: 'An operator has a note about this file',
+  suspend: 'An operator has acted on this file',
+};
+
+/**
+ * Country options, with nothing chosen for you.
+ *
+ * The list is alphabetical, so a select that opens on its first entry opens on
+ * Afghanistan — and every form this appears in withholds something. A blank
+ * first option means the safe outcome of a careless submit is a validator
+ * message (`?error=country`), not a country nobody meant to pick.
+ */
+function countrySelectOptions() {
+  return `<option value="">Choose a country…</option>`
+    + COUNTRY_OPTIONS.map((c) => `<option value="${esc(c.code)}">${esc(c.name)}</option>`).join('');
+}
+
+/**
+ * One file, decided.
+ *
+ * The store page answers "which store is in a bad state"; this answers "which
+ * file, why, and everywhere it is unavailable". Three things live here that
+ * existed nowhere before: the file's own state, its country rules, and the full
+ * decision history — including the rules a creator set, because an operator who
+ * cannot see why a file is missing in Nepal will assume the read path is broken.
+ */
+export function adminModerationFile({
+  user, asset, channel, rules = [], countryRules = [], history = [], actions = [],
+  labels = {}, limits = [], flash = null, consent = null,
+}) {
+  const behaviour = assetBehaviour(asset.moderation_state);
+  const ruleTitle = (code) => {
+    const r = rules.find((x) => x.code === code);
+    return r ? r.title : code;
+  };
+  const effects = !behaviour.publicVisible
+    ? 'Not listed anywhere: the file page answers 404 to everybody except its owner, an operator, and anyone who already unlocked it.'
+    : behaviour.canUnlock
+      ? 'Listed, and unlockable — except in the countries below.'
+      : 'Listed, and NOT unlockable anywhere. The store still shows it.';
+
+  const ruleOptions = (selected = null) => rules
+    .map((r) => `<option value="${esc(r.code)}"${r.code === selected ? ' selected' : ''}>${esc(r.title)}${r.country_code ? ` — ${esc(r.country_code)}` : ''} (${esc(r.code)})</option>`)
+    .join('');
+
+  const countryRows = countryRules.map((r) => `
+  <tr>
+    <td><strong>${esc(countryName(r.country_code))}</strong> <span class="fine mono">${esc(r.country_code)}</span></td>
+    <td>${pill(r.state, r.state === 'allowed' ? 'success' : r.state === 'restricted' ? 'warning' : 'danger')}</td>
+    <td>${r.source === 'creator' ? 'The creator' : 'An operator'}</td>
+    <td>${r.rule_title ? esc(r.rule_title) : r.rule_code ? `<span class="mono">${esc(r.rule_code)}</span>` : '<span class="fine">no rule cited</span>'}</td>
+    <td class="fine">${r.set_by_name ? `${esc(r.set_by_name)} · ` : ''}${esc(relTime(r.updated_at))}</td>
+    <td><form method="post" action="/admin/moderation/files/${esc(asset.id)}/country">
+      <input type="hidden" name="countryCode" value="${esc(r.country_code)}">
+      <input type="hidden" name="clear" value="1">
+      <button class="btn btn-sm" type="submit">Clear</button>
+    </form></td>
+  </tr>`).join('');
+
+  /**
+   * What a logged action reads as.
+   *
+   * One verb covers two outcomes in the log on purpose — `restrict` records a
+   * country block and a country "listed but not unlockable" alike, because the
+   * verb is about the act, not the state it left behind — and the state is the
+   * Countries table's job, above. Rendering the verb raw next to that table is
+   * how you get a log that says "Restrict" while the table says "blocked", so a
+   * country row is worded as the country decision it was, and the note under the
+   * table says which table holds the state.
+   */
+  const historyLabel = (h) => h.country_code
+    ? `${h.action === 'approve' ? 'Allowed for' : 'Limited for'} ${countryIn(h.country_code)}`
+    : (labels[h.action] || h.action);
+  const historyRows = history.map((h) => `
+  <tr>
+    <td class="fine">${esc(relTime(h.created_at))}</td>
+    <td>${esc(historyLabel(h))}</td>
+    <td>${h.rule_title ? esc(h.rule_title) : h.rule_code ? `<span class="mono">${esc(h.rule_code)}</span>` : '<span class="fine">—</span>'}</td>
+    <td class="fine">${esc(h.actor_name || 'the platform')}</td>
+    <td class="fine">${esc(h.reason || '')}</td>
+  </tr>`).join('');
+
+  return layout({
+    title: `Moderation · ${asset.title}`, user, current: 'admin', consent,
+    body: `
+<a class="back-link" href="/admin/moderation">← Moderation</a>
+
+<div class="section" style="margin-bottom:0">
+  <div class="row">
+    <h1>${esc(asset.title)}</h1>
+    ${pill(asset.moderation_state, asset.moderation_state === 'approved' ? 'success' : 'danger')}
+    <span class="spacer"></span>
+    <a class="btn btn-sm" href="/s/${esc(channel.slug)}/a/${esc(asset.slug)}">See it as a visitor</a>
+  </div>
+  <p class="lede" style="margin-top:var(--space-3)">
+    In <a href="/s/${esc(channel.slug)}">${esc(channel.name)}</a>,
+    owned by ${esc(asset.owner_name || asset.owner_email || 'an account with no name on file')}.
+    ${esc(effects)}
+  </p>
+</div>
+
+${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-5)" role="status">${esc(flash.message)}</div>` : ''}
+
+<section class="section">
+  <div class="panel"><div class="panel-body">
+    <h2 style="font-size:var(--text-md)">${esc(behaviour.ownerNote ? 'What the owner is told' : 'The file is in the default state')}</h2>
+    <p class="small" style="margin-top:var(--space-3)">${esc(behaviour.ownerNote || 'Nothing has been decided about this file, so nobody has been told anything.')}</p>
+  </div></div>
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>Decide the file</h2><p>A restriction cites a rule. Clearing one does not.</p></div>
+  <form method="post" action="/admin/moderation/files/${esc(asset.id)}" class="panel">
+    <div class="panel-body">
+      <div class="row" style="align-items:flex-start;gap:var(--space-4);flex-wrap:wrap">
+        <div class="field" style="flex:1 1 180px">
+          <label for="fa">Action</label>
+          <select class="input" id="fa" name="action">
+            ${actions.map((a) => `<option value="${esc(a)}">${esc(labels[a] || a)}</option>`).join('')}
+          </select>
+          <span class="hint">A file cannot be suspended — that is a store. Refused rather than mapped.</span>
+        </div>
+        <div class="field" style="flex:2 1 260px">
+          <label for="fr">Reason</label>
+          <select class="input" id="fr" name="ruleCode">
+            <option value="">— none cited —</option>
+            ${ruleOptions()}
+          </select>
+        </div>
+      </div>
+      <div class="field" style="margin-top:var(--space-4)">
+        <label for="fm">What should the owner do?</label>
+        <input class="input" id="fm" name="remedy" maxlength="280"
+               placeholder="One line, in your own words. It is shown with the rule's own wording.">
+      </div>
+      <button class="btn btn-primary" type="submit" style="margin-top:var(--space-4)">Record decision</button>
+    </div>
+  </form>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Countries</h2>
+    <p>${countryRules.length ? `${countryRules.length} rule${countryRules.length === 1 ? '' : 's'} on this file.` : 'This file is available everywhere, as far as any rule goes.'}</p>
+  </div>
+  ${countryRules.length ? `<div class="table-scroll"><table class="table">
+    <thead><tr><th>Country</th><th>State</th><th>Decided by</th><th>Rule</th><th>When</th><th></th></tr></thead>
+    <tbody>${countryRows}</tbody>
+  </table></div>` : '<div class="empty">No country rule applies to this file.</div>'}
+
+  <form method="post" action="/admin/moderation/files/${esc(asset.id)}/country" class="panel" style="margin-top:var(--space-5)">
+    <div class="panel-body">
+      <h3 style="font-size:var(--text-md);margin:0">Set a country rule</h3>
+      <div class="row" style="align-items:flex-start;gap:var(--space-4);flex-wrap:wrap;margin-top:var(--space-4)">
+        <div class="field" style="flex:1 1 200px">
+          <label for="fc">Country</label>
+          <select class="input" id="fc" name="countryCode">
+            ${countrySelectOptions()}
+          </select>
+        </div>
+        <div class="field" style="flex:0 1 200px">
+          <label for="fs">State</label>
+          <select class="input" id="fs" name="state">
+            <option value="blocked">Blocked — 451, and absent from listings there</option>
+            <option value="restricted">Listed, not unlockable — the shop still reads</option>
+            <option value="allowed">Allowed — overrides a store-wide block</option>
+          </select>
+        </div>
+        <div class="field" style="flex:1 1 240px">
+          <label for="fk">Rule</label>
+          <select class="input" id="fk" name="ruleCode">
+            <option value="">— none cited —</option>
+            ${ruleOptions()}
+          </select>
+        </div>
+      </div>
+      <div class="field" style="margin-top:var(--space-4)">
+        <label for="fn">Note (kept private)</label>
+        <input class="input" id="fn" name="note" maxlength="280" placeholder="For the record. Never shown to a visitor.">
+      </div>
+      <label class="check" style="margin-top:var(--space-4)">
+        <input type="checkbox" name="wholeStore" value="1">
+        <span>Apply to the whole store instead — every file in ${esc(channel.name)} is withheld from this country.</span>
+      </label>
+      <button class="btn btn-primary" type="submit" style="margin-top:var(--space-4)">Set the rule</button>
+      <p class="fine" style="margin-top:var(--space-4)">
+        A blocked country answers <span class="mono">451</span> for a platform rule and
+        <span class="mono">403</span> for a creator's own choice; a removed file is a 404.
+        These responses are sent uncacheable, because a cached block served to the wrong country
+        is indistinguishable from a broken site.
+      </p>
+    </div>
+  </form>
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>Every decision about this file</h2><p>Newest first. Nothing here is editable, on purpose.</p></div>
+  ${history.length ? `<div class="table-scroll"><table class="table">
+    <thead><tr><th>When</th><th>Action</th><th>Rule</th><th>Who</th><th>Note</th></tr></thead>
+    <tbody>${historyRows}</tbody>
+  </table></div>` : '<div class="empty">No decision has been recorded about this file.</div>'}
+  <p class="fine" style="margin:var(--space-6) 0 var(--space-2)">
+    What a country rule can and cannot do, on this page and everywhere else:
+  </p>
+  <ul class="fine" style="padding-left:1.1em">
+    ${limits.map((l) => `<li>${esc(l)}</li>`).join('')}
+  </ul>
 </section>`,
   });
 }
@@ -3793,6 +4240,15 @@ ${flashNote(flash)}
 export function assetManage({
   channel, asset, user, consent = null, flash = null, files = [],
   policy = {}, stats = {}, unlocks = 0,
+  // Availability: the countries this creator chose, and the countries the
+  // platform did. Two lists rather than one, because they are two different
+  // standing — a creator can undo theirs and cannot undo ours.
+  countryRules = [], platformRules = [],
+  // The newest operator decision about this file, if there is one. A store's
+  // owner is told when their shop is restricted (see moderationNotice); before
+  // this, a file's owner was told nothing at all — the file simply stopped
+  // being unlockable, and the dashboard looked the same as ever.
+  decision = null,
   // The case against this file as its seller may see it (counts and rule codes,
   // never a reporter), and their own appeal history. Both optional: a caller that
   // passes neither gets the page it always got, and no appeal panel — which is the
@@ -3822,6 +4278,22 @@ export function assetManage({
     body: `
 ${pageHead(channel, 'overview', asset.title, `Published at <a href="${esc(publicHref)}">${esc(publicHref)}</a>.`)}
 ${flashNote(flash)}
+
+${decision ? `
+<section class="section" style="margin-bottom:0">
+  <div class="note ${asset.moderation_state === 'removed' ? 'note-danger' : 'note-warning'}" role="status">
+    <strong>${esc(DECISION_VERB[decision.action] || `An operator looked at this file`)}${decision.rule_title ? ` — ${esc(decision.rule_title)}` : ''}.</strong>
+    ${decision.reason ? `${esc(decision.reason)} ` : ''}Nothing was deleted: the file, its files and its history are all still here.
+    <div class="fine" style="margin-top:var(--space-2)">
+      Decided ${esc(relTime(decision.created_at))}${decision.actor_name ? ` by ${esc(decision.actor_name)}` : ''}.
+      ${asset.moderation_state === 'removed'
+    ? 'Visitors get a 404, and the store no longer lists it. This page is still yours.'
+    : asset.moderation_state === 'restricted'
+      ? 'Visitors can see it listed, and nobody can unlock it while this stands.'
+      : 'It is listed, and unlocks work again.'}
+    </div>
+  </div>
+</section>` : ''}
 
 ${notice ? `
 <section class="section" style="margin-bottom:0">
@@ -4010,7 +4482,73 @@ ${notice ? `
     <button class="btn btn-primary" type="submit">Save</button>
     <span class="fine">Details and unlock terms save together.</span>
   </div>
-</form>`,
+</form>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Where this file is available</h2>
+    <p>Everywhere by default. A rule here withholds it from one country — usually because a licence
+    only covers some of them.</p>
+  </div>
+
+  ${countryRules.length ? `<div class="table-scroll"><table class="table">
+    <thead><tr><th>Country</th><th>What happens there</th><th>Set by</th><th>When</th><th></th></tr></thead>
+    <tbody>${countryRules.map((r) => `<tr>
+      <td><strong>${esc(countryName(r.country_code))}</strong></td>
+      <td>${r.state === 'blocked'
+    ? 'Not shown at all — the page answers 403 to a visitor there'
+    : r.state === 'restricted'
+      ? 'Listed, but nobody there can unlock it'
+      : 'Available — this overrides a store-wide decision'}</td>
+      <td>${r.source === 'creator' ? 'You' : 'The platform'}</td>
+      <td class="fine">${esc(relTime(r.updated_at))}</td>
+      <td>${r.source === 'creator' ? `<form method="post" action="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}/country">
+        <input type="hidden" name="countryCode" value="${esc(r.country_code)}">
+        <input type="hidden" name="clear" value="1">
+        <button class="btn btn-sm" type="submit">Clear</button>
+      </form>` : '<span class="fine">not yours to clear</span>'}</td>
+    </tr>`).join('')}</tbody>
+  </table></div>` : '<div class="empty">No country rule. This file is available everywhere.</div>'}
+
+  ${platformRules.length ? `<div class="note note-warning" style="margin-top:var(--space-5)">
+    <strong>The platform has limited this file${platformRules.length === 1 ? '' : ' in ' + platformRules.map((r) => countryIn(r.country_code)).join(', ')}.</strong>
+    ${platformRules.map((r) => `${esc(countryIn(r.country_code))}: ${esc(r.rule_title || 'a platform rule')}${r.reason ? ` — ${esc(r.reason)}` : ''}`).join('. ')}.
+    Nothing was deleted, and you can answer any decision about this file from the notice at the top of this page.
+  </div>` : ''}
+
+  <form method="post" action="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}/country" class="panel" style="margin-top:var(--space-5)">
+    <div class="panel-body">
+      <h3 style="font-size:var(--text-md);margin:0">Withhold this file from a country</h3>
+      <div class="row" style="align-items:flex-end;gap:var(--space-4);flex-wrap:wrap;margin-top:var(--space-4)">
+        <div class="field" style="flex:1 1 220px">
+          <label for="cr-country">Country</label>
+          <select class="input" id="cr-country" name="countryCode">
+            ${countrySelectOptions()}
+          </select>
+        </div>
+        <div class="field" style="flex:1 1 260px">
+          <label for="cr-state">What happens there</label>
+          <select class="input" id="cr-state" name="state">
+            <option value="blocked">Not shown at all</option>
+            <option value="restricted">Listed, but cannot be unlocked</option>
+          </select>
+        </div>
+      </div>
+      <div class="field" style="margin-top:var(--space-4)">
+        <label for="cr-note">Why (kept private)</label>
+        <input class="input" id="cr-note" name="note" maxlength="280"
+               placeholder="Licensed for Nepal only, for example.">
+        <span class="hint">For your own record and for an operator. A visitor is told it was your choice, never this line.</span>
+      </div>
+      <button class="btn btn-primary" type="submit" style="margin-top:var(--space-4)">Save the country rule</button>
+      <p class="fine" style="margin-top:var(--space-4)">
+        The country is read from the network the visitor arrives over, so a VPN changes it.
+        We tell the visitor the truth about that rather than pretending otherwise — and we never
+        show your private note to anyone but you and an operator.
+      </p>
+    </div>
+  </form>
+</section>`,
   });
 }
 

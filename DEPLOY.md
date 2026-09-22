@@ -187,6 +187,12 @@ of the seam. Nothing else needs to change when the bucket arrives.
   should restore one into a scratch project once before you need it.
 - **Watch the logs for one real visit.** A 500 in the first hour is much cheaper
   than the same 500 discovered by a creator with a store.
+- **Put the origin behind the edge, and keep it there.** Country rules read
+  `CF-IPCountry`, and that header is only worth what the edge in front of it is:
+  a request that reaches the origin directly can claim any country. Block direct
+  access (Cloudflare Tunnel or an IP allowlist on the origin), and do not cache
+  the pages the header changes — they are sent `no-store` for exactly that
+  reason.
 
 ---
 

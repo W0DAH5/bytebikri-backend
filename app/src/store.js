@@ -656,7 +656,11 @@ export const store = {
    * CHECK constraints ever drift apart.
    */
   policyRules() {
-    return many('select code, title, description, default_state, severity from policy_rules where active = true order by severity desc, code');
+    return many(
+      `select code, title, description, default_state, severity, scope, country_code
+         from policy_rules where active = true
+        order by severity desc, code`,
+    );
   },
   policyRule(code) {
     return one('select code, title, description, default_state, severity from policy_rules where code = $1 and active = true', [String(code ?? '')]);
@@ -702,6 +706,343 @@ export const store = {
         limit 1`,
       [channelId],
     );
+  },
+
+  // ── files, and the countries they are for ────────────────────────────────
+  //
+  // Everything below serves one sentence: a file may be listed everywhere and
+  // unlockable in four countries. The reads are written for the PUBLIC path
+  // (one query per page, never one per file), and every write is paired with a
+  // `moderation_actions` row in the same transaction — a file that stopped being
+  // available in a country with nobody recorded as deciding it is
+  // indistinguishable from a bug in the read path.
+
+  /**
+   * The country decisions for a set of files, in one query.
+   *
+   * Takes an array because the storefront is a grid: a query per card is how a
+   * front page becomes forty round trips, and the join to `content_geo_blocks`
+   * is what carries the RULE the decision cited, so the visitor can be told why
+   * without a second lookup.
+   */
+  countryRulesFor(assetIds = [], country = null) {
+    if (!assetIds.length || !country) return many('select null::uuid as asset_id where false');
+    return many(
+      `select r.asset_id, r.country_code, r.state, r.reason, r.source, r.set_by, r.updated_at,
+              g.rule_code
+         from asset_country_rules r
+         left join content_geo_blocks g
+           on g.subject_type = 'asset' and g.subject_id = r.asset_id
+          and g.country_code = r.country_code
+        where r.asset_id = any($1::uuid[]) and r.country_code = $2`,
+      [assetIds, String(country)],
+    );
+  },
+
+  /** Every country rule on one file, with the rule's title, for the owner and the operator. */
+  assetCountryRules(assetId) {
+    return many(
+      `select r.*, g.rule_code, p.title as rule_title, p.description as rule_description,
+              pr.display_name as set_by_name, pr.email as set_by_email
+         from asset_country_rules r
+         left join content_geo_blocks g
+           on g.subject_type = 'asset' and g.subject_id = r.asset_id
+          and g.country_code = r.country_code
+         left join policy_rules p on p.code = g.rule_code
+         left join profiles pr on pr.id = r.set_by
+        where r.asset_id = $1
+        order by r.country_code`,
+      [assetId],
+    );
+  },
+
+  /** A store-wide country block, for one visitor's country. */
+  channelCountryBlock(channelId, country = null) {
+    if (!country) return Promise.resolve(null);
+    return one(
+      `select * from content_geo_blocks
+        where subject_type = 'channel' and subject_id = $1 and country_code = $2`,
+      [channelId, String(country)],
+    );
+  },
+
+  /** The same, for a page that lists stores. */
+  channelCountryBlocks(channelIds = [], country = null) {
+    if (!channelIds.length || !country) return many('select null::uuid as subject_id where false');
+    return many(
+      `select subject_id, country_code, rule_code, created_at
+         from content_geo_blocks
+        where subject_type = 'channel' and subject_id = any($1::uuid[]) and country_code = $2`,
+      [channelIds, String(country)],
+    );
+  },
+
+  /** Every store-level country block, with the rule it cites, for the console. */
+  storeCountryBlocks() {
+    return many(
+      `select g.subject_id, g.country_code, g.rule_code, g.created_at,
+              c.slug, c.name, p.title as rule_title
+         from content_geo_blocks g
+         join channels c on c.id = g.subject_id
+         left join policy_rules p on p.code = g.rule_code
+        where g.subject_type = 'channel'
+        order by c.name, g.country_code`,
+    );
+  },
+
+  /** Every country where something is currently blocked or restricted. */
+  countrySummary() {
+    return many(
+      `select country_code,
+              count(*) filter (where kind = 'blocked-asset')::int    as blocked_files,
+              count(*) filter (where kind = 'blocked-store')::int    as blocked_stores,
+              count(*) filter (where kind = 'restricted-asset')::int as restricted_files
+         from (
+           select country_code,
+                  case subject_type when 'asset' then 'blocked-asset' else 'blocked-store' end as kind
+             from content_geo_blocks
+           union all
+           select country_code, 'restricted-asset'
+             from asset_country_rules
+            where state = 'restricted'
+         ) t
+        group by country_code
+        order by country_code`,
+    );
+  },
+
+  /**
+   * Files an operator may need to look at: not in the default state, OR carrying
+   * a country rule while their state is fine.
+   *
+   * The second half is the reason this queue exists at all. A file blocked in two
+   * countries is `approved` — the state column says nothing is wrong with it —
+   * and before this queue a country decision was invisible to everyone except the
+   * person who made it.
+   */
+  filesNeedingModeration() {
+    return many(
+      `select a.id, a.title, a.slug, a.status, a.moderation_state,
+              a.created_at, a.updated_at,
+              c.id as channel_id, c.slug as channel_slug, c.name as channel_name,
+              p.display_name as owner_name, p.email as owner_email,
+              (select count(*)::int from asset_country_rules r where r.asset_id = a.id) as country_rules,
+              (select string_agg(r.country_code || ' ' || r.state, ', ' order by r.country_code)
+                 from asset_country_rules r where r.asset_id = a.id) as country_summary,
+              m.created_at as decided_at
+         from assets a
+         join channels c on c.id = a.channel_id
+         left join profiles p on p.id = c.owner_id
+         left join lateral (
+           select created_at from moderation_actions ma
+            where ma.subject_type = 'asset' and ma.subject_id = a.id
+            order by ma.created_at desc, ma.id desc limit 1
+         ) m on true
+        where a.moderation_state <> 'approved'
+           or exists (select 1 from asset_country_rules r where r.asset_id = a.id)
+        order by case a.moderation_state
+                   when 'removed' then 1 when 'restricted' then 2 else 3 end,
+                 coalesce(m.created_at, a.created_at) desc`,
+    );
+  },
+
+  /** One file, its store, its country rules and its decision history. */
+  fileModerationDetail(assetId) {
+    return one(
+      `select a.*, c.slug as channel_slug, c.name as channel_name, c.moderation_state as channel_state,
+              c.owner_id, p.display_name as owner_name, p.email as owner_email
+         from assets a
+         join channels c on c.id = a.channel_id
+         left join profiles p on p.id = c.owner_id
+        where a.id = $1`,
+      [assetId],
+    );
+  },
+
+  /** Every decision ever recorded about one file, newest first, with its rule. */
+  fileDecisionHistory(assetId) {
+    return many(
+      `select m.*, r.title as rule_title,
+              coalesce(p.display_name, p.email) as actor_name
+         from moderation_actions m
+         left join policy_rules r on r.code = m.rule_code
+         left join profiles p on p.id = m.actor_id
+        where m.subject_type = 'asset' and m.subject_id = $1
+        order by m.created_at desc, m.id desc
+        limit 50`,
+      [assetId],
+    );
+  },
+
+  /**
+   * Change a file's own state, and record who did it and why.
+   *
+   * One transaction for the same reason the store version has one: a file that
+   * stopped being listed with no `moderation_actions` row is a file whose owner
+   * has nothing to appeal.
+   */
+  async setAssetModeration({ assetId, action, state = null, ruleCode = null, remedy = '', actorId = null }) {
+    return withTransaction(async (client) => {
+      // No reason column on `assets`, deliberately: the reason for a file is its
+      // newest decision row, which carries the rule code and the person. A
+      // column would be a second copy of that, and the copy is what goes stale.
+      const res = await client.query(
+        `update assets
+            set moderation_state = coalesce($2, moderation_state),
+                updated_at = now()
+          where id = $1
+          returning *`,
+        [assetId, state],
+      );
+      const asset = res.rows[0] ?? null;
+      await client.query(
+        `insert into moderation_actions
+           (subject_type, subject_id, action, rule_code, reason, actor_id)
+         values ('asset', $1, $2, $3, $4, $5)`,
+        [assetId, action, ruleCode, remedy ? String(remedy) : null, actorId],
+      );
+      return asset;
+    });
+  },
+
+  /**
+   * Set what one file may be seen as, in one country.
+   *
+   * Three writes and one promise. The rule row is the decision; the
+   * `content_geo_blocks` row is the index the public path and the country summary
+   * read — written for a block and deleted for anything else, so "blocked"
+   * cannot linger in the index after somebody allowed the country again; and the
+   * `moderation_actions` row is the record, carrying the country and the rule.
+   *
+   * `source` is not inferred from who is calling. A creator limiting their own
+   * file and an operator citing a rule produce different sentences to a visitor
+   * and different HTTP status codes (403 and 451), and a field that has to be
+   * guessed from a session is a field that will be guessed wrong.
+   */
+  async setAssetCountryRule({ assetId, countryCode, state, ruleCode = null, note = null, source = 'operator', actorId = null }) {
+    const country = String(countryCode).toUpperCase();
+    return withTransaction(async (client) => {
+      const res = await client.query(
+        `insert into asset_country_rules (asset_id, country_code, state, reason, source, set_by, updated_at)
+         values ($1, $2, $3, $4, $5, $6, now())
+         on conflict (asset_id, country_code) do update
+            set state = excluded.state,
+                reason = excluded.reason,
+                source = excluded.source,
+                set_by = excluded.set_by,
+                updated_at = now()
+          returning *`,
+        [assetId, country, state, note ? String(note) : null, source, actorId],
+      );
+
+      if (state === 'blocked') {
+        await client.query(
+          `insert into content_geo_blocks (subject_type, subject_id, country_code, rule_code)
+           values ('asset', $1, $2, $3)
+           on conflict (subject_type, subject_id, country_code)
+           do update set rule_code = excluded.rule_code`,
+          [assetId, country, ruleCode],
+        );
+      } else {
+        await client.query(
+          `delete from content_geo_blocks
+            where subject_type = 'asset' and subject_id = $1 and country_code = $2`,
+          [assetId, country],
+        );
+      }
+
+      // A country decision is logged with the same verbs as any other: blocking
+      // or limiting is `restrict`, allowing is `approve`. `approve` deliberately
+      // carries no rule code — clearing a restriction is not itself a rule.
+      await client.query(
+        `insert into moderation_actions
+           (subject_type, subject_id, action, rule_code, country_code, reason, actor_id)
+         values ('asset', $1, $2, $3, $4, $5, $6)`,
+        [
+          assetId,
+          state === 'allowed' ? 'approve' : 'restrict',
+          state === 'allowed' ? null : ruleCode,
+          country,
+          note ? String(note) : null,
+          actorId,
+        ],
+      );
+      return res.rows[0] ?? null;
+    });
+  },
+
+  /** Remove a country rule, and stand the index down with it. */
+  async clearAssetCountryRule({ assetId, countryCode, actorId = null }) {
+    const country = String(countryCode).toUpperCase();
+    return withTransaction(async (client) => {
+      const res = await client.query(
+        'delete from asset_country_rules where asset_id = $1 and country_code = $2 returning id',
+        [assetId, country],
+      );
+      await client.query(
+        `delete from content_geo_blocks
+          where subject_type = 'asset' and subject_id = $1 and country_code = $2`,
+        [assetId, country],
+      );
+      if (res.rowCount) {
+        await client.query(
+          `insert into moderation_actions
+             (subject_type, subject_id, action, country_code, actor_id)
+           values ('asset', $1, 'approve', $2, $3)`,
+          [assetId, country, actorId],
+        );
+      }
+      return res.rowCount;
+    });
+  },
+
+  /**
+   * Block or unblock a whole store in one country.
+   *
+   * This is the row `content_geo_blocks.subject_type = 'channel'` exists for: a
+   * rule about a shop's contents reaches every file in it without a row per file,
+   * and an operator can still carve one file back out with an asset rule, because
+   * the asset decision is the more specific one.
+   */
+  async setChannelCountryBlock({ channelId, countryCode, ruleCode, remedy = '', actorId = null }) {
+    const country = String(countryCode).toUpperCase();
+    return withTransaction(async (client) => {
+      const res = await client.query(
+        `insert into content_geo_blocks (subject_type, subject_id, country_code, rule_code)
+         values ('channel', $1, $2, $3)
+         on conflict (subject_type, subject_id, country_code)
+         do update set rule_code = excluded.rule_code
+         returning *`,
+        [channelId, country, ruleCode],
+      );
+      await client.query(
+        `insert into moderation_actions
+           (subject_type, subject_id, action, rule_code, country_code, reason, actor_id)
+         values ('channel', $1, 'restrict', $2, $3, $4, $5)`,
+        [channelId, ruleCode, country, remedy ? String(remedy) : null, actorId],
+      );
+      return res.rows[0] ?? null;
+    });
+  },
+
+  async clearChannelCountryBlock({ channelId, countryCode, actorId = null }) {
+    const country = String(countryCode).toUpperCase();
+    return withTransaction(async (client) => {
+      const res = await client.query(
+        `delete from content_geo_blocks
+          where subject_type = 'channel' and subject_id = $1 and country_code = $2`,
+        [channelId, country],
+      );
+      if (res.rowCount) {
+        await client.query(
+          `insert into moderation_actions
+             (subject_type, subject_id, action, country_code, actor_id)
+           values ('channel', $1, 'approve', $2, $3)`,
+          [channelId, country, actorId],
+        );
+      }
+      return res.rowCount;
+    });
   },
 
   moderationHistory(channelId, limit = 20) {

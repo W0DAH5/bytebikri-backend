@@ -247,8 +247,8 @@ cannot hover.
 |---|---|
 | **Network tag render layer** | slots draw now — the store's own message and the house ad — and a network can be connected and verified. Serving a real network's *tag* still needs one real network account: we store no third-party script, and the slot carries only the seam (`data-adapter`) for the adapter that will mount it |
 | **`ads.txt`** | ad networks require it; needs a publisher ID |
-| **A mail sender on a domain we own** | both flows that need mail are built and tested (§17): password reset and address confirmation. Production refuses to boot on `EMAIL_DRIVER=console` or with no driver, so the last thing between this and sending anything is `EMAIL_DRIVER=resend`/`smtp` plus an `EMAIL_FROM` on a domain you control |
-| **Moderation workflow** | the states are enforced, the operator page exists (§14) and the seller can now answer a report-driven hiding (§14a); still missing: an asset-level queue, country rules |
+| **A mail sender on a domain we own** | both flows that need mail are built and tested (§18): password reset and address confirmation. Production refuses to boot on `EMAIL_DRIVER=console` or with no driver, so the last thing between this and sending anything is `EMAIL_DRIVER=resend`/`smtp` plus an `EMAIL_FROM` on a domain you control |
+| **Moderation workflow** | the states are enforced, the operator page exists (§14), the seller can answer a report-driven hiding (§14a), and a file now has its own queue and its own country rules (§19). Still missing: nothing that blocks a launch — the country list is the edge's, and a whole-store legal takedown is still expressed as a block per country |
 | **A second app-facing auth path** | the app signs in through the web form; sign-up in the app needs a JSON endpoint or a WebView |
 
 ### Missing product surface
@@ -635,10 +635,11 @@ of this feature.
 The operator page at `/admin/moderation` exists because a mechanism nobody can
 invoke is the same problem as a column nobody sets. It is plain on purpose and it
 is **not** a report queue: nothing in it says which store to look at, because a
-seller-facing report button is a separate feature with its own design. Still
-missing: an asset-level queue and country rules (`policy_rules.scope = 'country'`
-is modelled and unused). The seller-facing report button and the appeal surface
-it feeds are both built (§14a).
+seller-facing report button is a separate feature with its own design. The
+seller-facing report button and the appeal surface it feeds are both built
+(§14a), and the asset-level queue and country rules this paragraph used to list
+as missing are built too — §19 is that half, and `policy_rules.scope = 'country'`
+is what a country block cites.
 
 Verified live: a bogus rule code came back `?error=rule`, a suspension with no
 rule came back `?error=reason`, a real one saved; `/s/bob` then answered **404 to
@@ -792,7 +793,7 @@ moderation queue distinct from the report queue, and country rules
 
 ---
 
-## 15. Looking at the pages, and what it found
+## 17. Looking at the pages, and what it found
 
 Four rounds of CSS were written and none of them had ever been looked at. Every
 assertion in the suite reads the stylesheet as text; "balance, alignment,
@@ -891,7 +892,7 @@ sign-in works, storefront 200, back in Explore.
 
 ---
 
-## 17. This round: getting back in, and proving an address
+## 18. This round: getting back in, and proving an address
 
 Two gaps that were on the launch list for the same reason: both are about an
 address being real. A forgotten password had no way back, and anybody could type
@@ -976,3 +977,136 @@ Verified live, not just in the suite: sign-up → strip under the header → lin
 the log → `200` on the button page → **token in the markup: 0** → `POST` →
 "Address confirmed" → strip gone; and the gate, refused with `?error=verify`
 before confirmation and accepted after it.
+
+---
+
+## 19. This round: a file, a country, and the page that explains it
+
+`asset_country_rules` and `content_geo_blocks` were in migration 0001 and read by
+nobody, so every file was available in every country. Worse, a file could not be
+stopped at all: `assets.moderation_state` existed, but the only surface that
+wrote a state wrote it to a **store** — which is why hiding a store hid every
+file in it, including the ones whose own state had never been decided.
+
+So this round is the other half of §14: the file as the thing that is moderated,
+and the country as a second axis that is not the same axis.
+
+### A file's vocabulary is not a store's
+
+`assets.moderation_state` is `pending | approved | restricted | removed` — read
+out of `pg_constraint` by the tests and matched by `src/moderation.js`. There is
+no `suspended` for a file, on purpose: suspending is what a store does (it stops
+writes and keeps the shop reachable to its owner while a question is settled),
+and a file has no writes to stop. The operator page **refuses** `suspend` with
+`?error=action` rather than silently mapping it to the nearest thing, because a
+mapping that quiet is a decision nobody made.
+
+`restricted` is the interesting one, and it is not a softer `removed`: the file
+stays listed and stops being unlockable. It is how a licence problem, a pending
+question, or a country limitation reads to a visitor, and it is the only state
+where the listing and the bytes disagree.
+
+### Two people can write a country rule, and they are not the same writer
+
+| | may set | cites a rule | may clear |
+|---|---|---|---|
+| Operator | `blocked`, `restricted`, `allowed` | required for the first two; forbidden on `allowed` | any row |
+| Creator | `blocked`, `restricted` | never — the note is theirs, and it is private | own rows only |
+
+`allowed` is the operator's alone because it is the carve-out: a store can be
+withheld from a country for a policy reason while one file in it is a public-
+domain text that the same rule has no business hiding. A creator who could say
+`allowed` could override the platform's own rule, and the disagreement they
+actually have is the appeal — which a person reads.
+
+The first version of this shipped with the creator's route reusing the
+operator's validator, and the bug ran in both directions at once: a creator could
+not set **any** rule (the validator demanded a rule code they must not cite), and
+`state=allowed` was **accepted** if they sent it. `validateCountryDecision({
+states, requireRule })` now takes both from the caller, and `CREATOR_COUNTRY_STATES`
+is the creator's list. Retested live: blocked in the UK → saved; a UK visitor
+gets **403**; `allowed` → `?error=state`; clearing an operator's row → `?error=nope`.
+
+### Resolution, and the two questions the read paths ask
+
+`availabilityFor({ assetState, resolved })` answers exactly:
+
+    visible     may a stranger see the listing at all
+    unlockable  may the unlock be attempted
+    reason      'file' | 'country' | null — which one decides the copy
+
+Most specific wins: a file's own country rule beats the store-wide block it
+would otherwise inherit. `removed` beats a country rule — an operator who removed
+a file did not mean "except where a country rule allows it". A row whose stored
+state this code cannot read resolves to **blocked**, because serving a file
+because a string was unexpected is the failure nobody notices until a letter
+arrives. An **unknown country is not a blocked country**: no header, `XX` and
+`T1` mean no rule applies, or the first proxy that strips a header would black
+out a file for the world.
+
+### The four answers, and none of them is a dead end
+
+| The visitor's country | What they get | Why that one |
+|---|---|---|
+| A platform rule blocks it | **451**, with the rule's own title and a way to disagree | RFC 7725 is the status for "unavailable for legal reasons", and the block page has to say so or it reads as the site being broken |
+| The creator withheld it | **403** | It is their choice, not a legal one, and the copy says that: "usually a licence that only covers some countries" |
+| The file is removed | **404**, byte-identical to a file that never existed | A removal is not a notice |
+| The file is listed, not unlockable here | **200** with "Listed, but not unlockable in India" | The honest state, and the one that would otherwise look like a bug in the ad slot |
+
+Every country-dependent response goes out `Cache-Control: private, no-store` and
+`Vary: CF-IPCountry`. The `Vary` is a courtesy — CDNs are documented ignoring or
+stripping it — and the `no-store` is the thing that is load bearing, because a
+cached block served to the wrong country is indistinguishable from a broken site.
+
+### The country itself
+
+It comes from the edge header (`cf-ipcountry`), read in one place (`src/geo.js`),
+with a `?country=` override that is wired to `!isProd()` and nothing else. The
+limits are printed on the operator page rather than discovered later: a VPN
+defeats this, so does a satellite link that egresses somewhere else, and a
+connection straight to the origin can claim any country — which is why the
+origin belongs behind the edge and nowhere else. Nothing here classifies
+content; a rule reaches a file because a person applied it, and the operator
+page shows every country where something is currently blocked.
+
+### The pages
+
+- `/admin/moderation` gained a **Files** queue (open items counted separately
+  from removed ones, which are down already and waiting on their owner, not on a
+  person), a "where content is blocked" table per country, a "stores withheld
+  from a country" table, and the one form that withholds a store.
+- `/admin/moderation/files/:assetId` is new: decide the file, decide its
+  countries (with a `wholeStore` checkbox that promotes the rule to the store), and
+  read every decision ever recorded about it, citations included.
+- `/dashboard/:slug/assets/:assetId` gained **Where this file is available**:
+  what the creator set, what the platform set (read-only, with the platform's own
+  note), and a form that can only withhold.
+- The owner is told. A file's owner reads the decision in their dashboard and on
+  their own public page, from the same record the console shows — a notice
+  written from a different query is a notice that will disagree with the console.
+
+### What it cost to get the words right
+
+`countryWithArticle` exists because the owner notice printed *"Visitors in United
+States cannot open this store."* — every sentence names a country, and eleven of
+the names in the table need an article. Country names in tables and labels stay
+bare; names inside sentences go through one helper, tested against the whole
+table for doubling and for the four names whose articles are archaic.
+
+### Tests and what was actually run
+
+`test/geo.test.js` (23) pins the resolution order, the fail-closed and fail-open
+edges, the creator/operator split, the article rule, the transaction that writes
+rule + index + record together, and one thing the suite could not see before:
+**every `<form action>` the console renders is checked against the server's own
+source**, because a form that posted to `/admin/moderation/country` while the
+handler listened on `/admin/moderation/blocks` answered "Channel not found" and
+nothing said so. Reverting that action makes the test fail; that is how it was
+verified. Full suite: **445/445**.
+
+Verified live, as a visitor in each country: `?country=IN` on a withheld store →
+**451**; `?country=US` → **200**; the same store's file in Nepal →
+"Listed, but not unlockable in Nepal"; a creator-blocked file in the UK →
+**403**; a removed file → **404** for a stranger, **200** for its owner, absent
+from the storefront; the withhold form (via its own button) → `?saved_country=1`
+→ the store is out of Explore for that country and the owner is told why.

@@ -253,3 +253,101 @@ export function validateDecision({ action, ruleCode = null, remedy = '' } = {}) 
 export function changesVisibility(action) {
   return ACTION_TO_STATE[String(action ?? '')] !== null;
 }
+
+// ── files ──────────────────────────────────────────────────────────────────
+//
+// A file has four states, not five, and the difference is not an oversight in
+// the schema: a file cannot be "suspended". Suspension is what happens to a
+// STORE — the whole shop is hidden while its owner answers for it. A file is
+// either listed or it is not, and the middle state it does have means something
+// specific here: listed, and not unlockable.
+//
+// `test/moderation.test.js` reads this list out of the `assets` CHECK constraint
+// in Postgres, the same way it does the channel one, because a vocabulary that
+// drifts from a CHECK constraint fails at runtime on a file that needed stopping.
+
+/** The `assets.moderation_state` CHECK, verbatim. */
+export const ASSET_STATES = ['pending', 'approved', 'restricted', 'removed'];
+
+/** What each file action does to the file. */
+export const ASSET_ACTION_TO_STATE = {
+  approve: 'approved',
+  reinstate: 'approved',
+  restrict: 'restricted',
+  remove: 'removed',
+  // A warning about a file is a record and changes nothing, exactly as it is for
+  // a store. The file's owner reads it; the file does not move.
+  warn: null,
+};
+
+/** The actions a FILE can carry. `suspend` is absent on purpose: see above. */
+export const ASSET_ACTIONS = Object.freeze(Object.keys(ASSET_ACTION_TO_STATE));
+
+/**
+ * What each file state means to the two people who meet it.
+ *
+ * `restricted` is the one worth reading twice. For a store it protects the
+ * presentation while the files stay up; for a FILE it protects the listing while
+ * the bytes stop — the title and cover stay in the store so the shop still makes
+ * sense, and the unlock refuses. Nothing is deleted either way, and the owner is
+ * told both times.
+ */
+export const ASSET_BEHAVIOUR = {
+  pending: { publicVisible: true, canUnlock: true, ownerNote: null },
+  approved: { publicVisible: true, canUnlock: true, ownerNote: null },
+  restricted: {
+    publicVisible: true,
+    canUnlock: false,
+    ownerNote: 'This file stays listed, but it cannot be unlocked. Nothing has been deleted and you can still see it here.',
+    // What a VISITOR is told, which is not the same message: the owner is told
+    // nothing was deleted, and the visitor is told why the button is missing.
+    visitorNote: 'This file has been limited by the platform, so it stays listed and cannot be unlocked. The store can appeal the decision.',
+  },
+  removed: {
+    publicVisible: false,
+    canUnlock: false,
+    ownerNote: 'This file has been removed from your store and its address is now a 404. The record and the files stay on this dashboard.',
+  },
+};
+
+export function normaliseAssetState(state) {
+  return ASSET_STATES.includes(String(state ?? '')) ? String(state) : 'pending';
+}
+
+export function assetBehaviour(state) {
+  return ASSET_BEHAVIOUR[normaliseAssetState(state)];
+}
+
+/** May a stranger find this file at all? */
+export function isAssetPublic(state) {
+  return assetBehaviour(state).publicVisible;
+}
+
+/** May anybody unlock it — in a country where no rule says otherwise? */
+export function isAssetUnlockable(state) {
+  return assetBehaviour(state).canUnlock;
+}
+
+export function assetStateFor(action) {
+  if (!ASSET_ACTIONS.includes(String(action ?? ''))) return null;
+  return ASSET_ACTION_TO_STATE[String(action)];
+}
+
+/**
+ * Validate a decision about one file.
+ *
+ * Same two promises as a store decision — the action is real, a restriction
+ * cites a rule that exists — with one addition: an action that only makes sense
+ * for a store is refused rather than mapped to something the `assets` CHECK
+ * would accept. `suspend` silently becoming `restricted` is how an operator
+ * hides a file everywhere while believing they kept it listed.
+ */
+export function validateAssetDecision({ action, ruleCode = null, remedy = '' } = {}) {
+  if (!ASSET_ACTIONS.includes(String(action ?? ''))) return { ok: false, error: 'action' };
+  return validateDecision({ action, ruleCode, remedy });
+}
+
+/** Does this file decision change what the public sees? `warn` does not. */
+export function assetChangesVisibility(action) {
+  return ASSET_ACTION_TO_STATE[String(action ?? '')] !== null;
+}

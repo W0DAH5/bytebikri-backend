@@ -32,10 +32,17 @@ import { briefMeta } from './src/views.js';
 import { composeSlots, HOUSE_CREATIVE, sanitizeUrl } from './src/creatives.js';
 import { exploreRails } from './src/ranking.js';
 import {
-  ACTIONS as MOD_ACTIONS, ACTION_LABELS, PERSON_ACTIONS, behaviour, canWrite,
-  changesVisibility, decisionNote, isPublic, isPublicChannel, normaliseState,
-  personStateFor, stateFor, validateDecision,
+  ACTIONS as MOD_ACTIONS, ACTION_LABELS, ASSET_ACTIONS, ASSET_ACTION_TO_STATE,
+  ASSET_BEHAVIOUR, PERSON_ACTIONS, assetBehaviour, behaviour, canWrite,
+  changesVisibility, decisionNote, isAssetPublic, isPublic, isPublicChannel, normaliseAssetState,
+  normaliseState, personStateFor, stateFor, validateAssetDecision, validateDecision,
 } from './src/moderation.js';
+import {
+  COUNTRY_LIMITS, RULE_STATES, availabilityFor, blockSentence, blockStatus,
+  CREATOR_COUNTRY_STATES, countryFrom, isRefused, resolveCountry, restrictedSentence,
+  validateCountryDecision,
+} from './src/geo.js';
+import { COUNTRY_OPTIONS, countryIn, countryName, isCountryCode } from './src/countries.js';
 import {
   AUTO_HIDE_AFTER, orderQueue, reportVerdict, validateReport,
   hidingNotice, canAppeal, cleanStatement, APPEAL_LIMIT, reporterMessage,
@@ -394,7 +401,12 @@ APP.get('/legal/:slug', async (req, res, next) => {
 // ---------------------------------------------------------------------------
 APP.get('/', async (req, res, next) => {
   try {
-    const channels = await decorateChannels(await store.channels());
+    // A store withheld from the visitor's country is not advertised to it. The
+    // filter is the same one the storefront and Explore use, so a visitor cannot
+    // find a store on one page that answers 451 on another.
+    const channels = await storesVisibleTo(
+      await decorateChannels(await store.channels()), viewerCountry(req),
+    );
     const [assets, unlocks, views_] = await Promise.all([
       scalar(`select count(*)::int from assets`),
       scalar(`select count(*)::int from unlocks where revoked_at is null`),
@@ -427,6 +439,116 @@ async function exploreState(channels) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Country rules on the read path
+// ---------------------------------------------------------------------------
+// The country is read from the edge header, resolved against the asset's own
+// rule and the store's, and applied in four places: the storefront, the file
+// page, the unlock call and the bytes themselves. See src/geo.js for the model
+// and for why an unknown country means NO rule applies.
+
+/** The country this request came from, or null. */
+function viewerCountry(req) {
+  // `isProd` is a function, not a constant — the first version of this line
+  // passed `!isProd`, which is `false`, so the development override silently
+  // never armed and the whole feature could only be tested by forging a header.
+  return countryFrom(req, { dev: !isProd() });
+}
+
+/**
+ * Any response that depends on the viewer's country is uncacheable.
+ *
+ * `no-store` is the load-bearing header, not `Vary`: CDNs are documented to
+ * strip `Vary` values, and a cached 451 for India served to a visitor in Nepal
+ * is a bug that looks exactly like the platform being broken. `Vary` is sent
+ * anyway because it is the correct header wherever it is honoured.
+ */
+function countryDependent(res) {
+  res.set('Cache-Control', 'private, no-store');
+  res.set('Vary', 'CF-IPCountry');
+}
+
+/** The policy rule a decision cited, looked up in the list the page already has. */
+function ruleFor(rules, code) {
+  return code ? rules.find((r) => r.code === String(code)) ?? null : null;
+}
+
+/**
+ * One query per page: what each of these files says about this country.
+ *
+ * Deliberately not one query per card. The storefront is a grid, and the third
+ * query per file is how a front page becomes a hundred round trips.
+ */
+async function withCountry(assets, country) {
+  const rules = await store.countryRulesFor(assets.map((a) => a.id), country);
+  const byAsset = new Map(rules.map((r) => [r.asset_id, r]));
+  return assets.map((a) => {
+    const countryRule = byAsset.get(a.id) ?? null;
+    const resolved = resolveCountry({ assetRule: countryRule });
+    return {
+      ...a,
+      countryRule,
+      resolved,
+      availability: availabilityFor({ assetState: a.moderation_state, resolved }),
+    };
+  });
+}
+
+/**
+ * The country check, at the point the bytes leave.
+ *
+ * The page, the unlock call and the two file routes all consult this one
+ * function, because a rule enforced only where the button is drawn is not
+ * enforced at all: a player keeps its source URL, a download link is a
+ * credential, and a token minted in one country travels. The honest claim is the
+ * one this code can make — the check runs where the file is read, every time.
+ *
+ * @returns {Promise<null|{status: number, country: string|null, availability: object, sentence: object}>}
+ */
+async function countryRefusalFor(asset, country) {
+  const channelBlock = await store.channelCountryBlock(asset.channel_id, country);
+  const assetRule = country ? (await store.countryRulesFor([asset.id], country))[0] ?? null : null;
+  const resolved = resolveCountry({ assetRule, channelBlock });
+  const availability = availabilityFor({ assetState: asset.moderation_state, resolved });
+  if (availability.visible && availability.unlockable) return null;
+
+  if (availability.reason === 'file') {
+    return {
+      status: 403,
+      country,
+      availability,
+      sentence: {
+        headline: 'Listed, but not unlockable',
+        why: assetBehaviour(asset.moderation_state).visitorNote
+          || 'This file cannot be unlocked.',
+      },
+    };
+  }
+  const rules = await store.policyRules();
+  return {
+    status: blockStatus(resolved) ?? 451,
+    country,
+    availability,
+    sentence: blockSentence({
+      resolved, rule: ruleFor(rules, resolved.ruleCode), store: 'This store', country,
+    }),
+  };
+}
+
+/**
+ * Stores this visitor may be shown, with any store-wide country block applied.
+ *
+ * A store blocked for one country is not in Explore for that country and nowhere
+ * else: the decision is about the visitor's country, not about the store.
+ */
+async function storesVisibleTo(channels, country) {
+  if (!country || !channels.length) return channels;
+  const blocked = new Set(
+    (await store.channelCountryBlocks(channels.map((c) => c.id), country)).map((b) => b.subject_id),
+  );
+  return channels.filter((c) => !blocked.has(c.id));
+}
+
 APP.get('/marketplace', async (req, res, next) => {
   try {
     const q = String(req.query.q || '').slice(0, 80);
@@ -434,7 +556,9 @@ APP.get('/marketplace', async (req, res, next) => {
     // stays the default answer, because a search box that starts empty and
     // returns nothing looks broken.
     const results = q.trim().length >= 2 ? await store.search(q) : null;
-    const channels = await decorateChannels(await store.channels({ listedOnly: true }));
+    const channels = await storesVisibleTo(
+      await decorateChannels(await store.channels({ listedOnly: true })), viewerCountry(req),
+    );
     const explore = results ? null : await exploreState(channels);
     res.send(views.marketplace({
       channels, user: req.user, consent: req.consent, q, results, explore,
@@ -786,6 +910,26 @@ APP.get('/s/:slug', async (req, res, next) => {
       // Byte for byte the same answer a store that never existed gets.
       return notFoundPage(req, res, 'store');
     }
+    // A store can be withheld from one country, and then the shop window is the
+    // wrong door for that visitor: they get the decision, the rule behind it and
+    // a way to ask, instead of a storefront they cannot use. The owner and an
+    // operator still see the store — every page of it — with the block stated.
+    const country = viewerCountry(req);
+    const seesEverything = Boolean(req.user)
+      && (req.user.id === channel.owner_id || req.user.role === 'admin');
+    const channelBlock = await store.channelCountryBlock(channel.id, country);
+    if (channelBlock && !seesEverything) {
+      const rules = await store.policyRules();
+      const resolved = resolveCountry({ channelBlock });
+      countryDependent(res);
+      return res.status(blockStatus(resolved)).send(views.countryBlocked({
+        user: req.user, consent: null, country, store: channel,
+        sentence: blockSentence({
+          resolved, rule: ruleFor(rules, channelBlock.rule_code), store: channel.name, country,
+        }),
+      }));
+    }
+
     // A page view by the owner while the store is hidden is not a view by the
     // public, and counting it would flatter the rent estimate with the owner's
     // own refreshes.
@@ -797,11 +941,18 @@ APP.get('/s/:slug', async (req, res, next) => {
     const allSlots = await slotsFor(channel, { viewer: req.user, surface: 'storefront' });
     const slots = allSlots.filter((s) => s.creative);
     const rawAssets = await store.assetsOf(channel.id);
-    const assets = await Promise.all(rawAssets.map(async (a) => ({
-      ...a,
-      files: await store.filesOf(a.id),
-      ads_required: (await store.unlockPolicy(a.id))?.ads_required ?? 1,
-    })));
+    // Two decisions are applied here and not in the view: the file's own state
+    // (a removed file is not on the public web) and the country rule that
+    // applies where this visitor is standing.
+    const listed = await withCountry(rawAssets, country);
+    const assets = await Promise.all(
+      listed.filter((a) => seesEverything || a.availability.visible).map(async (a) => ({
+        ...a,
+        files: await store.filesOf(a.id),
+        ads_required: (await store.unlockPolicy(a.id))?.ads_required ?? 1,
+      })),
+    );
+    if (country) countryDependent(res);
     const pageviews = await store.pageviews30d(channel.id);
     // The rent estimate is what the CREATOR pays for traffic — billing detail.
     // It feeds the dashboard, not the shop window, so it is not passed here.
@@ -827,6 +978,20 @@ APP.get('/s/:slug', async (req, res, next) => {
       moderation: owner && !isPublicChannel(channel)
         ? await moderationBrief(channel)
         : null,
+      // The owner (or an operator) is the only person who reaches this page at
+      // all while the store is withheld from their country, and they are told
+      // exactly what a visitor would have been told.
+      countryBlocked: channelBlock && seesEverything
+        ? {
+          country: countryIn(country),
+          why: blockSentence({
+            resolved: resolveCountry({ channelBlock }),
+            rule: ruleFor(await store.policyRules(), channelBlock.rule_code),
+            store: channel.name,
+            country,
+          }).why,
+        }
+        : null,
     }));
   } catch (err) { next(err); }
 });
@@ -844,7 +1009,26 @@ APP.get('/api/stores/:slug', async (req, res, next) => {
     const channel = await store.channelBySlug(req.params.slug);
     if (!channel) return res.status(404).json({ ok: false, error: 'store not found' });
 
-    const assets = await store.assetsOf(channel.id);
+    // The app is a client of the same decisions, not a way around them: a store
+    // or a file withheld for the viewer's country is withheld here too, with the
+    // sentence the app can show.
+    const country = viewerCountry(req);
+    const channelBlock = await store.channelCountryBlock(channel.id, country);
+    if (channelBlock) {
+      const rules = await store.policyRules();
+      const resolved = resolveCountry({ channelBlock });
+      countryDependent(res);
+      const sentence = blockSentence({
+        resolved, rule: ruleFor(rules, channelBlock.rule_code), store: channel.name, country,
+      });
+      return res.status(blockStatus(resolved) ?? 451).json({
+        ok: false, error: 'country', country, ...sentence,
+      });
+    }
+
+    const listed = await withCountry(await store.assetsOf(channel.id), country);
+    const assets = listed.filter((a) => a.availability.visible);
+    if (country) countryDependent(res);
     const unlockedIds = req.user
       ? new Set((await many(
           `select asset_id from unlocks
@@ -872,6 +1056,10 @@ APP.get('/api/stores/:slug', async (req, res, next) => {
           coverUrl: a.cover_url, unlockMode: a.unlock_mode,
           fileCount: files.length,
           kind: kinds.find((k) => k === 'video' || k === 'audio') || kinds[0] || 'file',
+          // `unlockable` is what the app must check before offering the ad flow;
+          // `unlocked` is what the account already holds. A client that tried to
+          // unlock a refused file would be refused one call later anyway.
+          unlockable: a.availability.unlockable,
           unlocked: a.unlock_mode === 'open' || unlockedIds.has(a.id),
           adsRequired: (await store.unlockPolicy(a.id))?.ads_required ?? 1,
         };
@@ -912,9 +1100,75 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
       // and for a report about illegal content that is already too much said.
       return notFoundPage(req, res, 'file');
     }
+
+    // `status` was half of the visibility rule; the operator's own decision about
+    // the FILE is the other half. A file removed from the store was still served
+    // at this URL for as long as its `status` stayed live, which is the same bug
+    // the report-hiding path had, one column over.
+    const maySeeEverything = Boolean(req.user)
+      && (req.user.id === channel.owner_id || req.user.role === 'admin');
+    if (!isAssetPublic(asset.moderation_state) && !maySeeEverything && !holdsUnlock) {
+      return notFoundPage(req, res, 'file');
+    }
+
+    // The country decision, resolved the same way the storefront resolves it:
+    // the file's own rule wins, the store's block applies where there is none.
+    const country = viewerCountry(req);
+    const countryRule = country ? (await store.countryRulesFor([asset.id], country))[0] ?? null : null;
+    const channelBlock = await store.channelCountryBlock(channel.id, country);
+    const resolved = resolveCountry({ assetRule: countryRule, channelBlock });
+    const availability = availabilityFor({ assetState: asset.moderation_state, resolved });
+
+    if (!availability.visible && !maySeeEverything) {
+      const rules = await store.policyRules();
+      countryDependent(res);
+      return res.status(blockStatus(resolved) ?? 451).send(views.countryBlocked({
+        user: req.user, consent: null, country, store: channel, asset,
+        sentence: blockSentence({
+          resolved, rule: ruleFor(rules, resolved.ruleCode), store: channel.name, country,
+        }),
+      }));
+    }
+
+    // What the OWNER is told, in the same pass: they always see the page, and the
+    // sentence is the difference between a decision and a mystery. An operator
+    // gets the same line, because they are the one who can undo it.
+    // The newest decision about the file, so the sentence the owner reads on
+    // their own public page is the same record the console shows.
+    const fileDecision = asset.moderation_state === 'approved'
+      ? null
+      : (await store.fileDecisionHistory(asset.id))[0] ?? null;
+    const ownerNotice = !availability.unlockable
+      ? availability.reason === 'file'
+        ? `${assetBehaviour(asset.moderation_state).ownerNote}${fileDecision
+          ? ` An operator decided this${fileDecision.rule_title ? ` under “${fileDecision.rule_title}”` : ''}${fileDecision.reason ? `: ${fileDecision.reason}` : '.'}`
+          : ''}`
+        : `${restrictedSentence({
+          resolved,
+          rule: ruleFor(await store.policyRules(), resolved.ruleCode),
+          store: channel.name,
+          country,
+        }).why} Visitors from there get a ${blockStatus(resolved) ?? 451} on this page.`
+      : null;
+
+    const refusal = availability.unlockable
+      ? null
+      : availability.reason === 'file'
+        ? {
+          headline: 'Listed, but not unlockable',
+          why: assetBehaviour(asset.moderation_state).visitorNote || 'This file cannot be unlocked.',
+          appeal: 'The store has been told, and can appeal.',
+        }
+        : restrictedSentence({
+          resolved,
+          rule: ruleFor(await store.policyRules(), resolved.ruleCode),
+          store: channel.name,
+          country,
+        });
+
     await store.bumpPageView(channel.id);
 
-    const unlocked = asset.unlock_mode === 'open' || holdsUnlock;
+    const unlocked = (asset.unlock_mode === 'open' || holdsUnlock) && availability.unlockable;
 
     // Content URLs are minted per request, per user, and expire. They are only
     // produced when an unlock actually exists — never baked into the HTML.
@@ -988,6 +1242,7 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
       myReview,
       reviewError: REVIEW_ERRORS[String(req.query.error)] || null,
       policy: await store.unlockPolicy(asset.id),
+      refusal, ownerNotice,
       // On a file page the whole point of the space is to pay for the unlock, so
       // the platform slot is always here — the creator's own message appears
       // only if they wrote one.
@@ -1345,6 +1600,10 @@ APP.post('/api/unlock/start', limitUnlock, async (req, res, next) => {
     res.json(await startUnlock({
       assetId: req.body?.assetId, userId: user.id, providerId: req.body?.providerId,
       personalised: req.consent?.ads === true,
+      // The unlock is refused here as well as at the bytes: an ad that will never
+      // be honoured is worse than no ad, and this is the only path that can start
+      // one.
+      country: viewerCountry(req),
     }));
   } catch (err) { next(err); }
 });
@@ -1603,6 +1862,22 @@ async function resolveContentRequest(req, res, { event }) {
   const file = await store.fileById(f);
   if (!file) { res.status(404).json({ ok: false, error: 'file not found' }); return null; }
 
+  // The check that matters most: a token proves an unlock, and an unlock in one
+  // country does not carry into a country the file is withheld from.
+  const channel = await store.channelById(asset.channel_id);
+  const privileged = channel?.owner_id === u || req.user.role === 'admin';
+  const refusal = privileged ? null : await countryRefusalFor(asset, viewerCountry(req));
+  if (refusal) {
+    await store.audit('content.denied', {
+      reason: refusal.availability.reason === 'file' ? 'file not unlockable' : 'country rule',
+      assetId: a, fileId: f, userId: u, country: refusal.country,
+    }, { actorId: u, subjectType: 'asset', subjectId: a });
+    res.status(refusal.status).json({
+      ok: false, error: refusal.sentence.headline, why: refusal.sentence.why, country: refusal.country,
+    });
+    return null;
+  }
+
   await store.audit(event, { assetId: a, fileId: f, userId: u },
     { actorId: u, subjectType: 'asset', subjectId: a });
   return { asset, file, userId: u };
@@ -1665,6 +1940,22 @@ APP.get('/api/content/:assetId', async (req, res, next) => {
     // A draft is not public. The owner may look at their own; nobody else can.
     if (asset.status !== 'live' && channel?.owner_id !== req.user.id) {
       return res.status(404).json({ ok: false, error: 'asset not found' });
+    }
+
+    // The owner and an operator are never refused: they are the two people who
+    // can do something about it, and a rule that hides its own reason from them
+    // is a rule nobody can appeal.
+    const privileged = channel?.owner_id === req.user.id || req.user.role === 'admin';
+    const country = viewerCountry(req);
+    const refusal = privileged ? null : await countryRefusalFor(asset, country);
+    if (refusal) {
+      await store.audit('content.denied', {
+        reason: refusal.availability.reason === 'file' ? 'file not unlockable' : 'country rule',
+        assetId: asset.id, country: refusal.country,
+      }, { actorId: req.user.id, subjectType: 'asset', subjectId: asset.id });
+      return res.status(refusal.status).json({
+        ok: false, error: refusal.sentence.headline, why: refusal.sentence.why, country: refusal.country,
+      });
     }
 
     const unlocked = asset.unlock_mode === 'open' || await store.isUnlocked(asset.id, req.user.id);
@@ -1897,6 +2188,9 @@ const SUCCESS_FLASH = {
   // still an answer: it names what is already in flight rather than doing nothing.
   verify_sent: (v) => `Confirmation link sent to ${String(v || 'that address').slice(0, 120)}. It works once and lasts 48 hours.`,
   verify_wait: (v) => `A link went out ${String(v || 'a few minutes')} ago and is still the newest one. Sending another would cancel it — ask them to check spam before you send again.`,
+  // Files, and the countries they are for.
+  saved_file: () => 'Decision recorded. The file moved, and the owner sees the rule and your note on their own page for it.',
+  saved_country: () => 'Country rule saved. Visitors in that country are answered by it from their next request.',
 };
 
 const ERROR_FLASH = {
@@ -1907,6 +2201,18 @@ const ERROR_FLASH = {
   banner: 'The banner must be an image under 5 MB.',
   reference: 'Enter the transaction reference from your transfer — at least four characters.',
   verify: 'Confirm the email address on this account first — an operator matches transfers by hand, and the receipt has to reach you. The button is on the verify page.',
+  // Country rules. Each refusal names the field, because a form that answers
+  // "something went wrong" makes an operator reload and guess.
+  // Says the same thing to a form that submitted nothing and to one that
+  // submitted nonsense, because both odds are the same operator at the same
+  // picker — and the first one is what a blank first option now produces.
+  country: 'Pick a country — two letters, ISO-3166: NP, IN, US.',
+  state: 'That is not a state a country rule can be in. Allowed, restricted or blocked.',
+  reason: 'A country rule that withholds something has to cite a rule. Allowing a country cites nothing.',
+  rule: 'That is not a rule this platform has. Pick one from the list.',
+  file: 'That file does not exist.',
+  store: 'That store does not exist.',
+  nope: 'That rule is not yours to clear. An operator set it — the appeal on this page is how to disagree.',
   nothing: 'There is nothing waiting to be paid right now.',
   empty: 'A slot message needs a headline.',
   slot: 'That is not a position on your pages.',
@@ -2651,6 +2957,9 @@ APP.get('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
     if (!channel) return undefined;
     const asset = await store.assetById(req.params.assetId);
     if (!asset || asset.channel_id !== channel.id) return res.status(404).send('Not found');
+    // The two lists on the availability panel, split by who decided: a creator
+    // can clear their own rule and cannot clear the platform's.
+    const allCountryRules = await store.assetCountryRules(asset.id);
     res.send(views.assetManage({
       channel, asset, user: req.user, consent: req.consent, flash: flashFor(req.query),
       files: await store.filesOf(asset.id),
@@ -2659,6 +2968,14 @@ APP.get('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
       unlocks: (await store.unlocksOfChannel(channel.id)).filter((u) => u.asset_id === asset.id).length,
       caseFile: await store.fileCase(asset.id),
       appeals: await store.appealsOfChannel(channel.id).then((all) => all.filter((a) => a.asset_id === asset.id)),
+      // Only when something was actually decided, so an ordinary page view costs
+      // no query — and the seller sees the same record the console does, which is
+      // the only version of "you were told" that is worth anything.
+      decision: asset.moderation_state === 'approved'
+        ? null
+        : (await store.fileDecisionHistory(asset.id))[0] ?? null,
+      countryRules: allCountryRules.filter((r) => r.source === 'creator'),
+      platformRules: allCountryRules.filter((r) => r.source !== 'creator'),
     }));
   } catch (err) { return next(err); }
 });
@@ -2799,11 +3116,12 @@ APP.post('/s/:slug/a/:assetSlug/report', limitReport, async (req, res, next) => 
  * the single most common way an admin console loses an operator's trust.
  */
 async function consoleCounts() {
-  const [payments, invoices, reports, moderation, banned, unmatched, connections] = await Promise.all([
+  const [payments, invoices, reports, moderation, files, banned, unmatched, connections] = await Promise.all([
     store.unmatchedPayments(),
     store.openRentInvoices(),
     store.reportCounts(),
     store.channelsNeedingModeration(),
+    store.filesNeedingModeration(),
     store.bannedUsers(),
     store.planPayments(),
     store.connectionHealth({ limit: 500 }),
@@ -2821,6 +3139,17 @@ async function consoleCounts() {
     reports: reports.open,
     reportedFiles: reports.files,
     moderation: moderation.length,
+    // Files, counted separately from stores on purpose: a country rule can put a
+    // file in this queue while its store is perfectly public, and one number for
+    // both would hide exactly the case the queue was built for.
+    //
+    // 'removed' is taken back out. It is not waiting on anybody: the decision is
+    // made, the file is down, and the next step is an appeal the owner has to
+    // start. Leaving it in keeps this number permanently above zero, and a queue
+    // that never reaches zero is a queue people stop reading — which costs us the
+    // one time it matters.
+    files: files.filter((f) => f.moderation_state !== 'removed').length,
+    filesRemoved: files.filter((f) => f.moderation_state === 'removed').length,
     banned: banned.length,
     silentConnections,
     unmatched: Array.isArray(unmatched) ? unmatched.length : 0,
@@ -2842,7 +3171,12 @@ async function withBadges(user) {
     adminBadges: {
       payments: c.payments + c.invoices,
       reports: c.reports,
-      moderation: c.moderation,
+      // A tab badge is a promise about the page it points at, so it counts what
+      // that page is holding: stores that are not public, and files that are not
+      // the default. The two are counted separately on the console — a file can be
+      // waiting while its store is perfectly public — and summed here, where there
+      // is only room for one number.
+      moderation: c.moderation + c.files,
       banned: c.banned,
     },
   };
@@ -2903,6 +3237,7 @@ APP.get('/admin', async (req, res, next) => {
         { title: 'Transfers to match', count: counts.payments + counts.invoices, note: 'A person matches each one against the statement by hand.', href: '/admin/payments' },
         { title: 'Files reported', count: counts.reports, note: `${AUTO_HIDE_AFTER} distinct reporters hide a file automatically. Below that, it waits.`, href: '/admin/reports' },
         { title: 'Stores needing a decision', count: counts.moderation, note: 'Restricted, suspended or removed.', href: '/admin/moderation' },
+        { title: 'Files needing a decision', count: counts.files, note: `Pending, restricted, or withheld from a country. A file can be in here while its store is public.${counts.filesRemoved ? ` ${counts.filesRemoved} removed file${counts.filesRemoved === 1 ? ' is' : 's are'} not counted — nothing is waiting on us there, the owner has to appeal.` : ''}`, href: '/admin/moderation' },
         { title: 'Suspended accounts', count: counts.banned, note: 'Signed out everywhere, stores hidden, nothing deleted.', href: '/admin/users' },
         {
           title: 'Rates to correct',
@@ -3120,6 +3455,66 @@ APP.get('/admin/reports', async (req, res, next) => {
  * three-report threshold, and the threshold exists because a single report is a
  * competitor weapon. What the seller gets is a person reading their words.
  */
+/**
+ * A creator withholds their own file from a country.
+ *
+ * Deliberately a small surface. They can say `blocked` or `restricted`, they can
+ * clear a rule they set, and they cannot say `allowed` — that is the word an
+ * operator uses to carve a file out of a store-wide decision, and a creator who
+ * could say it could override the platform's own rule. They also cannot clear an
+ * operator's rule: the disagreement is what the appeal above this panel is for.
+ */
+APP.post('/dashboard/:slug/assets/:assetId/country', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    if (refuseWrite(req, res, channel)) return undefined;
+    const back = `/dashboard/${channel.slug}/assets/${encodeURIComponent(req.params.assetId)}`;
+    const asset = await store.assetById(req.params.assetId);
+    if (!asset || asset.channel_id !== channel.id) return res.status(404).send('Not found');
+    if (!isCountryCode(req.body?.countryCode)) return res.redirect(`${back}?error=country`);
+
+    if (req.body?.clear === '1') {
+      // Their own rule only. `clearAssetCountryRule` would happily delete an
+      // operator's row, so the check is here, where the operator's identity is
+      // known, and not left to a form that only renders one button.
+      const existing = (await store.assetCountryRules(asset.id))
+        .find((r) => r.country_code === String(req.body.countryCode).toUpperCase());
+      if (!existing || existing.source !== 'creator') return res.redirect(`${back}?error=nope`);
+      await store.clearAssetCountryRule({
+        assetId: asset.id, countryCode: existing.country_code, actorId: req.user.id,
+      });
+      await store.audit('moderation.asset_country_cleared', {
+        assetId: asset.id, countryCode: existing.country_code, by: 'creator', actorId: req.user.id,
+      });
+      return res.redirect(`${back}?saved_country=1`);
+    }
+
+    // `states` and `requireRule` are what make this the creator's call and not an
+    // operator's: no `allowed`, and no rule to cite.
+    const decision = validateCountryDecision({
+      state: req.body?.state, ruleCode: null, note: req.body?.note || '',
+      states: CREATOR_COUNTRY_STATES, requireRule: false,
+    });
+    if (!decision.ok) return res.redirect(`${back}?error=${decision.error}`);
+
+    await store.setAssetCountryRule({
+      assetId: asset.id,
+      countryCode: req.body.countryCode,
+      state: decision.state,
+      ruleCode: null,
+      note: decision.note,
+      source: 'creator',
+      actorId: req.user.id,
+    });
+    await store.audit('moderation.asset_country', {
+      assetId: asset.id, countryCode: String(req.body.countryCode).toUpperCase(),
+      state: decision.state, by: 'creator', actorId: req.user.id,
+    });
+    return res.redirect(`${back}?saved_country=1`);
+  } catch (err) { return next(err); }
+});
+
 APP.post('/dashboard/:slug/assets/:assetId/appeal', async (req, res, next) => {
   const back = `/dashboard/${encodeURIComponent(req.params.slug)}/assets/${encodeURIComponent(req.params.assetId)}`;
   try {
@@ -3279,15 +3674,224 @@ APP.get('/admin/audit', async (req, res, next) => {
 APP.get('/admin/moderation', async (req, res, next) => {
   try {
     if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    const [rules, rows, files, countries, storeBlocks, channels] = await Promise.all([
+      store.policyRules(),
+      store.channelsNeedingModeration(),
+      store.filesNeedingModeration(),
+      store.countrySummary(),
+      store.storeCountryBlocks(),
+      store.channels(),
+    ]);
     res.send(views.adminModeration({
       user: req.user, consent: req.consent,
-      rules: await store.policyRules(),
-      rows: await store.channelsNeedingModeration(),
+      rules, rows, files, countries, storeBlocks, channels,
       actions: MOD_ACTIONS,
       labels: ACTION_LABELS,
+      limits: COUNTRY_LIMITS,
       flash: flashFor(req.query),
     }));
   } catch (err) { next(err); }
+});
+
+/**
+ * Withhold a store from one country.
+ *
+ * Registered BEFORE `/admin/moderation/:slug` on purpose: Express matches in
+ * order, so a literal path declared after the parameterised one is a route that
+ * never runs — and the failure looks like a form that does nothing.
+ */
+APP.post('/admin/moderation/blocks', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    const channel = await store.channelBySlug(String(req.body?.slug || ''));
+    if (!channel) return res.redirect('/admin/moderation?error=store');
+    if (!isCountryCode(req.body?.countryCode)) return res.redirect('/admin/moderation?error=country');
+
+    const rules = await store.policyRules();
+    const decision = validateCountryDecision({
+      state: 'blocked', ruleCode: req.body?.ruleCode, note: req.body?.remedy || '',
+    });
+    if (!decision.ok) return res.redirect('/admin/moderation?error=reason');
+    if (decision.ruleCode && !rules.some((r) => r.code === decision.ruleCode)) {
+      return res.redirect('/admin/moderation?error=rule');
+    }
+
+    await store.setChannelCountryBlock({
+      channelId: channel.id,
+      countryCode: req.body.countryCode,
+      ruleCode: decision.ruleCode,
+      remedy: decision.note,
+      actorId: req.user.id,
+    });
+    await store.audit('moderation.channel_country', {
+      channelId: channel.id, countryCode: String(req.body.countryCode).toUpperCase(),
+      ruleCode: decision.ruleCode, actorId: req.user.id,
+    });
+    return res.redirect('/admin/moderation?saved_country=1');
+  } catch (err) { return next(err); }
+});
+
+/** One file: its state, its countries, and every decision made about it. */
+APP.get('/admin/moderation/files/:assetId', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    if (!isUuid(req.params.assetId)) return res.status(404).send('Not found');
+    const asset = await store.fileModerationDetail(req.params.assetId);
+    if (!asset) return res.status(404).send('File not found');
+
+    res.send(views.adminModerationFile({
+      user: req.user, consent: req.consent,
+      asset,
+      channel: { id: asset.channel_id, slug: asset.channel_slug, name: asset.channel_name },
+      rules: await store.policyRules(),
+      countryRules: await store.assetCountryRules(asset.id),
+      history: await store.fileDecisionHistory(asset.id),
+      actions: ASSET_ACTIONS,
+      labels: ACTION_LABELS,
+      limits: COUNTRY_LIMITS,
+      flash: flashFor(req.query),
+    }));
+  } catch (err) { next(err); }
+});
+
+/** Decide a file's own state. */
+APP.post('/admin/moderation/files/:assetId', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    const back = `/admin/moderation/files/${encodeURIComponent(req.params.assetId)}`;
+    if (!isUuid(req.params.assetId)) return res.redirect('/admin/moderation');
+    const asset = await store.fileModerationDetail(req.params.assetId);
+    if (!asset) return res.redirect('/admin/moderation?error=file');
+
+    const ruleCodes = new Set((await store.policyRules()).map((r) => r.code));
+    const decision = validateAssetDecision({
+      action: req.body?.action,
+      ruleCode: req.body?.ruleCode || null,
+      remedy: req.body?.remedy || '',
+    });
+    // `suspend` lands here: a file has no suspended state, and mapping it to
+    // something the CHECK constraint accepts would hide a file everywhere while
+    // the operator believed they had kept it listed.
+    if (!decision.ok) return res.redirect(`${back}?error=${decision.error}`);
+    if (decision.ruleCode && !ruleCodes.has(decision.ruleCode)) {
+      return res.redirect(`${back}?error=rule`);
+    }
+
+    await store.setAssetModeration({
+      assetId: asset.id,
+      action: decision.action,
+      state: decision.state,
+      ruleCode: decision.ruleCode,
+      remedy: decision.remedy,
+      actorId: req.user.id,
+    });
+    await store.audit('moderation.asset', {
+      assetId: asset.id, channelId: asset.channel_id, action: decision.action,
+      state: decision.state, ruleCode: decision.ruleCode, actorId: req.user.id,
+    });
+    return res.redirect(`${back}?saved_file=1`);
+  } catch (err) { return next(err); }
+});
+
+/** Set, clear, or push a country rule down to a whole store. */
+APP.post('/admin/moderation/files/:assetId/country', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    const back = `/admin/moderation/files/${encodeURIComponent(req.params.assetId)}`;
+    if (!isUuid(req.params.assetId)) return res.redirect('/admin/moderation');
+    const asset = await store.fileModerationDetail(req.params.assetId);
+    if (!asset) return res.redirect('/admin/moderation?error=file');
+    if (!isCountryCode(req.body?.countryCode)) return res.redirect(`${back}?error=country`);
+
+    if (req.body?.clear === '1') {
+      await store.clearAssetCountryRule({
+        assetId: asset.id, countryCode: req.body.countryCode, actorId: req.user.id,
+      });
+      await store.audit('moderation.asset_country_cleared', {
+        assetId: asset.id, countryCode: String(req.body.countryCode).toUpperCase(), actorId: req.user.id,
+      });
+      return res.redirect(`${back}?saved_country=1`);
+    }
+
+    const decision = validateCountryDecision({
+      state: req.body?.state, ruleCode: req.body?.ruleCode, note: req.body?.note || '',
+    });
+    if (!decision.ok) return res.redirect(`${back}?error=${decision.error}`);
+    const rules = await store.policyRules();
+    if (decision.ruleCode && !rules.some((r) => r.code === decision.ruleCode)) {
+      return res.redirect(`${back}?error=rule`);
+    }
+
+    // "Apply to the whole store" is a different row in a different table, and it
+    // is deliberately the same form: the operator has already decided WHAT and
+    // WHERE, and the only remaining question is how far it reaches.
+    if (req.body?.wholeStore === '1') {
+      if (decision.state !== 'blocked') return res.redirect(`${back}?error=state`);
+      await store.setChannelCountryBlock({
+        channelId: asset.channel_id,
+        countryCode: req.body.countryCode,
+        ruleCode: decision.ruleCode,
+        remedy: decision.note,
+        actorId: req.user.id,
+      });
+      await store.audit('moderation.channel_country', {
+        channelId: asset.channel_id, countryCode: String(req.body.countryCode).toUpperCase(),
+        ruleCode: decision.ruleCode, actorId: req.user.id,
+      });
+      return res.redirect(`${back}?saved_country=1`);
+    }
+
+    await store.setAssetCountryRule({
+      assetId: asset.id,
+      countryCode: req.body.countryCode,
+      state: decision.state,
+      ruleCode: decision.ruleCode,
+      note: decision.note,
+      source: 'operator',
+      actorId: req.user.id,
+    });
+    await store.audit('moderation.asset_country', {
+      assetId: asset.id, countryCode: String(req.body.countryCode).toUpperCase(),
+      state: decision.state, ruleCode: decision.ruleCode, actorId: req.user.id,
+    });
+    return res.redirect(`${back}?saved_country=1`);
+  } catch (err) { return next(err); }
+});
+
+/** Clear or set a store-wide country block from the console list. */
+APP.post('/admin/moderation/:slug/country', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    const channel = await store.channelBySlug(req.params.slug);
+    if (!channel) return res.redirect('/admin/moderation?error=store');
+    if (!isCountryCode(req.body?.countryCode)) return res.redirect('/admin/moderation?error=country');
+
+    if (req.body?.clear === '1') {
+      await store.clearChannelCountryBlock({
+        channelId: channel.id, countryCode: req.body.countryCode, actorId: req.user.id,
+      });
+      await store.audit('moderation.channel_country_cleared', {
+        channelId: channel.id, countryCode: String(req.body.countryCode).toUpperCase(), actorId: req.user.id,
+      });
+    } else {
+      const decision = validateCountryDecision({
+        state: 'blocked', ruleCode: req.body?.ruleCode, note: req.body?.remedy || '',
+      });
+      if (!decision.ok) return res.redirect('/admin/moderation?error=reason');
+      const rules = await store.policyRules();
+      if (decision.ruleCode && !rules.some((r) => r.code === decision.ruleCode)) {
+        return res.redirect('/admin/moderation?error=rule');
+      }
+      await store.setChannelCountryBlock({
+        channelId: channel.id,
+        countryCode: req.body.countryCode,
+        ruleCode: decision.ruleCode,
+        remedy: decision.note,
+        actorId: req.user.id,
+      });
+    }
+    return res.redirect('/admin/moderation?saved_country=1');
+  } catch (err) { return next(err); }
 });
 
 APP.post('/admin/moderation/:slug', async (req, res, next) => {

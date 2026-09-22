@@ -385,9 +385,26 @@ test('the asset page is one form, so one save cannot undo another', () => {
     policy: { ads_required: 1, ad_min_seconds: 15, unlock_hours: 24 },
     stats: { count: 0, average: 0 }, unlocks: 0,
   });
-  assert.equal((html.match(/<form/g) || []).length, 1, 'one form on the page, one save');
-  assert.ok(/name="title"/.test(html) && /name="adsRequired"/.test(html));
-  assert.ok(!/type="hidden"/.test(html), 'nothing is mirrored into a hidden field to go stale');
+  /**
+   * The property is not "one form on the page" — it is "the file's own fields
+   * live in exactly one form, and no other form carries a copy of them".
+   *
+   * The count was the original way of saying this, and it stopped being true the
+   * day the page gained a second, unrelated form (withholding the file from a
+   * country). Sharpening it keeps the guarantee and stops the test failing for
+   * the wrong reason: what must never come back is a second form mirroring the
+   * title into a hidden input, because pressing it posts the stale value back and
+   * the edit silently disappears.
+   */
+  const forms = html.match(/<form[\s\S]*?<\/form>/g) || [];
+  const edits = forms.filter((f) => /name="title"/.test(f));
+  assert.equal(edits.length, 1, 'the file’s own fields are in exactly one form');
+  assert.ok(/name="adsRequired"/.test(edits[0]), 'and that form carries the unlock terms too');
+  assert.ok(!/type="hidden"/.test(edits[0]), 'nothing is mirrored into a hidden field to go stale');
+  const other = forms.filter((f) => f !== edits[0]);
+  assert.ok(other.length, 'the country form is on the page');
+  assert.ok(other.every((f) => !/name="title"|name="description"|name="adsRequired"/.test(f)),
+    'no other form carries a copy of the edit fields, so none of them can save a stale one');
   assert.ok(/cannot be swapped for another one here/.test(html),
     'the page refuses a silent file swap, and says why');
 });
