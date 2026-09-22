@@ -1738,12 +1738,26 @@ export function adminModeration({
     <span class="fine">${esc(relTime(f.decided_at || f.created_at))}</span>
   </a>`;
 
+  /**
+   * "1 file blocked" without saying who blocked it reads as a platform rule in
+   * force, and half of these are a creator's own choice — the half nobody has to
+   * answer for. The breakdown appears only when both exist, because on an
+   * ordinary day there is nothing to break down.
+   */
+  const count = (n, noun) => (n ? `${n} ${noun}${n === 1 ? '' : 's'}` : '—');
+  const split = (byOperator, byCreator, noun) => {
+    if (!byOperator && !byCreator) return '—';
+    if (!byCreator) return count(byOperator, noun);
+    if (!byOperator) return `${count(byCreator, noun)} <span class="fine">by the creator</span>`;
+    return `${byOperator + byCreator} ${noun}s <span class="fine">${byOperator} platform · ${byCreator} creator</span>`;
+  };
+
   const countryRow = (c) => `
   <tr>
     <td><strong>${esc(countryName(c.country_code))}</strong> <span class="fine mono">${esc(c.country_code)}</span></td>
-    <td>${c.blocked_files ? `${c.blocked_files} file${c.blocked_files === 1 ? '' : 's'}` : '—'}</td>
-    <td>${c.restricted_files ? `${c.restricted_files} file${c.restricted_files === 1 ? '' : 's'}` : '—'}</td>
-    <td>${c.blocked_stores ? `${c.blocked_stores} store${c.blocked_stores === 1 ? '' : 's'}` : '—'}</td>
+    <td>${split(c.blocked_files_operator, c.blocked_files_creator, 'file')}</td>
+    <td>${split(c.restricted_files_operator, c.restricted_files_creator, 'file')}</td>
+    <td>${count(c.blocked_stores, 'store')}</td>
   </tr>`;
 
   return layout({
@@ -1810,7 +1824,8 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
 <section class="section">
   <div class="section-head">
     <h2>Where content is blocked</h2>
-    <p>Every country with a rule in force, counted from the enforcement index.</p>
+    <p>Every country with a rule in force. A file of a creator's own making is marked, because that
+    half is theirs to answer for and not ours.</p>
   </div>
   ${countries.length ? `<div class="table-scroll"><table class="table">
     <thead><tr><th>Country</th><th>Files blocked</th><th>Files listed, not unlockable</th><th>Stores withheld</th></tr></thead>

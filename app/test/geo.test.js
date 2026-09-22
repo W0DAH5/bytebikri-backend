@@ -297,7 +297,10 @@ test('a country rule writes the decision, the index and the record together', as
   const { user, ch, asset } = await fixture();
   const before = await store.countryRulesFor([asset.id], 'IN');
   assert.deepEqual(before, [], 'a new file is available everywhere');
-  const beforeIn = (await store.countrySummary()).find((c) => c.country_code === 'IN')?.blocked_files ?? 0;
+  const beforeRow = (await store.countrySummary()).find((c) => c.country_code === 'IN') ?? {};
+  const beforeIn = beforeRow.blocked_files ?? 0;
+  const beforeOperator = beforeRow.blocked_files_operator ?? 0;
+  const beforeCreator = beforeRow.blocked_files_creator ?? 0;
   const beforeStores = (await store.countrySummary()).find((c) => c.country_code === 'IN')?.blocked_stores ?? 0;
 
   await store.setAssetCountryRule({
@@ -327,7 +330,12 @@ test('a country rule writes the decision, the index and the record together', as
   // Counted relatively: the test database is shared by every test in this file,
   // so an absolute number here would be an assertion about the order tests run in.
   const summary = (await store.countrySummary()).find((c) => c.country_code === 'IN');
+  // Relative counts, not absolute ones: every test in this file shares one
+  // database, so "1" is really "one more than before".
   assert.equal(summary.blocked_files, beforeIn + 1, 'this file is now counted in India');
+  assert.equal(summary.blocked_files_operator, beforeOperator + 1,
+    'and counted as ours, because an operator decided it');
+  assert.equal(summary.blocked_files_creator, beforeCreator, 'the creator’s column did not move');
   assert.equal(summary.blocked_stores, beforeStores, 'and no store was withheld');
 });
 
@@ -407,7 +415,12 @@ test('a store-wide block is one row and it counts once, not once per file', asyn
 
   const blocks = await store.channelCountryBlocks([ch.id], 'NP');
   assert.equal(blocks.length, 1, 'a rule about a shop is one row, not one per file');
-  const summary = (await store.countrySummary()).find((c) => c.country_code === 'NP');
+  const summary = (await store.countrySummary()).find((c) => c.country_code === 'NP') ?? {};
+  // A creator's own withholding must not arrive at the operator's country table
+  // wearing the platform's colours: it lands in the creator column, and the
+  // operator column does not move.
+  assert.equal(summary.restricted_files_creator >= 1, true, 'the creator’s restriction is counted');
+  assert.equal(summary.restricted_files_operator, 0, 'and not as a platform rule');
   assert.equal(summary.blocked_stores, beforeStores + 1);
   assert.equal(summary.blocked_files, beforeFiles,
     'nothing was written per file, so nothing is counted per file');

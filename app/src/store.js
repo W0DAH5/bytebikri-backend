@@ -791,20 +791,30 @@ export const store = {
   },
 
   /** Every country where something is currently blocked or restricted. */
+  /**
+   * Everywhere a country rule is in force, counted by **who** made it.
+   *
+   * The split is the point. "1 file blocked in Nepal" reads to an operator as a
+   * platform rule in force, and a creator's own withholding is not that — one of
+   * the two is ours to answer for and the other is theirs. The index alone cannot
+   * tell them apart (`content_geo_blocks` records what and where, not who), so
+   * this reads the rule table, which carries `source`, and the channel blocks,
+   * which are always an operator's.
+   */
   countrySummary() {
     return many(
       `select country_code,
-              count(*) filter (where kind = 'blocked-asset')::int    as blocked_files,
-              count(*) filter (where kind = 'blocked-store')::int    as blocked_stores,
-              count(*) filter (where kind = 'restricted-asset')::int as restricted_files
+              count(*) filter (where kind = 'asset' and state = 'blocked'    and source = 'operator')::int as blocked_files_operator,
+              count(*) filter (where kind = 'asset' and state = 'blocked'    and source = 'creator')::int  as blocked_files_creator,
+              count(*) filter (where kind = 'asset' and state = 'restricted' and source = 'operator')::int as restricted_files_operator,
+              count(*) filter (where kind = 'asset' and state = 'restricted' and source = 'creator')::int  as restricted_files_creator,
+              count(*) filter (where kind = 'channel')::int as blocked_stores,
+              count(*) filter (where kind = 'asset' and state = 'blocked')::int as blocked_files
          from (
-           select country_code,
-                  case subject_type when 'asset' then 'blocked-asset' else 'blocked-store' end as kind
-             from content_geo_blocks
+           select country_code, 'asset' as kind, state, source from asset_country_rules
            union all
-           select country_code, 'restricted-asset'
-             from asset_country_rules
-            where state = 'restricted'
+           select country_code, 'channel', 'blocked', 'operator'
+             from content_geo_blocks where subject_type = 'channel'
          ) t
         group by country_code
         order by country_code`,
