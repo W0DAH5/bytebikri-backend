@@ -1687,3 +1687,89 @@ an id — a file, an operator's decision page — are on neither list. A layout
 regression on one of those pages is invisible to both harnesses until a walk opens
 it. That is now in `ci/eyes/README.md` under its limits, because a check that is
 believed to cover more than it does is worse than no check.
+
+---
+
+## 23. The next phone pass: nine tables that scrolled, and the two bugs under them
+
+§22 ended by writing down what it had not fixed and could not guess at: **nine
+tables five columns or wider still scrolled sideways on a phone**, none of them
+crushed, one of them cutting a Plan chip in half so a store on the Store plan read
+`STO`. This round is that list, worked through — and the same evening's lesson
+again: **fixing the wide thing reveals the wrong thing next to it.**
+
+### Why they had to be stacked, and where the line moved
+
+Rule 2 of the check (no cell under 10rem wrapping to four lines) never fired on
+these nine, because their cells are short values that fit: a pill, a number, a
+date. What was wrong was not a cell, it was the **table**: at 390px the 11rem floor
+on the first cell leaves about 180px for everything else, so a five- or six-column
+table cannot show itself. A phone shows the first two or three columns and cuts the
+one at the edge — which is the clipping §21 called a bug, arriving through the one
+door the floor does not cover.
+
+So the line §22 drew — *crushed cells, and rows read as one record* — turned out to
+be the same thing seen twice. Every one of the nine is a row that is read as a
+record: a store, a file, a payment, an invoice, a month, a plan. They are stacked
+now, and **the check fails if that stops being true**: rule 6 says a table five
+columns or wider must not be wider than its box. Below five columns a table may
+still scroll, because that is what the shadow cue is for and a narrow table that
+scrolls loses nothing.
+
+That is the honest shape of this round: a report was promoted to a rule only after
+the last instance of it was fixed.
+
+### Two bugs that were only visible once the tables were stacked
+
+**The upgrade rows were shifted by one column.** The seller's bill — "what you have
+paid bytebikri" — is one table of two row shapes: rent invoices (five cells) and
+plan upgrades (four). On a desktop the upgrade rows put their amount under *Due* and
+their state under *Amount*, and left the Status column empty; nothing complained,
+because a browser lays out a short row without a word. The rent rows have the due
+date only because rent has one — an upgrade does not — so the upgrade row now says
+so, with a dash, and the row has five cells. **A table with two row shapes needs
+both of them counted**, which is rule 5, and rule 5 could not see this one because
+the page only renders upgrade rows when somebody has bought one.
+
+**A comment had outlived its premise.** The seller's file table carries a long
+comment arguing State must come before Access *because* a phone can show the title
+and one more column inside the scrolling box, so the order decides what is visible
+without swiping. That was true when it was written and is false now that the table
+is stacked — every column is visible. The order is kept (it is still the right order
+to read) and the comment now says why, because a comment that argues from a dead
+premise is how the next person reintroduces the bug.
+
+### The check got a rule and a measurement it was missing
+
+The new rule 6 is above. The other change is in rule 3: it used to assert that a
+stacked cell *carries* `data-label`. That is half a promise — the attribute does
+nothing unless the stylesheet renders it, and a `display` change on a cell or a
+dropped pseudo-element would leave a value with no label and no failure anywhere.
+So the check now measures the **gap between the top of the cell and the first line
+of its own text**: if no line's worth of room is taken above it, the label is not
+being drawn and the check says so.
+
+That measurement exists because of a misread. Looking at a downscaled phone shot of
+the month-by-month rent table, the labels appeared to be *below* their values —
+"NPR 24" then "BILLED". Measuring the live DOM said otherwise: the label is a
+`display: block` pseudo-element and the value's first line sits 19px below the top
+of the cell, in every cell. The picture was wrong and the number was right, which is
+the third time this audit has learned that (**§21: the downscaled screenshot is a
+map, not evidence**). The measurement was then checked against a deliberate break:
+with `td::before { display: none }` injected, the same gap collapses to 2px, so the
+rule fires when it should rather than passing by construction.
+
+### What was run
+
+- `ci/eyes/columns.mjs` — **25 tables on 14 pages, 0 findings** at 390px, and for
+  the first time **nothing at all in the "still scrolls sideways" list**: there is
+  no table left in the console that a phone cannot show.
+- `npm test` — **456 / 456 / 0**; `ci/eyes/sweep.mjs` — **38 clean, 0 findings** at
+  both widths.
+- Screenshots looked at, full height at phone width, on the five pages whose layout
+  changed: the store list, the billing queue, the seller's dashboard, the seller's
+  bill and the month summary.
+
+Sixteen tables carry `.table-stacked` now. The two- and three-column tables are
+still tables, which is the point: the treatment marks the tables a phone cannot
+show, and stops meaning anything if it is applied to the ones it can.

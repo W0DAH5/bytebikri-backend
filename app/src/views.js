@@ -3058,14 +3058,14 @@ ${(() => {
       ? ' A hidden file says so in its own row, with the way to answer it.' : ''}</p>
   </div>
   <div class="panel"><div class="panel-body panel-body-flush">
-    <table class="table">
-      ${/* State before Access, not after.
-             The two swap because of a phone: at 390px the table scrolls inside
-             its own box by design (`public/styles.css` argues for that over a
-             card layout), and the first visible window fits the title and one
-             more column. "Am I live?" is the question a seller opens this page
-             with, so that is the column they get without swiping; how a file
-             unlocks changes twice in its life. */''}
+    <!-- Six columns, stacked on a phone like the other wide tables.
+         State comes before Access because of the question this page is opened
+         with: "am I live?" first, then how the file unlocks — and only then the
+         numbers. It used to come first because a phone could show the title and
+         ONE more column inside the scrolling box, so the order decided what was
+         visible without swiping. That premise is gone: a stacked row shows all of
+         them, and the order is now only about what is read first. -->
+    <table class="table table-stacked">
       <thead><tr><th>File</th><th>State</th><th>Access</th>
         <th class="num">Unlocks</th><th>Ad views · 30d</th><th class="num"></th></tr></thead>
       <tbody>${(() => {
@@ -3087,7 +3087,7 @@ ${(() => {
         <td><strong>${esc(a.title)}</strong>
           <div class="fine">${esc(a.slug)} · ${plural(Number(st.files) || 0, 'file')}${
     a.unlock_mode === 'open' ? ' · open to everyone' : ''}</div></td>
-        <td>${/* A file the report threshold hid is not the same as one the seller
+        <td data-label="State">${/* A file the report threshold hid is not the same as one the seller
                 paused, and calling both "Paused" told a seller they had done something
                 they had not done — while hiding the one thing they needed to know. The
                 pill says who acted, and the row links straight to the answer. */
@@ -3096,13 +3096,13 @@ ${(() => {
         : a.status === 'removed' ? pill('Removed', 'danger') : pill('Live', 'success')}
           ${a.hidden_by_reports ? `<div class="fine" style="margin-top:var(--space-1)">
             <a href="/dashboard/${esc(channel.slug)}/assets/${esc(a.id)}">Your side of it →</a></div>` : ''}</td>
-        <td>${a.unlock_mode === 'open' ? pill('Free', 'success') : pill('Ad-gated', 'locked')}</td>
-        <td class="num">${num(Number(st.unlocks) || 0)}</td>
-        <td>${series.length
+        <td data-label="Access">${a.unlock_mode === 'open' ? pill('Free', 'success') : pill('Ad-gated', 'locked')}</td>
+        <td class="num" data-label="Unlocks">${num(Number(st.unlocks) || 0)}</td>
+        <td data-label="Ad views · 30d">${series.length
     ? `<div class="row" style="gap:var(--space-3);align-items:center">${sparkline({ points: series, max: sharedMax })}
          <span class="fine">${monthTotal ? `${num(monthTotal)} this month` : 'none yet'}</span></div>`
     : '<span class="fine">—</span>'}</td>
-        <td class="num"><a class="btn btn-sm" href="/dashboard/${esc(channel.slug)}/assets/${esc(a.id)}">Edit</a></td>
+        <td class="num" data-label="Actions"><a class="btn btn-sm" href="/dashboard/${esc(channel.slug)}/assets/${esc(a.id)}">Edit</a></td>
       </tr>`;
     }).join('');
   })()}</tbody>
@@ -4099,7 +4099,12 @@ export function billing({
 <div class="panel">
   <div class="panel-head"><h2>What you have paid bytebikri</h2></div>
   <div class="panel-body panel-body-flush">
-    <table class="table">
+    <!-- Five columns, stacked on a phone. The rent rows and the upgrade rows are
+         two shapes in one table, and the upgrade rows had four cells — so on a
+         desktop the money an upgrade cost sat under "Due" and its state under
+         "Amount", and the last column was empty. A due date is the one thing an
+         upgrade does not have, so it says so. -->
+    <table class="table table-stacked">
       <thead><tr><th>What</th><th>Period</th><th>Due</th><th class="num">Amount</th><th>Status</th></tr></thead>
       <tbody>
         ${invoices.map((i) => {
@@ -4111,19 +4116,20 @@ export function billing({
     const settled = i.status === 'paid' || i.status === 'waived' || i.status === 'void';
     return `<tr>
           <td>Rent</td>
-          <td class="nowrap">${day(i.period_start)} → ${day(i.period_end)}</td>
-          <td class="nowrap">${i.due_at ? esc(isoDay(i.due_at)) : '<span class="fine">—</span>'}${
+          <td class="nowrap" data-label="Period">${day(i.period_start)} → ${day(i.period_end)}</td>
+          <td class="nowrap" data-label="Due">${i.due_at ? esc(isoDay(i.due_at)) : '<span class="fine">—</span>'}${
     settled || !i.due_at ? '' : `<div class="fine">${
       age.level === 'current' ? esc(age.label) : `<strong>${esc(age.label)}</strong>`}</div>`}</td>
-          <td class="num">${npr(i.amount_npr)}</td>
-          <td>${pill(i.status, i.status === 'paid' ? 'success' : i.status === 'submitted' ? 'info' : 'warning')}</td>
+          <td class="num" data-label="Amount">${npr(i.amount_npr)}</td>
+          <td data-label="Status">${pill(i.status, i.status === 'paid' ? 'success' : i.status === 'submitted' ? 'info' : 'warning')}</td>
         </tr>`;
   }).join('')}
         ${payments.map((p) => `<tr>
           <td>Plan · ${esc(p.plan_code)}</td>
-          <td>${day(p.created_at)}</td>
-          <td class="num">${npr(p.amount_npr)}</td>
-          <td>${pill(p.status, p.status === 'matched' ? 'success' : p.status === 'rejected' ? 'danger' : 'info')}</td>
+          <td class="nowrap" data-label="Period">${day(p.created_at)}</td>
+          <td data-label="Due"><span class="fine">—</span></td>
+          <td class="num" data-label="Amount">${npr(p.amount_npr)}</td>
+          <td data-label="Status">${pill(p.status, p.status === 'matched' ? 'success' : p.status === 'rejected' ? 'danger' : 'info')}</td>
         </tr>`).join('')}
       </tbody>
     </table>
@@ -5114,7 +5120,9 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
 
   ${rows.length ? `
   <div class="panel"><div class="panel-body panel-body-flush">
-    <table class="table table-directory">
+    <!-- Eight columns. On a phone the third one was cut through the chip: a store
+         on the Store plan read "STO". Stacked, like the other wide tables. -->
+    <table class="table table-directory table-stacked">
       <thead>
         <tr>
           <th>Store</th>
@@ -5134,14 +5142,14 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
             <div class="fine">/s/${esc(r.slug)} · ${esc(r.owner_name || r.owner_email || 'no owner on file')}${
     r.listing_mode === 'marketplace' ? ' · listed' : ''} · <a href="/s/${esc(r.slug)}" target="_blank" rel="noopener">open store ↗</a></div>
           </td>
-          <td>${stateChip(r.moderation_state)}${r.moderation_reason ? `<div class="fine">${esc(r.moderation_reason)}</div>` : ''}</td>
-          <td>${r.plan_code === 'free' ? pill('Free', '') : pill(r.plan_code, 'accent')}${
+          <td data-label="State">${stateChip(r.moderation_state)}${r.moderation_reason ? `<div class="fine">${esc(r.moderation_reason)}</div>` : ''}</td>
+          <td data-label="Plan">${r.plan_code === 'free' ? pill('Free', '') : pill(r.plan_code, 'accent')}${
     r.sub_status === 'grace' ? '<div class="fine">in grace</div>' : ''}</td>
-          <td class="num">${num(r.files_live)}${r.files_total !== r.files_live ? `<div class="fine">of ${num(r.files_total)}</div>` : ''}</td>
-          <td class="num">${num(r.views_30d)}</td>
-          <td class="num">${num(r.unlocks)}${r.unlocks ? '' : '<div class="fine">none yet</div>'}</td>
-          <td class="num">${num(r.ad_views_30d)}</td>
-          <td class="fine">${r.last_file_at ? esc(relTime(r.last_file_at)) : '—'}</td>
+          <td class="num" data-label="Files">${num(r.files_live)}${r.files_total !== r.files_live ? `<div class="fine">of ${num(r.files_total)}</div>` : ''}</td>
+          <td class="num" data-label="Views · 30d">${num(r.views_30d)}</td>
+          <td class="num" data-label="Unlocks">${num(r.unlocks)}${r.unlocks ? '' : '<div class="fine">none yet</div>'}</td>
+          <td class="num" data-label="Ad views">${num(r.ad_views_30d)}</td>
+          <td class="fine" data-label="Last file">${r.last_file_at ? esc(relTime(r.last_file_at)) : '—'}</td>
         </tr>`).join('')}
       </tbody>
     </table>
@@ -5256,7 +5264,9 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
     <p>${files.length ? `${plural(files.length, 'file')} published. Unlocks and ad views are counted from our own tables.` : 'Nothing published yet.'}</p>
   </div>
   ${files.length ? `<div class="panel"><div class="panel-body panel-body-flush">
-    <table class="table table-directory">
+    <!-- Seven columns: a phone showed the file, its state and its unlock mode, and
+         the numbers — the reason an operator opens this page — were off-screen. -->
+    <table class="table table-directory table-stacked">
       <thead><tr>
         <th>File</th><th>State</th><th>Unlock</th>
         <th class="num">Unlocks</th><th class="num">Ad views</th><th class="num">Reports</th><th class="num">Rating</th>
@@ -5267,12 +5277,12 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
             <a href="/s/${esc(c.slug)}/a/${esc(f.slug)}" target="_blank" rel="noopener"><strong>${esc(f.title)}</strong> ↗</a>
             <div class="fine">published ${esc(relTime(f.created_at))}</div>
           </td>
-          <td>${pill(f.status, f.status === 'live' ? 'success' : '')}</td>
-          <td>${pill(f.unlock_mode === 'ad' ? 'one rewarded ad' : f.unlock_mode, 'info')}</td>
-          <td class="num">${num(f.unlocks)}</td>
-          <td class="num">${num(f.ad_views)}</td>
-          <td class="num">${f.open_reports ? `<strong>${num(f.open_reports)}</strong>` : num(f.reports_total)}</td>
-          <td class="num">${Number(f.reviews) ? `${Number(f.rating).toFixed(1)}<div class="fine">${plural(f.reviews, 'review')}</div>` : '—'}</td>
+          <td data-label="State">${pill(f.status, f.status === 'live' ? 'success' : '')}</td>
+          <td data-label="Unlock">${pill(f.unlock_mode === 'ad' ? 'one rewarded ad' : f.unlock_mode, 'info')}</td>
+          <td class="num" data-label="Unlocks">${num(f.unlocks)}</td>
+          <td class="num" data-label="Ad views">${num(f.ad_views)}</td>
+          <td class="num" data-label="Reports">${f.open_reports ? `<strong>${num(f.open_reports)}</strong>` : num(f.reports_total)}</td>
+          <td class="num" data-label="Rating">${Number(f.reviews) ? `${Number(f.rating).toFixed(1)}<div class="fine">${plural(f.reviews, 'review')}</div>` : '—'}</td>
         </tr>`).join('')}
       </tbody>
     </table>
@@ -5453,17 +5463,17 @@ ${drift.length ? `<section class="section">
     : 'Nothing is close. The list is empty, which is the answer.'}</p>
   </div>
   ${near.length ? `<div class="panel"><div class="panel-body panel-body-flush">
-    <table class="table">
+    <table class="table table-stacked">
       <thead><tr>
         <th>Store</th><th>Plan</th><th class="num">Published</th><th class="num">Allowance</th><th>Fill</th><th>Owner</th>
       </tr></thead>
       <tbody>${near.map((n) => `<tr>
         <td><a href="/admin/stores/${esc(n.slug)}"><strong>${esc(n.name)}</strong></a><div class="fine">/s/${esc(n.slug)}</div></td>
-        <td>${pill(n.plan_name, n.plan_code === 'free' ? '' : 'accent')}</td>
-        <td class="num">${num(n.files)}</td>
-        <td class="num">${num(n.cap)}</td>
-        <td style="min-width:120px">${capMeter(n)}<div class="fine">${num(n.pct_full)}% full</div></td>
-        <td class="fine">${esc(n.owner_email || 'no owner on file')}</td>
+        <td data-label="Plan">${pill(n.plan_name, n.plan_code === 'free' ? '' : 'accent')}</td>
+        <td class="num" data-label="Published">${num(n.files)}</td>
+        <td class="num" data-label="Allowance">${num(n.cap)}</td>
+        <td style="min-width:120px" data-label="Fill">${capMeter(n)}<div class="fine">${num(n.pct_full)}% full</div></td>
+        <td class="fine" data-label="Owner">${esc(n.owner_email || 'no owner on file')}</td>
       </tr>`).join('')}
       </tbody>
     </table>
@@ -5476,7 +5486,9 @@ ${drift.length ? `<section class="section">
     <p>Prices are per ${plans[0]?.period_months || 12} months, read from the plans table.</p>
   </div>
   <div class="panel"><div class="panel-body panel-body-flush">
-    <table class="table table-directory">
+    <!-- Seven columns, and the row is a plan: what it costs, how many stores are on
+         it, and how many of those have lapsed. Read down. -->
+    <table class="table table-directory table-stacked">
       <thead><tr>
         <th>Plan</th><th class="num">Price</th><th class="num">Stores</th>
         <th class="num">Active</th><th class="num">In grace</th><th class="num">Lapsed</th><th>Status</th>
@@ -5485,12 +5497,12 @@ ${drift.length ? `<section class="section">
     const m = byCode[p.code] || { stores: 0, active: 0, in_grace: 0, lapsed: 0 };
     return `<tr>
         <td><strong>${esc(p.name)}</strong><div class="fine mono">${esc(p.code)}</div></td>
-        <td class="num">${p.price_npr ? `NPR ${Number(p.price_npr).toLocaleString('en-IN')}` : 'free'}</td>
-        <td class="num">${num(m.stores)}</td>
-        <td class="num">${num(m.active)}</td>
-        <td class="num">${m.in_grace ? `${num(m.in_grace)}<div class="fine">features retained</div>` : num(m.in_grace)}</td>
-        <td class="num">${num(m.lapsed)}</td>
-        <td>${p.active ? pill('offered', 'success') : pill('not offered', '')}</td>
+        <td class="num" data-label="Price">${p.price_npr ? `NPR ${Number(p.price_npr).toLocaleString('en-IN')}` : 'free'}</td>
+        <td class="num" data-label="Stores">${num(m.stores)}</td>
+        <td class="num" data-label="Active">${num(m.active)}</td>
+        <td class="num" data-label="In grace">${m.in_grace ? `${num(m.in_grace)}<div class="fine">features retained</div>` : num(m.in_grace)}</td>
+        <td class="num" data-label="Lapsed">${num(m.lapsed)}</td>
+        <td data-label="Status">${p.active ? pill('offered', 'success') : pill('not offered', '')}</td>
       </tr>`;
   }).join('')}
       </tbody>
@@ -6167,11 +6179,11 @@ export function operatorBilling({
         <strong>${esc(p.channel_name)}</strong>
         <div class="fine">/s/${esc(p.channel_slug)} · ${esc(p.plan_code)}</div>
       </td>
-      <td class="mono">${esc(p.txn_reference)}</td>
-      <td>${esc(p.method)}${p.payer_name ? `<div class="fine">${esc(p.payer_name)}${p.payer_number ? ` · ${esc(p.payer_number)}` : ''}</div>` : ''}</td>
-      <td class="num">${npr(p.amount_npr)}</td>
-      <td class="fine">${relTime(p.created_at)}</td>
-      <td>
+      <td class="mono" data-label="Reference">${esc(p.txn_reference)}</td>
+      <td data-label="Method">${esc(p.method)}${p.payer_name ? `<div class="fine">${esc(p.payer_name)}${p.payer_number ? ` · ${esc(p.payer_number)}` : ''}</div>` : ''}</td>
+      <td class="num" data-label="Amount">${npr(p.amount_npr)}</td>
+      <td class="fine" data-label="When">${relTime(p.created_at)}</td>
+      <td data-label="Actions">
         <form class="inline-form" method="post" action="/admin/payments/plan/${esc(p.id)}">
           <button class="btn btn-sm btn-primary" name="action" value="match" type="submit">Match</button>
           <button class="btn btn-sm btn-danger" name="action" value="reject" type="submit">Reject</button>
@@ -6211,7 +6223,9 @@ ${flashNote(flash)}
   <div class="section-head"><h2>Upgrades waiting</h2><p>${plural(payments.length, 'payment')}</p></div>
   ${payments.length ? `
     <div class="panel"><div class="panel-body panel-body-flush">
-      <table class="table">
+      <!-- Six columns; a phone showed the store, the reference and half the method,
+           and the operator's two buttons were off the right edge. -->
+      <table class="table table-stacked">
         <thead><tr><th>Store</th><th>Reference</th><th>Method</th><th class="num">Amount</th><th>When</th><th></th></tr></thead>
         <tbody>${payRows}</tbody>
       </table>
@@ -6242,7 +6256,9 @@ ${flashNote(flash)}
   </div>
 
   <div class="panel"><div class="panel-body panel-body-flush">
-    <table class="table">
+    <!-- Eight columns. The row ends in the one action this page exists for — Mark
+         paid — which on a phone was the last thing past the right edge. -->
+    <table class="table table-stacked">
       <thead><tr><th style="min-width:170px">Store</th><th>Period</th><th>Due</th><th>Age</th><th>Reference</th><th class="num">Amount</th><th>State</th><th></th></tr></thead>
       <tbody>${aged.map((a) => {
     const age = ageOf(a);
@@ -6251,15 +6267,15 @@ ${flashNote(flash)}
           <strong>${esc(a.channel_name)}</strong>
           <div class="fine">/s/${esc(a.channel_slug)}${a.owner_email ? ` · ${esc(a.owner_email)}` : ''}</div>
         </td>
-        <td class="fine nowrap">${esc(isoDay(a.period_start))} → ${esc(isoDay(a.period_end))}</td>
-        <td class="fine nowrap">${esc(isoDay(a.due_at) || '—')}</td>
-        <td>${age.level === 'current' || age.level === 'unknown'
+        <td class="fine nowrap" data-label="Period">${esc(isoDay(a.period_start))} → ${esc(isoDay(a.period_end))}</td>
+        <td class="fine nowrap" data-label="Due">${esc(isoDay(a.due_at) || '—')}</td>
+        <td data-label="Age">${age.level === 'current' || age.level === 'unknown'
       ? `<span class="fine">${esc(age.label)}</span>`
       : pill(age.label, age.level === 'stale' ? 'danger' : 'warning')}</td>
-        <td class="mono fine">${esc(a.txn_reference || '—')}</td>
-        <td class="num">${npr(a.amount_npr)}</td>
-        <td>${pill(a.status, a.status === 'submitted' ? 'info' : 'warning')}</td>
-        <td>
+        <td class="mono fine" data-label="Reference">${esc(a.txn_reference || '—')}</td>
+        <td class="num" data-label="Amount">${npr(a.amount_npr)}</td>
+        <td data-label="State">${pill(a.status, a.status === 'submitted' ? 'info' : 'warning')}</td>
+        <td data-label="Actions">
           <form class="inline-form" method="post" action="/admin/payments/rent/${esc(a.id)}">
             <button class="btn btn-sm btn-primary" type="submit">Mark paid</button>
           </form>
@@ -6287,7 +6303,9 @@ ${byMonth.length ? `<section class="section">
     <p>Grouped by the period each invoice covers, not by when it was paid — March's rent is March's, whether it arrived in March or June.</p>
   </div>
   <div class="panel"><div class="panel-body panel-body-flush">
-    <table class="table">
+    <!-- Five money columns. Each row is a month, and at 390px the four figures
+         could not fit beside the month name — the last one was cut off. -->
+    <table class="table table-stacked">
       <thead><tr><th>Month</th><th class="num">Billed</th><th class="num">Collected</th><th class="num">Late now</th><th>Invoices</th></tr></thead>
       <tbody>${byMonth.map((m) => {
     const billed = Number(m.billed_npr || 0);
@@ -6295,12 +6313,12 @@ ${byMonth.length ? `<section class="section">
     const pct = billed ? Math.round((collected / billed) * 100) : 0;
     return `<tr>
         <td class="mono">${esc(m.month)}</td>
-        <td class="num">${npr(billed)}</td>
-        <td class="num">${npr(collected)}${billed
+        <td class="num" data-label="Billed">${npr(billed)}</td>
+        <td class="num" data-label="Collected">${npr(collected)}${billed
     ? `<div class="meter${pct >= 100 ? ' meter-full' : ' meter-near'}" role="img" aria-label="${esc(`${pct}% collected`)}"><span style="width:${Math.min(pct, 100)}%"></span></div>`
     : ''}</td>
-        <td class="num">${Number(m.late_invoices) ? `${num(m.late_invoices)}<div class="fine">still owed</div>` : '—'}</td>
-        <td class="fine">${num(m.paid_invoices)} of ${num(m.invoices)} paid${Number(m.waived_npr) ? ` · ${npr(m.waived_npr)} waived` : ''}</td>
+        <td class="num" data-label="Late now">${Number(m.late_invoices) ? `${num(m.late_invoices)}<div class="fine">still owed</div>` : '—'}</td>
+        <td class="fine" data-label="Invoices">${num(m.paid_invoices)} of ${num(m.invoices)} paid${Number(m.waived_npr) ? ` · ${npr(m.waived_npr)} waived` : ''}</td>
       </tr>`;
   }).join('')}
       </tbody>

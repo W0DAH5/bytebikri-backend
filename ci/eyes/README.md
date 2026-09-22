@@ -93,6 +93,16 @@ Per table, at phone width:
 5. **The headings.** Every body row has as many columns as the header says it does,
    counting `colspan`. Cheapest rule here; found a four-column header over a
    three-cell body on its first run.
+6. **Five columns fit nowhere.** A table five columns or wider that is wider than the
+   box it scrolls in must be stacked. It was a report before it was a rule, and it
+   named nine tables — one of which cut a Plan chip in half, so a store on the Store
+   plan read "STO". A narrower table that scrolls is left alone: the shadow cue is
+   there for exactly that.
+
+The label rule measures as well as asserts: it checks the line of room a rendered
+label takes above the cell's own text, so an attribute the stylesheet stops drawing
+fails the run instead of passing quietly. (Verified against a deliberate break —
+with `td::before { display: none }` injected, the gap collapses from 19px to 2px.)
 
 ```bash
 node columns.mjs                    # every signed-in page
@@ -102,13 +112,11 @@ EYES_MIN_CELL=180 node columns.mjs  # change the crush threshold, not the rule
 
 Exit code is 1 when anything is found, so it drops into CI as it stands.
 
-**What it does not fail on:** a wide table that scrolls sideways *without* crushing
-a cell passes, because that is the stylesheet's own supported pattern — a table may
-scroll in its own box, with the cue that it does. Those are counted and named at the
-end of every run (nine of them on the pages this script walks, five columns or
-wider) so the list is a measurement rather than a hunt. Whether one of them should
-be stacked instead is a judgement about how the page is read, and no rule here makes
-it for you.
+**What it does not fail on:** a table under five columns that is wider than its box.
+That is the stylesheet's own supported pattern — a table may scroll in its own box,
+with the cue that it does — and a narrow one that scrolls loses nothing. Those are
+counted and named at the end of every run so the list stays a measurement rather
+than a hunt.
 
 ## What the sweep checks
 

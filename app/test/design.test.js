@@ -336,7 +336,7 @@ test('a stacked table keeps its labels, and keeps out of the floor', () => {
   // exempt: it is the row's name, and a label above it would repeat it.
   const src = readFileSync(path.join(root, 'src/views.js'), 'utf8');
   const stacked = (src.match(/class="[^"]*table-stacked/g) || []).length;
-  assert.ok(stacked >= 7, `the wide tables opt in, and one leaving is a decision to make aloud (found ${stacked})`);
+  assert.ok(stacked >= 16, `the wide tables opt in, and one leaving is a decision to make aloud (found ${stacked})`);
 });
 
 test('no HTML comment in a view contains a backtick', () => {

@@ -34,7 +34,10 @@
 //   3. **The labels.** Every cell after the first carries a `data-label`. The label
 //      is what the stylesheet prints above the value, so a cell without one is a
 //      bare number under nothing — invisible in a desktop review, and the reason a
-//      stacked table is worse than a scrolling one when it is done half way.
+//      stacked table is worse than a scrolling one when it is done half way. The
+//      label is also measured, not assumed: it has to occupy a line ABOVE the
+//      cell's text, since an attribute the stylesheet stops rendering is the same
+//      bug with more paperwork.
 //   4. **The exemption.** A stacked table's first cell has no min-width. If the
 //      floor ever reaches it again the whole page scrolls sideways.
 //   5. **The headings.** Every body row has as many columns as the header says it
@@ -44,6 +47,11 @@
 //      column that did not exist. A browser renders that without complaint, the
 //      empty column just hangs off the right edge, and it is invisible unless
 //      someone counts.
+//   6. **Five columns fit nowhere.** A table five columns or wider that is wider
+//      than its box must be stacked. It was a report before it was a rule — nine
+//      tables were in that state, and one of them cut a Plan chip in half so a
+//      store on the Store plan read "STO". A narrower table that scrolls is left
+//      alone: the shadow cue is there for exactly that.
 //
 //   node columns.mjs                    # every signed-in page, phone width
 //   node columns.mjs /dashboard/bob     # one page
@@ -102,15 +110,12 @@ async function measureTables(p) {
       const rows = [...t.querySelectorAll('tbody tr')].filter((r) => r.querySelector('td'));
       if (!rows.length) return;
 
-      // Not a finding, a count: a table that is wider than the box it sits in and
-      // scrolls sideways. The stylesheet supports that on purpose — that is what the
-      // scrolling shadows are for — but a phone only shows the first two or three
-      // columns of a wide one, and the column at the edge is cut mid-word (a Plan
-      // chip reading "STO"). Reported so the list is a measurement, not a hunt.
+      // Is it wider than the box it scrolls in?
       const heads = [...t.querySelectorAll('thead th')].length;
+      let overflows = false;
       for (let n = t.parentElement; n; n = n.parentElement) {
         if (getComputedStyle(n).overflowX !== 'visible') {
-          if (n.scrollWidth > n.clientWidth + 2) scrolls.push({ where, cols: heads });
+          overflows = n.scrollWidth > n.clientWidth + 2;
           break;
         }
       }
@@ -119,6 +124,25 @@ async function measureTables(p) {
       const thead = t.querySelector('thead');
       const stacked = (thead && getComputedStyle(thead).display === 'none')
         || rows.some((r) => getComputedStyle(r).display === 'block');
+
+      // (6) Five columns do not fit across 390px: the 11rem floor on the first cell
+      // leaves about 180px for the rest, so the last two or three columns are off the
+      // edge — and the one AT the edge is cut mid-word, which is how a store on the
+      // Store plan came to read "STO". Scrolling is supported here (that is what the
+      // shadow cue is for) and a narrow table scrolling is fine, so this rule is about
+      // the wide ones only. Below five columns, an overflowing table is reported at
+      // the end of the run instead of failing.
+      if (overflows && heads >= 5 && !stacked) {
+        out.push({
+          kind: 'wide-not-stacked',
+          where,
+          detail: `${heads} columns wider than the box, not stacked — a phone shows the`
+            + ' first two or three and cuts the next one mid-word',
+        });
+      } else if (overflows && heads >= 5) {
+        scrolls.push({ where, cols: heads });
+      }
+
       if (stacked) {
         const first = rows[0].querySelector('td');
         if (parseFloat(getComputedStyle(first).minWidth) > 0) {
@@ -134,12 +158,32 @@ async function measureTables(p) {
               if (n === 0) return;                       // the row's own name needs no label
               if (cell.hasAttribute('colspan')) return;  // a spanning sentence, not a field
               if (!(cell.textContent || '').trim()) return;
-              if (!cell.getAttribute('data-label')) {
+              const label = cell.getAttribute('data-label');
+              if (!label) {
                 out.push({
                   kind: 'unlabelled-cell',
                   where,
                   detail: `cell ${n + 1} has no data-label: "${(cell.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 40)}"`,
                 });
+              } else {
+                // The attribute is only half the promise; the stylesheet prints it
+                // with a ::before, and a cell that renders its label BESIDE the value
+                // (or not at all — a display change, a pseudo-element the browser
+                // dropped) reads as one run-on line. So: is a line's worth of room
+                // taken above the cell's own text? Measured, because a downscaled
+                // screenshot said this was wrong when it was right.
+                const box = cell.getBoundingClientRect();
+                const pad = parseFloat(getComputedStyle(cell).paddingTop) || 0;
+                const range = document.createRange();
+                range.selectNodeContents(cell);
+                const first = [...range.getClientRects()].filter((r) => r.width > 1)[0];
+                if (first && first.top - (box.top + pad) < 6) {
+                  out.push({
+                    kind: 'label-not-above',
+                    where,
+                    detail: `cell ${n + 1} carries data-label="${label}" but renders no label above its text`,
+                  });
+                }
               }
             });
           }
@@ -236,11 +280,11 @@ for (const [who, urls] of Object.entries(PAGES)) {
 
 console.log(`\n${tables} tables on ${pages} pages, ${bad} finding${bad === 1 ? '' : 's'} at ${WIDTH}px`);
 if (sideways.length) {
-  // Wide but not crushed: the stylesheet supports this (that is what the shadow cue
-  // is for), so it is not a failure — but a phone shows two or three of these
-  // columns, so they are worth naming before someone "discovers" one as a bug.
-  console.log(`${sideways.length} five-column-or-wider table${sideways.length === 1 ? '' : 's'} `
-    + 'still scroll sideways on a phone:');
+  // Still wide, still scrolling, and not a failure: either it is stacked already or
+  // it has fewer than five columns, and the shadow cue is what the stylesheet
+  // provides for that. Named so the list stays a measurement.
+  console.log(`${sideways.length} wide table${sideways.length === 1 ? '' : 's'} `
+    + 'still scroll sideways on a phone (stacked, or under five columns):');
   for (const s of sideways.slice(0, 12)) console.log(`    ${s}`);
   if (sideways.length > 12) console.log(`    … and ${sideways.length - 12} more`);
 }
