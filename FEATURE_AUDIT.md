@@ -789,7 +789,9 @@ attack, and a looping client is bounded.
 
 **Still missing:** a report on a whole store rather than a file, an asset-level
 moderation queue distinct from the report queue, and country rules
-(`policy_rules.scope = 'country'` is modelled and unused).
+(`policy_rules.scope = 'country'` is modelled and unused). *The last two landed in
+§19; a report on a store is still a report on the files in it, which is the
+honest shape of the same complaint.*
 
 ---
 
