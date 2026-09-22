@@ -11,7 +11,7 @@ const b = await chromium.launch({ executablePath: '/tmp/chromium', args: ['--no-
 // page that only appears in one account's state is a page the sweep would miss.
 let clean = 0, dirty = 0;
 
-for (const who of ['operator', 'alice', 'bob']) {
+for (const who of ['operator', 'alice', 'nima', 'bob']) {
   const state = await sessionFor(b, who);
   const pages = await pagesFor(b, who, { storageState: state });
   for (const vp of [{ w: 1440, h: 1000, tag: 'desktop' }, { w: 390, h: 844, tag: 'phone' }]) {

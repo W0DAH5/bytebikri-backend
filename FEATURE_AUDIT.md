@@ -1940,3 +1940,133 @@ the strongest form of "we do not store it": not a policy, a constraint.
   above.
 - Storefront, Explore rails, seller settings, operator store page and the operator
   overview all looked at full height at 390px.
+
+## §26 — "We will tell you before it does", said by nobody
+
+### The contradiction
+
+§25 shipped a seller panel with this paragraph, live:
+
+> It lapses on 23 Sept 2028. **We will tell you before it does**; nothing about your
+> files changes when it does.
+
+Nothing in the platform told anybody anything. There was no reminder, no list, no
+job — the sentence was a promise attached to a mechanism that did not exist, which is
+the same failure as §25's page and, like §25's, invisible from the code: the sentence
+rendered, the tests passed, and only a person reading it in a browser would ask *how*.
+
+Two smaller versions of the same fault sat next to it. The operator's overview had a
+queue row, "Identity checks asked for", that linked to `/admin/stores` — the whole
+directory, unfiltered, so the row counted something the page it led to did not show.
+And the badge itself came from `verificationFor`, the newest row of any kind, which
+meant a seller asking for the *next* check would replace the outcome of the current
+one — the badge would come down by asking early.
+
+### What was researched before anything was built
+
+Reverification practice, because "remind them at the right time" is a solved problem
+everywhere except here:
+
+- **SheerID, on reverification mechanics** — start roughly a month before expiry;
+  remind at 30, 15 and 5 days, each message carrying a direct link to the form; and
+  the point that decided this round's shape: **do not deactivate access while
+  re-verification is pending** — keep the benefit, ask for the renewal, and only act
+  after the date.
+- **I-9 reverification guides** (outsolve) — first notice 120 days out, then 90/60/30,
+  because renewing a document takes weeks; and the automation is worth less than the
+  **named owner** of the list: what produces "fire drills and audit findings" is a
+  tracker nobody owns.
+- **A Global Entry thread** on a lapsed renewal — "no more reminders? … it totally
+  caught me off guard". The failure is not the expiry; it is the expiry arriving
+  without a word.
+
+Adopted: a 60-day console window, a list a person works, a notice a person sends, and
+the badge kept while the renewal is arranged.
+
+### What was built
+
+- **Bands derived from the date, not stored.** `lapseOf(row, now)` answers `current` /
+  `soon` (≤60 days) / `due` (≤30) / `lapsed` (past), from `expires_at` alone. Nothing
+  runs at midnight; a store's state is a function of the clock. `lapsed` returns the
+  level rather than `null`, because the console has to be able to say the badge came
+  down on the 3rd.
+- **The badge is the newest DECIDED row.** `verificationFor` excludes pending rows;
+  `pendingVerificationFor` is a second read. One row per fact, so asking for the next
+  check cannot take the current badge down — and `requestability({…, pending,
+  lapsing})` lets a seller ask inside the window while saying, in as many words, that
+  the current check keeps counting.
+- **A queue, and a notice a person sends.** `POST
+  /admin/stores/:slug/verification/notice` claims the row
+  (`markVerificationNotice`, only where `notice_sent_at is null`), sends
+  `sendLapseNotice`, and releases the claim if nothing was written — two operators
+  either side of a slow page load must not both mail a seller, and a claim with no
+  message behind it must not survive, because the next person working the list would
+  skip someone nobody has contacted. Migration `0027` adds `notice_sent_at`,
+  `notice_by` and a partial index on `expires_at where status = 'verified'`.
+- **The notice itself.** Subject "Your identity check ends on {date}"; the date, what
+  the badge coming off does and does not change, the way back, and the line doing the
+  most work: *"You do not need to send us anything now."*
+- **The console reads identity as its own column.** `storeDirectory({identity, sort})`
+  filters computed state — never checked / waiting on us / checked / ending soon /
+  lapsed — in the outer query, so the count agrees with the rows. Two of them are the
+  overview's queues, now linked with the filter attached.
+
+### Four bugs, three of them found by looking
+
+1. **The listing that excluded the store it counted.** The directory's `identity_state`
+   made the open request beat the standing outcome, so a store that was *both* waiting
+   on us and close to its date — the ordinary renew-early case — appeared as
+   "waiting", and the "Checks ending soon" row linked to a filter that hid it. The
+   count said one, the list said none. The two facts are now two columns of the same
+   cell: the pill is the standing outcome, the lines under it are the request and the
+   notice.
+2. **A window that opened 548 days early.** `lapsing` was computed as "has a live
+   check", so a check eighteen months from its date was offered the renewal form — the
+   one open window became a permanent button. Caught by rendering the panel with a
+   distant date before trusting it. `withinNoticeWindow(lapse)` is now the only
+   definition, and both the panel and the POST handler use it.
+3. **The form and its handler disagreeing.** The ask route called
+   `requestability` with neither `pending` nor `lapsing`, so once the panel correctly
+   offered "Ask for the next check", pressing it was refused with "Already checked."
+   by the route that received it.
+4. **Fine print reading as a button label.** `Withdraw the request` followed by an
+   inline `<span class="fine">` wrapped *under* the button and looked like the second
+   half of its own sentence. Only the browser showed it; columns and sweep both called
+   the page clean. The sentence is a block under the action now.
+
+And one fixed while testing, from the same family: every flash on these four routes
+was built as `#verification?error=…`, which is a fragment called
+"verification?error=…" — the server never sees it and the person is bounced back to a
+form with no explanation. The free-plan seller's refusal had been unreachable since it
+was written. `back()` now takes the query as an argument and the anchor is appended
+last, with a static test that fails if a new anchored route goes back to the old shape.
+
+### What was run
+
+- `npm test` — **484 / 484 / 0**, including three new view tests (the panel inside the
+  window, the panel outside it, the console before and after the notice, and the
+  fragment rule), the backdated-check test, and the duplicate-flash-key check.
+- `ci/eyes/columns.mjs` — **31 tables on 18 pages, 0 findings at 390px**.
+- `ci/eyes/sweep.mjs` — **56 clean, 0 with findings**, now including `nima` as a
+  fourth account: her store is the demo's deliberately awkward one (a check inside its
+  window *and* a request open), and a seeded state that exists on purpose is worth
+  checking on purpose. `sessionFor` needed the store slug for its proof URL —
+  `/dashboard/nima` 404s and a 404 looks exactly like a refused sign-in.
+- Looked at, at 390px, in the browser: the seller's panel (badge, band, both facts,
+  the withdraw action), the operator's ending panel before and after the notice, and
+  the directory's identity column across the three demo stores — *"Citizenship
+  certificate — 30 days left / asked 16m ago / told 12m ago"*, and *"Never checked"*
+  with nothing under it.
+- The notice text itself, printed by the console mail driver:
+
+  > The check on Nima Crafts was made after somebody looked at your document. It stops
+  > counting on 23 Oct 2026 (in 30 days), and the badge comes off your store page the
+  > same day.
+  >
+  > Nothing else changes. Your store stays open, your files stay published, unlocks and
+  > earnings are untouched — the badge is the only thing on the line, and it is the only
+  > thing that goes.
+  >
+  > If you want it back, ask for a check from your store settings when it suits you. It
+  > is the same process as the first time: a person looks at one document, and the
+  > outcome is recorded. You do not need to send us anything now.

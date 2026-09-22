@@ -18,12 +18,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { store, storage, SLOT_DEFS, slugify, PLANS, nextPlan } from './src/store.js';
-import { METHODS, DEFAULT_MONTHS, stateOf, requestability } from './src/verification.js';
+import {
+  METHODS, DEFAULT_MONTHS, LAPSE_WINDOW_DAYS, stateOf, requestability, lapseOf, lapseNotice,
+  withinNoticeWindow,
+} from './src/verification.js';
 import { assertProductionConfig, readSecret, checkConfig, formatConfigReport, isProd } from './src/config.js';
 import { query, many, scalar, health as dbHealth, close as closeDb } from './src/db.js';
 import { allocateSlots, estimateRentSlotValue, POLICY } from './src/slots.js';
 import { csvCell, csvDocument, exportAll, truncationNote } from './src/export.js';
 import { AUDIT_FAMILIES, actorOf } from './src/audit.js';
+// The first message this platform sends to somebody who did not ask for it. See
+// the header of src/notices.js for why a person sends it rather than a job.
+import { sendLapseNotice } from './src/notices.js';
 // The CSV must print a date the same way the page does, so the export borrows the
 // page's formatter rather than growing a second opinion about it.
 import { isoDay } from './src/views.js';
@@ -2230,12 +2236,20 @@ const SUCCESS_FLASH = {
   asked: () => 'Asked. A person looks at one document and records what they saw — we work in the order requests arrive, and nothing is uploaded here.',
   withdrawn: () => 'Withdrawn. The request is gone and nobody is waiting on anything.',
   verified: () => 'Recorded. The badge is on the store now, with what was checked and the date — and no copy of the document was kept.',
+  noticed: () => 'Sent. The seller has the date, what happens on it, and that nothing else changes.',
+  'noticed-logged': () => 'Written to the mail log — no provider is configured, so it was not delivered. The seller can see the same date on their own settings page.',
   rejected: () => 'Recorded as refused. The seller is told, with your note, and can ask again with the same or a different document.',
 };
 
 const ERROR_FLASH = {
   'no-numbers': 'That looks like a document number. Nothing here needs it and this field is kept — say where you are or when to call instead.',
-  plan: 'A document check is included from the Store plan up. Your files sell exactly the same either way.',
+  // NOT `plan`: see the FLASH_CODE map on the ask route. Two entries under one key
+  // is not a merge, it is a deletion — the later declaration wins and the earlier
+  // message becomes unreachable, silently, in a file where nothing looks wrong.
+  'check-plan': 'A document check is included from the Store plan up. Your files sell exactly the same either way.',
+  'no-check': 'There is no check on this store to write to them about. Nothing was sent.',
+  'already-noticed': 'That seller has already been told this check is ending. Nothing was sent a second time.',
+  'not-sent': 'The message was not recorded, so nothing was sent and nothing was marked. Try again — and if it keeps failing, the mail settings need looking at.',
   'already-asked': 'You have already asked, and nobody has looked yet.',
   'already-checked': 'This store is checked. There is nothing to ask for until the check lapses.',
   name: 'A store needs a name.',
@@ -2256,7 +2270,11 @@ const ERROR_FLASH = {
   rule: 'That is not a rule this platform has. Pick one from the list.',
   file: 'That file does not exist.',
   store: 'That store does not exist.',
-  nope: 'That rule is not yours to clear. An operator set it — the appeal on this page is how to disagree.',
+  // Its own key: `nope` belongs to the connection routes (three of them) and the
+  // later declaration was silently winning, so this sentence — the one a seller
+  // needs when they try to undo a rule the platform set — was unreachable and the
+  // page answered "That connection is not yours." on a country-rule form.
+  'rule-not-yours': 'That rule is not yours to clear. An operator set it — the appeal on this page is how to disagree.',
   nothing: 'There is nothing waiting to be paid right now.',
   empty: 'A slot message needs a headline.',
   slot: 'That is not a position on your pages.',
@@ -2266,7 +2284,10 @@ const ERROR_FLASH = {
   already: 'That network is already connected to this store.',
   moderated: 'This store is not in a state where it can publish. Nothing was changed, and nothing has been deleted.',
   action: 'That is not a moderation action.',
-  rule: 'That reason is not one of our rules. Pick one from the list.',
+  // (There was a second `rule:` here — "That reason is not one of our rules." — which
+  // is the same sentence about the same list, and which shadowed the one above. One
+  // key, one message, and the duplicate-key test now fails the build if another
+  // appears.)
   report_reason: 'Pick what is wrong with the file from the list.',
   report_self: 'That is your own file — there is nothing to report.',
   secret: 'That secret did not look right — copy it again from the network dashboard, with no spaces at either end.',
@@ -2875,7 +2896,11 @@ APP.post('/admin/payments/rent/:id', async (req, res, next) => {
 // at the column rather than quietly becoming a breach.
 
 APP.post('/dashboard/:slug/verification', async (req, res, next) => {
-  const back = () => `/dashboard/${encodeURIComponent(req.params.slug)}/settings#verification`;
+  // Query before fragment: `#verification?error=check-plan` never reaches the
+  // server, so a seller on the free plan would be bounced back to a form with no
+  // explanation at all — the exact silent-refusal failure this route's flash keys
+  // were disambiguated to prevent.
+  const back = (qs = '') => `/dashboard/${encodeURIComponent(req.params.slug)}/settings${qs ? `?${qs}` : ''}#verification`;
   try {
     const channel = await ownerChannel(req, res);
     if (!channel) return undefined;
@@ -2884,41 +2909,64 @@ APP.post('/dashboard/:slug/verification', async (req, res, next) => {
 
     const plan = store.plan(channel);
     const current = await store.verificationFor(channel.id);
+    const open = await store.pendingVerificationFor(channel.id);
+    // The same two facts the panel on the page was rendered from — pending and
+    // whether the live check is inside its window. This route used to pass neither,
+    // which meant the "Ask for the next check" button the panel offers inside the
+    // window was refused by the handler with "Already checked.": the form and the
+    // thing that receives it have to answer the same question the same way.
     const ask = requestability({
-      capabilities: plan.capabilities, state: stateOf(current),
+      capabilities: plan.capabilities,
+      state: stateOf(current),
+      pending: Boolean(open),
+      lapsing: withinNoticeWindow(lapseOf(current)),
     });
     // A code, never the sentence: query strings are echoed back to the reader by
     // the flash map, and that map is the only writer of that text.
-    if (!ask.ok) return res.redirect(`${back()}?error=${encodeURIComponent(ask.code || 'not-now')}`);
+    // `requestability` answers with a DOMAIN code, and `plan` is the right one for
+    // "your plan does not include this". But the upgrade flow already owns the
+    // `plan` flash message — and it was declared LATER in the map, so the upgrade
+    // sentence silently shadowed this one and a seller on the free plan was told
+    // "That plan is not available from your current one." on a form that has no
+    // plans on it. The code stays honest; only the flash key is disambiguated.
+    const FLASH_CODE = { plan: 'check-plan' };
+    if (!ask.ok) {
+      const code = FLASH_CODE[ask.code] || ask.code || 'not-now';
+      return res.redirect(back(`error=${encodeURIComponent(code)}`));
+    }
 
     // Logistics only. Anything that looks like a document number is refused with
     // an explanation rather than stored: this form must never become the place the
     // evidence lands, and a person pasting one has not been told that yet.
     const note = String(req.body?.note || '').trim().slice(0, 280);
-    if (/\d{6,}/.test(note)) return res.redirect(`${back()}?error=no-numbers`);
+    if (/\d{6,}/.test(note)) return res.redirect(back('error=no-numbers'));
     if (/\b(citizenship|pan|passport)\b[^.]{0,20}\b(no|number|num)\b/i.test(note)) {
-      return res.redirect(`${back()}?error=no-numbers`);
+      return res.redirect(back('error=no-numbers'));
     }
 
     const done = await store.askForVerification({ channelId: channel.id, note });
     await store.audit('seller.verification_requested', { channelId: channel.id });
-    return res.redirect(`${back()}?saved=${done.ok ? 'asked' : 'already'}`);
+    return res.redirect(back(`saved=${done.ok ? 'asked' : 'already'}`));
   } catch (err) { return next(err); }
 });
 
 APP.post('/dashboard/:slug/verification/withdraw', async (req, res, next) => {
-  const back = () => `/dashboard/${encodeURIComponent(req.params.slug)}/settings#verification`;
+  const back = (qs = '') => `/dashboard/${encodeURIComponent(req.params.slug)}/settings${qs ? `?${qs}` : ''}#verification`;
   try {
     const channel = await ownerChannel(req, res);
     if (!channel) return undefined;
     await store.withdrawVerificationRequest(channel.id);
     await store.audit('seller.verification_withdrawn', { channelId: channel.id });
-    return res.redirect(`${back()}?saved=withdrawn`);
+    return res.redirect(back('saved=withdrawn'));
   } catch (err) { return next(err); }
 });
 
 APP.post('/admin/stores/:slug/verification', async (req, res, next) => {
-  const back = () => `/admin/stores/${encodeURIComponent(req.params.slug)}#verification`;
+  // Query BEFORE the fragment. `#verification?saved=x` reads to the browser as a
+  // fragment called "verification?saved=x" — the parameter is never sent, the flash
+  // never appears, and the page just looks like nothing happened. Every route that
+  // returns to a section anchors from the outside like this.
+  const back = (qs = '') => `/admin/stores/${encodeURIComponent(req.params.slug)}${qs ? `?${qs}` : ''}#verification`;
   try {
     if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
     const channel = await store.channelBySlug(req.params.slug);
@@ -2937,7 +2985,44 @@ APP.post('/admin/stores/:slug/verification', async (req, res, next) => {
     // more people than the console.
     await store.audit(outcome === 'verified' ? 'seller.verification_recorded' : 'seller.verification_refused',
       { channelId: channel.id, method, months });
-    return res.redirect(`${back()}?saved=${outcome}`);
+    return res.redirect(back(`saved=${outcome}`));
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Tell a seller their identity check is ending.
+ *
+ * Sent from the store's own page, by a person, about the check that is on screen —
+ * and recorded on that check, so the list cannot ask twice. The order is claim →
+ * send → release-if-nothing-was-written: two operators either side of a slow page
+ * load must not both mail somebody, and a claim with no message behind it must not
+ * survive, because the next person to work the list would skip a seller nobody has
+ * actually contacted.
+ */
+APP.post('/admin/stores/:slug/verification/notice', async (req, res, next) => {
+  const back = (qs = '') => `/admin/stores/${encodeURIComponent(req.params.slug)}${qs ? `?${qs}` : ''}#verification`;
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    const channel = await store.channelBySlug(req.params.slug);
+    if (!channel) return res.status(404).send('Channel not found');
+
+    const current = await store.verificationFor(channel.id);
+    if (!lapseOf(current)) return res.redirect(back('error=no-check'));
+
+    const claimed = await store.markVerificationNotice({ verificationId: current.id, actorId: req.user.id });
+    if (!claimed) return res.redirect(back('error=already-noticed'));
+
+    const sent = await sendLapseNotice({ channel, verification: current });
+    if (!sent.id) {
+      // Nothing was written down, so nothing was said. Take the claim back.
+      await store.releaseVerificationNotice(current.id);
+      return res.redirect(back('error=not-sent'));
+    }
+    await store.audit('seller.verification_notice_sent',
+      { channelId: channel.id, method: current.method, days: sent.days, delivered: Boolean(sent.delivered) });
+    // `delivered` false is the console driver, which is not a failure — the flash
+    // says what happened either way rather than implying a mail left the building.
+    return res.redirect(back(`saved=${sent.delivered ? 'noticed' : 'noticed-logged'}`));
   } catch (err) { return next(err); }
 });
 
@@ -2952,9 +3037,12 @@ APP.get('/dashboard/:slug/settings', async (req, res, next) => {
     res.send(views.storeSettings({
       channel, user: req.user, consent: req.consent, flash: flashFor(req.query),
       plan,
-      // What is on file about the person, not the files. The panel answers with
-      // the newest row; the badge the storefront shows comes from the same one.
+      // Two facts, two reads. `verification` is the STANDING outcome (what the
+      // badge rests on, and what an operator recorded last) and `pendingRequest` is
+      // whether there is an open request — a seller can be waiting on the next check
+      // while the current one still counts, and the panel has to be able to say both.
       verification: await store.verificationFor(channel.id),
+      pendingRequest: await store.pendingVerificationFor(channel.id),
       capabilities: plan.capabilities,
       // Whether the marketplace is REACHABLE, not just whether the box is
       // ticked: a free store that asks for it gets an explanation, not a
@@ -3358,18 +3446,38 @@ APP.get('/admin', async (req, res, next) => {
         { label: 'Views · 30d', value: Number(reach.views || 0).toLocaleString('en-IN'), context: `${Number(reach.unlocks || 0).toLocaleString('en-IN')} unlocks · ${Number(reach.events || 0).toLocaleString('en-IN')} ad views` },
     ];
     const verificationQueue = await store.verificationQueue();
+    // Derived on every read, never scheduled: `expires_at` against the clock is the
+    // whole mechanism, so there is no job to be late and no state to go stale.
+    const lapsing = await store.verificationsLapsing({ days: LAPSE_WINDOW_DAYS });
+    const lapsingLapsed = lapsing.filter((v) => new Date(v.expires_at) <= new Date()).length;
+    const lapsingUntold = lapsing.filter((v) => !v.notice_sent_at && new Date(v.expires_at) > new Date()).length;
     const queueRows = [
         { title: 'Transfers to match', count: counts.payments + counts.invoices, note: 'A person matches each one against the statement by hand.', href: '/admin/payments' },
         { title: 'Files reported', count: counts.reports, note: `${AUTO_HIDE_AFTER} distinct reporters hide a file automatically. Below that, it waits.`, href: '/admin/reports' },
         { title: 'Stores needing a decision', count: counts.moderation, note: 'Restricted, suspended or removed.', href: '/admin/moderation' },
         // Its own row, because it is its own kind of work: not moderation, and
         // not a payment. A store can wait on a document check with nothing wrong
-        // with it at all. Shown only when somebody is waiting.
+        // with it at all. Shown only when somebody is waiting — and it links to the
+        // FILTERED list. The first version pointed at `/admin/stores`, which is
+        // every store on the platform: a queue row that answers its own count and
+        // then makes you find the row by hand is worse than no row at all.
         ...(verificationQueue.length ? [{
           title: 'Identity checks asked for',
           count: verificationQueue.length,
           note: `${verificationQueue.length === 1 ? 'One seller has' : 'Sellers have'} asked to be checked. Look at one document, record what you saw, keep no copy. Oldest first.`,
-          href: '/admin/stores',
+          href: '/admin/stores?identity=pending&sort=newest',
+        }] : []),
+        // The other half of the identity work, and the half nothing would ever
+        // remind anybody about: a check that is about to stop counting, or has
+        // just stopped. A badge going quietly dark is the failure mode a seller
+        // only discovers when a buyer asks why it disappeared.
+        ...(lapsing.length ? [{
+          title: Number(lapsingLapsed) ? 'Checks ending, or ended' : 'Checks ending soon',
+          count: lapsing.length,
+          note: `${lapsing.length === 1 ? 'One check is' : `${lapsing.length} checks are`} within two months of their date`
+            + `${Number(lapsingLapsed) ? `, and ${lapsingLapsed} of them ${lapsingLapsed === 1 ? 'has' : 'have'} already lapsed` : ''}.`
+            + ` ${Number(lapsingUntold) ? `${lapsingUntold} nobody has been told about yet — send the notice from the store's page.` : 'Everyone has been told.'}`,
+          href: '/admin/stores?identity=lapsing&sort=expiry',
         }] : []),
         { title: 'Files needing a decision', count: counts.files, note: `Pending, restricted, or withheld from a country. A file can be in here while its store is public.${counts.filesRemoved ? ` ${counts.filesRemoved} removed file${counts.filesRemoved === 1 ? ' is' : 's are'} not counted — nothing is waiting on us there, the owner has to appeal.` : ''}`, href: '/admin/moderation' },
         { title: 'Suspended accounts', count: counts.banned, note: 'Signed out everywhere, stores hidden, nothing deleted.', href: '/admin/users' },
@@ -3433,15 +3541,21 @@ APP.get('/admin/stores', async (req, res, next) => {
       q: String(req.query.q || '').trim().slice(0, 80),
       state: String(req.query.state || 'all'),
       plan: String(req.query.plan || 'all'),
+      // The console's identity queue links land here. `store.storeDirectory`
+      // validates the value against the states it can actually produce, so this is
+      // a passthrough rather than a second allowlist to keep in step.
+      identity: String(req.query.identity || 'all'),
       sort: String(req.query.sort || 'traffic'),
     };
 
     if (req.query.format === 'csv') {
       const all = await exportAll(({ page, perPage }) => store.storeDirectory({ ...filters, page, perPage }));
       const head = ['store', 'slug', 'owner_email', 'plan', 'subscription', 'state',
-        'listing', 'files_live', 'files_total', 'views_30d', 'unlocks', 'ad_views_30d', 'reviews', 'last_file_at'];
+        'listing', 'identity', 'identity_expires', 'files_live', 'files_total', 'views_30d', 'unlocks', 'ad_views_30d', 'reviews', 'last_file_at'];
       const body = all.rows.map((r) => [r.name, r.slug, r.owner_email || '', r.plan_code, r.sub_status,
-        r.moderation_state, r.listing_mode, r.files_live, r.files_total, r.views_30d,
+        r.moderation_state, r.listing_mode, r.identity_state,
+        r.verification_expires_at ? new Date(r.verification_expires_at).toISOString() : '',
+        r.files_live, r.files_total, r.views_30d,
         r.unlocks, r.ad_views_30d, r.reviews, r.last_file_at ? new Date(r.last_file_at).toISOString() : '']);
       const stamp = new Date().toISOString().slice(0, 10);
       await store.audit('channel.directory_exported',
@@ -3483,10 +3597,11 @@ APP.get('/admin/stores/:slug', async (req, res, next) => {
     const channelId = data?.channel?.id ?? null;
     const verification = channelId ? await store.verificationFor(channelId) : null;
     const verifications = channelId ? await store.verificationsFor(channelId) : [];
+    const pendingRequest = channelId ? await store.pendingVerificationFor(channelId) : null;
     // A store that does not exist is not a 404 for the operator: "no such store"
     // is a legitimate answer that deserves a page with a way back.
     return res.send(views.adminStoreDetail({
-      verification, verifications,
+      verification, verifications, pendingRequest,
       user: await withBadges(req.user), consent: req.consent, flash: flashFor(req.query),
       data, rules: await store.policyRules(), actions: MOD_ACTIONS, labels: ACTION_LABELS,
     }));
@@ -3621,7 +3736,7 @@ APP.post('/dashboard/:slug/assets/:assetId/country', async (req, res, next) => {
       // known, and not left to a form that only renders one button.
       const existing = (await store.assetCountryRules(asset.id))
         .find((r) => r.country_code === String(req.body.countryCode).toUpperCase());
-      if (!existing || existing.source !== 'creator') return res.redirect(`${back}?error=nope`);
+      if (!existing || existing.source !== 'creator') return res.redirect(`${back}?error=rule-not-yours`);
       await store.clearAssetCountryRule({
         assetId: asset.id, countryCode: existing.country_code, actorId: req.user.id,
       });

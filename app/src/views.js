@@ -39,7 +39,8 @@ import { assetBehaviour } from './moderation.js';
 // (a person, the platform, or a visitor) and what it was about.
 import { AUDIT_FAMILIES, actorOf, subjectOf } from './audit.js';
 import {
-  METHODS, methodOf, stateOf, badgeFor, whatItMeans, requestability, STATE_WORDING, DEFAULT_MONTHS,
+  METHODS, methodOf, stateOf, lapseOf, withinNoticeWindow, badgeFor, whatItMeans, requestability, STATE_WORDING,
+  DEFAULT_MONTHS, LAPSE_WINDOW_DAYS,
 } from './verification.js';
 
 const FAMILY_LABELS = Object.fromEntries(AUDIT_FAMILIES.map((f) => [f.key, f.label]));
@@ -4243,13 +4244,44 @@ ${pageHead(channel, 'billing', 'Billing', `Two things cost money here, and both 
 
 export function storeSettings({
   channel, user, consent = null, flash = null, plan, canList = false,
-  subscription = null, stats = {}, verification = null, capabilities = {},
+  subscription = null, stats = {}, verification = null, pendingRequest = null, capabilities = {},
 }) {
   // Who is behind the store. Shown as a state, not a score: the panel says what a
   // check is, what it costs nobody, and what we keep (the outcome — never a copy).
+  //
+  // Two facts, kept apart on purpose. `vState` is what the BADGE is (`none`,
+  // `verified`, `expired`, `rejected`) and comes from the last decided row; the open
+  // request is separate, because a seller can be waiting on the next check while the
+  // current one still counts — and if these were one row, asking in good time would
+  // take the badge down.
   const vState = stateOf(verification);
-  const ask = requestability({ capabilities, state: vState });
-  const asked = verification?.created_at && vState === 'pending' ? longDay(verification.created_at) : null;
+  const lapse = lapseOf(verification);
+  const waiting = Boolean(pendingRequest);
+  const ask = requestability({
+    capabilities,
+    state: vState,
+    pending: waiting,
+    // Both research findings point the same way: prompt EARLY (60 days here, a month
+    // at the very latest) and do NOT take the mark away while you are prompting for
+    // the renewal. What makes the renewal form appear is being INSIDE that window —
+    // not merely holding a live check, which would offer a renewal eighteen months
+    // out and turn the one open window into a permanent button.
+    lapsing: withinNoticeWindow(lapse),
+  });
+  const asked = pendingRequest ? longDay(pendingRequest.created_at) : null;
+  // When asking opens again. Printed as a date rather than "in 548 days": the seller
+  // is planning a trip to an office, not counting a timer.
+  const windowOpens = verification?.expires_at
+    ? new Date(new Date(verification.expires_at).getTime() - LAPSE_WINDOW_DAYS * 86400000)
+    : null;
+  const withdrawForm = () => `
+    <form method="post" action="/dashboard/${esc(channel.slug)}/verification/withdraw" style="margin-top:var(--space-4)">
+      <button class="btn btn-sm" type="submit">Withdraw the request</button>
+      <!-- A block, not an inline span: beside a button the sentence wrapped under it
+           and read as though it belonged to the button's own line. Fine print that
+           qualifies an action goes UNDER the action. -->
+      <p class="fine" style="margin:var(--space-3) 0 0">Nothing else changes: withdrawing does not touch a check that is already on file.</p>
+    </form>`;
   return layout({
     title: 'Store settings', user, activeChannel: channel, consent, current: 'dashboard',
     body: `
@@ -4383,24 +4415,35 @@ ${flashNote(flash)}
 
     <div class="panel">
       <div class="panel-head">
-        <h2 style="font-size:var(--text-md)">${esc(STATE_WORDING[vState])}</h2>
+        <h2 style="font-size:var(--text-md)">${esc(waiting && vState !== 'verified' ? STATE_WORDING.pending : STATE_WORDING[vState])}</h2>
         <span class="spacer"></span>
         ${vState === 'verified' ? pill('Shown on your store', 'success') : ''}
+        ${vState === 'verified' && lapse && lapse.level !== 'current' ? pill(lapse.label, lapse.level === 'lapsed' ? 'warning' : 'info') : ''}
       </div>
       <div class="panel-body">
         ${vState === 'verified' ? `
           <p class="small">${esc(badgeFor(verification).sentence)}</p>
           <p class="fine" style="margin-top:var(--space-3)">
-            It lapses on ${esc(longDay(verification.expires_at))}. We will tell you before it does; nothing about your
-            files changes when it does.
+            It lapses on ${esc(longDay(verification.expires_at))}${lapse && lapse.level !== 'current' ? ` <strong>(${esc(lapse.label)})</strong>` : ''}.
+            A person here works the list of checks that are close to their date and will write to you about two
+            months before — but this panel is the record either way, and nothing about your files changes
+            when the badge comes down.
           </p>` : ''}
-        ${vState === 'pending' ? `
+        ${vState === 'verified' && waiting ? `
+          <!-- Checked, and waiting on the next one. Both facts, both said: this is
+               the ordinary renew-early path, and the panel would be lying by
+               omission if it showed the badge and stayed quiet about the request —
+               the seller would ask again, and we would be looking at the same
+               document twice. -->
+          <p class="small" style="margin-top:var(--space-4)">You asked for the next check on ${esc(asked)}, and it is with
+          us. The check above keeps counting to its own date, so your badge stays up while a person gets to it.</p>
+          ${pendingRequest.request_note ? `<p class="fine">You wrote: “${esc(pendingRequest.request_note)}”</p>` : ''}
+          ${withdrawForm()}` : ''}
+        ${waiting && vState !== 'verified' ? `
           <p class="small">You asked on ${esc(asked)}. A person looks at one document and records what they saw —
           this is done by hand, in the order requests arrive.</p>
-          ${verification.request_note ? `<p class="fine">You wrote: “${esc(verification.request_note)}”</p>` : ''}
-          <form method="post" action="/dashboard/${esc(channel.slug)}/verification/withdraw" style="margin-top:var(--space-4)">
-            <button class="btn btn-sm" type="submit">Withdraw the request</button>
-          </form>` : ''}
+          ${pendingRequest.request_note ? `<p class="fine">You wrote: “${esc(pendingRequest.request_note)}”</p>` : ''}
+          ${withdrawForm()}` : ''}
         ${vState === 'rejected' ? `
           <p class="small">The last check did not go through.</p>
           ${verification.notes ? `<p class="fine">What the person noted: “${esc(verification.notes)}”</p>` : ''}
@@ -4414,6 +4457,7 @@ ${flashNote(flash)}
         ${ask.ok ? `
           <form method="post" action="/dashboard/${esc(channel.slug)}/verification"
                 style="margin-top:var(--space-5)">
+            ${ask.detail ? `<p class="small" style="margin-bottom:var(--space-4)">${esc(ask.detail)}</p>` : ''}
             <div class="field">
               <label for="v-note">Anything we need to know to reach you? <span class="muted">(optional)</span></label>
               <input class="input" id="v-note" name="note" maxlength="280"
@@ -4421,10 +4465,11 @@ ${flashNote(flash)}
               <span class="hint">Logistics only. <strong>Do not paste a document number here</strong> —
               nobody needs it in writing, and this field is kept.</span>
             </div>
-            <button class="btn btn-primary" type="submit">Ask for a check</button>
+            <button class="btn btn-primary" type="submit">${vState === 'verified' ? 'Ask for the next check' : 'Ask for a check'}</button>
           </form>` : `
           <p class="fine" style="margin-top:var(--space-4)">${esc(ask.reason || '')}
-          ${ask.detail ? esc(ask.detail) : ''}</p>`}
+          ${ask.code === 'already-checked' && lapse ? esc(`It stops counting on ${longDay(verification.expires_at)}, and asking opens again on ${longDay(windowOpens)} — the last two months, so the document is fresh when a person looks at it and your badge never has a gap in it.`) : ''}
+          ${ask.code === 'plan' ? esc(ask.detail || '') : ''}</p>`}
       </div>
     </div>
 
@@ -5193,14 +5238,53 @@ export function adminStores({ user, consent = null, flash = null, data = null, f
   const page = data?.page || 1;
   const perPage = data?.perPage || 25;
   const pages = Math.max(Math.ceil(total / perPage), 1);
-  const { q = '', state = 'all', plan = 'all', sort = 'traffic' } = filters;
+  const { q = '', state = 'all', plan = 'all', identity = 'all', sort = 'traffic' } = filters;
 
   const link = (next) => {
     const params = new URLSearchParams();
-    const merged = { q, state, plan, sort, ...next };
+    const merged = { q, state, plan, identity, sort, ...next };
     for (const [k, v] of Object.entries(merged)) if (v && v !== 'all' && !(k === 'sort' && v === 'traffic')) params.set(k, v);
     const qs = params.toString();
     return `/admin/stores${qs ? `?${qs}` : ''}`;
+  };
+
+  /**
+   * What a store's identity state reads as, in the one column that carries it.
+   *
+   * The states are the console's own (`storeDirectory` computes them from the
+   * outcome row and any open request), and each chip is a word rather than a
+   * colour: an operator scanning this column is deciding who to work next, and
+   * "waiting", "ends soon" and "no check" are three different next actions.
+   */
+  const IDENTITY_LABELS = {
+    pending: ['Waiting on a check', 'warning'],
+    checked: ['Checked', 'success'],
+    lapsing: ['Check ending soon', 'info'],
+    lapsed: ['Check has lapsed', 'warning'],
+    none: ['Never checked', ''],
+  };
+  /**
+   * Two lines, because there are two facts.
+   *
+   * The pill is the STANDING outcome — what the badge on the storefront rests on —
+   * and the lines under it say whether somebody is waiting on us and whether the
+   * date is close. A store can be in both states at once (asking for the next check
+   * while the current one still runs), and a column that had to choose between them
+   * would hide exactly the row an operator is working down the list to find.
+   */
+  const identityCell = (r) => {
+    const [label, tone] = IDENTITY_LABELS[r.identity_state] || IDENTITY_LABELS.none;
+    const lapse = r.identity_state === 'lapsing' || r.identity_state === 'lapsed'
+      ? lapseOf({ status: 'verified', expires_at: r.verification_expires_at })
+      : null;
+    const what = r.identity_state === 'none'
+      ? ''
+      : `${methodOf(r.verification_method)?.title || r.verification_method || 'a document'}${
+        lapse ? ` — ${lapse.label}` : r.verification_expires_at ? `, to ${longDay(r.verification_expires_at)}` : ''}`;
+    return `${pill(label, tone)}
+      ${what ? `<div class="fine">${esc(what)}</div>` : ''}
+      ${r.verification_requested_at ? `<div class="fine">asked ${esc(relTime(r.verification_requested_at))}</div>` : ''}
+      ${lapse && lapse.level !== 'lapsed' ? `<div class="fine">${r.verification_notice_at ? `told ${esc(relTime(r.verification_notice_at))}` : 'nobody told yet'}</div>` : ''}`;
   };
 
   const sortHead = (key, label, numeric = true) => `
@@ -5240,10 +5324,21 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
     .map(([v, l]) => `<option value="${v}"${plan === v ? ' selected' : ''}>${l}</option>`).join('')}
       </select>
     </div>
+    <div class="field">
+      <label for="identity">Identity</label>
+      <select class="input" id="identity" name="identity">
+        ${[['all', 'Any state'], ['pending', 'Waiting on a check'], ['lapsing', 'Check ending soon'],
+    ['lapsed', 'Check has lapsed'], ['checked', 'Checked'], ['none', 'Never checked']]
+    .map(([v, l]) => `<option value="${v}"${identity === v ? ' selected' : ''}>${l}</option>`).join('')}
+      </select>
+      <span class="hint">The overview links straight to two of these: waiting on a check, and checks ending
+      soon. A store can be in both — asking for the next check before the current one runs out is the
+      ordinary way to renew.</span>
+    </div>
     <input type="hidden" name="sort" value="${esc(sort)}">
     <div class="filters-foot">
       <button class="btn btn-primary" type="submit">Apply</button>
-      ${(q || state !== 'all' || plan !== 'all')
+      ${(q || state !== 'all' || plan !== 'all' || identity !== 'all')
     ? `<a class="btn btn-sm" href="/admin/stores">Clear</a>` : ''}
     </div>
   </form>
@@ -5251,7 +5346,7 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
   <div class="section-head" style="margin-top:var(--space-6)">
     <h2>${total ? `${num(total)} store${total === 1 ? '' : 's'}` : 'No store matches'}</h2>
     <p>${total
-    ? `Page ${num(page)} of ${num(pages)}${sort === 'traffic' ? ' · busiest first' : ''}`
+    ? `Page ${num(page)} of ${num(pages)}${sort === 'traffic' ? ' · busiest first' : ''}${sort === 'expiry' ? ' · soonest to lapse first' : ''}${identity !== 'all' ? ` · filtered to <strong>${esc((IDENTITY_LABELS[identity] || ['', ''])[0])}</strong>` : ''}`
     : 'Clear the filters, or search for a different word — the search looks at names, slugs, owner names and owner emails.'}</p>
   </div>
 
@@ -5264,6 +5359,7 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
         <tr>
           <th>Store</th>
           <th>State</th>
+          <th>Identity</th>
           <th>Plan</th>
           ${sortHead('files', 'Files')}
           ${sortHead('traffic', 'Views · 30d')}
@@ -5280,6 +5376,7 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
     r.listing_mode === 'marketplace' ? ' · listed' : ''} · <a href="/s/${esc(r.slug)}" target="_blank" rel="noopener">open store ↗</a></div>
           </td>
           <td data-label="State">${stateChip(r.moderation_state)}${r.moderation_reason ? `<div class="fine">${esc(r.moderation_reason)}</div>` : ''}</td>
+          <td data-label="Identity">${identityCell(r)}</td>
           <td data-label="Plan">${r.plan_code === 'free' ? pill('Free', '') : pill(r.plan_code, 'accent')}${
     r.sub_status === 'grace' ? '<div class="fine">in grace</div>' : ''}</td>
           <td class="num" data-label="Files">${num(r.files_live)}${r.files_total !== r.files_live ? `<div class="fine">of ${num(r.files_total)}</div>` : ''}</td>
@@ -5297,8 +5394,8 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
     ${page < pages ? `<a class="btn btn-sm" href="${esc(link({ page: page + 1 }))}">Older →</a>` : ''}
   </nav>` : ''}
   ` : `<div class="empty">
-    ${q || state !== 'all' || plan !== 'all'
-    ? 'Nothing matches those filters.'
+    ${q || state !== 'all' || plan !== 'all' || identity !== 'all'
+    ? `Nothing matches those filters${identity !== 'all' ? ` — and a store with no check at all is <strong>Never checked</strong>, not <strong>Checked</strong>` : ''}.`
     : 'No store has been created yet. The first one will appear here with its traffic and unlocks.'}
   </div>`}
 
@@ -5327,7 +5424,7 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
  */
 export function adminStoreDetail({
   user, consent = null, flash = null, data = null, rules = [], actions = [], labels = {},
-  verification = null, verifications = [],
+  verification = null, verifications = [], pendingRequest = null,
 }) {
   if (!data) {
     return adminShell({
@@ -5338,6 +5435,17 @@ export function adminStoreDetail({
   }
   const { channel: c, files, reports, invoice, history } = data;
   const openReports = reports.filter((r) => r.status === 'open');
+  // The same two facts the seller's own panel is built from, from the same model:
+  // what the badge stands on, and whether somebody is waiting on us right now.
+  const vState = stateOf(verification);
+  const lapse = lapseOf(verification);
+  const vRequested = pendingRequest ? longDay(pendingRequest.created_at) : null;
+  // The person, not their uuid. Same shape as "Decided by" above it: a name if the
+  // account has one, otherwise the address, and a sentence rather than an absence
+  // when the account is gone.
+  const sentBy = verification?.notice_sent_at
+    ? ` by ${verification.notice_by_name || verification.notice_by_email || 'an account since deleted'}`
+    : '';
   const options = (selected = null) => rules
     .map((r) => `<option value="${esc(r.code)}"${r.code === selected ? ' selected' : ''}>${esc(r.title)} (${esc(r.code)})</option>`)
     .join('');
@@ -5444,25 +5552,53 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
 
 <section class="section" id="verification">
   <div class="section-head">
-    <h2>Who is behind this store${verification && stateOf(verification) === 'verified' ? ' · checked' : ''}</h2>
+    <h2>Who is behind this store${vState === 'verified' ? ' · checked' : vState === 'rejected' ? ' · refused' : vState === 'expired' ? ' · lapsed' : ''}</h2>
     <p>A document was seen by a person, and what they saw is recorded here. The document is not —
     the database refuses to store one. This is not a moderation decision: a checked seller can
     still publish a file that gets taken down.</p>
   </div>
 
-  ${verification && stateOf(verification) === 'pending' ? `<div class="note note-warning" role="status">
-    <strong>${esc(verification.request_note ? `They asked, and wrote: “${verification.request_note}”` : 'They have asked for a check.')}</strong>
-    Asked ${esc(relTime(verification.created_at))}. Work it in the order it arrived.
+  ${pendingRequest ? `<div class="note note-warning" role="status">
+    <strong>${esc(pendingRequest.request_note ? `They asked, and wrote: “${pendingRequest.request_note}”` : 'They have asked for a check.')}</strong>
+    Asked ${esc(relTime(pendingRequest.created_at))}. Work it in the order it arrived${vState === 'verified'
+    ? ` — and note that their current check runs until ${esc(longDay(verification.expires_at))}, so the badge stays up while you arrange this one.` : '.'}
   </div>` : ''}
 
-  ${verification && stateOf(verification) === 'verified' ? `<div class="panel"><div class="panel-body">
-    <p class="small">${esc(badgeFor(verification).sentence)}</p>
+  ${vState === 'verified' ? `<div class="panel"><div class="panel-body">
+    <div class="row" style="align-items:baseline;gap:var(--space-3);flex-wrap:wrap">
+      <p class="small" style="margin:0">${esc(badgeFor(verification).sentence)}</p>
+      ${lapse ? pill(lapse.label, lapse.level === 'lapsed' ? 'warning' : lapse.level === 'current' ? '' : 'info') : ''}
+    </div>
     <dl class="kv" style="margin-top:var(--space-4)">
       <dt>Decided by</dt><dd>${esc(verification.decided_by_name || verification.decided_by_email || 'a person no longer on the console')}</dd>
-      <dt>Counts until</dt><dd>${esc(longDay(verification.expires_at))}</dd>
+      <dt>Counts until</dt><dd>${esc(longDay(verification.expires_at))}${lapse ? ` <span class="fine">· ${esc(lapse.label)}</span>` : ''}</dd>
+      <dt>Notice</dt><dd>${verification.notice_sent_at
+    ? `Sent ${esc(relTime(verification.notice_sent_at))}${sentBy} .`.replace(' .', '.')
+    : '<span class="fine">Nobody has told them yet.</span>'}</dd>
       ${verification.notes ? `<dt>Note</dt><dd>${esc(verification.notes)}</dd>` : ''}
     </dl>
   </div></div>` : ''}
+
+  ${lapse && lapse.level !== 'current' ? `<div class="panel" style="margin-top:var(--space-5)">
+    <div class="panel-head"><h2 style="font-size:var(--text-md)">${lapse.level === 'lapsed' ? 'The check has ended' : 'The check is ending'}</h2></div>
+    <div class="panel-body">
+      <p class="small" style="margin-top:0">
+        ${lapse.level === 'lapsed'
+    ? `It stopped counting on ${esc(longDay(verification.expires_at))}, so the badge is off the store page already — nothing else about the store changed, and nothing was taken away. If they want it back, they ask from their settings and it is the same process as the first time.`
+    : verification.notice_sent_at
+      ? `It stops counting on ${esc(longDay(verification.expires_at))} — ${esc(lapse.label)}. They were told ${esc(relTime(verification.notice_sent_at))}${esc(sentBy)}, so nobody writes to them twice. There is no schedule behind this and nothing is sent automatically: the list on the console is worked by hand.`
+      : `It stops counting on ${esc(longDay(verification.expires_at))} — ${esc(lapse.label)}. Nobody has told them yet. The notice below gives them the date, what happens on it, and what does not. There is no schedule behind this and nothing will be sent automatically: the list on the console is worked by hand, which is why this button is here.`}
+      </p>
+      ${lapse.level === 'lapsed' || verification.notice_sent_at ? '' : `<form method="post" action="/admin/stores/${esc(c.slug)}/verification/notice">
+        <button class="btn btn-primary" type="submit">Write to them that it is ending</button>
+        <p class="fine" style="margin-top:var(--space-3)">
+          One message, from the platform, naming the date. It goes to
+          <span class="mono">${esc(c.owner_email || 'no address on file')}</span>${c.owner_email ? '' : ' — there is nothing to send it to'}.
+          It is recorded on this check, so the list knows they have been told.
+        </p>
+      </form>`}
+    </div>
+  </div>` : ''}
 
   <div class="panel" style="margin-top:var(--space-5)"><div class="panel-body">
     <form method="post" action="/admin/stores/${esc(c.slug)}/verification">

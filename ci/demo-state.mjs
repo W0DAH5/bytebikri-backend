@@ -17,13 +17,16 @@
  *      file has not been looked at by anybody. It works at its link and on the
  *      store page, it is absent from search, and it is the one item in the
  *      operator's queue.
- *   3. ONE CHECKED SELLER AND ONE WHO HAS ASKED: Alice's identity was looked at
- *      (the badge is live on her storefront, and the whole record — who decided,
- *      on what document, until when — is on her operator page), and Nima has an
- *      open request sitting in the operator's identity queue. Asking for a check
- *      needs a plan that includes it, so the seeder takes Nima through the same
- *      three calls the real upgrade path uses rather than writing a row a person
- *      could not have produced.
+ *   3. THE THREE IDENTITY STATES A PERSON ACTUALLY WORKS WITH: Alice's check was
+ *      made today and runs for two years (her badge and its record are on her
+ *      storefront and her operator page); Nima's was made 23 months ago and has a
+ *      month left, so her store shows the badge AND a lapse date, she has asked for
+ *      the next check, and she is the one row in the console's "checks ending" list
+ *      that nobody has been told about yet; Bob has never been checked, which is
+ *      where most stores are and which must look like nothing at all. Asking for a
+ *      check needs a plan that includes it, so the seeder takes Nima through the
+ *      same three calls the real upgrade path uses rather than writing a row a
+ *      person could not have produced.
  *
  * Everything is written through the same store calls the routes use — this is the
  * feature, not a fixture. Idempotent: run it as often as you like.
@@ -158,6 +161,21 @@ if (alice && OPERATOR && !(await one(
   say('alice checked', 'citizenship certificate, 24 months');
 }
 
+// Nima: a check made nearly two years ago. Recorded with the date it was SEEN, so
+// its window runs from that day and it is already inside the notice band — which is
+// the state the console's "ending soon" list exists for, and the state that is
+// impossible to fake from a screenshot.
+if (nima && OPERATOR && !(await one(
+  `select id from seller_verifications where channel_id = $1 and status in ('verified','rejected')`, [nima.id]))) {
+  const seen = new Date();
+  seen.setMonth(seen.getMonth() - 23);
+  await store.recordVerification({
+    channelId: nima.id, outcome: 'verified', method: 'citizenship', actorId: OPERATOR.id,
+    months: 24, seenAt: seen, note: 'Seen in person at the shop; name matched the account.',
+  });
+  say('nima checked', `citizenship, seen ${Math.round((Date.now() - seen.getTime()) / 86400000 / 30)} months ago`);
+}
+
 // Nima: the plan she would have to be on to ask, bought the way a seller buys it —
 // a request, a transfer reference, and an operator matching it by hand.
 if (nima && OPERATOR) {
@@ -190,10 +208,16 @@ console.log('\n  country rules:',
   rules.map((r) => `${r.title} ${r.country_code} ${r.state} (${r.source})`).join(', ') || 'none');
 console.log('  waiting files:',
   waitingNow.map((w) => `${w.title} at ${w.name}`).join(', ') || 'none');
-const checks = await many(`select c.name, v.status, v.method from seller_verifications v
-                             join channels c on c.id = v.channel_id order by v.created_at`);
-console.log('  identity checks:',
-  checks.map((c) => `${c.name} ${c.status}${c.method && c.status !== 'pending' ? ` (${c.method})` : ''}`).join(', ') || 'none');
+const checks = await many(`select c.name, v.status, v.method, v.expires_at, v.notice_sent_at
+                              from seller_verifications v
+                              join channels c on c.id = v.channel_id order by v.created_at`);
+const { lapseOf } = await import('../app/src/verification.js');
+console.log('  identity:',
+  checks.map((c) => {
+    const l = lapseOf(c);
+    const when = l ? ` — ${l.label}` : '';
+    return `${c.name} ${c.status}${c.method && c.status !== 'pending' ? ` (${c.method})` : ''}${when}${l && l.level !== 'current' && !c.notice_sent_at && l.level !== 'lapsed' ? ' (nobody told yet)' : ''}`;
+  }).join(', ') || 'none');
 console.log('\n  open the preview at /  ·  the creator’s view at /dashboard/alice'
   + '  ·  the queue at /admin\n');
 

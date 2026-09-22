@@ -41,6 +41,7 @@ async function fixture() {
 
 const {
   METHODS, methodOf, stateOf, requestability, badgeFor, whatItMeans, expires, longDay,
+  lapseOf, lapseNotice, LAPSE_LEVELS, LAPSE_WINDOW_DAYS,
 } = await import('../src/verification.js');
 const { store } = await import('../src/store.js');
 
@@ -265,12 +266,16 @@ test('asking twice is one request, and the second answer is not an error', async
   const second = await store.askForVerification({ channelId: channel.id, note: 'again' });
   assert.equal(second.ok, false, 'two clicks are one request');
 
-  // Only the newest row is what the seller and the storefront read.
-  const latest = await store.verificationFor(channel.id);
-  assert.equal(stateOf(latest), 'pending');
+  // TWO reads, because they are two facts. The open request is one; what the badge
+  // is standing on is the other, and a request is not a decision — so the badge
+  // read says nothing while the request read says pending.
+  const open = await store.pendingVerificationFor(channel.id);
+  assert.equal(stateOf(open), 'pending');
+  assert.equal(await store.verificationFor(channel.id), null,
+    'an open request is not an outcome, and the badge must not read one as the other');
 
   await store.withdrawVerificationRequest(channel.id);
-  assert.equal(await store.verificationFor(channel.id), null, 'withdrawn means gone, not hidden');
+  assert.equal(await store.pendingVerificationFor(channel.id), null, 'withdrawn means gone, not hidden');
 
   // And a recorded outcome replaces the request.
   await store.askForVerification({ channelId: channel.id, note: null });
@@ -290,6 +295,218 @@ test('asking twice is one request, and the second answer is not an error', async
   await query('delete from seller_verifications where channel_id = $1', [channel.id]);
   assert.equal(await store.verificationFor(channel.id), null);
   await query('delete from channels where id = $1', [channel.id]);
+});
+
+test('the lapse bands are boundaries, not vibes', () => {
+  const now = new Date('2026-06-01T06:00:00Z');
+  const at = (days) => lapseOf(
+    { status: 'verified', method: 'pan', verified_at: '2026-01-01T00:00:00Z', expires_at: new Date(now.getTime() + days * 86400000) },
+    now,
+  );
+  assert.equal(at(400).level, 'current');
+  assert.equal(at(61).level, 'current', 'one day outside the window is outside it');
+  assert.equal(at(60).level, 'soon', 'the window starts here');
+  assert.equal(at(31).level, 'soon');
+  assert.equal(at(30).level, 'due', 'a month is the loud band');
+  assert.equal(at(1).level, 'due');
+  assert.equal(at(0).level, 'due', 'the last day is still a warning, not a lapse');
+  assert.equal(at(-1).level, 'lapsed');
+  assert.equal(at(-400).level, 'lapsed');
+
+  // The labels say what a person needs at a glance, and the units change so nobody
+  // has to read "731 days left" and do arithmetic.
+  assert.equal(at(1).label, 'ends tomorrow');
+  assert.equal(at(9).label, '9 days left');
+  assert.equal(at(400).label, '13 months left');
+  assert.equal(at(0).label, 'ends today');
+  assert.equal(at(-1).label, 'lapsed');
+
+  // Every level the function can return has wording and a note, so a screen cannot
+  // render an empty chip.
+  const levels = new Set([at(400).level, at(60).level, at(30).level, at(-1).level]);
+  assert.deepEqual([...levels].sort(), LAPSE_LEVELS.map((l) => l.key).sort());
+  for (const l of LAPSE_LEVELS) assert.ok(l.note && l.label, `${l.key} has wording`);
+
+  // Null rather than a guess for anything that is not a live check.
+  for (const row of [null, { status: 'pending' }, { status: 'rejected' }, { status: 'verified' }, { status: 'none' }]) {
+    assert.equal(lapseOf(row, now), null, `${JSON.stringify(row)} has no lapse to report`);
+  }
+  assert.equal(LAPSE_WINDOW_DAYS, 60);
+});
+
+test('who may ask, and what they are told when they may not', () => {
+  const caps = { verified_badge: true };
+  // The plan gate is first, and its code is the domain code — the ROUTE renames it
+  // for the flash map, where the upgrade flow already owns `plan`.
+  assert.equal(requestability({ capabilities: {}, state: 'none' }).code, 'plan');
+
+  assert.equal(requestability({ capabilities: caps, state: 'none' }).ok, true, 'a free-plan store on a paid tier may ask');
+  assert.equal(requestability({ capabilities: caps, state: 'rejected' }).ok, true, 'a refusal is not an ending');
+  assert.equal(requestability({ capabilities: caps, state: 'verified' }).code, 'already-checked');
+  assert.equal(requestability({ capabilities: caps, state: 'verified', lapsing: true }).ok, true,
+    'and a check that is running out can be renewed before it does');
+  assert.equal(requestability({ capabilities: caps, state: 'verified', lapsing: true }).detail.includes('keeps counting'), true,
+    'the sentence says the current check is not replaced until somebody looks');
+
+  // Pending wins over everything, because it is the one thing that would create a
+  // second request in the queue.
+  assert.equal(requestability({ capabilities: caps, state: 'none', pending: true }).code, 'already-asked');
+  assert.equal(requestability({ capabilities: caps, state: 'verified', pending: true, lapsing: true }).code, 'already-asked');
+});
+
+test('the notice names the date, the consequence, and what does NOT happen', () => {
+  const msg = lapseNotice({ channelName: 'Alice\'s Studio', expiresAt: '2026-11-01T06:15:00Z', days: 40 });
+  assert.match(msg.subject, /1 Nov 2026/, 'the subject carries the date — it is the whole message');
+  assert.match(msg.text, /Alice's Studio/);
+  assert.match(msg.text, /in 40 days/);
+  // The three things a person needs, in order. The third is the one that stops the
+  // recipient replying "am I losing my store".
+  assert.match(msg.text, /badge comes off/, 'what happens on the date');
+  assert.match(msg.text, /store stays open[^]*files stay published/, 'and that nothing else does');
+  assert.match(msg.text, /ask for a check from your store settings/, 'with the way back, named');
+  // It must not demand anything. (The first version of this assertion banned the
+  // words "send us" and failed on the REASSURANCE — "You do not need to send us
+  // anything now" — which is the sentence doing the most work in the whole message.
+  // Assert the shape of a demand, not a word that appears in its absence.)
+  assert.ok(!/you must|you need to (?!send nothing)|required|urgent|immediately|final notice/i.test(msg.text),
+    'nothing in it is a demand');
+  assert.match(msg.text, /do not need to send us anything/, 'and it says so out loud');
+  const past = lapseNotice({ channelName: 'X', expiresAt: '2026-09-01T06:00:00Z', days: -1 });
+  assert.match(past.text, /lapsed|stops counting/, 'a notice written late still reads correctly');
+});
+
+test('a check made last year expires from the day it was made', async () => {
+  // `seenAt` is the ordinary case, not an exotic one: an operator looks at a
+  // document in person and types the outcome up later. Deriving the window from
+  // "now" would hand the seller a fresh two years for a check that has already
+  // been running — a quiet extension nobody decided.
+  const channel = await fixture();
+  const op = await store.userByEmailOrCreate(`backdated-${Date.now()}@test.local`);
+  const seen = new Date();
+  seen.setMonth(seen.getMonth() - 23);
+  const row = await store.recordVerification({
+    channelId: channel.id, outcome: 'verified', method: 'citizenship',
+    actorId: op.id, months: 24, seenAt: seen,
+  });
+  const lapse = lapseOf(row);
+  assert.ok(lapse, 'it is a live check');
+  assert.ok(lapse.days > 0 && lapse.days <= 31, `about a month left, not twenty-four (got ${lapse.days})`);
+  assert.ok(['due', 'soon'].includes(lapse.level),
+    `and it is inside the notice window the day it is recorded (got ${lapse.level})`);
+  assert.ok(badgeFor(row).sentence.includes(String(seen.getUTCFullYear())),
+    'the sentence names the day it was seen, not today');
+
+  // No seenAt still means "seen now", which is the case the buttons produce.
+  const now = await store.recordVerification({
+    channelId: channel.id, outcome: 'verified', method: 'pan', actorId: op.id, months: 24,
+  });
+  assert.ok(lapseOf(now).days >= 729, 'a check recorded as made today gets its full window');
+
+  await query('delete from seller_verifications where channel_id = $1', [channel.id]);
+  await query('delete from channels where id = $1', [channel.id]);
+});
+
+test('asking again while a check is still live does not take the badge down', async () => {
+  // The reason the two reads exist, in one scenario. Research on re-verification is
+  // explicit that a platform should keep the mark while it prompts for renewal —
+  // and asking early would otherwise punish the seller for doing exactly what the
+  // notice asked them to. `verificationFor` reads DECIDED rows only, so the badge
+  // stands on the old check until a person records the new one.
+  const channel = await fixture();
+  const op = await store.userByEmailOrCreate(`recheck-${Date.now()}@test.local`);
+  const first = await store.recordVerification({
+    channelId: channel.id, outcome: 'verified', method: 'pan', actorId: op.id, months: 12,
+  });
+  assert.ok(badgeFor(await store.verificationFor(channel.id)), 'checked to begin with');
+
+  await store.askForVerification({ channelId: channel.id, note: null });
+  const standing = await store.verificationFor(channel.id);
+  assert.equal(standing.id, first.id, 'the badge still stands on the check that was made');
+  assert.ok(badgeFor(standing), 'and it is still a badge');
+  assert.equal(stateOf(await store.pendingVerificationFor(channel.id)), 'pending', 'while the request is on file');
+
+  // A person decides, and the outcome replaces both: the request is answered, the
+  // new row is what the badge rests on, and the history keeps the first one.
+  const second = await store.recordVerification({
+    channelId: channel.id, outcome: 'verified', method: 'pan', actorId: op.id, months: 12,
+  });
+  assert.equal(await store.pendingVerificationFor(channel.id), null, 'answered requests are not still open');
+  assert.equal((await store.verificationFor(channel.id)).id, second.id);
+  const history = await store.verificationsFor(channel.id);
+  assert.equal(history.length, 2, 'and the earlier check stays on the record');
+  assert.equal(history.filter((h) => h.status === 'pending').length, 0, 'with no open request left behind');
+
+  await query('delete from seller_verifications where channel_id = $1', [channel.id]);
+  await query('delete from channels where id = $1', [channel.id]);
+});
+
+test('the lapsing list is derived from the date, and remembers who was told', async () => {
+  // Nothing sweeps at midnight: this list is a query. `expires_at` in the past is
+  // still returned (an operator should be able to find the store whose badge went
+  // dark), which is why the caller's window is a parameter and not a filter
+  // somebody adds later.
+  const channel = await fixture();
+  const op = await store.userByEmailOrCreate(`notice-${Date.now()}@test.local`);
+  await store.recordVerification({
+    channelId: channel.id, outcome: 'verified', method: 'citizenship', actorId: op.id, months: 36,
+  });
+  const far = await store.verificationsLapsing({ days: 60 });
+  assert.equal(far.filter((v) => v.channel_id === channel.id).length, 0, 'three years out is not close');
+
+  // Move the date instead of waiting for it: the row is the only state there is.
+  const inFortyDays = new Date(Date.now() + 40 * 86400000);
+  await query('update seller_verifications set expires_at = $2 where channel_id = $1', [channel.id, inFortyDays]);
+  const soon = await store.verificationsLapsing({ days: 60 });
+  const mine = soon.find((v) => v.channel_id === channel.id);
+  assert.ok(mine, 'forty days out is inside the window');
+  assert.equal(mine.notice_sent_at, null, 'nobody has been told yet');
+  assert.equal(lapseOf(mine).level, 'soon');
+
+  // A notice is claimed once, by a person, and the claim is on the outcome.
+  const claimed = await store.markVerificationNotice({ verificationId: mine.id, actorId: op.id });
+  assert.ok(claimed.notice_sent_at, 'the row records that they were told');
+  assert.equal(claimed.notice_by, op.id);
+  assert.equal(await store.markVerificationNotice({ verificationId: mine.id, actorId: op.id }), null,
+    'a second claim gets nothing, so nobody is mailed twice');
+
+  // Releasing is possible, because a claim with no message behind it must not
+  // survive: the next person to work the list would skip somebody nobody contacted.
+  await store.releaseVerificationNotice(mine.id);
+  assert.equal((await store.verificationsLapsing({ days: 60 })).find((v) => v.channel_id === channel.id).notice_sent_at, null);
+
+  // Past its date, the row is still in the list when the caller asks for it — and
+  // out of it when they do not.
+  await query('update seller_verifications set expires_at = $2 where channel_id = $1',
+    [channel.id, new Date(Date.now() - 86400000)]);
+  assert.ok((await store.verificationsLapsing({ days: 60 })).some((v) => v.channel_id === channel.id),
+    'a lapsed check is still worth seeing');
+  assert.equal((await store.verificationsLapsing({ days: 60, includeLapsed: false })).filter((v) => v.channel_id === channel.id).length, 0,
+    'and can be left out');
+  assert.equal(lapseOf((await store.verificationFor(channel.id))).level, 'lapsed');
+  assert.equal(badgeFor(await store.verificationFor(channel.id)), null, 'a lapsed check carries no badge');
+
+  await query('delete from seller_verifications where channel_id = $1', [channel.id]);
+  await query('delete from channels where id = $1', [channel.id]);
+});
+
+test('no message key is declared twice in the flash maps', () => {
+  // JavaScript allows a duplicate key in an object literal and keeps the LAST one,
+  // so the earlier message does not merge or conflict — it disappears. That is what
+  // happened here: the verification refusal was declared under `plan`, the upgrade
+  // flow declared `plan` again further down, and a seller on the free plan asking
+  // for a check was told "That plan is not available from your current one." on a
+  // form with no plans on it. Nothing in the file looked wrong; the message was
+  // simply unreachable, and only a static check can see that.
+  const src = readFileSync(path.join(here, '..', 'server.js'), 'utf8');
+  for (const name of ['SUCCESS_FLASH', 'ERROR_FLASH']) {
+    const start = src.indexOf(`const ${name} = {`);
+    assert.ok(start > 0, `${name} is where this test thinks it is`);
+    const body = src.slice(start, src.indexOf('\n};', start));
+    const keys = [...body.matchAll(/^\s{2}'?([a-zA-Z0-9-]+)'?:/gm)].map((m) => m[1]);
+    const seen = new Set();
+    const dupes = keys.filter((k) => (seen.has(k) ? true : (seen.add(k), false)));
+    assert.deepEqual(dupes, [], `${name} declares these keys twice: ${dupes.join(', ')}`);
+  }
 });
 
 test('the newest row carries the name of whoever decided it', async () => {
@@ -318,4 +535,107 @@ test('a rejected row carries no expiry and no check date', async () => {
   assert.equal(r.expires_at, null, 'and a refusal does not lapse — it stands until it is answered with a new document');
   await query('delete from seller_verifications where channel_id = $1', [channel.id]);
   await query('delete from channels where id = $1', [channel.id]);
+});
+
+test('a check inside the notice window can be renewed, and the panel says both facts at once', async () => {
+  // The whole point of the round: the promise "we will tell you before it does" has
+  // to be visible in the two places a person acts from. The seller's panel must
+  // offer the renewal BEFORE the date (research: prompt early, keep the mark while
+  // prompting) and must go on saying the current check counts, or the seller has to
+  // guess whether asking early costs them the badge.
+  const { storeSettings } = await import('../src/views.js');
+  const { PLANS } = await import('../src/store.js');
+
+  const inWindow = new Date();
+  inWindow.setDate(inWindow.getDate() + 30);
+  const channel = { slug: 'nima-crafts', name: 'Nima Crafts', owner_id: 'x', ads_enabled: true,
+    listing_mode: 'marketplace', sells_digital: true, sells_physical: false, moderation_state: 'approved' };
+  const verification = { id: 1, status: 'verified', method: 'citizenship', verified_at: new Date(),
+    expires_at: inWindow, decided_by_name: 'Operator', notes: null, notice_sent_at: null };
+  const stock = { channel, user: null, plan: PLANS.store || PLANS.pro, canList: true, subscription: null,
+    stats: {}, capabilities: { verified_badge: true } };
+
+  const askable = storeSettings({ ...stock, verification });
+  assert.match(askable, /citizenship certificate/i, 'the document type is named');
+  assert.match(askable, /Days left: 30|30 days left/, 'the seller is told how long is left, not just a date');
+  assert.match(askable, /Ask for the next check/, 'and the way to renew is right there');
+  assert.match(askable, /keeps counting to its own date/, 'asking early is explained, not left to guesswork');
+  assert.ok(!/Already checked/.test(askable), 'no refusal on a check that is inside its own window');
+
+  const early = storeSettings({ ...stock, verification, pendingRequest: { id: 2, created_at: new Date(), request_note: null } });
+  assert.match(early, /it is with\s+us/, 'a seller waiting on the next check is told so, not left wondering');
+  assert.match(early, /Withdraw the request/, 'and can take it back');
+  assert.match(early, /badge stays up/, 'while being told the current check still counts');
+  assert.match(early, /Your request is with us/, 'asking twice is refused with the reason, not silently');
+
+  // Far from the date: the same panel refuses to open a window nobody can work yet,
+  // and says WHEN it will — a refusal without a date is a dead end.
+  const far = new Date();
+  far.setMonth(far.getMonth() + 18);
+  const closed = storeSettings({ ...stock, verification: { ...verification, expires_at: far } });
+  assert.match(closed, /Already checked/, 'outside the window the panel says there is nothing to ask for yet');
+  assert.match(closed, /asking opens again on \d/, 'and names the day it opens, not a countdown');
+});
+
+test('the console sends the notice once, and the button is gone afterwards', async () => {
+  const { adminStoreDetail } = await import('../src/views.js');
+  const inWindow = new Date();
+  inWindow.setDate(inWindow.getDate() + 30);
+  const c = { id: 1, slug: 'nima-crafts', name: 'Nima Crafts', owner_id: 'x', owner_email: 'n@test.local',
+    moderation_state: 'approved', listing_mode: 'marketplace', plan_code: 'store' };
+  const verification = { id: 1, status: 'verified', method: 'citizenship', verified_at: new Date(),
+    expires_at: inWindow, decided_by_name: 'Operator', notes: null, notice_sent_at: null, notice_by_name: null };
+  const data = { channel: c, files: [], reports: [], history: [], invoice: null };
+  const base = { user: { role: 'admin', email: 'op@test.local' }, consent: null, data };
+
+  const before = adminStoreDetail({ ...base, verification });
+  assert.match(before, /The check is ending/, 'the console says what this row is');
+  assert.match(before, /Days left: 30|30 days left/);
+  assert.match(before, /Nobody has told them yet/, 'and whether the promise has been kept');
+  assert.match(before, /The notice below gives them the date/, 'the copy is written for the state it is in');
+  assert.match(before, /action="\/admin\/stores\/nima-crafts\/verification\/notice"/, 'the send action is on the page');
+  assert.match(before, /n@test\.local/, 'it names the address the message goes to');
+
+  const after = adminStoreDetail({ ...base,
+    verification: { ...verification, notice_sent_at: new Date(), notice_by_name: 'Operator' } });
+  assert.ok(!/verification\/notice/.test(after), 'once sent, the button is gone — nobody is written to twice');
+  assert.match(after, /Operator/, 'and the record says who sent it, by name');
+  assert.ok(!/Send the notice below|Nobody has told them yet/.test(after),
+    'and the panel does not go on asking for a message that has been sent');
+
+  // Lapsed: the notice is pointless and the panel says what actually happened.
+  const past = new Date();
+  past.setDate(past.getDate() - 12);
+  const lapsed = adminStoreDetail({ ...base, verification: { ...verification, expires_at: past } });
+  assert.match(lapsed, /The check has ended/, 'a lapsed check is its own sentence');
+  assert.match(lapsed, /badge is off the store page/, 'and the console states the consequence plainly');
+  assert.ok(!/verification\/notice/.test(lapsed), 'no reminder to send about a date that has passed');
+  assert.match(lapsed, /same process as the first time/, 'with the way back, not a dead end');
+});
+
+test('no route can build a flash into a fragment', async () => {
+  // `#verification?error=x` is a fragment called "verification?error=x": the browser
+  // never sends it, the server never parses it, and the person is bounced back to a
+  // form with no explanation. Every anchored `back()` must take its query as an
+  // argument, so the shape is enforced rather than remembered.
+  const src = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
+  // Checked per route, because a route with no fragment on it is allowed to keep
+  // the plain shape — and a rule that is broader than the hazard would be turned
+  // off by the first person it inconvenienced.
+  const routes = src.split(/\nAPP\.(?:get|post)\(/).slice(1);
+  let anchored = 0;
+  for (const route of routes) {
+    // Read the rest of the line rather than regex-matching a backtick template:
+    // the definition has a template INSIDE it (`?${qs}`), so any pattern that stops
+    // at the first backtick stops one nesting level too early and finds nothing —
+    // which is a check that quietly passes because it never matches anything.
+    const line = route.split('\n').find((l) => l.includes('const back = '));
+    if (!line || !line.includes('#')) continue;
+    anchored += 1;
+    assert.match(line, /qs/, 'an anchored back() takes the query as an argument');
+    assert.ok(line.indexOf('#') > line.indexOf('qs'), 'the query is built before the fragment');
+    assert.ok(!/\$\{back\(\)\}\?/.test(route),
+      'no route appends a query to an anchored back() after the fact');
+  }
+  assert.ok(anchored >= 4, `the anchored routes are the ones being checked (found ${anchored})`);
 });

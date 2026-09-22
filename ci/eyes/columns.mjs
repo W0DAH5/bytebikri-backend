@@ -243,7 +243,7 @@ const b = await chromium.launch({ executablePath: '/tmp/chromium', args: ['--no-
 let tables = 0, bad = 0, pages = 0;
 const sideways = [];
 
-for (const who of ['operator', 'alice', 'bob']) {
+for (const who of ['operator', 'alice', 'nima', 'bob']) {
   const state = await sessionFor(b, who, { base: BASE });
   // The list includes the pages whose URL carries an id, found the way a person
   // finds them: by following the links (see pages.mjs).

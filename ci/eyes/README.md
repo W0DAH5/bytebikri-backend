@@ -39,6 +39,12 @@ node csvcheck.mjs                                       # the exports, end to en
 node pager.mjs [/admin/audit?family=all]                # a pager that pages
 node columns.mjs                                        # tables on a phone: floors, labels, headings
 
+# Accounts the harness knows (ci/eyes/pages.mjs): operator, alice, nima, bob.
+# Nima's store is the demo's deliberately awkward one — her identity check is inside
+# its notice window AND she is waiting on the next one, so her settings page has to
+# say two things that look contradictory in one panel. Seeded states that exist on
+# purpose are the ones worth checking on purpose.
+
 # One page, one element, at a real viewport — for looking closely at one thing:
 node shot.mjs /dashboard/alice/billing alice /tmp/eyes/billing.png "main#main" 900 1200
 node shot.mjs "/s/alice?country=IN" "" /tmp/eyes/blocked.png ".note:has(strong)" 390 700
@@ -61,14 +67,18 @@ appears to be painted across the first row of the table.
 # A store, a dashboard, a plan page — the same script, three widths.
 ```
 
-`page@account` picks who is signed in (`@bob` for a seller dashboard, operator by
-default). Screenshots land in `/tmp/eyes/out/` whether or not a page is clean —
-useful when a finding is a judgement call rather than a rule.
+`page@account` picks who is signed in (`@alice`, `@nima`, `@bob` for a seller
+dashboard, operator by default). Screenshots land in `/tmp/eyes/out/` whether or not
+a page is clean — useful when a finding is a judgement call rather than a rule.
 
-Sessions are cached in `/tmp/eyes/state-<account>.json` and **verified before
-being written**, because the sign-in limiter counts successful attempts too: a
-sweep that signed in per page (32 times) tripped a real product limit and then
-reported the resulting 429s as page findings. Two logins per sweep now.
+Sessions are cached in `/tmp/eyes/state-<account>-<port>.json` and **verified before
+being written**, because the sign-in limiter counts successful attempts too: a sweep
+that signed in per page (32 times) tripped a real product limit and then reported the
+resulting 429s as page findings. The port is in the filename because a session from
+one instance is meaningless against another, and reusing it would look exactly like a
+refused sign-in. The verification URL is per account as well — an account's name is
+not always its store's slug (`nima` runs `nima-crafts`), and a 404 on the proof URL
+was being read as a failed login.
 
 ## columns.mjs — the tables
 

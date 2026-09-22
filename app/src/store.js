@@ -217,16 +217,34 @@ export const store = {
 
   /** The newest check row about a store: what the seller is told, and the badge. */
   async verificationFor(channelId) {
-    // The same join as `verificationsFor`, on purpose. Without it the newest row
-    // arrived with no name on it, and the operator's own decision from a minute
-    // ago rendered as "a person no longer on the console" — a sentence that
-    // invents an absence. One row, one shape, whoever reads it.
+    // The newest DECIDED row — what the badge is — and deliberately not the newest
+    // row of any kind. A seller whose check is close to lapsing can ask for the
+    // next one, and that request is a `pending` row; if this query returned it,
+    // asking early would take the badge DOWN, so the platform would punish the
+    // person for doing the thing it had just asked them to do. (The researched
+    // rule for renewals is the same one: keep the mark while prompting.)
+    //
+    // The join is the same as `verificationsFor` on purpose. Without it the newest
+    // row arrived with no name on it, and the operator's own decision from a minute
+    // ago rendered as "a person no longer on the console" — a sentence that invents
+    // an absence. One row, one shape, whoever reads it.
     return one(
-      `select v.*, p.display_name as decided_by_name, p.email as decided_by_email
+      `select v.*, p.display_name as decided_by_name, p.email as decided_by_email,
+              n.display_name as notice_by_name, n.email as notice_by_email
          from seller_verifications v
          left join profiles p on p.id = v.decided_by
-        where v.channel_id = $1
+         left join profiles n on n.id = v.notice_by
+        where v.channel_id = $1 and v.status <> 'pending'
         order by v.created_at desc limit 1`,
+      [channelId],
+    );
+  },
+
+  /** The open request, if there is one. A separate fact from the standing outcome. */
+  async pendingVerificationFor(channelId) {
+    return one(
+      `select * from seller_verifications where channel_id = $1 and status = 'pending'
+        order by created_at desc limit 1`,
       [channelId],
     );
   },
@@ -246,13 +264,70 @@ export const store = {
   /** Newest row per store, for a list of stores — one query, not one per row. */
   async verificationsForChannels(channelIds = []) {
     if (!channelIds.length) return new Map();
+    // Decided rows only — this feeds the badge in Explore, and a store that has
+    // asked for its next check has not stopped having the current one.
     const rows = await many(
       `select distinct on (channel_id) * from seller_verifications
-        where channel_id = any($1::uuid[])
+        where channel_id = any($1::uuid[]) and status <> 'pending'
         order by channel_id, created_at desc`,
       [channelIds],
     );
     return new Map(rows.map((r) => [r.channel_id, r]));
+  },
+
+  /**
+   * Checks that end inside the window — soonest first, so the list is worked in the
+   * order the dates arrive.
+   *
+   * Includes the ones that have ALREADY lapsed, because an operator looking at a
+   * store whose badge came down last week should be able to find it, and because
+   * "the notice never went out" is a thing worth being able to see. Nothing sweeps
+   * this: the window is recomputed on every read from `expires_at`.
+   */
+  async verificationsLapsing({ days = 60, includeLapsed = true } = {}) {
+    return many(
+      `select v.*, c.name as channel_name, c.slug as channel_slug,
+              p.email as owner_email, p.display_name as owner_name,
+              n.display_name as notice_by_name, n.email as notice_by_email
+         from seller_verifications v
+         join channels c on c.id = v.channel_id
+         left join profiles p on p.id = c.owner_id
+         left join profiles n on n.id = v.notice_by
+        where v.status = 'verified'
+          and v.expires_at is not null
+          and v.expires_at <= now() + ($1 || ' days')::interval
+          and ($2 or v.expires_at > now())
+        order by v.expires_at asc`,
+      [String(Number(days) || 60), Boolean(includeLapsed)],
+    );
+  },
+
+  /** A person told the seller their check is ending. Recorded on the outcome itself. */
+  async markVerificationNotice({ verificationId, actorId }) {
+    return one(
+      `update seller_verifications
+          set notice_sent_at = now(), notice_by = $2
+        where id = $1 and status = 'verified' and notice_sent_at is null
+        returning *`,
+      [verificationId, actorId],
+    );
+  },
+
+  /**
+   * Undo a notice claim, for the one case where claiming and sending come apart.
+   *
+   * The route claims the row first (so two operators cannot both send the same
+   * message) and then sends. If nothing was written down at all — no mail provider
+   * configured, or the insert failed — the claim is released, because a record
+   * that says "told them" when nothing was recorded is worse than no record: the
+   * next person to work the list would skip a seller nobody has contacted.
+   */
+  async releaseVerificationNotice(verificationId) {
+    return one(
+      `update seller_verifications set notice_sent_at = null, notice_by = null
+        where id = $1 returning *`,
+      [verificationId],
+    );
   },
 
   /** Stores waiting for a person, oldest first: the order they should be worked. */
@@ -303,7 +378,14 @@ export const store = {
     channelId, outcome, method = 'manual', actorId = null, months = 24, note = null, seenAt = null,
   }) {
     const clean = String(note || '').trim().slice(0, 500) || null;
-    const until = new Date();
+    // The window runs from when the document was SEEN, not from when the row was
+    // typed up. `seenAt` exists for the ordinary case where an operator looks at a
+    // document in person and records it afterwards — sometimes weeks afterwards —
+    // and starting a fresh two years from the typing would quietly extend a check
+    // that has already been running. (It also makes a backdated record possible at
+    // all, which is what the demo state and the tests need: a check made 23 months
+    // ago has one month left, whatever day somebody enters it.)
+    const until = new Date(seenAt || Date.now());
     until.setMonth(until.getMonth() + Number(months));
     const row = await one(
       `insert into seller_verifications
@@ -326,6 +408,10 @@ export const store = {
     return one(
       `select c.*,
               coalesce(o.banned, false) as owner_banned,
+              -- The owner's address, because a notice about their store has to reach
+              -- them and this is the row everything else about the store is read from.
+              o.email as owner_email,
+              o.display_name as owner_name,
               coalesce(s.plan_code, 'free')           as plan_code,
               s.status                            as subscription_status,
               s.period_end                        as subscription_end,
@@ -3144,13 +3230,22 @@ export const store = {
    * round trip with `count(*) over ()` so a page never disagrees with the header
    * that says how many there are.
    */
-  async storeDirectory({ q = '', state = 'all', plan = 'all', sort = 'traffic', page = 1, perPage = 25 } = {}) {
+  async storeDirectory({
+    q = '', state = 'all', plan = 'all', identity = 'all', sort = 'traffic', page = 1, perPage = 25,
+  } = {}) {
+    // Unqualified names below, because the whole select is wrapped in a subselect:
+    // `identity_state` is computed from two lateral joins (the standing outcome and
+    // any open request) and filtered on in the outer query, since Postgres will not
+    // let a WHERE clause read a select alias. The alternative — a second copy of the
+    // CASE inside the WHERE — is two definitions of "lapsing", which is how a filter
+    // and the chip beside it start disagreeing about the same store.
     const SORTS = {
-      traffic: 'views_30d desc nulls last, c.created_at desc',
+      traffic: 'views_30d desc nulls last, created_at desc',
       unlocks: 'unlocks desc, views_30d desc nulls last',
-      files: 'files_live desc, c.created_at desc',
-      newest: 'c.created_at desc',
-      name: 'lower(c.name) asc',
+      files: 'files_live desc, created_at desc',
+      newest: 'created_at desc',
+      name: 'lower(name) asc',
+      expiry: 'verification_expires_at asc nulls last',
     };
     const order = SORTS[sort] || SORTS.traffic;
     const term = String(q || '').trim();
@@ -3158,7 +3253,8 @@ export const store = {
     const offset = Math.max((Number(page) || 1) - 1, 0) * limit;
 
     const rows = await many(
-      `select c.id, c.slug, c.name, c.tagline, c.created_at, c.listing_mode, c.moderation_state,
+      `select x.*, count(*) over () as total_rows from (
+      select c.id, c.slug, c.name, c.tagline, c.created_at, c.listing_mode, c.moderation_state,
               c.moderation_reason, c.owner_id,
               coalesce(s.plan_code, 'free')                                        as plan_code,
               coalesce(s.status, 'active')                                         as sub_status,
@@ -3180,13 +3276,35 @@ export const store = {
               (select max(a.created_at) from assets a where a.channel_id = c.id)   as last_file_at,
               (select max(pv.day) from page_view_daily pv where pv.channel_id = c.id) as last_view_day,
               p.email as owner_email, p.display_name as owner_name,
-              count(*) over () as total_rows
+              v.expires_at     as verification_expires_at,
+              v.method         as verification_method,
+              v.verified_at    as verification_at,
+              v.notice_sent_at as verification_notice_at,
+              req.created_at   as verification_requested_at,
+              -- The standing outcome, which is what the badge is: one fact, and
+              -- the same bands lapseOf uses in the app — so the chip in this
+              -- column and the sentence on the store's own page cannot disagree.
+              case
+                when v.id is null                               then 'none'
+                when v.expires_at <= now()                      then 'lapsed'
+                when v.expires_at <= now() + interval '60 days' then 'lapsing'
+                else 'checked'
+              end as identity_state
          from channels c
          left join lateral (select sub.plan_code, sub.status
                               from subscriptions sub
                              where sub.channel_id = c.id
                              order by sub.created_at desc limit 1) s on true
          left join profiles p on p.id = c.owner_id
+         left join lateral (select sv.id, sv.method, sv.verified_at, sv.expires_at,
+                                   sv.notice_sent_at
+                              from seller_verifications sv
+                             where sv.channel_id = c.id and sv.status <> 'pending'
+                             order by sv.created_at desc limit 1) v on true
+         left join lateral (select sv.id, sv.created_at
+                              from seller_verifications sv
+                             where sv.channel_id = c.id and sv.status = 'pending'
+                             order by sv.created_at desc limit 1) req on true
         where ($1 = '' or c.name ilike '%' || $1 || '%' or c.slug ilike '%' || $1 || '%'
                or p.email ilike '%' || $1 || '%' or p.display_name ilike '%' || $1 || '%')
           and ($2 = 'all'
@@ -3195,10 +3313,24 @@ export const store = {
           and ($3 = 'all'
                or ($3 = 'paid' and coalesce(s.plan_code, 'free') <> 'free')
                or ($3 = 'free' and coalesce(s.plan_code, 'free') = 'free'))
+      ) x
+       -- Two independent questions, and the filter asks whichever one the caller
+       -- meant. A store can be BOTH waiting on us and close to its date — the
+       -- ordinary renew-early case, not an edge case — and the first version of this
+       -- column folded them into one value, so the console's "checks ending" queue
+       -- linked to a filter that excluded the very store it had just counted. It is
+       -- the same split the model makes everywhere else: the state is the badge, and
+       -- a request is a fact of its own.
+       where ($6 = 'all'
+              or ($6 = 'pending' and x.verification_requested_at is not null)
+              or ($6 <> 'pending' and x.identity_state = $6))
         order by ${order}
         limit $4 offset $5`,
       [term, ['all', 'approved', 'restricted', 'suspended', 'removed', 'held'].includes(state) ? state : 'all',
-        ['all', 'free', 'paid'].includes(plan) ? plan : 'all', limit, offset],
+        ['all', 'free', 'paid'].includes(plan) ? plan : 'all', limit, offset,
+        // Validated against the states the CASE can actually produce, so a URL
+        // somebody typed cannot become a filter that silently matches nothing.
+        ['all', 'none', 'pending', 'checked', 'lapsing', 'lapsed'].includes(identity) ? identity : 'all'],
     );
 
     return {

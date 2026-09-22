@@ -49,6 +49,9 @@ export async function login(p, email, password = 'bytebikri-demo', base = 'http:
  * sweep, cached on disk, and the session is verified before it is written: a
  * login that was itself refused would otherwise be cached as "no cookies".
  */
+/** Demo accounts whose store is not named after them. */
+const STORE_SLUG = { nima: 'nima-crafts', alice: 'alice', bob: 'bob' };
+
 export async function sessionFor(browser, who, { dir = '/tmp/eyes', base = 'http://127.0.0.1:3000' } = {}) {
   const { existsSync, readFileSync, writeFileSync } = await import('node:fs');
   // Any demo account, not just the two this started with: bob is the seller the
@@ -66,8 +69,11 @@ export async function sessionFor(browser, who, { dir = '/tmp/eyes', base = 'http
   const p = await ctx.newPage();
   await login(p, email, 'bytebikri-demo', base);
   // The proof URL has to be one THIS account may read: /admin is operator-only,
-  // and a 404 there for a seller would look exactly like a refused sign-in.
-  const proof = await p.goto(base + (who.startsWith('operator') ? '/admin' : `/dashboard/${who.split('@')[0]}`));
+  // and a 404 there for a seller would look exactly like a refused sign-in. The
+  // account name is not the store slug either — nima's store is nima-crafts, and
+  // guessing `/dashboard/nima` proved nothing except that a 404 looks like a refusal.
+  const proofPath = who.startsWith('operator') ? '/admin' : `/dashboard/${STORE_SLUG[who.split('@')[0]] || who.split('@')[0]}`;
+  const proof = await p.goto(base + proofPath);
   if (proof.status() !== 200) {
     await ctx.close();
     throw new Error(`sign-in did not take (${proof.status()}) — rate limited? restart the web process and retry`);

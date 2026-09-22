@@ -28,6 +28,11 @@ export const PAGES = {
   alice: ['/dashboard/alice', '/dashboard/alice/earnings', '/dashboard/alice/billing',
     '/dashboard/alice/slots', '/dashboard/alice/networks', '/dashboard/alice/settings',
     '/dashboard/alice/reviews'],
+  // Nima is the seller the demo state keeps deliberately awkward: her identity check is
+  // inside its notice window AND she is waiting on the next one, which is the only page
+  // in the product that has to say two contradictory-looking things at once. A state
+  // that is seeded on purpose needs to be the state that is checked on purpose.
+  nima: ['/dashboard/nima-crafts', '/dashboard/nima-crafts/settings', '/dashboard/nima-crafts/billing'],
   bob: ['/dashboard/bob'],
 };
 
@@ -36,6 +41,7 @@ export const PAGES = {
 // second row, and the sweep stays a sweep rather than a crawl.
 const SEEDS = {
   alice: { from: '/dashboard/alice', take: 2, match: /^\/dashboard\/[a-z0-9-]+\/assets\/[0-9a-f-]{36}$/ },
+  nima: { from: '/dashboard/nima-crafts', take: 1, match: /^\/dashboard\/[a-z0-9-]+\/assets\/[0-9a-f-]{36}$/ },
   bob: { from: '/dashboard/bob', take: 1, match: /^\/dashboard\/[a-z0-9-]+\/assets\/[0-9a-f-]{36}$/ },
   operator: { from: '/admin/moderation', take: 2, match: /^\/admin\/moderation\/files\/[0-9a-f-]{36}$/ },
 };
