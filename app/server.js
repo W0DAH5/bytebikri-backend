@@ -18,6 +18,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { store, storage, SLOT_DEFS, slugify, PLANS, nextPlan } from './src/store.js';
+import { METHODS, DEFAULT_MONTHS, stateOf, requestability } from './src/verification.js';
 import { assertProductionConfig, readSecret, checkConfig, formatConfigReport, isProd } from './src/config.js';
 import { query, many, scalar, health as dbHealth, close as closeDb } from './src/db.js';
 import { allocateSlots, estimateRentSlotValue, POLICY } from './src/slots.js';
@@ -560,6 +561,11 @@ APP.get('/marketplace', async (req, res, next) => {
       await decorateChannels(await store.channels({ listedOnly: true })), viewerCountry(req),
     );
     const explore = results ? null : await exploreState(channels);
+    // One query for every card on the page, then attached where the view can read
+    // it: the badge renderer takes a row, not an id, so nothing here can forget
+    // to ask and silently show no badge.
+    const verified = await store.verificationsForChannels(channels.map((c) => c.id));
+    for (const c of channels) c.verification = verified.get(c.id) || null;
     res.send(views.marketplace({
       channels, user: req.user, consent: req.consent, q, results, explore,
     }));
@@ -973,6 +979,9 @@ APP.get('/s/:slug', async (req, res, next) => {
     res.send(views.storefront({
       channel, assets, slots, user: req.user, estimate, pageviews, unlockedIds,
       consent: req.consent,
+      // The badge, from the same one row the seller's panel reads. A visitor sees
+      // "identity checked" and the sentence says what was checked and when.
+      verification: await store.verificationFor(channel.id),
       // Only the owner ever sees this banner, and only on a store that is not
       // public — it is a message about their own shop, not a public notice.
       moderation: owner && !isPublicChannel(channel)
@@ -2216,9 +2225,19 @@ const SUCCESS_FLASH = {
   // Files, and the countries they are for.
   saved_file: () => 'Decision recorded. The file moved, and the owner sees the rule and your note on their own page for it.',
   saved_country: () => 'Country rule saved. Visitors in that country are answered by it from their next request.',
+  // Verification. The seller's two, then the operator's two — and each one says
+  // what happens NEXT, because a check is a wait and a refusal is not an ending.
+  asked: () => 'Asked. A person looks at one document and records what they saw — we work in the order requests arrive, and nothing is uploaded here.',
+  withdrawn: () => 'Withdrawn. The request is gone and nobody is waiting on anything.',
+  verified: () => 'Recorded. The badge is on the store now, with what was checked and the date — and no copy of the document was kept.',
+  rejected: () => 'Recorded as refused. The seller is told, with your note, and can ask again with the same or a different document.',
 };
 
 const ERROR_FLASH = {
+  'no-numbers': 'That looks like a document number. Nothing here needs it and this field is kept — say where you are or when to call instead.',
+  plan: 'A document check is included from the Store plan up. Your files sell exactly the same either way.',
+  'already-asked': 'You have already asked, and nobody has looked yet.',
+  'already-checked': 'This store is checked. There is nothing to ask for until the check lapses.',
   name: 'A store needs a name.',
   title: 'A file needs a title — it becomes the page address.',
   plan: 'That plan is not available from your current one.',
@@ -2847,6 +2866,82 @@ APP.post('/admin/payments/rent/:id', async (req, res, next) => {
 });
 
 // ---------------------------------------------------------------------------
+// Verification — the seller asks, a person records what they saw
+// ---------------------------------------------------------------------------
+// Three routes, and one rule shared by all of them: no document ever arrives here.
+// The seller's route takes a note of logistics and nothing else, and the operator's
+// route takes an OUTCOME. `seller_verifications.docs_retained` is checked to be
+// false in the database, so a future change that tries to accept an upload fails
+// at the column rather than quietly becoming a breach.
+
+APP.post('/dashboard/:slug/verification', async (req, res, next) => {
+  const back = () => `/dashboard/${encodeURIComponent(req.params.slug)}/settings#verification`;
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    // A store the platform has withheld is not asking for identity paperwork.
+    if (refuseWrite(req, res, channel)) return undefined;
+
+    const plan = store.plan(channel);
+    const current = await store.verificationFor(channel.id);
+    const ask = requestability({
+      capabilities: plan.capabilities, state: stateOf(current),
+    });
+    // A code, never the sentence: query strings are echoed back to the reader by
+    // the flash map, and that map is the only writer of that text.
+    if (!ask.ok) return res.redirect(`${back()}?error=${encodeURIComponent(ask.code || 'not-now')}`);
+
+    // Logistics only. Anything that looks like a document number is refused with
+    // an explanation rather than stored: this form must never become the place the
+    // evidence lands, and a person pasting one has not been told that yet.
+    const note = String(req.body?.note || '').trim().slice(0, 280);
+    if (/\d{6,}/.test(note)) return res.redirect(`${back()}?error=no-numbers`);
+    if (/\b(citizenship|pan|passport)\b[^.]{0,20}\b(no|number|num)\b/i.test(note)) {
+      return res.redirect(`${back()}?error=no-numbers`);
+    }
+
+    const done = await store.askForVerification({ channelId: channel.id, note });
+    await store.audit('seller.verification_requested', { channelId: channel.id });
+    return res.redirect(`${back()}?saved=${done.ok ? 'asked' : 'already'}`);
+  } catch (err) { return next(err); }
+});
+
+APP.post('/dashboard/:slug/verification/withdraw', async (req, res, next) => {
+  const back = () => `/dashboard/${encodeURIComponent(req.params.slug)}/settings#verification`;
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    await store.withdrawVerificationRequest(channel.id);
+    await store.audit('seller.verification_withdrawn', { channelId: channel.id });
+    return res.redirect(`${back()}?saved=withdrawn`);
+  } catch (err) { return next(err); }
+});
+
+APP.post('/admin/stores/:slug/verification', async (req, res, next) => {
+  const back = () => `/admin/stores/${encodeURIComponent(req.params.slug)}#verification`;
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    const channel = await store.channelBySlug(req.params.slug);
+    if (!channel) return res.status(404).send('Channel not found');
+
+    const outcome = req.body?.outcome === 'rejected' ? 'rejected' : 'verified';
+    const method = METHODS.some((m) => m.code === req.body?.method) ? req.body.method : 'manual';
+    const months = [12, 24, 36].includes(Number(req.body?.months)) ? Number(req.body.months) : DEFAULT_MONTHS;
+    const notes = String(req.body?.notes || '').trim().slice(0, 500);
+
+    await store.recordVerification({
+      channelId: channel.id, outcome, method, actorId: req.user.id, months, note: notes,
+    });
+    // The audit line records the DECISION, never what was in the note beyond a
+    // cue — the note itself is on the outcome row, and the audit log is read by
+    // more people than the console.
+    await store.audit(outcome === 'verified' ? 'seller.verification_recorded' : 'seller.verification_refused',
+      { channelId: channel.id, method, months });
+    return res.redirect(`${back()}?saved=${outcome}`);
+  } catch (err) { return next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // Store settings
 // ---------------------------------------------------------------------------
 APP.get('/dashboard/:slug/settings', async (req, res, next) => {
@@ -2857,6 +2952,10 @@ APP.get('/dashboard/:slug/settings', async (req, res, next) => {
     res.send(views.storeSettings({
       channel, user: req.user, consent: req.consent, flash: flashFor(req.query),
       plan,
+      // What is on file about the person, not the files. The panel answers with
+      // the newest row; the badge the storefront shows comes from the same one.
+      verification: await store.verificationFor(channel.id),
+      capabilities: plan.capabilities,
       // Whether the marketplace is REACHABLE, not just whether the box is
       // ticked: a free store that asks for it gets an explanation, not a
       // silent revert to storefront.
@@ -3258,10 +3357,20 @@ APP.get('/admin', async (req, res, next) => {
         },
         { label: 'Views · 30d', value: Number(reach.views || 0).toLocaleString('en-IN'), context: `${Number(reach.unlocks || 0).toLocaleString('en-IN')} unlocks · ${Number(reach.events || 0).toLocaleString('en-IN')} ad views` },
     ];
+    const verificationQueue = await store.verificationQueue();
     const queueRows = [
         { title: 'Transfers to match', count: counts.payments + counts.invoices, note: 'A person matches each one against the statement by hand.', href: '/admin/payments' },
         { title: 'Files reported', count: counts.reports, note: `${AUTO_HIDE_AFTER} distinct reporters hide a file automatically. Below that, it waits.`, href: '/admin/reports' },
         { title: 'Stores needing a decision', count: counts.moderation, note: 'Restricted, suspended or removed.', href: '/admin/moderation' },
+        // Its own row, because it is its own kind of work: not moderation, and
+        // not a payment. A store can wait on a document check with nothing wrong
+        // with it at all. Shown only when somebody is waiting.
+        ...(verificationQueue.length ? [{
+          title: 'Identity checks asked for',
+          count: verificationQueue.length,
+          note: `${verificationQueue.length === 1 ? 'One seller has' : 'Sellers have'} asked to be checked. Look at one document, record what you saw, keep no copy. Oldest first.`,
+          href: '/admin/stores',
+        }] : []),
         { title: 'Files needing a decision', count: counts.files, note: `Pending, restricted, or withheld from a country. A file can be in here while its store is public.${counts.filesRemoved ? ` ${counts.filesRemoved} removed file${counts.filesRemoved === 1 ? ' is' : 's are'} not counted — nothing is waiting on us there, the owner has to appeal.` : ''}`, href: '/admin/moderation' },
         { title: 'Suspended accounts', count: counts.banned, note: 'Signed out everywhere, stores hidden, nothing deleted.', href: '/admin/users' },
         {
@@ -3368,9 +3477,16 @@ APP.get('/admin/stores/:slug', async (req, res, next) => {
     if (req.user.role !== 'admin') return res.status(404).send('Not found');
 
     const data = await store.storeDetail(String(req.params.slug));
+    // The identity-check panel needs both halves: the row in force (what the
+    // badge says) and the whole history behind it (who decided, when, and on what
+    // document). A store with no row has both as null/[] — an honest empty panel.
+    const channelId = data?.channel?.id ?? null;
+    const verification = channelId ? await store.verificationFor(channelId) : null;
+    const verifications = channelId ? await store.verificationsFor(channelId) : [];
     // A store that does not exist is not a 404 for the operator: "no such store"
     // is a legitimate answer that deserves a page with a way back.
     return res.send(views.adminStoreDetail({
+      verification, verifications,
       user: await withBadges(req.user), consent: req.consent, flash: flashFor(req.query),
       data, rules: await store.policyRules(), actions: MOD_ACTIONS, labels: ACTION_LABELS,
     }));

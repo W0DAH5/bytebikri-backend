@@ -7,7 +7,7 @@
  * from existing. Anything that has to be re-created after a rebuild belongs in the
  * repository.
  *
- * Two states, each of them a decision this round was built around:
+ * Three states, each of them a decision this round was built around:
  *
  *   1. A COUNTRY RULE a creator set: Alice withholds one file from India because
  *      her licence covers Nepal only. The file stays listed and refuses unlocks
@@ -17,6 +17,13 @@
  *      file has not been looked at by anybody. It works at its link and on the
  *      store page, it is absent from search, and it is the one item in the
  *      operator's queue.
+ *   3. ONE CHECKED SELLER AND ONE WHO HAS ASKED: Alice's identity was looked at
+ *      (the badge is live on her storefront, and the whole record — who decided,
+ *      on what document, until when — is on her operator page), and Nima has an
+ *      open request sitting in the operator's identity queue. Asking for a check
+ *      needs a plan that includes it, so the seeder takes Nima through the same
+ *      three calls the real upgrade path uses rather than writing a row a person
+ *      could not have produced.
  *
  * Everything is written through the same store calls the routes use — this is the
  * feature, not a fixture. Idempotent: run it as often as you like.
@@ -136,6 +143,43 @@ if (!(await one('select cover_url from assets where id = $1', [waiting.id]))?.co
   say('its cover', 'set');
 }
 
+// ── 3. A checked seller, and one waiting for a check ─────────────────────────
+const OPERATOR = await one(`select id, email from profiles where role = 'admin' order by created_at limit 1`);
+
+// Alice: a record of a document a person looked at. Skipped if she already has an
+// outcome, so re-running this does not stack up checks that never happened.
+if (alice && OPERATOR && !(await one(
+  `select id from seller_verifications where channel_id = $1 and status in ('verified','rejected')`, [alice.id]))) {
+  await store.recordVerification({
+    channelId: alice.id, outcome: 'verified', method: 'citizenship',
+    actorId: OPERATOR.id, months: 24,
+    note: 'Name and photograph matched the account holder; seen in person.',
+  });
+  say('alice checked', 'citizenship certificate, 24 months');
+}
+
+// Nima: the plan she would have to be on to ask, bought the way a seller buys it —
+// a request, a transfer reference, and an operator matching it by hand.
+if (nima && OPERATOR) {
+  const plan = await one(`select plan_code, status from subscriptions where channel_id = $1`, [nima.id]);
+  if (!plan || plan.plan_code === 'free') {
+    await store.requestUpgrade({ id: nima.id, slug: nima.slug, name: nima.name }, 'store');
+    const payment = await store.recordPlanPayment({
+      channelId: nima.id, amountNpr: 1500, txnReference: 'DEMO-PLAN-0001',
+      method: 'esewa', payerName: 'Nima Gurung', payerNumber: '9800000009',
+    });
+    await store.matchPlanPayment({ paymentId: payment.id, actorId: OPERATOR.id });
+    say('nima upgraded', 'Store plan, matched by the operator');
+  }
+  const open = await one(`select id from seller_verifications where channel_id = $1 and status = 'pending'`, [nima.id]);
+  if (!open) {
+    const asked = await store.askForVerification({
+      channelId: nima.id, note: 'I am at the shop most mornings, and can bring the original.',
+    });
+    say('nima asked for a check', asked.ok ? 'waiting in the operator queue' : asked.reason);
+  }
+}
+
 // ── What the database now holds ──────────────────────────────────────────────
 const rules = await many(`select r.country_code, r.state, r.source, a.title
                             from asset_country_rules r join assets a on a.id = r.asset_id`);
@@ -146,6 +190,10 @@ console.log('\n  country rules:',
   rules.map((r) => `${r.title} ${r.country_code} ${r.state} (${r.source})`).join(', ') || 'none');
 console.log('  waiting files:',
   waitingNow.map((w) => `${w.title} at ${w.name}`).join(', ') || 'none');
+const checks = await many(`select c.name, v.status, v.method from seller_verifications v
+                             join channels c on c.id = v.channel_id order by v.created_at`);
+console.log('  identity checks:',
+  checks.map((c) => `${c.name} ${c.status}${c.method && c.status !== 'pending' ? ` (${c.method})` : ''}`).join(', ') || 'none');
 console.log('\n  open the preview at /  ·  the creator’s view at /dashboard/alice'
   + '  ·  the queue at /admin\n');
 

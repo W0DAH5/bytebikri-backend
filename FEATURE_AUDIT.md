@@ -1864,3 +1864,79 @@ rebuilt the browser, and the harness found the three violations above on the fir
 run after the rebuild. **The verification tooling is what made a lost environment a
 twenty-minute interruption instead of a lost round**, which is the whole argument
 for having put it in the repository rather than in `/tmp`.
+
+---
+
+## §25 — The badge the plans were selling, and the table nobody had read
+
+### The contradiction
+
+The Store and Pro plans have advertised, since the plans page was written, "A
+verified-seller badge once your documents are checked". The operator's People page
+said the opposite in as many words — that the platform has **no KYC step**, and that
+inventing a badge for one would be worse than not having it. Both pages were live at
+the same time.
+
+Underneath them, `seller_verifications` had existed since `0001_init.sql` with a
+comment that is a specification: *"Stores the OUTCOME of KYC, never the evidence."*
+Nothing read it and nothing wrote it.
+
+### What was researched before anything was drawn
+
+- **Badge wording.** The consistent finding across verification vendors is that a
+  badge which does not say **what** was checked gets read as "this person is
+  trustworthy". A check on identity is not a check on honesty, and the badge is not
+  a review of the files. Facebook's own badge copy is the model: it says a real
+  person controls the account, and nothing about their claims.
+- **Failure is not fraud.** Automated checks fail on glare, blur and transliterated
+  names; a refused check needs a specific retry instruction rather than a wall, and
+  must not be recorded as a finding against the person.
+- **Retention.** Keep only what the decision needs: an outcome record, not the
+  document. Regulators' framing is "retain the smaller audit record, not the raw
+  ID".
+- **Nepal's documents.** A personal PAN requires the citizenship certificate (or a
+  passport); registration is free and issued within days, and the digital PAN in the
+  Nagarik App is QR-verifiable in real time. So citizenship and PAN are the two
+  documents a Nepali seller will actually have, and the seller panel says so instead
+  of naming an ID type nobody here holds.
+
+### What was built
+
+A document-free check: the seller asks; a person on our side looks at ONE document
+somewhere outside the platform; the outcome is recorded — verified or refused, with
+the method, who decided, when, and a note. **The document never arrives here.** The
+table enforces that (`docs_retained boolean check (docs_retained = false)`), which is
+the strongest form of "we do not store it": not a policy, a constraint.
+
+- Expiry is **derived** from `expires_at` (default 24 months, choices 12/24/36), so
+  the badge lapses on its own and nothing sweeps at midnight.
+- One open request per store, enforced by a partial unique index.
+- The badge is **positive-only**: "Identity checked", with a sentence naming the
+  document the person saw and the date. There is no grey "unverified" chip anywhere,
+  because a store nobody has asked about is not a suspect.
+- A check is plan-gated (the capability already existed in the plans table), and the
+  copy says why in a sentence rather than a lock icon.
+
+### Two bugs the review pass caught, both invisible from the code
+
+1. **The `null` in the store name.** The Explore rail rendered
+   `${badgeFor(v) && verifiedBadge(v)}` — `null && …` is `null`, and a template
+   literal prints it, so every un-checked store in the directory read *"Nima
+   Craftsnull"* under its own name. A screenshot found it in ten seconds; nothing in
+   the suite could have, because no assertion was ever about a word that should not
+   be there. The regression test now asserts it.
+2. **The card that showed the chip twice.** The storefront called the pill renderer
+   twice — once beside the name and once with the sentence — so a checked store read
+   "IDENTITY CHECKED" twice. Fixed by splitting the sentence into its own renderer
+   fed by the same `badgeFor`: one sentence, one source, and a test that the two
+   cannot disagree.
+
+### What was run
+
+- `ci/eyes/columns.mjs` — **29 tables on 17 pages, 0 findings**.
+- `ci/eyes/sweep.mjs` — **48 clean, 0 with findings**.
+- `npm test` — **474 / 474 / 0**, of which 18 are new and cover the state machine,
+  the gated ask, the refusal path, the Kathmandu date boundary, and the two bugs
+  above.
+- Storefront, Explore rails, seller settings, operator store page and the operator
+  overview all looked at full height at 390px.

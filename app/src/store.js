@@ -211,6 +211,117 @@ export const store = {
 
   // Plan + subscription live in separate tables; every channel read joins them so
   // callers keep seeing one object.
+  // ── seller verification ────────────────────────────────────────────────────
+  // The outcome of a document check, never the document. See src/verification.js
+  // for the model; these are only the reads and writes it needs.
+
+  /** The newest check row about a store: what the seller is told, and the badge. */
+  async verificationFor(channelId) {
+    // The same join as `verificationsFor`, on purpose. Without it the newest row
+    // arrived with no name on it, and the operator's own decision from a minute
+    // ago rendered as "a person no longer on the console" — a sentence that
+    // invents an absence. One row, one shape, whoever reads it.
+    return one(
+      `select v.*, p.display_name as decided_by_name, p.email as decided_by_email
+         from seller_verifications v
+         left join profiles p on p.id = v.decided_by
+        where v.channel_id = $1
+        order by v.created_at desc limit 1`,
+      [channelId],
+    );
+  },
+
+  /** Every row about a store, newest first — the operator's record of who signed off. */
+  async verificationsFor(channelId) {
+    return many(
+      `select v.*, p.display_name as decided_by_name, p.email as decided_by_email
+         from seller_verifications v
+         left join profiles p on p.id = v.decided_by
+        where v.channel_id = $1
+        order by v.created_at desc`,
+      [channelId],
+    );
+  },
+
+  /** Newest row per store, for a list of stores — one query, not one per row. */
+  async verificationsForChannels(channelIds = []) {
+    if (!channelIds.length) return new Map();
+    const rows = await many(
+      `select distinct on (channel_id) * from seller_verifications
+        where channel_id = any($1::uuid[])
+        order by channel_id, created_at desc`,
+      [channelIds],
+    );
+    return new Map(rows.map((r) => [r.channel_id, r]));
+  },
+
+  /** Stores waiting for a person, oldest first: the order they should be worked. */
+  async verificationQueue() {
+    return many(
+      `select v.*, c.name as channel_name, c.slug as channel_slug
+         from seller_verifications v join channels c on c.id = v.channel_id
+        where v.status = 'pending'
+        order by v.created_at asc`,
+    );
+  },
+
+  /**
+   * The seller asks for a check. Logistics only in the note — never a document
+   * number; the partial unique index turns a double click into one request.
+   */
+  async askForVerification({ channelId, note = null }) {
+    const cleanNote = String(note || '').trim().slice(0, 280) || null;
+    try {
+      const row = await one(
+        `insert into seller_verifications (channel_id, method, status, request_note)
+         values ($1, 'manual', 'pending', $2)
+         returning *`,
+        [channelId, cleanNote],
+      );
+      return { ok: true, row };
+    } catch (err) {
+      if (isUniqueViolation(err)) return { ok: false, reason: 'You have already asked.' };
+      throw err;
+    }
+  },
+
+  /** Withdraw a request nobody has looked at yet. */
+  async withdrawVerificationRequest(channelId) {
+    const res = await query(
+      `delete from seller_verifications where channel_id = $1 and status = 'pending'`,
+      [channelId],
+    );
+    return { ok: res.rowCount > 0 };
+  },
+
+  /**
+   * A person records what they saw: verified or rejected, with the method, who
+   * decided, and when it stops counting. `expires_at` is read, not enforced — a
+   * lapsed check needs no job to bring the badge down.
+   */
+  async recordVerification({
+    channelId, outcome, method = 'manual', actorId = null, months = 24, note = null, seenAt = null,
+  }) {
+    const clean = String(note || '').trim().slice(0, 500) || null;
+    const until = new Date();
+    until.setMonth(until.getMonth() + Number(months));
+    const row = await one(
+      `insert into seller_verifications
+         (channel_id, method, status, decided_by, decided_at, verified_at, expires_at, notes, docs_retained)
+       values ($1, $2, $3, $4, now(), $5, $6, $7, false)
+       returning *`,
+      [
+        channelId, method, outcome, actorId,
+        outcome === 'verified' ? (seenAt ? new Date(seenAt) : new Date()) : null,
+        outcome === 'verified' ? until : null,
+        clean,
+      ],
+    );
+    // A request that has just been answered is not still open.
+    await query(`delete from seller_verifications where channel_id = $1 and status = 'pending'`, [channelId]);
+    return row;
+  },
+
   async channelBySlug(slug) {
     return one(
       `select c.*,

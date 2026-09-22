@@ -43,6 +43,35 @@ export function asDay(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+/**
+ * The clock a person reads.
+ *
+ * The three functions above are calendar dates and are UTC-based on purpose. An
+ * INSTANT is the opposite problem: "when did that happen" has to be answered on
+ * the reader's own clock, and the reader is here. Nepal is +05:45 with no daylight
+ * saving, so pinning it is stable all year, and it is what stops two rows on one
+ * dashboard disagreeing — a renewal and a document check that happened in the same
+ * minute both read as the 23rd, or neither does.
+ *
+ * 18:15 UTC is 00:00 in Kathmandu. That is the boundary this exists for: before it,
+ * a seller in Nepal reads yesterday's date on something that happened this morning.
+ */
+export const SHOP_TZ = 'Asia/Kathmandu';
+
+/** `12 Sep 2026` — the long form, for a date that stands on its own. */
+export function longDay(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return 'an unknown date';
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: SHOP_TZ });
+}
+
+/** `12 Sep` — the short form, for a column inside a sentence. */
+export function shortDay(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: SHOP_TZ });
+}
+
 /** Whole days from `a` to `b`, ignoring the time of day. Null if either is unreadable. */
 export function daysBetween(a, b) {
   const from = asDay(a);

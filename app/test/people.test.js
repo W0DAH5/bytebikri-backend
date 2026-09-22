@@ -153,7 +153,11 @@ test('the directory renders counts, and links each row to the account', () => {
     assert.ok(html.includes(`segment=${key}`), `the ${key} tab is a link that filters`);
   }
   assert.match(html, /Counted, never listed|never listed/, 'the privacy stance is on the page, not in a comment');
-  assert.match(html, /no KYC step/, 'and the absent badge is explained rather than faked');
+  // The page used to say the platform had no KYC step and no badge anywhere. That
+  // stopped being true this round, so what it must say now is why the DIRECTORY
+  // still carries no chip — the badge exists, and a column of ticked and unticked
+  // boxes would turn "has not asked" into "suspect".
+  assert.match(html, /ticked and unticked boxes/, 'and the absent badge is explained rather than faked');
 });
 
 test('an empty segment explains the segment, an empty search explains the search', () => {

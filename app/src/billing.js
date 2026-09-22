@@ -245,7 +245,13 @@ export function planBenefits(plan, { availableSlots = null } = {}) {
     : c.custom_sections ? `${c.custom_sections} custom sections on your storefront`
       : 'A standard storefront layout');
   if (c.theme_custom === true) out.push('Custom theme');
-  if (c.verified_badge) out.push('A verified-seller badge once your documents are checked');
+  // The badge now exists (§25), so the line can say what it actually is. It named
+  // "documents" while nothing read the table that was built for them, and the
+  // operator's own People page said the platform had no KYC step — the plan was
+  // selling a feature the product denied having.
+  if (c.verified_badge) {
+    out.push('A checked-seller badge: a person looks at one identity document, records what they saw, and keeps no copy');
+  }
   if (c.analytics_level !== 'basic') out.push(`Analytics: ${c.analytics_level}`);
   return out;
 }

@@ -29,7 +29,7 @@ import { MIN_PASSWORD_LENGTH } from './security.js';
 // definition of "how full is this plan", used by the dashboard, the operator's
 // plans page and the message at the upload wall.
 import { planUsage, rentAge, AGE_BUCKETS, RENT_TERMS } from './billing.js';
-import { isoDay, daysBetween } from './dates.js';
+import { isoDay, daysBetween, longDay, shortDay } from './dates.js';
 import { COUNTRY_OPTIONS, countryIn, countryName } from './countries.js';
 // The asset vocabulary lives in one place. `moderation.js` is pure — no database
 // import — so a view may read it, which is what keeps the console from inventing
@@ -38,6 +38,9 @@ import { assetBehaviour } from './moderation.js';
 // The audit vocabulary and the two renderers that make a row readable: who did it
 // (a person, the platform, or a visitor) and what it was about.
 import { AUDIT_FAMILIES, actorOf, subjectOf } from './audit.js';
+import {
+  METHODS, methodOf, stateOf, badgeFor, whatItMeans, requestability, STATE_WORDING, DEFAULT_MONTHS,
+} from './verification.js';
 
 const FAMILY_LABELS = Object.fromEntries(AUDIT_FAMILIES.map((f) => [f.key, f.label]));
 
@@ -85,7 +88,7 @@ const relTime = (d) => {
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   if (s < 2592000) return `${Math.floor(s / 86400)}d ago`;
-  return new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  return shortDay(d);
 };
 
 const initials = (s) =>
@@ -532,12 +535,19 @@ export function marketplace({ channels, user, consent = null, q = '', results = 
    * to see that the position was bought — anything else is a dark pattern with
    * better typography.
    */
-  const railCard = (entry, paid) => `
+  const railCard = (entry, paid) => {
+    // `verifiedBadge` already returns '' when there is no check, so it is called
+    // once and guarded with a ternary. The first version wrote
+    // `${badgeFor(v) && verifiedBadge(v)}`, and `false && ...` evaluates to
+    // `false`/`null` — which a template literal prints, so every un-checked store
+    // in this rail was called "Nima Craftsnull" on the page.
+    const identity = verifiedBadge(entry.channel.verification);
+    return `
     <a class="card card-interactive rail-card${paid ? ' rail-card-paid' : ''}"
        href="/s/${esc(entry.channel.slug)}">
       <div class="row" style="align-items:flex-start">
         <div style="min-width:0">
-          <h3 style="font-size:var(--text-md)">${esc(entry.channel.name)}</h3>
+          <h3 style="font-size:var(--text-md)">${esc(entry.channel.name)}${identity ? ` ${identity}` : ''}</h3>
           <p class="small" style="margin:var(--space-1) 0 0">${esc(entry.channel.tagline || 'A store on ByteBikri.')}</p>
         </div>
         ${!paid && entry.rank ? `<span class="spacer"></span><span class="rank-badge">${num(entry.rank)}</span>` : ''}
@@ -548,6 +558,7 @@ export function marketplace({ channels, user, consent = null, q = '', results = 
         <span class="fine">${esc(entry.why)}</span>
       </div>
     </a>`;
+  };
 
   const rail = (r) => `
   <section class="section">
@@ -621,7 +632,39 @@ ${explore && explore.rails.length ? explore.rails.map(rail).join('') : ''}
   });
 }
 
-export function storefront({ channel, assets, slots, user, estimate, pageviews, unlockedIds = new Set(), consent = null, moderation = null, countryBlocked = null }) {
+/**
+ * The identity badge, wherever it appears.
+ *
+ * One renderer on purpose: the wording is the product (it says WHAT was checked and
+ * WHEN, and never "trusted seller"), and two copies of a sentence like that drift
+ * the moment somebody improves one of them. It is a positive mark only — there is
+ * no "unverified" counterpart anywhere, because a store that has not been checked
+ * is not a suspect.
+ */
+export function verifiedBadge(verification, { today = new Date(), withSentence = false } = {}) {
+  const badge = badgeFor(verification, today);
+  if (!badge) return '';
+  return `${pill(badge.label, 'success')}${withSentence ? verifiedSentence(verification, { today }) : ''}`;
+}
+
+/**
+ * The sentence, on its own.
+ *
+ * It exists because the first version of the storefront called `verifiedBadge`
+ * twice — once for the chip beside the name and once with `withSentence` — and the
+ * page showed the chip twice and the sentence once. Two renderers would be worse
+ * than that bug (the copy is the product, and two copies drift), so this one asks
+ * the same `badgeFor` for the same string and renders only the sentence: the chip
+ * stays where chips belong, in the heading row, and the explanation reads under
+ * the facts it explains.
+ */
+export function verifiedSentence(verification, { today = new Date() } = {}) {
+  const badge = badgeFor(verification, today);
+  if (!badge) return '';
+  return `<p class="fine" style="margin-top:var(--space-3)">${esc(badge.sentence)}</p>`;
+}
+
+export function storefront({ channel, assets, slots, user, estimate, pageviews, unlockedIds = new Set(), consent = null, moderation = null, countryBlocked = null, verification = null }) {
   const cards = assets.map((a) => {
     const open = a.unlock_mode === 'open';
     const unlocked = open || (user && unlockedIds.has(a.id));
@@ -678,6 +721,7 @@ ${countryBlocked ? `<div class="section" style="margin-bottom:0">
     ${channel.listing_mode === 'marketplace'
       ? pill('In Explore', 'accent')
       : pill('Shared by link')}
+    ${verifiedBadge(verification)}
   </div>
   <p class="lede" style="margin-top:var(--space-3)">${esc(channel.tagline || 'A store on ByteBikri.')}</p>
   <div class="store-meta">
@@ -685,6 +729,7 @@ ${countryBlocked ? `<div class="section" style="margin-bottom:0">
     <span class="dot" aria-hidden="true">·</span>
     <span>${plural(pageviews, 'view')} in the last 30 days</span>
   </div>
+  ${verifiedSentence(verification)}
 </div>
 
 ${placed.head}
@@ -2388,9 +2433,13 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
       </p>
       <p class="small">
         There is no money column, and that is not an omission: nothing of a creator's ever passes through
-        bytebikri, so an account has no balance to show. There is also no “verified” chip yet — this
-        platform has no KYC step, and inventing a badge for one that does not exist would be worse than
-        the empty column.
+        bytebikri, so an account has no balance to show.
+      </p>
+      <p class="small">
+        There is no “verified” chip in this directory, and that is a decision rather than a gap. The badge
+        now exists (see any store's page), it is about identity and nothing else, and it is shown where a
+        buyer can read what it means. A column of ticked and unticked boxes here would say that an
+        unchecked creator is a suspect, and most of them are simply creators who have not asked.
       </p>
     </div></div>
   </div>
@@ -3847,10 +3896,15 @@ function storeSectionNav(channel, current) {
   </nav>`;
 }
 
-/** `21 Sept 2026` — a date someone can read, not an ISO string. */
-const day = (d) => (d
-  ? new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
-  : '—');
+/**
+ * `21 Sept 2026` — a date someone can read, not an ISO string.
+ *
+ * Same clock as the badge sentence (`dates.js` → SHOP_TZ). The two forms sit in
+ * the same panels — a renewal date and a document check can be the same instant —
+ * and a page that said 22 Sept in one row and 23 Sept in the next would be
+ * describing one minute two ways.
+ */
+const day = (d) => (d ? longDay(d) : '—');
 
 function pageHead(channel, current, title, lede) {
   return `${storeSectionNav(channel, current)}
@@ -4189,8 +4243,13 @@ ${pageHead(channel, 'billing', 'Billing', `Two things cost money here, and both 
 
 export function storeSettings({
   channel, user, consent = null, flash = null, plan, canList = false,
-  subscription = null, stats = {},
+  subscription = null, stats = {}, verification = null, capabilities = {},
 }) {
+  // Who is behind the store. Shown as a state, not a score: the panel says what a
+  // check is, what it costs nobody, and what we keep (the outcome — never a copy).
+  const vState = stateOf(verification);
+  const ask = requestability({ capabilities, state: vState });
+  const asked = verification?.created_at && vState === 'pending' ? longDay(verification.created_at) : null;
   return layout({
     title: 'Store settings', user, activeChannel: channel, consent, current: 'dashboard',
     body: `
@@ -4315,11 +4374,85 @@ ${flashNote(flash)}
     </div>
   </form>
 
+  <section class="section" id="verification">
+    <div class="section-head">
+      <h2>Verification</h2>
+      <p>Who is behind the store, checked by a person. It is the one thing on this
+      platform that is about you rather than your files.</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2 style="font-size:var(--text-md)">${esc(STATE_WORDING[vState])}</h2>
+        <span class="spacer"></span>
+        ${vState === 'verified' ? pill('Shown on your store', 'success') : ''}
+      </div>
+      <div class="panel-body">
+        ${vState === 'verified' ? `
+          <p class="small">${esc(badgeFor(verification).sentence)}</p>
+          <p class="fine" style="margin-top:var(--space-3)">
+            It lapses on ${esc(longDay(verification.expires_at))}. We will tell you before it does; nothing about your
+            files changes when it does.
+          </p>` : ''}
+        ${vState === 'pending' ? `
+          <p class="small">You asked on ${esc(asked)}. A person looks at one document and records what they saw —
+          this is done by hand, in the order requests arrive.</p>
+          ${verification.request_note ? `<p class="fine">You wrote: “${esc(verification.request_note)}”</p>` : ''}
+          <form method="post" action="/dashboard/${esc(channel.slug)}/verification/withdraw" style="margin-top:var(--space-4)">
+            <button class="btn btn-sm" type="submit">Withdraw the request</button>
+          </form>` : ''}
+        ${vState === 'rejected' ? `
+          <p class="small">The last check did not go through.</p>
+          ${verification.notes ? `<p class="fine">What the person noted: “${esc(verification.notes)}”</p>` : ''}
+          <p class="fine">It is not a finding against you, and it changes nothing about your store. Show the same
+          document again, or a different one.</p>` : ''}
+        ${vState === 'expired' ? `
+          <p class="small">The last check was on ${esc(longDay(verification.verified_at || verification.decided_at))}
+          and stopped counting on ${esc(longDay(verification.expires_at))}. Nothing was revoked — a proof of who
+          somebody is ages, so it is looked at again rather than assumed for ever.</p>` : ''}
+
+        ${ask.ok ? `
+          <form method="post" action="/dashboard/${esc(channel.slug)}/verification"
+                style="margin-top:var(--space-5)">
+            <div class="field">
+              <label for="v-note">Anything we need to know to reach you? <span class="muted">(optional)</span></label>
+              <input class="input" id="v-note" name="note" maxlength="280"
+                     placeholder="Where you are, or when to call.">
+              <span class="hint">Logistics only. <strong>Do not paste a document number here</strong> —
+              nobody needs it in writing, and this field is kept.</span>
+            </div>
+            <button class="btn btn-primary" type="submit">Ask for a check</button>
+          </form>` : `
+          <p class="fine" style="margin-top:var(--space-4)">${esc(ask.reason || '')}
+          ${ask.detail ? esc(ask.detail) : ''}</p>`}
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:var(--space-6)">
+      <div class="panel-head"><h2 style="font-size:var(--text-md)">What a check is, and what it is not</h2></div>
+      <div class="panel-body">
+        <ul class="list-plain">
+          ${whatItMeans().map((line) => `<li>${esc(line)}</li>`).join('')}
+        </ul>
+        <p class="fine" style="margin-top:var(--space-4)">
+          The document to have ready is usually a citizenship certificate, or the PAN card a freelancer
+          here registers for — free, issued in days, and QR-verifiable from the Nagarik App. A passport,
+          or a business registration if you sell as a firm, works too.
+        </p>
+      </div>
+    </div>
+  </section>
+
   <div class="panel" style="margin-top:var(--space-8)">
     <div class="panel-head"><h2>Your store as buyers see it</h2></div>
     <div class="panel-body">
+      <!-- The badge, rendered by the same function the storefront uses, so an
+           owner does not have to open their own shop in another tab to find out
+           what it says. It is absent for most stores most of the time, and that
+           is the honest default: there is no grey "unverified" mark. -->
       <dl class="kv">
         <dt>Address</dt><dd class="mono">/s/${esc(channel.slug)}</dd>
+        <dt>Identity</dt><dd>${verifiedBadge(verification, { withSentence: true }) || '<span class="fine">No check on file. Nothing on your store says otherwise — a store nobody has checked looks exactly like a new one.</span>'}</dd>
         <dt>Listed</dt><dd>${channel.listing_mode === 'marketplace' ? 'In Explore' : 'Own address only'}</dd>
         <dt>Plan</dt><dd>${esc(plan.name)}${subscription?.period_end ? ` · renews ${day(subscription.period_end)}` : ''}</dd>
         <dt>Reviews</dt><dd>${stats.count
@@ -5192,7 +5325,10 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
  * belongs to them. Showing our own estimate beside real invoices would teach an
  * operator to trust the wrong figure.
  */
-export function adminStoreDetail({ user, consent = null, flash = null, data = null, rules = [], actions = [], labels = {} }) {
+export function adminStoreDetail({
+  user, consent = null, flash = null, data = null, rules = [], actions = [], labels = {},
+  verification = null, verifications = [],
+}) {
   if (!data) {
     return adminShell({
       user, consent, current: 'stores', title: 'No such store',
@@ -5304,6 +5440,81 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
       <tbody>${reports.map(reportRow).join('')}</tbody>
     </table>
   </div></div>` : '<div class="empty">Nothing has been reported on this store.</div>'}
+</section>
+
+<section class="section" id="verification">
+  <div class="section-head">
+    <h2>Who is behind this store${verification && stateOf(verification) === 'verified' ? ' · checked' : ''}</h2>
+    <p>A document was seen by a person, and what they saw is recorded here. The document is not —
+    the database refuses to store one. This is not a moderation decision: a checked seller can
+    still publish a file that gets taken down.</p>
+  </div>
+
+  ${verification && stateOf(verification) === 'pending' ? `<div class="note note-warning" role="status">
+    <strong>${esc(verification.request_note ? `They asked, and wrote: “${verification.request_note}”` : 'They have asked for a check.')}</strong>
+    Asked ${esc(relTime(verification.created_at))}. Work it in the order it arrived.
+  </div>` : ''}
+
+  ${verification && stateOf(verification) === 'verified' ? `<div class="panel"><div class="panel-body">
+    <p class="small">${esc(badgeFor(verification).sentence)}</p>
+    <dl class="kv" style="margin-top:var(--space-4)">
+      <dt>Decided by</dt><dd>${esc(verification.decided_by_name || verification.decided_by_email || 'a person no longer on the console')}</dd>
+      <dt>Counts until</dt><dd>${esc(longDay(verification.expires_at))}</dd>
+      ${verification.notes ? `<dt>Note</dt><dd>${esc(verification.notes)}</dd>` : ''}
+    </dl>
+  </div></div>` : ''}
+
+  <div class="panel" style="margin-top:var(--space-5)"><div class="panel-body">
+    <form method="post" action="/admin/stores/${esc(c.slug)}/verification">
+      <p class="small" style="margin-bottom:var(--space-4)">
+        Look at the document somewhere else — in person, or in a call where they hold it up. Nothing
+        is uploaded here, and nothing should be: record the outcome, and the document stays with its owner.
+      </p>
+      <div class="row" style="align-items:flex-end;gap:var(--space-4);flex-wrap:wrap">
+        <div class="field" style="flex:1 1 200px">
+          <label for="v-outcome">Outcome</label>
+          <select class="input" id="v-outcome" name="outcome">
+            <option value="verified">Checked — it matched</option>
+            <option value="rejected">Did not work — refused</option>
+          </select>
+        </div>
+        <div class="field" style="flex:1 1 200px">
+          <label for="v-method">What was seen</label>
+          <select class="input" id="v-method" name="method">
+            ${METHODS.map((m) => `<option value="${esc(m.code)}">${esc(m.title)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field" style="flex:0 1 160px">
+          <label for="v-months">Counts for</label>
+          <select class="input" id="v-months" name="months">
+            ${[12, 24, 36].map((m) => `<option value="${m}"${m === DEFAULT_MONTHS ? ' selected' : ''}>${m} months</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="field" style="margin-top:var(--space-4)">
+        <label for="v-notes">What you saw <span class="muted">(the seller reads this if you refuse)</span></label>
+        <input class="input" id="v-notes" name="notes" maxlength="500"
+               placeholder="One line about what you saw.">
+        <span class="hint">Name matched the account, or what did not line up. Do not write a document
+        number here — an outcome is a record of a decision, not of the evidence.</span>
+      </div>
+      <button class="btn btn-primary" type="submit">Record the outcome</button>
+    </form>
+  </div></div>
+
+  ${verifications.length > 1 ? `<details style="margin-top:var(--space-4)">
+    <summary class="fine">Every check on this store (${num(verifications.length)})</summary>
+    <div class="table-scroll"><table class="table table-stacked" style="margin-top:var(--space-3)">
+      <thead><tr><th>When</th><th>Outcome</th><th>What was seen</th><th>By</th><th>Note</th></tr></thead>
+      <tbody>${verifications.map((v) => `<tr>
+        <td class="fine" data-label="When">${esc(relTime(v.decided_at || v.created_at))}</td>
+        <td data-label="Outcome">${pill(STATE_WORDING[stateOf(v)], stateOf(v) === 'verified' ? 'success' : stateOf(v) === 'pending' ? '' : 'warning')}</td>
+        <td class="fine" data-label="What was seen">${esc(methodOf(v.method)?.title || v.method)}</td>
+        <td class="fine" data-label="By">${esc(v.decided_by_name || v.decided_by_email || '—')}</td>
+        <td class="fine" data-label="Note">${esc(v.notes || '')}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>
+  </details>` : ''}
 </section>
 
 <section class="section">
