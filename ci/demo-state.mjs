@@ -198,6 +198,73 @@ if (nima && OPERATOR) {
   }
 }
 
+// ── 4. A seller with more than one page of files ─────────────────────────────
+//
+// §27 exists because of one line in the audit: "one file at a time; a seller with
+// 200 files will want more". A demo store with three files cannot show what that
+// means — no second page, no "select this page" next to "select all N matching",
+// and no sort worth using — so the demo carries a seller who has been publishing
+// for a few months. Created the way a seller creates them, guarded by slug so a
+// re-run adds nothing, and backdated so the date sorts have something to sort.
+const EXTRA_FILES = [
+  ['Dashain poster set', 'dashain-poster-set', false],
+  ['Tihar diya pack', 'tihar-diya-pack', false],
+  ['Devanagari grid pack', 'devanagari-grid-pack', true],
+  ['Kathmandu skyline print', 'kathmandu-skyline-print', false],
+  ['Newari script sampler', 'newari-script-sampler', false],
+  ['Pokhara lake photo pack', 'pokhara-lake-photo-pack', false],
+  ['Everest route map', 'everest-route-map', true],
+  ['Lumbini travel set', 'lumbini-travel-set', false],
+  ['Bhaktapur door detail', 'bhaktapur-door-detail', false],
+  ['Thangka line art', 'thangka-line-art', false],
+  ['Nepali type specimen', 'nepali-type-specimen', true],
+  ['Himalayan icon set', 'himalayan-icon-set', false],
+  ['Chitwan bird cards', 'chitwan-bird-cards', false],
+  ['Terai harvest sticker', 'terai-harvest-sticker', false],
+  ['Momo recipe zine', 'momo-recipe-zine', true],
+  ['Sel roti recipe card', 'sel-roti-recipe-card', false],
+  ['Dhaka topi pattern', 'dhaka-topi-pattern', false],
+  ['Boudhanath mandala', 'boudhanath-mandala', false],
+  ['Swayambhu sketch pack', 'swayambhu-sketch-pack', false],
+  ['Patan museum tiles', 'patan-museum-tiles', true],
+  ['Ilam tea label set', 'ilam-tea-label-set', false],
+  ['Mustang desert pack', 'mustang-desert-pack', false],
+  ['Rara lake posters', 'rara-lake-posters', false],
+  ['Janakpur mural scan', 'janakpur-mural-scan', false],
+  ['Nepal map for print', 'nepal-map-for-print', false],
+  ['Trek permit checklist', 'trek-permit-checklist', false],
+];
+if (alice) {
+  let made = 0;
+  for (const [n, [title, slug, open]] of EXTRA_FILES.entries()) {
+    const exists = await one('select id from assets where channel_id = $1 and slug = $2', [alice.id, slug]);
+    if (exists) continue;
+    const asset = await store.createAsset({
+      channelId: alice.id, title, slug,
+      description: `${title} — made for the shop, exported for print and screen.`,
+      unlockMode: open ? 'open' : 'ad_gated',
+    });
+    const body = Buffer.from(`ByteBikri demo file — ${title}.\n`);
+    await store.addFile({
+      assetId: asset.id, storageKey: await storage.put(body, `${slug}.txt`),
+      filename: `${slug}.txt`, mimeType: 'text/plain', sizeBytes: body.length,
+      checksum: createHash('sha256').update(body).digest('hex'),
+    });
+    // Every fifth file is one the seller paused, and the oldest is dated six days
+    // back so "Newest first" and "Oldest first" are different orders on the page.
+    await many(`update assets set created_at = now() - ($2 || ' days')::interval where id = $1`,
+      [asset.id, String(6 + n * 4)]);
+    if (n % 5 === 4) await store.updateAsset(asset.id, { status: 'paused' });
+    made += 1;
+  }
+  const list = await one(
+    `select count(*)::int as all,
+            count(*) filter (where status = 'live' and not hidden_by_reports)::int as live,
+            count(*) filter (where status = 'paused' and not hidden_by_reports)::int as paused
+       from assets where channel_id = $1 and status <> 'removed'`, [alice.id]);
+  say('alice file list', `${list.all} files (${list.live} live, ${list.paused} paused${made ? `, ${made} added just now` : ''})`);
+}
+
 // ── What the database now holds ──────────────────────────────────────────────
 const rules = await many(`select r.country_code, r.state, r.source, a.title
                             from asset_country_rules r join assets a on a.id = r.asset_id`);

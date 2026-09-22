@@ -134,8 +134,16 @@ async function measureTables(p) {
         scrolls.push({ where, cols: heads });
       }
 
+      // A row may begin with a CONTROL column — the checkbox that picks it for a bulk
+      // action. That cell is chrome, not the row's name, so the name cell (the one the
+      // floor and the label exemption are about) is the one after it. Teaching the rule
+      // this is the honest fix rather than labelling the title cell: on a phone the
+      // card still has to open with a readable title, and a title that has been pushed
+      // into second place would be exactly the defect this rule exists to catch.
+      const nameAt = (rows[0]?.querySelector('td')?.classList.contains('pick')) ? 1 : 0;
+
       if (stacked) {
-        const first = rows[0].querySelector('td');
+        const first = rows[0].querySelectorAll('td')[nameAt];
         if (parseFloat(getComputedStyle(first).minWidth) > 0) {
           out.push({
             kind: 'stacked-with-floor',
@@ -146,7 +154,7 @@ async function measureTables(p) {
         } else {
           for (const row of rows) {
             [...row.querySelectorAll('td')].forEach((cell, n) => {
-              if (n === 0) return;                       // the row's own name needs no label
+              if (n <= nameAt) return;                   // the control, then the row's own name
               if (cell.hasAttribute('colspan')) return;  // a spanning sentence, not a field
               if (!(cell.textContent || '').trim()) return;
               const label = cell.getAttribute('data-label');
@@ -188,7 +196,7 @@ async function measureTables(p) {
         }
         return false;
       })();
-      const firstCell = rows[0].querySelector('td');
+      const firstCell = rows[0].querySelectorAll('td')[nameAt];
       const firstWidth = Math.round(firstCell.getBoundingClientRect().width);
       if (wrapped && firstWidth < floor - 1) {
         out.push({

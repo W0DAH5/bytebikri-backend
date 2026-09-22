@@ -8,7 +8,7 @@ Three codebases live here and they are at very different stages:
 
 | Codebase | Path | State |
 |---|---|---|
-| **Web app** (server + storefront) | `app/` | works, **456 tests**, running locally |
+| **Web app** (server + storefront) | `app/` | works, **500 tests**, running locally |
 | **Android app** (Kotlin/Compose) | `android/` | **written against the real API now, never compiled** |
 | **Old prototype** | `index.js`, `admin.js`, `middleware.js`, `prototype/`, `db/schema.sql` | dead code, superseded |
 
@@ -2070,3 +2070,116 @@ last, with a static test that fails if a new anchored route goes back to the old
   > If you want it back, ask for a check from your store settings when it suits you. It
   > is the same process as the first time: a person looks at one document, and the
   > outcome is recorded. You do not need to send us anything now.
+
+## §27 — the file list, for a seller with more than one file
+
+The audit has carried the same line since §10: *"one file at a time; a seller with 200
+files will want more."* Three files are a list you can read. Two hundred are a list you
+have to search, sort and act on in groups — and every action had to be done by opening
+one file's page, changing it, and coming back.
+
+### What the research said
+
+- **NN/g, "Bulk Actions"** — the three guidelines are: provide a Select All, put the
+  actions in a contextual bar, and give feedback *with an undo* rather than a
+  confirmation. The undo is the part that gets skipped and the part that matters: a
+  seller who pauses thirty files by mistake has thirty files to find.
+- **PatternFly's bulk selector** — the reason it is a menu rather than a checkbox is
+  that "select all" has two meanings, *this page* and *everything that matches*, and a
+  single tick can only be read one of them. Its menu keeps "select none / page / all"
+  as separate, labelled items, and keeps the selected count visible the whole time.
+- **UX Stack Exchange (two threads on select-all)** — the tri-state header checkbox is
+  the established convention, *because* the count of what is ticked is what tells a
+  reader whether to use it.
+- **An issue on the `can-eye-budget` repo (Livewire)** — the implementation trap, in
+  one line: *"store the filter snapshot, not a list of hundreds of ids."* Re-resolve
+  the filter on the server at commit time, re-authorise every id against the owner, and
+  never trust the ids a browser posts.
+- **NN/g heuristics #3 + the general undo-over-confirm writing** — reserve confirmation
+  dialogs for the irreversible. Pausing a file is reversible, so it gets an undo.
+
+### What was built
+
+A toolbar that asks the database for the rows (`sellerFiles`): a search over title and
+address, state and access filters, five sorts, and paging at 25. The chips carry counts
+for the **whole store, not the filtered view**, because a filter with no visible "of N"
+is a page that cannot be checked by the person reading it. The three states are written
+so they *partition* the store — `live` and `paused` exclude the files the platform is
+holding while reports are answered, and `hidden` is exactly those — so the chips add up
+to the sentence above them, and a row's pill and the chip that finds it always agree.
+
+Selection is two labelled controls drawn **outside the table**: *"Select this page — the
+25 files shown above"* and *"Select all 29 files matching this search — including the 4
+you cannot see on this page."* They are outside the table because `.table-stacked thead`
+is `display: none` on a phone — a control a phone needs cannot live in a row of cells a
+phone does not draw. The second one posts `scope=matching` and no ids at all: the server
+re-runs the filter when the button is pressed, which is the snapshot rule.
+
+The action bar is a real toolbar at rest and becomes sticky, with a live count, once
+anything is ticked. The count is the client enhancement; the form, the checkboxes and
+the four actions all work with JavaScript absent.
+
+A bulk change writes one row to `asset_bulk_batches` with the **previous values** of
+every file it actually changed — `[{id,status,unlock_mode}]` — and the page offers an
+**Undo** for thirty minutes. The window is derived from `created_at`, never stored, so
+there is no second copy of the truth to disagree with the first.
+
+### The decisions that took the longest
+
+- **Undo, not "are you sure?"** Pausing is reversible, so it acts and offers the way
+  back. The undo *restores* rather than inverts: a selection holding a live file and a
+  paused one, "put back live", and then undo puts the paused one back to paused. An
+  inverse action would have made it live, which is a state it was never in.
+- **The platform's state is not the seller's to move.** A file hidden while reports are
+  answered is skipped by every bulk action, and *counted* — "1 file hidden after reports
+  was left alone — the list says which." The undo respects a hold that arrived *after*
+  the change, too.
+- **A no-op is not a change.** Files already in the asked-for state are not recorded, so
+  the undo does not "restore" rows nothing happened to, and a press that changed nothing
+  is refused with a reason rather than an empty batch.
+- **Three refusals, because they are three different facts.** Nothing arrived (`bulk-empty`),
+  everything picked already says that (`bulk-nothing`), or the platform is holding
+  everything picked (`bulk-held`). The first used to be reported as the second — telling a
+  seller their files "already say this" about a press that sent nothing at all.
+- **The filter travels with the action.** Every redirect carries `q`, `state`, `access`
+  and `sort` back, so pressing Pause on a filtered list does not silently reset it.
+
+### What testing found that reading did not
+
+1. **The flash said "Saved."** The redirect was `saved=bulk:…`, and `flashFor` returns
+   the first key it finds — `saved` is above `bulk` in the map, so a real change reported
+   itself as the generic one. Static test now asserts both keys are their own.
+2. **The sticky bar was not sticky.** `.panel` carries `overflow: hidden` for its rounded
+   corners, which makes the *form* the sticky context: the bar sat at the bottom of an
+   1,865px form, so "3 files picked" was invisible exactly when it mattered. The check in
+   `bulk-click.mjs` that looked at the class name passed the whole time; the one that
+   reads `getBoundingClientRect().bottom` against `innerHeight` is the one that found it.
+3. **"1 file picked", "3 files picked".** A count inside a sentence is read as a claim
+   about what happened; "Paused 1 files" makes a real change read as a template.
+4. **The demo could not show the feature.** A store with three files has no second page
+   and no "select all 29 matching". `ci/demo-state.mjs` now gives alice a seller's list —
+   29 files, 26 of them created the way a seller creates them and backdated so the date
+   sorts differ — because a feature that only exists at scale has to be demonstrable at
+   scale.
+5. **The list, on a phone.** The row checkbox used to sit in a 34px column with a "Pick"
+   label of its own above each card. It now sits beside the card's title, which is how
+   every list on a phone does it.
+
+### What was run
+
+- `npm test` — **500 / 500 / 0**, including seventeen new tests in `test/bulk.test.js`:
+  the counts that partition the store, the sorts, paging, the ownership guard (a stranger's
+  id changes nothing), the held-file skip and its count, the filter-as-selection path, the
+  restore-not-invert undo, the hold that arrived after the change, the one-shot window, the
+  three refusals, the two labelled controls, and the flash-key rule.
+- `ci/eyes/bulk-click.mjs` — **20 checks, all passing**, in a real browser at 390px: the
+  live count and its singular, the tri-state control, the bar pinned to the foot of the
+  *window*, both scopes, the escape hatch clearing the row ticks, Clear, and the empty
+  submit guard.
+- `ci/eyes/columns.mjs` — **31 tables on 18 pages, 0 findings at 390px**. The rule learned
+  one thing: a row may begin with a control column, so on a stacked card the name cell is
+  the one after it. Labelling the title instead would have been the easy fix and the wrong
+  one — a title pushed into second place is exactly the defect the rule exists to catch.
+- `ci/eyes/sweep.mjs` — **56 clean, 0 with findings.**
+- Looked at, in the browser: the toolbar, chips and undo strip at 1440px and 390px; the
+  sticky bar with rows ticked on both; the phone card with the box beside its title.

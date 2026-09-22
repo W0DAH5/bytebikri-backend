@@ -2608,6 +2608,278 @@ export const store = {
     );
   },
 
+  // ---- the file list, as something a seller can work -----------------------
+  //
+  // Three questions a seller with two hundred files asks, and none of them had an
+  // answer: WHICH file (search), WHAT state is it in (filter), and WHICH ones are
+  // worth my afternoon (sort). The list returned everything, newest first, and at
+  // two hundred rows that is a wall rather than a list.
+  //
+  // The counts are computed over the whole store, not over the current filter, on
+  // purpose: they are what makes the filter chips honest ("Live 5 · Paused 2 ·
+  // Hidden 1" has to keep saying 5 while you are looking at the paused ones).
+
+  /**
+   * The seller's own files, filtered and sorted the way the list is read.
+   *
+   * `total` is how many match; `counts` is the whole store. A page that reports
+   * only one of those two numbers is a page that lies to somebody: "7 files" when
+   * 12 exist hides the five the filter removed, and a filter chip with no count is
+   * a guess about what is behind it.
+   */
+  async sellerFiles(channelId, { q = '', state = 'all', access = 'all', sort = 'newest', page = 1, perPage = 25 } = {}) {
+    const term = String(q || '').trim().slice(0, 80);
+    const st = ['all', 'live', 'paused', 'hidden'].includes(state) ? state : 'all';
+    const ac = ['all', 'ad_gated', 'open'].includes(access) ? access : 'all';
+    const per = Math.min(Math.max(Number(perPage) || 25, 5), 100);
+    const pageNo = Math.max(Number(page) || 1, 1);
+    const so = ['newest', 'oldest', 'unlocks', 'views', 'title'].includes(sort) ? sort : 'newest';
+    const order = {
+      newest: 'a.created_at desc',
+      oldest: 'a.created_at asc',
+      // The two sorts that answer "what is worth my afternoon". Ties break by date
+      // so the order is stable — a list that reshuffles between two page loads is
+      // how somebody ticks the wrong file.
+      unlocks: 'unlocks desc, a.created_at desc',
+      views: 'views_30d desc, a.created_at desc',
+      title: 'lower(a.title) asc',
+    }[so];
+
+    const where = [`a.channel_id = $1`, `a.status <> 'removed'`];
+    const args = [channelId];
+    if (term) {
+      args.push(`%${term}%`);
+      where.push(`(a.title ilike $${args.length} or a.slug ilike $${args.length})`);
+    }
+    // The three chips partition the store, which is the only arrangement a seller
+    // can check by eye: every file is in exactly one of Live, Paused or Hidden, and
+    // the numbers under the chips add up to the number in the sentence above them.
+    //
+    // So "Live" means live AND not held — a file the report threshold took is not
+    // live in any sense a seller cares about, and the row itself says "Hidden after
+    // reports" rather than "Live". A chip named Live that listed a row labelled
+    // Hidden would be the page disagreeing with itself.
+    if (st === 'live') where.push(`a.status = 'live' and not a.hidden_by_reports`);
+    if (st === 'paused') where.push(`a.status = 'paused' and not a.hidden_by_reports`);
+    if (st === 'hidden') where.push(`a.hidden_by_reports`);
+
+    if (ac !== 'all') {
+      args.push(ac);
+      where.push(`a.unlock_mode = $${args.length}`);
+    }
+
+    const from = `
+      from assets a
+      where ${where.join(' and ')}`;
+    // One shared column list, so the row the sorter reads and the row the page
+    // draws cannot be computed differently.
+    const columns = `
+      a.id, a.slug, a.title, a.status, a.unlock_mode, a.hidden_by_reports, a.created_at,
+      (select count(*)::int from asset_files f where f.asset_id = a.id)  as files,
+      (select count(*)::int from unlocks u
+        where u.asset_id = a.id and u.revoked_at is null)                as unlocks,
+      (select count(*)::int from ad_view_events e
+        where e.asset_id = a.id and e.completed
+          and e.created_at >= current_date - interval '29 days')         as views_30d`;
+
+    const rows = await many(
+      `select ${columns} ${from} order by ${order} limit ${per} offset ${(pageNo - 1) * per}`,
+      args,
+    );
+    const matched = await scalar(`select count(*)::int as n ${from}`, args);
+    // The store's own totals: no search, no filters, so the chips keep their
+    // numbers while a filter is on.
+    const all = await one(
+      `select count(*)::int as all,
+              count(*) filter (where status = 'live' and not hidden_by_reports)::int   as live,
+              count(*) filter (where status = 'paused' and not hidden_by_reports)::int as paused,
+              count(*) filter (where hidden_by_reports)::int                           as hidden
+         from assets where channel_id = $1 and status <> 'removed'`,
+      [channelId],
+    );
+    return {
+      rows,
+      // What was actually applied, not what was asked for: a URL with `state=banana`
+      // gets the default, and the toolbar has to show the filter that is in force
+      // rather than the one in the address bar. (The chips are built from these.)
+      q: term, state: st, access: ac, sort: so,
+      total: Number(matched) || 0,
+      page: pageNo,
+      perPage: per,
+      counts: { all: Number(all.all) || 0, live: Number(all.live) || 0, paused: Number(all.paused) || 0, hidden: Number(all.hidden) || 0 },
+    };
+  },
+
+  /**
+   * The ids a filter currently matches — for "select all N matching files".
+   *
+   * The alternative is asking the browser to post two hundred uuids, which goes
+   * wrong in the direction that matters: a selection made from a stale page can
+   * carry an id the seller can no longer see. Re-resolving the filter on the server,
+   * inside the commit, is the researched pattern ("store the filter snapshot, not a
+   * list of hundreds of ids") and it is also the only version where a file added
+   * between render and press is a decision the seller can see.
+   */
+  async sellerFileIds(channelId, filter = {}) {
+    const { rows } = await this.sellerFiles(channelId, { ...filter, page: 1, perPage: 100 });
+    if (rows.length < 100) return rows.map((r) => r.id);
+    // More than one page: read the rest. Bounded, because a store with thousands of
+    // files should get a slower answer rather than a wrong one.
+    const all = [];
+    for (let page = 1; page <= 20; page += 1) {
+      const chunk = (await this.sellerFiles(channelId, { ...filter, page, perPage: 100 })).rows;
+      all.push(...chunk.map((r) => r.id));
+      if (chunk.length < 100) break;
+    }
+    return all;
+  },
+
+  /**
+   * Change several files at once, and write down what they were.
+   *
+   * `action` is one of four words a seller would use, not a patch object: 'pause',
+   * 'live', 'ad_gated', 'open'. Selection arrives either as explicit ids (the boxes
+   * they ticked) or as `filter` (the "all N matching" escape hatch, re-resolved here
+   * so the set is decided by the server at commit time).
+   *
+   * Two things never change in bulk, and both are counted rather than dropped:
+   * a file hidden after reports (an operator owns that state until the appeal is
+   * answered — the same rule `updateAsset` enforces one at a time), and a file that
+   * already holds the value being applied (a no-op is not a change, and recording it
+   * as one would make the undo restore nothing and say it had).
+   */
+  async applyAssetBulk({ channelId, actorId, action, ids = [], filter = null }) {
+    const patches = {
+      pause: { column: 'status', value: 'paused' },
+      live: { column: 'status', value: 'live' },
+      ad_gated: { column: 'unlock_mode', value: 'ad_gated' },
+      open: { column: 'unlock_mode', value: 'open' },
+    };
+    const patch = patches[action];
+    if (!patch) return { ok: false, code: 'unknown-action' };
+
+    // The filter is resolved BEFORE the transaction opens, not inside it: every
+    // statement in a transaction has to run on that transaction's client, and
+    // `sellerFileIds` is a pooled read. Resolving first also keeps the meaning the
+    // same — "the set the filter matches at the moment the button is pressed" — with
+    // nothing between the resolution and the write but the transaction itself.
+    const wanted = filter
+      ? await this.sellerFileIds(channelId, filter)
+      : (Array.isArray(ids) ? ids : [])
+        .map((v) => String(v))
+        .filter((v) => /^[0-9a-f-]{36}$/i.test(v));
+
+    // `picked` is what survived — ids that were usable. The route needs it to tell
+    // "every file you picked already says this" from "nothing you picked arrived",
+    // which are different sentences and only one of them is true at a time.
+    if (!wanted.length) {
+      return { ok: true, applied: 0, unchanged: 0, skipped: 0, picked: 0, batch: null, action };
+    }
+
+    return withTransaction(async (tx) => {
+
+      // The ownership guard is the WHERE clause, not a check above it: an id that
+      // belongs to another store is simply not in this set. (A bulk route that
+      // trusted posted ids would be a way to pause a stranger's files.)
+      const candidates = await tx.query(
+        `select id, status, unlock_mode, hidden_by_reports
+           from assets
+          where channel_id = $1 and id = any($2::uuid[]) and status <> 'removed'`,
+        [channelId, wanted],
+      );
+      const rows = candidates.rows;
+      const changeable = rows.filter((r) => !r.hidden_by_reports);
+      const changing = changeable.filter((r) => r[patch.column] !== patch.value);
+      const skipped = rows.length - changeable.length;
+      const unchanged = changeable.length - changing.length;
+
+      if (!changing.length) {
+        return { ok: true, applied: 0, unchanged, skipped, picked: wanted.length, batch: null, action };
+      }
+
+      await tx.query(
+        `update assets set ${patch.column} = $3 where channel_id = $1 and id = any($2::uuid[])`,
+        [channelId, changing.map((r) => r.id), patch.value],
+      );
+
+      const before = changing.map((r) => ({ id: r.id, status: r.status, unlock_mode: r.unlock_mode }));
+      const batch = await tx.query(
+        `insert into asset_bulk_batches (channel_id, actor_id, action, before, applied, unchanged, skipped)
+         values ($1, $2, $3, $4::jsonb, $5, $6, $7) returning *`,
+        [channelId, actorId || null, action, JSON.stringify(before), changing.length, unchanged, skipped],
+      );
+      return {
+        ok: true, applied: changing.length, unchanged, skipped,
+        picked: wanted.length, batch: batch.rows[0], action,
+      };
+    });
+  },
+
+  /**
+   * The most recent bulk change nobody has taken back, if it is still undoable.
+   *
+   * The window is derived from `created_at` — thirty minutes — for the same reason
+   * every other deadline here is derived: a stored expiry is a second clock, and
+   * two clocks is how a page offers an undo the server then refuses.
+   */
+  recentAssetBulk(channelId, { withinMinutes = 30 } = {}) {
+    return one(
+      `select * from asset_bulk_batches
+        where channel_id = $1 and undone_at is null
+          and created_at > now() - ($2::int * interval '1 minute')
+        order by created_at desc limit 1`,
+      [channelId, withinMinutes],
+    );
+  },
+
+  /**
+   * Put the rows back exactly as they were.
+   *
+   * A restore, not an inverse action: rows that held different values (a mixed
+   * selection: some live, some paused) would come back wrong if the undo simply
+   * applied the opposite word to all of them. The values are in `before`, and this
+   * reads them.
+   *
+   * A file that has been hidden after reports SINCE the bulk change keeps its hidden
+   * state and is counted as skipped — the platform's hold is not something an undo
+   * quietly lifts. Everything else comes back.
+   */
+  async undoAssetBulk({ batchId, channelId, actorId }) {
+    return withTransaction(async (tx) => {
+      const found = await tx.query(
+        `select * from asset_bulk_batches where id = $1 and channel_id = $2`,
+        [batchId, channelId],
+      );
+      const batch = found.rows[0];
+      if (!batch) return { ok: false, code: 'no-such-change' };
+      if (batch.undone_at) return { ok: false, code: 'already-undone' };
+      const stale = await tx.query(
+        `select (created_at < now() - interval '30 minutes') as stale from asset_bulk_batches where id = $1`,
+        [batchId],
+      );
+      if (stale.rows[0]?.stale) return { ok: false, code: 'too-late' };
+
+      const before = Array.isArray(batch.before) ? batch.before : [];
+      const ids = before.map((r) => r.id);
+      const statuses = before.map((r) => r.status);
+      const modes = before.map((r) => r.unlock_mode);
+      const restored = await tx.query(
+        `update assets a
+            set status = v.status, unlock_mode = v.unlock_mode
+           from unnest($2::uuid[], $3::text[], $4::text[]) as v(id, status, unlock_mode)
+          where a.id = v.id and a.channel_id = $1
+            and a.status <> 'removed' and not a.hidden_by_reports
+          returning a.id`,
+        [channelId, ids, statuses, modes],
+      );
+      await tx.query(
+        `update asset_bulk_batches set undone_at = now(), undone_by = $2 where id = $1`,
+        [batchId, actorId || null],
+      );
+      return { ok: true, restored: restored.rowCount, skipped: ids.length - restored.rowCount, action: batch.action };
+    });
+  },
+
   async updateAsset(assetId, patch = {}) {
     const allowed = {
       title: (v) => String(v).trim().slice(0, 200),

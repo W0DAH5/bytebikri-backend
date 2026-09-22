@@ -312,4 +312,89 @@
    * without JavaScript.
    */
 
+  // ── the seller's file list: selection ────────────────────────────────────
+  /*
+   * Progressive enhancement, and the enhancement is only ever a COUNT and a
+   * sticky position. The form, the checkboxes and the four action buttons are in
+   * the markup and work with this file absent — which is the point: a bulk action
+   * that only exists once a script has run is a bulk action that disappears on a
+   * bad connection, and this is the page somebody uses to take a leak down.
+   *
+   * What it adds:
+   *
+   *   - the live count in the bar, so "3 selected" is visible while scrolling;
+   *   - the header box, which is indeterminate when some rows are ticked, and
+   *     selects THIS PAGE — never "everything matching", which is its own control
+   *     with its own label, because the ambiguity between the two is the hazard
+   *     the whole pattern has to avoid;
+   *   - "select all N matching", which clears the row boxes (so a file cannot be
+   *     counted twice) and switches the form to the filter scope the server
+   *     re-resolves at commit time.
+   */
+  const bulkForm = document.getElementById('bulk-form');
+  if (bulkForm) {
+    const boxes = Array.from(bulkForm.querySelectorAll('input[name="ids"]'));
+    const header = document.getElementById('pick-page');
+    const matching = document.getElementById('pick-matching');
+    const scope = document.getElementById('bulk-scope');
+    const bar = document.getElementById('bulk-bar');
+    const count = document.getElementById('bulk-count');
+    const clear = document.getElementById('bulk-clear');
+    const selectable = boxes.filter((b) => !b.disabled);
+
+    const refresh = () => {
+      const ticked = selectable.filter((b) => b.checked).length;
+      const allMatching = Boolean(matching && matching.checked);
+      if (header) {
+        // The page control is the tri-state one now: on, off, or neither — which is
+        // the part of the header-checkbox convention worth keeping, on a control
+        // that also says in words what it selects.
+        header.checked = ticked > 0 && ticked === selectable.length;
+        header.indeterminate = ticked > 0 && ticked < selectable.length;
+      }
+      if (scope) scope.value = allMatching ? 'matching' : 'page';
+      const total = matching ? Number(matching.dataset.total || 0) : 0;
+      if (count) {
+        count.textContent = allMatching
+          ? `${total} file${total === 1 ? '' : 's'} matching this search`
+          : ticked ? `${ticked} file${ticked === 1 ? '' : 's'} picked`
+            : 'No files picked';
+      }
+      // Sticky only once something is picked: a bar pinned to the bottom of the
+      // window on a page where nothing is selected is furniture over content.
+      if (bar) bar.classList.toggle('is-live', allMatching || ticked > 0);
+    };
+
+    for (const b of selectable) b.addEventListener('change', () => {
+      // Ticking a row by hand is the other way of saying "not all of them".
+      if (b.checked && matching) matching.checked = false;
+      refresh();
+    });
+    header?.addEventListener('change', () => {
+      for (const b of selectable) b.checked = header.checked;
+      if (matching) matching.checked = false;
+      refresh();
+    });
+    matching?.addEventListener('change', () => {
+      if (matching.checked) for (const b of selectable) b.checked = false;
+      refresh();
+    });
+    clear?.addEventListener('click', () => {
+      for (const b of selectable) b.checked = false;
+      if (matching) matching.checked = false;
+      if (header) { header.checked = false; header.indeterminate = false; }
+      refresh();
+    });
+    // A bulk action with nothing picked should say so rather than post an empty
+    // selection and come back with a refusal the page could have given itself.
+    bulkForm.addEventListener('submit', (event) => {
+      if (!selectable.some((b) => b.checked) && !(matching && matching.checked)) {
+        event.preventDefault();
+        if (count) count.textContent = 'Pick a file first — nothing is selected.';
+        if (bar) bar.classList.add('is-live');
+      }
+    });
+    refresh();
+  }
+
 })();

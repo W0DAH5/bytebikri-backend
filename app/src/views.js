@@ -80,6 +80,15 @@ export { isoDay };
  */
 const plural = (n, singular, pluralForm = `${singular}s`) =>
   `${num(n)} ${Number(n) === 1 ? singular : pluralForm}`;
+
+/**
+ * "1 file" / "3 files".
+ *
+ * The same helper exists in `server.js` for the flash sentences, and both exist for
+ * the same reason: a count inside a sentence is read as a claim about what happened,
+ * and "Paused 1 files" makes a real change read like a template.
+ */
+const filesN = (n) => `${Number(n) || 0} file${Number(n) === 1 ? '' : 's'}`;
 const num = (n) => Number(n).toLocaleString('en-IN');
 
 const relTime = (d) => {
@@ -2948,6 +2957,12 @@ export function dashboard({
   // plan-usage count, and a paused file must not count against the same ceiling a
   // publish is checked against.
   ownerAssets = null,
+  // The same list, filtered, sorted and paged — what the toolbar on this page
+  // actually asks the database for. `ownerAssets` is kept for callers that want the
+  // whole store (and for the tests that never needed paging).
+  files = null,
+  // The most recent bulk change still inside its undo window, if any.
+  recentBulk = null,
   // How full this seller's plan is, and what the next tier would give them.
   // Both come from `planUsage` so this panel, the refusal message and the
   // operator's pages cannot disagree about the same account.
@@ -3095,32 +3110,129 @@ ${traffic.length ? `
 </div>
 
 ${(() => {
-    // Live first, then whatever is not live — a seller scrolling their own files
-    // should not have to hunt past a hidden one to find what is earning.
-    const list = (ownerAssets ?? assets).slice().sort((a, b) => (a.status === 'live' ? 0 : 1) - (b.status === 'live' ? 0 : 1));
-    const hiddenCount = list.filter((a) => a.hidden_by_reports).length;
-    const pausedCount = list.filter((a) => a.status !== 'live' && !a.hidden_by_reports).length;
-    return list.length ? `
-<section class="section">
+    // What the toolbar asked for when it is there, and the old shape when it is not:
+    // the view is called by tests and by callers that do not page, and a page that
+    // only works with one of its two inputs is a page that breaks silently.
+    const paged = files || null;
+    const list = paged
+      ? paged.rows
+      // Live first, then whatever is not live — a seller scrolling their own files
+      // should not have to hunt past a hidden one to find what is earning.
+      : (ownerAssets ?? assets).slice().sort((a, b) => (a.status === 'live' ? 0 : 1) - (b.status === 'live' ? 0 : 1));
+    const counts = paged?.counts || {
+      all: list.length,
+      live: list.filter((a) => a.status === 'live' && !a.hidden_by_reports).length,
+      paused: list.filter((a) => a.status === 'paused' && !a.hidden_by_reports).length,
+      hidden: list.filter((a) => a.hidden_by_reports).length,
+    };
+    const f = {
+      q: paged?.q ?? '', state: paged?.state ?? 'all', access: paged?.access ?? 'all',
+      sort: paged?.sort ?? 'newest',
+    };
+    // Rebuilt from scratch for every link, so a filter cannot linger invisibly in a
+    // URL somebody copied: what the page shows and what its address says are the
+    // same four values.
+    const qs = (next = {}) => {
+      const merged = { ...f, ...next };
+      const params = new URLSearchParams();
+      if (merged.q) params.set('q', merged.q);
+      if (merged.state && merged.state !== 'all') params.set('state', merged.state);
+      if (merged.access && merged.access !== 'all') params.set('access', merged.access);
+      if (merged.sort && merged.sort !== 'newest') params.set('sort', merged.sort);
+      const out = params.toString();
+      return `/dashboard/${esc(channel.slug)}${out ? `?${out}` : ''}#files`;
+    };
+    const chip = (label, next, active, count) => `
+      <a class="chip${active ? ' chip-on' : ''}" href="${esc(qs(next))}"
+         ${active ? 'aria-current="true"' : ''}>${esc(label)}${count === undefined ? '' : ` <span class="chip-n">${num(count)}</span>`}</a>`;
+    const isFiltered = Boolean(f.q) || f.state !== 'all' || f.access !== 'all';
+    const hiddenCount = counts.hidden;
+    const pausedCount = counts.paused;
+
+    const toolbar = `
+      <form class="files-toolbar" method="get" action="/dashboard/${esc(channel.slug)}">
+        <div class="files-search">
+          <label class="sr-only" for="files-q">Search your files</label>
+          <input class="input" id="files-q" type="search" name="q" value="${esc(f.q)}"
+                 maxlength="80" placeholder="Search by title or address…">
+        </div>
+        <label class="sr-only" for="files-state">State</label>
+        <select class="input" id="files-state" name="state">
+          ${[['all', 'Any state'], ['live', 'Live'], ['paused', 'Paused by me'], ['hidden', 'Hidden after reports']]
+    .map(([v, l]) => `<option value="${v}"${f.state === v ? ' selected' : ''}>${l}</option>`).join('')}
+        </select>
+        <label class="sr-only" for="files-access">Access</label>
+        <select class="input" id="files-access" name="access">
+          ${[['all', 'Any access'], ['ad_gated', 'Ad-gated'], ['open', 'Open to everyone']]
+    .map(([v, l]) => `<option value="${v}"${f.access === v ? ' selected' : ''}>${l}</option>`).join('')}
+        </select>
+        <label class="sr-only" for="files-sort">Sort</label>
+        <select class="input" id="files-sort" name="sort">
+          ${[['newest', 'Newest first'], ['oldest', 'Oldest first'], ['unlocks', 'Most unlocks'],
+    ['views', 'Most ad views (30d)'], ['title', 'Title A–Z']]
+    .map(([v, l]) => `<option value="${v}"${f.sort === v ? ' selected' : ''}>${l}</option>`).join('')}
+        </select>
+        <button class="btn" type="submit">Apply</button>
+        ${isFiltered ? `<a class="btn btn-sm" href="/dashboard/${esc(channel.slug)}#files">Clear</a>` : ''}
+      </form>
+      <div class="files-chips">
+        ${chip('All', { state: 'all' }, f.state === 'all', counts.all)}
+        ${chip('Live', { state: 'live' }, f.state === 'live', counts.live)}
+        ${chip('Paused', { state: 'paused' }, f.state === 'paused', counts.paused)}
+        ${counts.hidden ? chip('Hidden after reports', { state: 'hidden' }, f.state === 'hidden', counts.hidden) : ''}
+      </div>`;
+
+    // The undo strip. In the page and not only in the flash: the flash says what
+    // happened once, and this says "you can still take it back" for as long as that
+    // is true — which is the actual promise.
+    const undoAction = { pause: 'Paused', live: 'Put back live', ad_gated: 'Set to ad-gated', open: 'Opened to everyone' };
+    const undoStrip = recentBulk && recentBulk.applied ? `
+      <div class="note note-info" role="status" style="margin:0 0 var(--space-4)">
+        <strong>${esc(undoAction[recentBulk.action] || 'Changed')} ${filesN(recentBulk.applied)} ${esc(relTime(recentBulk.created_at))}.</strong>
+        ${recentBulk.skipped ? ` ${filesN(recentBulk.skipped)} hidden after reports ${recentBulk.skipped === 1 ? 'was' : 'were'} left alone.` : ''}
+        <form method="post" action="/dashboard/${esc(channel.slug)}/assets/bulk/${esc(recentBulk.id)}/undo"
+              style="display:inline">
+          <button class="btn btn-sm" type="submit">Undo</button>
+        </form>
+        <span class="fine">Offered for 30 minutes after the change — take it back and the files are exactly as they were.</span>
+      </div>` : '';
+
+    // Three numbers, and a page that conflates them is a page that lies: how many
+    // rows are on this screen, how many files the search matched, and how many the
+    // store holds. "Showing 3 of 9 … out of 12 in the store" is the whole truth.
+    const shownCount = list.length;
+    const matchedCount = Number(paged?.total ?? shownCount) || 0;
+
+    return counts.all || isFiltered || recentBulk?.applied ? `
+<section class="section" id="files">
   <div class="section-head">
     <h2>Your files</h2>
-    <p>${plural(list.length, 'file')}${hiddenCount ? `, ${hiddenCount} hidden after reports` : ''}${
-      pausedCount ? `${hiddenCount ? ' and' : ','} ${pausedCount} paused by you` : ''}.
+    <p>${isFiltered
+    ? `Showing <strong>${num(shownCount)} of ${num(matchedCount)}</strong> files${f.q ? ` matching “${esc(f.q)}”` : ''}${f.state !== 'all' || f.access !== 'all' ? ' under these filters' : ''}${counts.all !== matchedCount ? `, out of ${num(counts.all)} in the store` : ''}.`
+    : `${plural(counts.all, 'file')}${hiddenCount ? `, ${hiddenCount} hidden after reports` : ''}${pausedCount ? `${hiddenCount ? ' and' : ','} ${pausedCount} paused by you` : ''}.`}
       Everything here is editable — nothing is reviewed before it appears.${hiddenCount
-      ? ' A hidden file says so in its own row, with the way to answer it.' : ''}</p>
+    ? ' A hidden file says so in its own row, with the way to answer it.' : ''}</p>
   </div>
-  <div class="panel"><div class="panel-body panel-body-flush">
-    <!-- Six columns, stacked on a phone like the other wide tables.
-         State comes before Access because of the question this page is opened
-         with: "am I live?" first, then how the file unlocks — and only then the
-         numbers. It used to come first because a phone could show the title and
-         ONE more column inside the scrolling box, so the order decided what was
-         visible without swiping. That premise is gone: a stacked row shows all of
-         them, and the order is now only about what is read first. -->
-    <table class="table table-stacked">
-      <thead><tr><th>File</th><th>State</th><th>Access</th>
-        <th class="num">Unlocks</th><th>Ad views · 30d</th><th class="num"></th></tr></thead>
-      <tbody>${(() => {
+  ${toolbar}
+  ${undoStrip}
+  <form method="post" action="/dashboard/${esc(channel.slug)}/assets/bulk" class="panel" id="bulk-form">
+    <input type="hidden" name="q" value="${esc(f.q)}">
+    <input type="hidden" name="state" value="${esc(f.state)}">
+    <input type="hidden" name="access" value="${esc(f.access)}">
+    <input type="hidden" name="sort" value="${esc(f.sort)}">
+    <!-- Which set the action applies to. The two are separate controls on purpose:
+         the header box means the rows on this page, and this one means the whole
+         filter — the researched hazard is a single checkbox that means both. -->
+    <input type="hidden" name="scope" value="page" id="bulk-scope">
+    <div class="panel-body panel-body-flush">
+      ${list.length ? `
+      <table class="table table-stacked">
+        <thead><tr>
+          <th class="pick"><span class="sr-only">Select</span></th>
+          <th>File</th><th>State</th><th>Access</th>
+          <th class="num">Unlocks</th><th>Ad views · 30d</th><th class="num"></th>
+        </tr></thead>
+        <tbody>${(() => {
     // One scale for every row. If each chart picked its own maximum, the file
     // with one ad view would draw the same shape as the file with two hundred.
     const seriesOf = (id) => {
@@ -3132,10 +3244,16 @@ ${(() => {
       return Math.max(best, peak);
     }, 0);
     return list.map((a) => {
-      const st = assetStats.find((x) => x.id === a.id) || { files: 0, unlocks: 0 };
+      const st = assetStats.find((x) => x.id === a.id) || { files: Number(a.files) || 0, unlocks: Number(a.unlocks) || 0 };
       const series = seriesOf(a.id);
-      const monthTotal = series.reduce((t, p) => t + p.value, 0);
+      const monthTotal = series.length ? series.reduce((t, p) => t + p.value, 0) : Number(a.views_30d) || 0;
       return `<tr>
+        <td class="pick" data-label="Pick">
+          <label class="pick-box">
+            <input type="checkbox" name="ids" value="${esc(a.id)}"
+                   aria-label="Select ${esc(a.title)}"${a.hidden_by_reports ? ' disabled' : ''}>
+          </label>
+        </td>
         <td><strong>${esc(a.title)}</strong>
           <div class="fine">${esc(a.slug)} · ${plural(Number(st.files) || 0, 'file')}${
     a.unlock_mode === 'open' ? ' · open to everyone' : ''}</div></td>
@@ -3153,13 +3271,54 @@ ${(() => {
         <td data-label="Ad views · 30d">${series.length
     ? `<div class="row" style="gap:var(--space-3);align-items:center">${sparkline({ points: series, max: sharedMax })}
          <span class="fine">${monthTotal ? `${num(monthTotal)} this month` : 'none yet'}</span></div>`
-    : '<span class="fine">—</span>'}</td>
+    : `<span class="fine">${monthTotal ? `${num(monthTotal)} this month` : '—'}</span>`}</td>
         <td class="num" data-label="Actions"><a class="btn btn-sm" href="/dashboard/${esc(channel.slug)}/assets/${esc(a.id)}">Edit</a></td>
       </tr>`;
     }).join('');
   })()}</tbody>
-    </table>
-  </div></div>
+      </table>` : `<div class="empty" style="margin:var(--space-5)">
+        ${isFiltered ? `No file matches those filters. <a href="/dashboard/${esc(channel.slug)}#files">Clear them</a> to see all ${num(counts.all)}.`
+    : 'Nothing published yet. Your storefront is live — the first file is what makes it a store.'}
+      </div>`}
+      ${paged && paged.total > paged.perPage ? `<nav class="pager" aria-label="Pages">
+        ${paged.page > 1 ? `<a class="btn btn-sm" href="${esc(qs({ page: paged.page - 1 }))}">← Back</a>` : ''}
+        <span class="fine">Page ${num(paged.page)} of ${num(Math.ceil(paged.total / paged.perPage))}</span>
+        ${paged.page < Math.ceil(paged.total / paged.perPage)
+    ? `<a class="btn btn-sm" href="${esc(qs({ page: paged.page + 1 }))}">Next →</a>` : ''}
+      </nav>` : ''}
+      ${list.length ? `
+        <!-- The two sets a seller can mean, as two labelled controls rather than one
+             ambiguous tick. The researched hazard is a single header checkbox whose
+             meaning ("this page" or "everything the filter matches"?) nobody can
+             read — so each one says which it is, and this block sits OUTSIDE the
+             table because the table's head is hidden on a phone: the escape hatch
+             cannot live in a row of cells that a phone does not draw. -->
+        <div class="pick-all">
+          <label class="check">
+            <input type="checkbox" id="pick-page">
+            <span>Select this page <span class="fine">— the ${num(list.length)} file${list.length === 1 ? '' : 's'} shown above</span></span>
+          </label>
+          ${paged && paged.total > list.length ? `
+          <label class="check">
+            <input type="checkbox" id="pick-matching" data-total="${num(paged.total)}">
+            <span>Select all <strong>${num(paged.total)}</strong> files matching this search
+              <span class="fine">— including the ${num(paged.total - list.length)} you cannot see on this page.</span></span>
+          </label>` : ''}
+        </div>` : ''}
+    </div>
+    <div class="bulk-bar" id="bulk-bar">
+      <span class="bulk-count" id="bulk-count" role="status">No files picked</span>
+      <div class="bulk-actions">
+        <button class="btn btn-sm" type="submit" name="action" value="pause">Pause</button>
+        <button class="btn btn-sm" type="submit" name="action" value="live">Put back live</button>
+        <button class="btn btn-sm" type="submit" name="action" value="ad_gated">Ad-gated</button>
+        <button class="btn btn-sm" type="submit" name="action" value="open">Open to everyone</button>
+        <button class="btn btn-sm" type="button" id="bulk-clear">Clear</button>
+      </div>
+      <p class="fine">A file hidden while reports are answered cannot be changed here — that state is ours until the
+      appeal is read, and the row says so.</p>
+    </div>
+  </form>
 </section>` : '<div class="empty">Nothing published yet. Your storefront is live — the first file is what makes it a store.</div>';
   })()}
 

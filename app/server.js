@@ -1344,7 +1344,18 @@ APP.get('/dashboard/:slug', async (req, res, next) => {
       // The table lists everything the seller owns except what an operator
       // removed; `assets` above stays the live-only list, because that is the
       // number the publish check and the plan meter both count.
-      ownerAssets: await store.assetsForOwner(channel.id),
+      // The file list, filtered and paged the way the toolbar on the page asks for
+      // it. This used to be the whole store, newest first, with no way to search it
+      // — a list, not a tool, for anybody with more than a handful of files.
+      files: await store.sellerFiles(channel.id, {
+        q: req.query.q, state: req.query.state, access: req.query.access,
+        sort: req.query.sort, page: req.query.page, perPage: 25,
+      }),
+      // The bulk change somebody has not taken back yet, if it is still inside the
+      // undo window. On the page rather than only in a flash, because a flash is
+      // gone the moment the next page loads and this promise is "you can take it
+      // back", not "you could have for a few seconds".
+      recentBulk: await store.recentAssetBulk(channel.id),
       assetStats: await store.assetStats(channel.id),
       traffic: await store.trafficSeries(channel.id, { days: 30 }),
       adViewSeries: await store.assetAdViewSeries(channel.id, { days: 30 }),
@@ -2201,7 +2212,34 @@ const REVIEW_ERRORS = {
   rating: 'Pick a rating from one to five.',
 };
 
+/**
+ * "1 file" / "3 files", for the flash sentences below.
+ *
+ * The view module has its own because it formats a hundred other things; this one
+ * exists so a flash cannot say "Paused 1 files". A count in a sentence is read as a
+ * claim about what happened, and losing the grammar makes it read as a template.
+ */
+const filesN = (n) => `${Number(n) || 0} file${Number(n) === 1 ? '' : 's'}`;
+
 const SUCCESS_FLASH = {
+  // `${action}:${applied}:${skipped}` — assembled in the bulk route from counts.
+  // The skipped number is in the sentence because a bulk action that quietly did
+  // less than it said is worse than one that refused.
+  bulk: (v) => {
+    const [action, applied, skipped] = String(v).split(':');
+    const said = {
+      pause: `Paused ${filesN(applied)}`,
+      live: `Put ${filesN(applied)} back live`,
+      ad_gated: `Set ${filesN(applied)} to ad-gated`,
+      open: `Opened ${filesN(applied)} to everyone`,
+    }[action] || `Updated ${filesN(applied)}`;
+    return `${said}.${Number(skipped) ? ` ${filesN(skipped)} hidden after reports ${Number(skipped) === 1 ? 'was' : 'were'} left alone — the list says which.` : ''} You can take this back below for the next 30 minutes.`;
+  },
+  undone: (v) => {
+    const [action, restored, skipped] = String(v).split(':');
+    const said = { pause: 'pausing', live: 'putting back live', ad_gated: 'setting to ad-gated', open: 'opening' }[action] || 'changing';
+    return `Undone — ${filesN(restored)} restored to what ${Number(restored) === 1 ? 'it was' : 'they were'} before ${said}.${Number(skipped) ? ` ${filesN(skipped)} stayed as ${Number(skipped) === 1 ? 'it is' : 'they are'}: reports are hiding ${Number(skipped) === 1 ? 'it' : 'them'}, and that is not yours to lift.` : ''}`;
+  },
   published: (v) => `Published “${String(v).slice(0, 80)}”. It is live on your storefront now.`,
   saved: () => 'Saved.',
   submitted: () => 'Reference received. An operator matches it against the bank or wallet statement by hand, and your plan changes when it clears.',
@@ -2242,6 +2280,15 @@ const SUCCESS_FLASH = {
 };
 
 const ERROR_FLASH = {
+  'bulk-action': 'That is not something this list can do. Nothing was changed.',
+  'bulk-empty':
+    'Nothing arrived to change — this list did not send a single file with that press. '
+    + 'Pick the files you mean and try again; nothing was touched.',
+  'bulk-nothing': 'Nothing to change — every file you picked already has that setting. Nothing was changed, and nothing was written down.',
+  'bulk-held': 'Every file you picked is hidden while reports are answered, and that state is not the seller\'s to move. Nothing was changed. The file\'s own page says what it is waiting for.',
+  'undo-missing': 'That change is not on this store, so there is nothing to take back.',
+  'undo-taken': 'That change has already been taken back. Undo works once — the second time, the files are already where you left them.',
+  'undo-late': 'That change is more than 30 minutes old, so undoing it automatically is no longer offered — the files are as they were left. Set them back by hand and the list will show the new change as its own.',
   'no-numbers': 'That looks like a document number. Nothing here needs it and this field is kept — say where you are or when to call instead.',
   // NOT `plan`: see the FLASH_CODE map on the ask route. Two entries under one key
   // is not a merge, it is a deletion — the later declaration wins and the earlier
@@ -2372,6 +2419,104 @@ function flashFor(query = {}, context = {}) {
   }
   return null;
 }
+
+/**
+ * Change several files at once.
+ *
+ * Two shapes of selection arrive and they are kept distinct on purpose: `ids` is
+ * the exact set somebody ticked, and `scope=matching` means "everything this filter
+ * matches", which is re-resolved HERE rather than trusted from the browser. The
+ * researched hazard in bulk selection is precisely the ambiguity between those two
+ * — a checkbox that might mean this page or this search — so the page names them
+ * separately and the server decides the second one at commit time.
+ *
+ * Every way this can decline is a sentence on the page rather than a silent no-op:
+ * an action on files the platform is holding (hidden after reports), an action that
+ * changes nothing because it was already true, and a selection that arrived empty.
+ */
+APP.post('/dashboard/:slug/assets/bulk', async (req, res, next) => {
+  const slug = encodeURIComponent(req.params.slug);
+  // The filter travels back with the redirect, so the seller lands on the list they
+  // were working rather than a reset one. Every value is re-validated on read.
+  const filter = {
+    q: String(req.body?.q || '').trim().slice(0, 80),
+    state: String(req.body?.state || 'all'),
+    access: String(req.body?.access || 'all'),
+    sort: String(req.body?.sort || 'newest'),
+  };
+  const keep = new URLSearchParams();
+  if (filter.q) keep.set('q', filter.q);
+  for (const k of ['state', 'access']) if (filter[k] && filter[k] !== 'all') keep.set(k, filter[k]);
+  if (filter.sort !== 'newest') keep.set('sort', filter.sort);
+  const back = (qs = '') => `/dashboard/${slug}${qs ? `?${qs}` : ''}${keep.toString() ? `${qs ? '&' : '?'}${keep}` : ''}`;
+  try {
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    const channel = await store.channelBySlug(req.params.slug);
+    if (!channel || channel.owner_id !== req.user.id) return res.status(404).send('Channel not found');
+    if (refuseWrite(req, res, channel)) return undefined;
+
+    const action = ['pause', 'live', 'ad_gated', 'open'].includes(req.body?.action) ? req.body.action : null;
+    if (!action) return res.redirect(back('error=bulk-action'));
+
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : (req.body?.ids ? [req.body.ids] : []);
+    const out = await store.applyAssetBulk({
+      channelId: channel.id,
+      actorId: req.user.id,
+      action,
+      ids,
+      filter: req.body?.scope === 'matching' ? filter : null,
+    });
+
+    if (!out.ok) return res.redirect(back('error=bulk-action'));
+    if (!out.applied) {
+      // Three reasons, and they are different sentences. Nothing usable arrived (a
+      // post with no ids, or ids that are not ids); everything picked was already in
+      // that state; or the platform is holding everything picked. The first one used
+      // to be reported as the second, which told a seller their files "already say
+      // this" when nothing had been sent at all.
+      if (!out.picked) return res.redirect(back('error=bulk-empty'));
+      return res.redirect(back(`error=${out.skipped ? 'bulk-held' : 'bulk-nothing'}`));
+    }
+    await store.audit('asset.bulk_updated', {
+      channelId: channel.id, action, applied: out.applied, skipped: out.skipped,
+      unchanged: out.unchanged, batch: out.batch?.id,
+    });
+    // `bulk`, not `saved`: `flashFor` returns the FIRST entry whose key is in the
+    // query, and `saved` is in the map above it — which is how the first version of
+    // this shipped a bulk change that reported itself as "Saved.".
+    return res.redirect(back(`bulk=${action}:${out.applied}:${out.skipped}`));
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Take a bulk change back.
+ *
+ * Narrow on purpose: one batch, the seller's own channel, inside the window, once.
+ * The restore itself lives in the store — this route only reports what happened,
+ * and each of the three ways it can decline has its own sentence, because "that did
+ * not work" is not an answer to "why can't I undo this".
+ */
+APP.post('/dashboard/:slug/assets/bulk/:batchId/undo', async (req, res, next) => {
+  const back = (qs = '') => `/dashboard/${encodeURIComponent(req.params.slug)}${qs ? `?${qs}` : ''}`;
+  try {
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    const channel = await store.channelBySlug(req.params.slug);
+    if (!channel || channel.owner_id !== req.user.id) return res.status(404).send('Channel not found');
+    if (refuseWrite(req, res, channel)) return undefined;
+
+    const out = await store.undoAssetBulk({
+      batchId: req.params.batchId, channelId: channel.id, actorId: req.user.id,
+    });
+    if (!out.ok) {
+      const code = { 'no-such-change': 'undo-missing', 'already-undone': 'undo-taken', 'too-late': 'undo-late' }[out.code] || 'undo-missing';
+      return res.redirect(back(`error=${code}`));
+    }
+    await store.audit('asset.bulk_undone', {
+      channelId: channel.id, action: out.action, restored: out.restored, skipped: out.skipped,
+    });
+    return res.redirect(back(`undone=${out.action}:${out.restored}:${out.skipped}`));
+  } catch (err) { return next(err); }
+});
 
 APP.post('/dashboard/:slug/assets', upload.fields([
   { name: 'media', maxCount: 1 },

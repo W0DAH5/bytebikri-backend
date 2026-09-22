@@ -2048,3 +2048,101 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
    not stretch one file's month across the screen. */
 .spark { display: block; width: 84px; height: 26px; flex: none; overflow: visible; }
 .spark .chart-bar { fill: var(--indigo-400); }
+
+/* ── the seller's file list: finding one, and changing several ──────────────
+   The list existed to be read; these rules are for the two other things a
+   seller does with two hundred files — find the one they mean, and act on the
+   set they picked. Nothing here changes how the table looks at rest. */
+.files-toolbar {
+  display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center;
+  margin-bottom: var(--space-3);
+}
+/* The search gets the room, because a filter with a narrow box is a filter
+   nobody types a real title into. The selects size to their own content so the
+   four controls fit one line on a desktop and stack honestly on a phone. */
+.files-toolbar .files-search { flex: 1 1 220px; min-width: 0; }
+.files-toolbar .files-search .input { width: 100%; }
+.files-toolbar select.input { flex: 0 1 auto; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+/* The counts are the point of these chips: they are the only place that says how
+   many files are behind each filter, including the ones currently hidden by it. */
+.files-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-4); }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 11px; border-radius: 999px;
+  border: 1px solid var(--border-subtle); background: var(--surface-raised);
+  color: var(--text-secondary); font-size: var(--text-xs); text-decoration: none;
+}
+.chip:hover { color: var(--text-primary); border-color: var(--border-strong); text-decoration: none; }
+.chip-on { background: var(--accent-soft); border-color: transparent; color: var(--accent-text); font-weight: 600; }
+.chip .chip-n { font-variant-numeric: tabular-nums; color: var(--text-faint); }
+.chip-on .chip-n { color: inherit; }
+
+.pick { width: 34px; }
+/* 24px box in a 44px target: the researched minimum for a finger, without the
+   table growing a second row of chrome. */
+.pick-box { display: flex; align-items: center; justify-content: center; min-height: 44px; margin: -8px 0; cursor: pointer; }
+.pick-box input { width: 1.15rem; height: 1.15rem; accent-color: var(--accent); cursor: pointer; }
+.pick-box input:disabled { cursor: not-allowed; opacity: .45; }
+.pick-all {
+  display: grid; gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-hover);
+}
+.pick-all .check { margin: 0; }
+/* On a phone the table's head is display:none, so the row's checkbox cell is all
+   that is left of the selection column. It should read as part of the card's title
+   — a box beside the name, which is how every list on a phone does it — and not as
+   a lone control above it with a "Pick" label of its own. */
+@media (max-width: 700px) {
+  .table-stacked tbody tr { position: relative; }
+  .table-stacked td.pick {
+    position: absolute; top: var(--space-4); left: var(--space-4);
+    width: auto; padding: 0;
+  }
+  .table-stacked td.pick::before { content: none; }
+  .table-stacked td.pick .pick-box { min-height: 0; margin: 0; }
+  .table-stacked td.pick + td { padding-left: calc(var(--space-4) + 1.9rem); }
+}
+
+/* The action bar. It is a real toolbar at rest — it names what it does and the
+   buttons work — and, once javascript is running and something is ticked, it
+   becomes sticky at the foot of the window with a live count. Deliberately the
+   same element in both states: an enhancement that replaces the control with a
+   different one is how a no-JS browser loses an action entirely. */
+.bulk-bar {
+  display: flex; flex-wrap: wrap; gap: var(--space-3) var(--space-4); align-items: center;
+  padding: var(--space-4) var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+.bulk-bar .bulk-count { font-size: var(--text-sm); font-weight: 600; }
+.bulk-bar .bulk-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.bulk-bar .fine { flex: 1 1 240px; margin: 0; }
+/* `.panel` carries `overflow: hidden` to round the table's corners, and an ancestor
+   that clips is also the sticky context: with it in place the bar stuck to the
+   bottom of a 1,800px-tall FORM, which is nowhere near the window, so the "3 files
+   picked" bar was invisible exactly when it mattered. The body clips its own
+   corners instead, and the panel stops clipping — measured, not assumed: the probe
+   reads `bar.getBoundingClientRect().bottom` against `innerHeight`. */
+#bulk-form { overflow: visible; }
+#bulk-form .panel-body-flush { border-radius: var(--radius-lg); overflow: hidden; }
+.bulk-bar.is-live {
+  position: sticky; bottom: 0; z-index: 5;
+  box-shadow: 0 -10px 24px -18px rgba(0, 0, 0, .55);
+}
+.bulk-bar.is-live .bulk-count { color: var(--accent-text); }
+@media (max-width: 700px) {
+  .files-toolbar > * { flex: 1 1 100%; }
+  .bulk-bar { padding: var(--space-3) var(--space-4); }
+  .bulk-bar .bulk-actions { width: 100%; }
+  .bulk-bar .bulk-actions .btn { flex: 1 1 auto; }
+  /* Sticky at the foot of a phone screen sits under the thumb: keep it, but let
+     the last row of the table clear it with room to spare so nothing is covered. */
+  .bulk-bar.is-live { margin-bottom: var(--space-4); }
+}
