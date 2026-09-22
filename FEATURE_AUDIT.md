@@ -8,7 +8,7 @@ Three codebases live here and they are at very different stages:
 
 | Codebase | Path | State |
 |---|---|---|
-| **Web app** (server + storefront) | `app/` | works, **152 tests**, running locally |
+| **Web app** (server + storefront) | `app/` | works, **456 tests**, running locally |
 | **Android app** (Kotlin/Compose) | `android/` | **written against the real API now, never compiled** |
 | **Old prototype** | `index.js`, `admin.js`, `middleware.js`, `prototype/`, `db/schema.sql` | dead code, superseded |
 
@@ -1518,3 +1518,172 @@ browser and left the folder with no scripts in it, so the flow in its own README
 rebuilding it**, because the second run after a restore is the one that looks
 broken. `setup.sh` also resolves its own directory before its first `cd`, since a
 relative `BASH_SOURCE` is relative to where the script started.
+
+---
+
+## 22. The check that was thrown away, and the five tables it was hiding
+
+§21 ended with the phone tables fixed and a confession: the scan that found them
+was **a one-off script, run once and deleted**. Sixteen tables across ten pages
+were crushed, one rule fixed them, and nothing on earth stopped table seventeen
+from being added crushed tomorrow. This round makes the scan part of the
+repository, points it at the whole console again, and fixes what it found — which
+was a second instance of the same bug, **one column over from where the first fix
+looked**.
+
+### The check is written against the stylesheet's own promise
+
+`ci/eyes/columns.mjs` does not carry a threshold somebody liked the look of. The
+number it enforces is the number in `public/styles.css`:
+
+> inside `.panel-body`, `.panel-body-flush` and `.table-scroll`, the first cell of
+> every data table is at least **11rem**
+
+It reads that 11rem off the page's own root font size, so editing the rule in the
+CSS changes the check with it. And it counts lines the way a reader sees them —
+`Range.getClientRects()`, a rect per line box — not `height / line-height`, which
+counts the metadata underneath a filename that is *supposed* to wrap.
+
+That distinction cost two wrong versions of this file before it was right. The
+first version measured the cell's own box and called **thirteen healthy tables
+crushed**. The second tried to measure the "name element" inside the cell and got
+seven, because several first columns are dates (`2027-09`, `just now`). Both were
+inventing a rule; the third reads the rule that already exists.
+
+Run against the console at 390px it reported **24 tables on 13 pages, six crushed
+cells** — every one of them in a column the 11rem floor does not reach:
+
+| Page | Column | Was |
+|---|---|---|
+| `/admin/stores/alice` | Detail | 123px, **11 lines** of `store: alice · amount: NPR 24 · …` |
+| `/admin/users` | State | 96px, 5 lines — a pill and *"can act on others"* |
+| `/admin/earnings` | Gap | 94px, 6 lines — a pill and *"we estimate higher"* |
+| `/dashboard/alice/earnings` | Our estimate | 131px, 4 lines — `$0.05` and `$0.01 in postbacks` |
+| `/dashboard/alice/earnings` | a caveat cell | 90px, **9 lines** |
+| `/dashboard/alice/networks` | Minimum | 153px, 4 lines — *"no stated minimum via Bank transfer / NPR"* |
+
+### The floor was the wrong tool for this, and the audit log was the right one
+
+The obvious fix was to extend the min-width floor to more columns. It does not
+work: a floor is a number, and what these cells need is a different shape. *"No
+stated minimum via Bank transfer / NPR"* is a sentence with no natural minimum
+width; `$0.05` under `$0.01 in postbacks` is two lines that belong together; and
+*"can act on others"* is a qualifier for the pill above it. A floor wide enough
+for the worst of them squeezes everything else off the screen.
+
+The stylesheet already had the right answer, written for **one** table in §21: on a
+phone the audit log stops being a table. The header row goes, each row becomes a
+block, and the block prints its own label from `data-label`. The reasoning there
+was about reading, not width —
+
+> a log is read by scanning, and a scan that requires horizontal scrolling stops
+> after the first row
+
+— and that is true of every one of these five tables, which is why the exception
+became the pattern. `.table-audit` is now `.table-stacked`, a name that says what
+it does, and the six findings are all gone.
+
+Six tables took the audit log's treatment: the operator's **People** page (9
+columns), an operator's store **decisions** (4), operator **earnings** (9), the
+seller's **earnings by network** (6), **your accounts at the networks** (4), and the
+network offers table, which is one row renderer used on two pages.
+
+### What is deliberately *not* stacked
+
+Stacking is not free: every stacked row is about three times taller, so it is worth
+saying exactly where it was applied and where it was not. The line drawn this round
+was **cells that were crushed, and rows read as one record**. A table whose columns
+are short values that fit — a plan, a price, a count — keeps scrolling on a phone
+with the shadow cue saying there is more to the right. That is the pattern §21
+built, it is verified in both scroll states, and it is still the right one for a
+grid the reader compares *across*. What changed for the six tables above is that
+their cells were not short values that fit: they were sentences, or a figure with a
+note under it, squeezed into a column narrower than a thumb.
+
+That leaves an honest gap rather than a claim, and it is now **measured rather
+than estimated**. `columns.mjs` also reports — without failing — every table whose
+content is wider than the box it scrolls in. At 390px there are **nine of them**,
+five columns or more, on the pages the harness walks: `/admin/stores` (8 columns),
+`/admin/stores/alice` (7), `/admin/payments` (8 and 5), `/admin/plans` (6 and 7),
+`/dashboard/alice` (6), `/dashboard/alice/billing` (5), `/dashboard/bob` (6).
+
+None has a crushed cell, which is what the failure rules measure, so by the
+standard written down this round none of them is a bug. But a phone shows two or
+three of those columns and cuts the next one mid-word — the Store list's Plan
+column is cut through the chip, so a store on the Store plan reads `STO`, which is
+worse than either a wrapped header or a stacked block. The argument that made the
+audit log stack applies here too: **a scan that needs horizontal scrolling stops
+after the first row.** This is the next phone pass, its list is printed by every
+run of the check, and it is written down here rather than quietly left out.
+
+The people table also lost its most-stacked cell before it was stacked at all. The
+seller's accounts table had the same sentence printed in **every row** — *"Only you
+can see this. It is not the network's record and we cannot check it."* — which is
+not row data at all, it is a note about the column. It is now said once, under the
+table, where it reads at every width. **A cell that is identical in every row is
+not a cell.**
+
+### Two bugs the new check found before it was even finished
+
+Writing the labels rule — *every cell after the first must carry a `data-label`* —
+turned up a cell in the seller's accounts table with no label, holding a `Save`
+button. Chasing it found something worse underneath: the table had **four
+`<th>` over a three-cell body**. `Payout method` had been sitting above the status
+cell since before this round, a heading describing a column that does not exist,
+with the fourth header empty over a caveat repeated in every row. A browser
+renders that without complaint; the empty column simply hangs off the right edge.
+The header now has the three columns the body actually has, the sandbox row's
+`colspan` was corrected to match, and the method input's placeholder says `payout
+method` instead of `method` because it is the only thing naming itself.
+
+That is now **rule five** in `columns.mjs`: every body row has as many columns as
+the header says it does, counting `colspan`. It is the cheapest rule in the file
+and it is the one that found a real bug on its first run — **nobody counts
+columns**, which is exactly why a check should.
+
+The phone screenshot then showed the fix's own edge: the form inside that cell —
+two inputs and a button on one line — got about 130px per field at 390 and cut its
+placeholders off mid-word (`e.g. Payoneer ▏`), which reads as a broken field
+rather than a hint. Inside a stacked table the form is now a column too: each
+field full width, the button last.
+
+### The instrument was lying about the first row
+
+Every phone screenshot of a stacked table showed the console's top nav painted
+across the top row, cutting it in half. That is not the page. `shot.mjs` takes an
+**element** screenshot, which makes Playwright scroll the element into view and
+then clip to its box — and anything `position: sticky` lands inside the clip. The
+first row looked broken in every picture and was perfect on the page.
+
+So `ci/eyes/fullpage.mjs` takes the page as the reader scrolls it, full height at
+390px, and it is in the repository for the same reason `columns.mjs` is. It is the
+third capture-hygiene lesson in that folder, after reduced motion and the consent
+bar, and it is the one that generalises: **when a reading looks wrong, check the
+instrument before believing the reading.** §21 learned the same lesson from the
+other direction, when three "bugs" in downscaled screenshots turned out to be
+compression artifacts. The screenshots still have to be looked at — but with a
+tool that is not inventing things.
+
+### What was run
+
+- `ci/eyes/columns.mjs` — **24 tables on 13 pages, 0 findings** at 390px, five
+  rules, exit code 1 if that ever changes.
+- `ci/eyes/sweep.mjs` — **38 clean, 0 with findings**, both widths, after the
+  stylesheet change.
+- `npm test` — **456 / 456 / 0**, one more than before this round, and the new case
+  is the cheap half of the same invariant: the stacked table's label is the cell's
+  own attribute, and the floor on the first cell does not reach it. That exemption
+  had been left pointing at the old class name for part of this round, and nothing
+  else in the repository would ever have mentioned it.
+- Screenshots looked at, not just measured: `/admin/users`, `/admin/earnings`,
+  `/admin/stores/alice`, `/admin/audit` and `/dashboard/alice/networks` on a
+  phone, and the accounts table at 1440 as well, because changing a header changes
+  the desktop too.
+
+### Still open, and written down rather than fixed
+
+`columns.mjs` and `sweep.mjs` walk a **list** of pages, and pages whose URL carries
+an id — a file, an operator's decision page — are on neither list. A layout
+regression on one of those pages is invisible to both harnesses until a walk opens
+it. That is now in `ci/eyes/README.md` under its limits, because a check that is
+believed to cover more than it does is worse than no check.

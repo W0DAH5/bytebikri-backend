@@ -1362,8 +1362,13 @@ a.kpi:hover { border-color: var(--border-strong); text-decoration: none; box-sha
     background-size: 28px 100%, 28px 100%, 12px 100%, 12px 100%;
     background-attachment: local, local, scroll, scroll;
   }
-  .panel-body .table-audit td:first-child, .panel-body-flush .table-audit td:first-child,
-  .table-scroll .table-audit td:first-child { min-width: 0; }
+  /* Every stacked table is exempt from the floor on the first cell: a stacked table
+     is not a table on a phone, its cells are full-width blocks, and a min-width
+     there would push the page sideways — the failure this whole section guards
+     against. (It was written for the audit log alone, before the pattern had a
+     name.) */
+  .panel-body .table-stacked td:first-child, .panel-body-flush .table-stacked td:first-child,
+  .table-scroll .table-stacked td:first-child { min-width: 0; }
 
   /* KPI tiles, two to a row.
      Full width, four of them are four tall blocks — roughly three screenfuls of
@@ -1776,6 +1781,15 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 
 /* ── operator queue ──────────────────────────────────────────────────────── */
 .inline-form { display: inline-flex; gap: var(--space-2); }
+/* A form inside a table cell, on a phone. Two inputs and a button on one line get
+   about 130px each at 390px, and the placeholder is cut off mid-word — "e.g.
+   Payoneer ▍" — which reads as a broken field rather than a hint. So the cell's
+   form stops being a row: each field takes the full width, the button last. */
+@media (max-width: 700px) {
+  .table-stacked .inline-form { display: grid; gap: var(--space-2); }
+  .table-stacked .inline-form .input { width: 100%; }
+  .table-stacked .inline-form .btn { justify-self: start; }
+}
 
 /* ── earnings: whose money it is ────────────────────────────────────────── */
 /* The creator's side of the money map is marked with a left edge rather than a
@@ -1895,33 +1909,54 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   .kpi-hero { grid-column: span 1; }
 }
 
-/* ── console: the audit log on a phone ───────────────────────────────────── */
+/* ── a wide table on a phone: labelled blocks ────────────────────────────── */
 /* Five columns need about 650px; a phone has 390. The usual answer is to let the
-   table scroll sideways inside its panel, which is what every other table here
-   does — but a log is read by scanning, and a scan that requires horizontal
-   scrolling stops after the first row. So on a phone the audit table stops being a
-   table: the header row goes, and each row becomes a labelled block, read top to
-   bottom. Same cells, same data, one reading direction. */
+   table scroll sideways inside its panel, which is what most tables here do — but
+   a table that is READ BY SCANNING stops working the moment it needs a sideways
+   scroll: the reader meets a column heading cut in half, scrolls, loses the row
+   they were on, and gives up after the first one. So on a phone these tables stop
+   being tables: the header row goes, and each row becomes a labelled block, read
+   top to bottom. Same cells, same data, one reading direction.
+
+   Written for the audit log first, and generalised the round the column check
+   (`ci/eyes/columns.mjs`) found the same failure five more times. It was the same
+   bug each time and one column over from where the first fix looked: the CSS floor
+   on the first cell protected the NAME, and left every later cell — a role, an
+   estimate, a caveat, a payout minimum — crushed to 90–150px holding four to eleven
+   lines of text.
+
+   Deliberately NOT applied to every table. A two- or three-column table reads fine
+   on a phone and stacking it doubles its height for nothing; a table of numbers to
+   compare is read across, not down, and stacking it destroys the comparison. It is
+   for the tables that are wide AND scanned row by row. */
 @media (max-width: 700px) {
   /* Two classes deep to beat `.panel-body-flush .table { min-width: 520px }`, which
-     is there for tables that scroll — this one no longer does. */
-  .panel-body-flush .table-audit, .table-audit { min-width: 0; }
-  .table-audit thead { display: none; }
-  .table-audit tbody tr {
+     is there for tables that scroll — these no longer do. */
+  .panel-body-flush .table-stacked, .table-stacked { min-width: 0; }
+  .table-stacked thead { display: none; }
+  .table-stacked tbody tr {
     display: block; padding: var(--space-4) 0;
     border-bottom: 1px solid var(--border-subtle);
   }
-  .table-audit tbody tr:last-child { border-bottom: 0; }
-  .table-audit td { display: block; border-bottom: 0; padding: 0 var(--space-4); }
-  .table-audit td + td { margin-top: var(--space-2); }
-  .table-audit td::before {
+  .table-stacked tbody tr:last-child { border-bottom: 0; }
+  .table-stacked td { display: block; border-bottom: 0; padding: 0 var(--space-4); }
+  .table-stacked td + td { margin-top: var(--space-2); }
+  /* A cell without a label prints nothing: `content: attr(data-label)` is empty
+     when the attribute is absent, so a chip or a number that needs no context can
+     be left alone without a blank line appearing above it. */
+  .table-stacked td::before {
     content: attr(data-label);
     display: block; font-size: var(--text-2xs); text-transform: uppercase;
     letter-spacing: 0.06em; color: var(--text-faint); font-weight: 600;
   }
-  /* The timestamp is the one value worth reading first, and it sits last in the
-     DOM on no page — keep it on one line. */
-  .table-audit td[data-label="When"] { white-space: nowrap; }
+  /* Values that read as one thing on one line: a timestamp, a percentage. */
+  .table-stacked td[data-label="When"], .table-stacked td[data-label="Joined"],
+  .table-stacked td[data-label="Last seen"], .table-stacked td[data-label="Window"],
+  .table-stacked td[data-label="Gap"] { white-space: nowrap; }
+  /* Numbers stop being a column and become a list, so they are labelled but not
+     right-aligned — a right-aligned number under a left-aligned label reads as
+     belonging to the label above it. */
+  .table-stacked td.num { text-align: left; }
 }
 
 /* ── console: find a store ───────────────────────────────────────────────── */

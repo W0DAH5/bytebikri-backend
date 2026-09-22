@@ -2318,7 +2318,10 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
 
   ${rows.length ? `
   <div class="panel"><div class="panel-body panel-body-flush">
-    <table class="table table-directory">
+    <!-- Nine columns. Stacked on a phone (see .table-stacked): at 390px this
+         table's own State cell was 96px wide holding five lines, and the reader
+         who needed "can act on others" had to scroll sideways to find it. -->
+    <table class="table table-directory table-stacked">
       <thead>
         <tr>
           <th>Person</th>
@@ -2338,14 +2341,14 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
             <a href="/admin/users/${esc(r.id)}"><strong>${esc(r.display_name || r.email)}</strong></a>
             <div class="fine">${esc(r.email)}${r.sold_by_on_file ? ' · sold-by details on file' : ''}</div>
           </td>
-          <td>${stateOf(r)}</td>
-          <td class="num">${num(r.stores)}${r.stores ? '' : '<div class="fine">none</div>'}</td>
-          <td class="num">${num(r.files)}${r.files ? '' : '<div class="fine">none</div>'}</td>
-          <td class="num">${num(r.views_30d)}</td>
-          <td class="num">${num(r.unlocks)}</td>
-          <td class="fine">${esc(isoDay(r.created_at))}</td>
-          <td class="fine">${r.last_seen_at ? esc(relTime(r.last_seen_at)) : 'never'}</td>
-          <td class="num">${r.failed_7d
+          <td data-label="State">${stateOf(r)}</td>
+          <td class="num" data-label="Stores">${num(r.stores)}${r.stores ? '' : '<div class="fine">none</div>'}</td>
+          <td class="num" data-label="Files">${num(r.files)}${r.files ? '' : '<div class="fine">none</div>'}</td>
+          <td class="num" data-label="Views · 30d">${num(r.views_30d)}</td>
+          <td class="num" data-label="Unlocks">${num(r.unlocks)}</td>
+          <td class="fine" data-label="Joined">${esc(isoDay(r.created_at))}</td>
+          <td class="fine" data-label="Last seen">${r.last_seen_at ? esc(relTime(r.last_seen_at)) : 'never'}</td>
+          <td class="num" data-label="Failed sign-ins">${r.failed_7d
     ? `${num(r.failed_7d)}<div class="fine">in 7 days</div>`
     : '<span class="fine">—</span>'}</td>
         </tr>`).join('')}
@@ -3582,6 +3585,9 @@ export function networksPage({
   </div>`;
   };
 
+  // Stacked on a phone, twice over: the Minimum cell reads "no stated minimum via
+  // Bank transfer / NPR" and at 390px it was 153px wide on four lines, with the
+  // "what you should know" column beside it competing for the same space.
   const offer = ({ provider, onboarding, verdict, note }) => {
     const ok = landingUrlFor(provider, onboarding);
     return `
@@ -3590,10 +3596,10 @@ export function networksPage({
       <strong>${esc(provider.name)}</strong>
       ${provider.enabled ? '' : '<div class="fine">not enabled on this deployment</div>'}
     </td>
-    <td>${pill(verdict?.level || 'unknown', verdict?.level === 'ok' ? 'success' : verdict?.level === 'caution' ? 'warning' : '')}</td>
-    <td class="num">${verdict?.thresholdLabel ? esc(verdict.thresholdLabel) : '—'}</td>
-    <td class="small">${esc(note || provider._note || '')}</td>
-    <td class="num">${ok
+    <td data-label="Nepal payout">${pill(verdict?.level || 'unknown', verdict?.level === 'ok' ? 'success' : verdict?.level === 'caution' ? 'warning' : '')}</td>
+    <td class="num" data-label="Minimum">${verdict?.thresholdLabel ? esc(verdict.thresholdLabel) : '—'}</td>
+    <td class="small" data-label="What you should know">${esc(note || provider._note || '')}</td>
+    <td class="num" data-label="Action">${ok
     ? `<form method="post" action="/dashboard/${esc(channel.slug)}/networks">
          <input type="hidden" name="providerId" value="${esc(provider.id)}">
          <button class="btn btn-sm btn-primary" type="submit">Connect</button>
@@ -3656,7 +3662,7 @@ ${unusableBase ? `
       own advertised minimum, which is not always the threshold an individual publisher gets.</p>
   </div>
   <div class="panel"><div class="panel-body panel-body-flush">
-    <table class="table">
+    <table class="table table-stacked">
       <thead><tr><th>Network</th><th>Nepal payout</th><th class="num">Minimum</th><th>What you should know</th><th class="num">Action</th></tr></thead>
       <tbody>${available.map(offer).join('')}</tbody>
     </table>
@@ -5324,14 +5330,18 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
     <p>Every audit row that names this store, newest first. <a href="/admin/audit">The whole log →</a></p>
   </div>
   <div class="panel"><div class="panel-body panel-body-flush">
-    <table class="table">
+    <!-- Stacked on a phone: the Detail cell is a list of key: value pairs turned
+         into one string, and at 390px it was 123px wide holding ELEVEN lines —
+         a column, in the sense that a column of a newspaper is a column. Read as
+         a labelled block it is what it always was: a record, one field per line. -->
+    <table class="table table-stacked">
       <thead><tr><th>When</th><th>Action</th><th>Who</th><th>Detail</th></tr></thead>
       <tbody>${history.length ? history.map((h) => `
         <tr>
-          <td class="fine" style="white-space:nowrap">${esc(relTime(h.created_at))}</td>
-          <td><span class="mono">${esc(h.action)}</span></td>
-          <td class="fine">${esc(h.actor_name || h.actor_email || 'the platform')}</td>
-          <td class="fine">${esc(briefMeta(h.meta))}</td>
+          <td class="fine" data-label="When">${esc(relTime(h.created_at))}</td>
+          <td data-label="Action"><span class="mono">${esc(h.action)}</span></td>
+          <td class="fine" data-label="Who">${esc(h.actor_name || h.actor_email || 'the platform')}</td>
+          <td class="fine" data-label="Detail">${esc(briefMeta(h.meta))}</td>
         </tr>`).join('') : '<tr><td colspan="4" class="muted">Nothing has been recorded about this store yet.</td></tr>'}
       </tbody>
     </table>
@@ -5654,7 +5664,10 @@ ${open.length ? `<section class="section">
     : 'Nothing has been recorded yet.'}</p>
   </div>
   ${rows.length ? `<div class="panel"><div class="panel-body panel-body-flush">
-    <table class="table table-directory">
+    <!-- Nine columns of money, stacked on a phone. The Gap cell held a pill and
+         "we estimate higher" in 94px of width: six lines, and the one word that
+         gives the row its meaning was the least readable thing on the page. -->
+    <table class="table table-directory table-stacked">
       <thead><tr>
         <th>Store</th><th>Network</th><th>Window</th>
         <th class="num">Periods</th><th class="num">Views in window</th>
@@ -5665,14 +5678,14 @@ ${open.length ? `<section class="section">
           <a href="/admin/stores/${esc(r.channel_slug)}"><strong>${esc(r.channel_name)}</strong></a>
           <div class="fine">${esc(r.owner_email || 'no owner on file')}</div>
         </td>
-        <td>${esc(r.provider_id)}</td>
-        <td class="fine nowrap">${esc(isoDay(r.first_period_start))} → ${esc(isoDay(r.last_period_end))}</td>
-        <td class="num">${num(r.periods)}</td>
-        <td class="num">${num(r.views)}${Number(r.views) === 0 ? '<div class="fine">none recorded</div>' : ''}</td>
-        <td class="num">$${Number(r.reported_usd).toFixed(2)}</td>
-        <td class="num">$${Number(r.estimate_usd).toFixed(4)}</td>
-        <td class="num">${r.implied_rpm_usd === null ? '—' : `$${Number(r.implied_rpm_usd).toFixed(2)}`}</td>
-        <td>${gapCell(r)}</td>
+        <td data-label="Network">${esc(r.provider_id)}</td>
+        <td class="fine nowrap" data-label="Window">${esc(isoDay(r.first_period_start))} → ${esc(isoDay(r.last_period_end))}</td>
+        <td class="num" data-label="Periods">${num(r.periods)}</td>
+        <td class="num" data-label="Views in window">${num(r.views)}${Number(r.views) === 0 ? '<div class="fine">none recorded</div>' : ''}</td>
+        <td class="num" data-label="Reported">$${Number(r.reported_usd).toFixed(2)}</td>
+        <td class="num" data-label="Our estimate">$${Number(r.estimate_usd).toFixed(4)}</td>
+        <td class="num" data-label="Implied rate">${r.implied_rpm_usd === null ? '—' : `$${Number(r.implied_rpm_usd).toFixed(2)}`}</td>
+        <td data-label="Gap">${gapCell(r)}</td>
       </tr>`).join('')}
       </tbody>
     </table>
@@ -6084,7 +6097,7 @@ export function adminAudit({
 
   ${rows.length ? `
   <div class="panel"><div class="panel-body panel-body-flush">
-    <table class="table table-directory table-audit">
+    <table class="table table-directory table-stacked">
       <thead><tr><th>When · UTC</th><th>Action</th><th>Who</th><th>What it was about</th><th>Detail</th></tr></thead>
       <tbody>${rows.map((r) => {
     const who = actorOf(r);
@@ -6353,12 +6366,12 @@ export function earnings({
           ? `Pays out via ${esc(verdict.usableMethods.join(', '))}`
           : esc(verdict?.message || '')}</div>` : ''}
       </td>
-      <td class="num">${num(l.views)}</td>
-      <td class="num">$${l.estimateUsd.toFixed(2)}
+      <td class="num" data-label="Views">${num(l.views)}</td>
+      <td class="num" data-label="Our estimate">$${l.estimateUsd.toFixed(2)}
         ${l.postbackUsd > 0 ? `<div class="fine">$${l.postbackUsd.toFixed(2)} in postbacks</div>` : ''}</td>
-      <td class="num">${l.reported === null ? '—' : `$${l.reported.toFixed(2)}`}</td>
-      <td>${gapPill}</td>
-      <td>${account
+      <td class="num" data-label="Statement">${l.reported === null ? '—' : `$${l.reported.toFixed(2)}`}</td>
+      <td data-label="Verdict">${gapPill}</td>
+      <td data-label="Your account there">${account
         ? `<div class="small">${esc(account.account_label)}</div>
            <div class="fine">${esc(account.payout_method || 'method not noted')}${
     account.status === 'changed' ? ' · you said this changed' : ''}</div>`
@@ -6491,7 +6504,9 @@ ${flashNote(flash)}
       <span class="fine">assumed $${Number(rpmUsd).toFixed(2)} per 1,000 views</span>
     </div>
     <div class="panel-body panel-body-flush">
-      <table class="table">
+      <!-- Six columns of money, stacked on a phone: the estimate cell holds a
+           figure and a note under it, and at 390px that was 131px and four lines. -->
+      <table class="table table-stacked">
         <thead><tr>
           <th>Network</th><th class="num">Views</th><th class="num">Our estimate</th>
           <th class="num">Statement</th><th>Verdict</th><th>Your account there</th>
@@ -6532,8 +6547,14 @@ ${flashNote(flash)}
       we could use.</p>
     </div>
     ${connections.length ? `<div class="panel"><div class="panel-body panel-body-flush">
-      <table class="table">
-        <thead><tr><th>Network</th><th>Your account</th><th>Payout method</th><th></th></tr></thead>
+      <table class="table table-stacked">
+        <!-- Three columns, not four. The header used to carry a fourth for a
+             caveat that was repeated in every row, and a "Payout method" heading
+             that sat over the STATUS cell while the form below it held both the
+             account and the method — a heading describing a column that did not
+             exist. The form IS the account column; the method is named by the
+             second input. -->
+        <thead><tr><th>Network</th><th>Your account</th><th>Status</th></tr></thead>
         <tbody>${connections.map((c) => {
     const account = accountOf(c.provider_id);
     const provider = providers.find((p) => p.id === c.provider_id);
@@ -6545,7 +6566,7 @@ ${flashNote(flash)}
     if (verdict?.level === 'unknown' && sandboxIds.includes(c.provider_id)) {
       return `<tr>
             <td><strong>${esc(provider?.name || c.provider_id)}</strong></td>
-            <td colspan="3" class="fine">Sandbox network — it completes the unlock loop with no
+            <td colspan="2" class="fine">Sandbox network — it completes the unlock loop with no
               credentials and pays nobody. There is nothing to record.</td>
           </tr>`;
     }
@@ -6553,23 +6574,25 @@ ${flashNote(flash)}
             <td><strong>${esc(provider?.name || c.provider_id)}</strong>
               ${verdict?.thresholdLabel && verdict.level !== 'unknown'
     ? `<div class="fine">Threshold ${esc(verdict.thresholdLabel)}</div>` : ''}</td>
-            <td>
+            <td data-label="Your account">
               <form class="inline-form" method="post" action="/dashboard/${esc(channel.slug)}/earnings/payout">
                 <input type="hidden" name="providerId" value="${esc(c.provider_id)}">
                 <input class="input input-sm" name="accountLabel" maxlength="120" required
                        placeholder="e.g. Payoneer ending 4417" value="${esc(account?.account_label || '')}">
                 <input class="input input-sm" name="payoutMethod" maxlength="60"
-                       placeholder="method" value="${esc(account?.payout_method || '')}">
+                       placeholder="payout method" value="${esc(account?.payout_method || '')}">
                 <button class="btn btn-sm" type="submit">Save</button>
               </form>
             </td>
-            <td class="fine">${account
+            <td class="fine" data-label="Status">${account
       ? (account.status === 'changed' ? 'You said this changed' : 'On file')
       : 'Not recorded'}</td>
-            <td class="fine">Only you can see this. It is not the network's record and we cannot check it.</td>
           </tr>`;
   }).join('')}</tbody>
       </table>
+      <p class="fine" style="margin:var(--space-4) var(--space-5) 0">
+        Only you can see the account column. It is not the network's record and we cannot check it.
+      </p>
     </div></div>` : `<div class="empty">No network connected yet, so nothing is being served and
       nothing can be earned. Connect one first — the account you connect is your own.</div>`}
   </section>

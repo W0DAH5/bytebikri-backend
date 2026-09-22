@@ -313,6 +313,32 @@ test('every new class the design pass introduced has a rule', () => {
   assert.ok(/\.header-pinned/.test(CSS) && /header-pinned/.test(client), 'the header lifts once it is floating over content');
 });
 
+test('a stacked table keeps its labels, and keeps out of the floor', () => {
+  // The phone treatment for a wide table: the header row goes, each cell becomes a
+  // block, and the block prints its own label from `data-label`. Three parts have
+  // to agree, and none of them fails loudly on its own — the attribute is invisible
+  // on a desktop, and the class is a string in a template literal. The rendered
+  // result is measured in a real browser by ci/eyes/columns.mjs; this is the cheap
+  // half, and it is here because renaming the class once left the first-cell floor
+  // exemption pointing at the old name, which nothing else would ever have said
+  // out loud.
+  const where = CSS.indexOf('.table-stacked thead');
+  assert.ok(where > 0, 'the phone treatment is in the stylesheet');
+  const block = CSS.slice(where, where + 1500);
+  assert.ok(/\.table-stacked thead \{ display: none/.test(block), 'the header row goes');
+  assert.match(block, /content: attr\(data-label\)/, 'the label is the cell\'s own attribute');
+  // The exemption lives in the phone block's list of things the floor does NOT
+  // reach, a few hundred lines above the stacked table's own rules — which is
+  // exactly why it was left pointing at the old class name for a while.
+  assert.match(CSS, /\.panel-body \.table-stacked td:first-child,[\s\S]{0,160}?min-width: 0/,
+    'the floor on the first cell does not reach a stacked table — it would push the page sideways');
+  // And the tables that opt in say what each of their cells is. Only the first is
+  // exempt: it is the row's name, and a label above it would repeat it.
+  const src = readFileSync(path.join(root, 'src/views.js'), 'utf8');
+  const stacked = (src.match(/class="[^"]*table-stacked/g) || []).length;
+  assert.ok(stacked >= 7, `the wide tables opt in, and one leaving is a decision to make aloud (found ${stacked})`);
+});
+
 test('no HTML comment in a view contains a backtick', () => {
   // Views are template literals, so a backtick anywhere inside one — including
   // inside an HTML comment, which is exactly where it feels safe — ends the

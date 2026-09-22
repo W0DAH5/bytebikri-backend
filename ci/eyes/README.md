@@ -37,10 +37,15 @@ node anon.mjs /s/ghost-store /nope                      # signed-out pages
 # (another port, another database) — sessions are cached per account and port.
 node csvcheck.mjs                                       # the exports, end to end
 node pager.mjs [/admin/audit?family=all]                # a pager that pages
+node columns.mjs                                        # tables on a phone: floors, labels, headings
 
 # One page, one element, at a real viewport — for looking closely at one thing:
 node shot.mjs /dashboard/alice/billing alice /tmp/eyes/billing.png "main#main" 900 1200
 node shot.mjs "/s/alice?country=IN" "" /tmp/eyes/blocked.png ".note:has(strong)" 390 700
+
+# A whole page as the reader scrolls it, at phone width — for reviewing a page
+# end to end (and the only honest way to shoot anything under a sticky header):
+node fullpage.mjs alice /dashboard/alice/earnings /dashboard/alice/networks
 ```
 
 `shot.mjs` carries two capture-hygiene lessons that cost real time: it waits under
@@ -48,7 +53,9 @@ node shot.mjs "/s/alice?country=IN" "" /tmp/eyes/blocked.png ".note:has(strong)"
 text — this repository went looking for a layout bug that did not exist), and it
 hides the fixed consent bar (which paints over the foot of the viewport and was
 captured instead of the note's last line). Both are about the CAPTURE, not the
-product.
+product. The third is the reason `fullpage.mjs` exists: an element screenshot
+scrolls first and clips second, so a sticky header lands inside the clip and
+appears to be painted across the first row of the table.
 
 ```bash
 # A store, a dashboard, a plan page — the same script, three widths.
@@ -63,7 +70,47 @@ being written**, because the sign-in limiter counts successful attempts too: a
 sweep that signed in per page (32 times) tripped a real product limit and then
 reported the resulting 429s as page findings. Two logins per sweep now.
 
-## What it checks
+## columns.mjs — the tables
+
+The only check that measures something the stylesheet PROMISES, rather than
+something a page looks like. It exists because the phone table bug came back once
+already, one column over from where it was fixed.
+
+Per table, at phone width:
+
+1. **The floor.** Inside `.panel-body`, `.panel-body-flush` and `.table-scroll`,
+   the first cell is at least 11rem. The number is read off the page's own root
+   font size, so changing the rule in `styles.css` changes the check with it.
+2. **The wrapping.** No cell under 10rem holds text wrapped to four or more lines.
+   Line counts come from `Range.getClientRects()` — the lines a reader sees — not
+   from `height / line-height`, which counts metadata that is *meant* to wrap and
+   called thirteen healthy tables crushed.
+3. **The labels.** For a table the stylesheet stacks (`.table-stacked`), every cell
+   after the first carries a `data-label`, because that attribute is the only thing
+   printing a label on a phone. A cell without one is a bare number under nothing.
+4. **The exemption.** A stacked table's first cell has no min-width — the floor
+   there would push the page sideways, the failure this whole file guards against.
+5. **The headings.** Every body row has as many columns as the header says it does,
+   counting `colspan`. Cheapest rule here; found a four-column header over a
+   three-cell body on its first run.
+
+```bash
+node columns.mjs                    # every signed-in page
+node columns.mjs /admin/users       # one page
+EYES_MIN_CELL=180 node columns.mjs  # change the crush threshold, not the rule
+```
+
+Exit code is 1 when anything is found, so it drops into CI as it stands.
+
+**What it does not fail on:** a wide table that scrolls sideways *without* crushing
+a cell passes, because that is the stylesheet's own supported pattern — a table may
+scroll in its own box, with the cue that it does. Those are counted and named at the
+end of every run (nine of them on the pages this script walks, five columns or
+wider) so the list is a measurement rather than a hunt. Whether one of them should
+be stacked instead is a judgement about how the page is read, and no rule here makes
+it for you.
+
+## What the sweep checks
 
 Per page, per viewport:
 
@@ -83,6 +130,9 @@ Console errors are reported alongside, with expected 404s on 404 pages ignored.
 
 - It measures geometry, not taste. "Clean" means *nothing is broken*, not *this is
   good* — the screenshot still has to be looked at.
+- `sweep.mjs` and `columns.mjs` walk a LIST of pages, so pages whose URL carries an
+  id (a file, an operator's decision page) are in neither until a walk opens them.
+  A layout regression there is invisible to both.
 - It cannot login-throttle around the product's own limiters, so it reuses
   sessions; a check that needs a fresh no-cookie state has to say so.
 - The 404-page allowance is a string match on the console line. A page that
