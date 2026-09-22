@@ -2010,11 +2010,11 @@ export function adminModerationFile({
   const countryRows = countryRules.map((r) => `
   <tr>
     <td><strong>${esc(countryName(r.country_code))}</strong> <span class="fine mono">${esc(r.country_code)}</span></td>
-    <td>${pill(r.state, r.state === 'allowed' ? 'success' : r.state === 'restricted' ? 'warning' : 'danger')}</td>
-    <td>${r.source === 'creator' ? 'The creator' : 'An operator'}</td>
-    <td>${r.rule_title ? esc(r.rule_title) : r.rule_code ? `<span class="mono">${esc(r.rule_code)}</span>` : '<span class="fine">no rule cited</span>'}</td>
-    <td class="fine">${r.set_by_name ? `${esc(r.set_by_name)} · ` : ''}${esc(relTime(r.updated_at))}</td>
-    <td><form method="post" action="/admin/moderation/files/${esc(asset.id)}/country">
+    <td data-label="State">${pill(r.state, r.state === 'allowed' ? 'success' : r.state === 'restricted' ? 'warning' : 'danger')}</td>
+    <td data-label="Decided by">${r.source === 'creator' ? 'The creator' : 'An operator'}</td>
+    <td data-label="Rule">${r.rule_title ? esc(r.rule_title) : r.rule_code ? `<span class="mono">${esc(r.rule_code)}</span>` : '<span class="fine">no rule cited</span>'}</td>
+    <td class="fine" data-label="When">${r.set_by_name ? `${esc(r.set_by_name)} · ` : ''}${esc(relTime(r.updated_at))}</td>
+    <td data-label="Actions"><form method="post" action="/admin/moderation/files/${esc(asset.id)}/country">
       <input type="hidden" name="countryCode" value="${esc(r.country_code)}">
       <input type="hidden" name="clear" value="1">
       <button class="btn btn-sm" type="submit">Clear</button>
@@ -2037,11 +2037,11 @@ export function adminModerationFile({
     : (labels[h.action] || h.action);
   const historyRows = history.map((h) => `
   <tr>
-    <td class="fine">${esc(relTime(h.created_at))}</td>
-    <td>${esc(historyLabel(h))}</td>
-    <td>${h.rule_title ? esc(h.rule_title) : h.rule_code ? `<span class="mono">${esc(h.rule_code)}</span>` : '<span class="fine">—</span>'}</td>
-    <td class="fine">${esc(h.actor_name || 'the platform')}</td>
-    <td class="fine">${esc(h.reason || '')}</td>
+    <td class="fine" data-label="When">${esc(relTime(h.created_at))}</td>
+    <td data-label="Action">${esc(historyLabel(h))}</td>
+    <td data-label="Rule">${h.rule_title ? esc(h.rule_title) : h.rule_code ? `<span class="mono">${esc(h.rule_code)}</span>` : '<span class="fine">—</span>'}</td>
+    <td class="fine" data-label="Who">${esc(h.actor_name || 'the platform')}</td>
+    <td class="fine" data-label="Note">${esc(h.reason || '')}</td>
   </tr>`).join('');
 
   return layout({
@@ -2114,7 +2114,9 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-5)
     <h2>Countries</h2>
     <p>${countryRules.length ? `${countryRules.length} rule${countryRules.length === 1 ? '' : 's'} on this file.` : 'This file is available everywhere, as far as any rule goes.'}</p>
   </div>
-  ${countryRules.length ? `<div class="table-scroll"><table class="table">
+  ${/* Six columns in a box a phone scrolls, with the Clear button at the far end —
+       stacked, like every other wide table. Both of this page's tables were. */
+  countryRules.length ? `<div class="table-scroll"><table class="table table-stacked">
     <thead><tr><th>Country</th><th>State</th><th>Decided by</th><th>Rule</th><th>When</th><th></th></tr></thead>
     <tbody>${countryRows}</tbody>
   </table></div>` : '<div class="empty">No country rule applies to this file.</div>'}
@@ -2166,7 +2168,7 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-5)
 
 <section class="section">
   <div class="section-head"><h2>Every decision about this file</h2><p>Newest first. Nothing here is editable, on purpose.</p></div>
-  ${history.length ? `<div class="table-scroll"><table class="table">
+  ${history.length ? `<div class="table-scroll"><table class="table table-stacked">
     <thead><tr><th>When</th><th>Action</th><th>Rule</th><th>Who</th><th>Note</th></tr></thead>
     <tbody>${historyRows}</tbody>
   </table></div>` : '<div class="empty">No decision has been recorded about this file.</div>'}
@@ -4650,22 +4652,24 @@ ${notice ? `
     only covers some of them.</p>
   </div>
 
-  ${countryRules.length ? `<div class="table-scroll"><table class="table">
+  ${countryRules.length ? `<div class="table-scroll"><table class="table table-stacked">
     <!-- The creator's own rules. A platform rule is not a row here: it is the
          notice below, because the two ask for different things (clear mine, or
-         read theirs and appeal) and a shared table invites the wrong click. -->
+         read theirs and appeal) and a shared table invites the wrong click.
+         Five columns, stacked: "What happens there" is a sentence, and on a phone
+         it was the second of two columns visible before the Clear button. -->
     <thead><tr><th>Country</th><th>What happens there</th><th>Set by</th><th>When</th><th></th></tr></thead>
     <tbody>${countryRules.map((r) => `<tr>
       <td><strong>${esc(countryName(r.country_code))}</strong></td>
-      <td>${r.state === 'blocked'
+      <td data-label="What happens there">${r.state === 'blocked'
     ? 'Not shown at all — the page answers 403 to a visitor there'
     : r.state === 'restricted'
       ? 'Listed, but nobody there can unlock it'
       : 'Available — this overrides a store-wide decision'}
         ${r.reason ? `<span class="fine" style="display:block;margin-top:var(--space-2)">Your note: ${esc(r.reason)}</span>` : ''}</td>
-      <td>${r.source === 'creator' ? 'You' : 'The platform'}</td>
-      <td class="fine">${esc(relTime(r.updated_at))}</td>
-      <td>${r.source === 'creator' ? `<form method="post" action="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}/country">
+      <td data-label="Set by">${r.source === 'creator' ? 'You' : 'The platform'}</td>
+      <td class="fine" data-label="When">${esc(relTime(r.updated_at))}</td>
+      <td data-label="Actions">${r.source === 'creator' ? `<form method="post" action="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}/country">
         <input type="hidden" name="countryCode" value="${esc(r.country_code)}">
         <input type="hidden" name="clear" value="1">
         <button class="btn btn-sm" type="submit">Clear</button>

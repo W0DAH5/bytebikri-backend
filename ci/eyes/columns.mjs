@@ -58,19 +58,10 @@
 //   EYES_BASE=http://127.0.0.1:3100 node columns.mjs
 import { chromium } from 'playwright';
 import { open, walk, sessionFor } from './lib.mjs';
+import { pagesFor } from './pages.mjs';
 
 const BASE = process.env.EYES_BASE || 'http://127.0.0.1:3000';
 const WIDTH = Number(process.env.EYES_WIDTH || 390);
-
-const PAGES = {
-  operator: ['/admin', '/admin/stores', '/admin/stores/alice', '/admin/connections',
-    '/admin/payments', '/admin/reports', '/admin/moderation', '/admin/audit',
-    '/admin/users', '/admin/plans', '/admin/earnings'],
-  alice: ['/dashboard/alice', '/dashboard/alice/earnings', '/dashboard/alice/billing',
-    '/dashboard/alice/slots', '/dashboard/alice/networks', '/dashboard/alice/settings',
-    '/dashboard/alice/reviews'],
-  bob: ['/dashboard/bob'],
-};
 
 /**
  * Measure every table, and every cell that could be crushed.
@@ -252,9 +243,11 @@ const b = await chromium.launch({ executablePath: '/tmp/chromium', args: ['--no-
 let tables = 0, bad = 0, pages = 0;
 const sideways = [];
 
-for (const [who, urls] of Object.entries(PAGES)) {
-  const list = only ? [only] : urls;
+for (const who of ['operator', 'alice', 'bob']) {
   const state = await sessionFor(b, who, { base: BASE });
+  // The list includes the pages whose URL carries an id, found the way a person
+  // finds them: by following the links (see pages.mjs).
+  const list = only ? [only] : await pagesFor(b, who, { storageState: state, base: BASE });
   const { ctx, p } = await open(b, { width: WIDTH, height: 900, storageState: state });
   for (const url of list) {
     const res = await p.goto(BASE + url, { waitUntil: 'load' });

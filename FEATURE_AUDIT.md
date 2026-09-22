@@ -1773,3 +1773,94 @@ rule fires when it should rather than passing by construction.
 Sixteen tables carry `.table-stacked` now. The two- and three-column tables are
 still tables, which is the point: the treatment marks the tables a phone cannot
 show, and stops meaning anything if it is applied to the ones it can.
+
+---
+
+## 24. The two pages nothing checked
+
+§22 and §23 both ended with the same sentence in slightly different words: the
+harness walks a **list**, so a page whose URL carries an id — a file, an operator's
+decision page — is on neither list, and a layout regression there is invisible to
+every automated check this repository has. This round closes it, and the result is
+the cleanest argument for the whole exercise that this audit has produced.
+
+### Why the list could not simply grow
+
+The id changes on every reseed (`ci/demo-state.mjs` makes new rows), so a literal
+URL is stale by the next run. Writing it down was never an option. Both pages are
+**linked** from pages that are already on the list, so the harness now opens the
+linking page and reads the hrefs out of the same markup a person clicks:
+`/dashboard/alice` → `/dashboard/alice/assets/<id>`, `/admin/moderation` →
+`/admin/moderation/files/<id>`. The list lives in one place, `ci/eyes/pages.mjs`,
+shared by `sweep.mjs` and `columns.mjs`, so neither can drift from the other.
+
+If the link is missing the run **says so** — it prints that nothing was found and
+that the link may have moved, rather than quietly checking one page fewer. Silence
+is what let this gap exist: two rounds of audit notes described it, and neither
+round looked.
+
+### What was on them
+
+Both pages were opened at 390px for the first time, and between them carried
+**three** rule-6 violations — tables five or more columns wide, wider than the box
+they scroll in:
+
+| Page | Table | Columns |
+|---|---|---|
+| `/admin/moderation/files/<id>` | Countries | 6 (with the Clear button at the far end) |
+| `/admin/moderation/files/<id>` | Every decision about this file | 5 |
+| `/dashboard/alice/assets/<id>` | Where this file is available | 5 — *"Not shown at all — the page answers 403 to a visitor there"* in one column |
+
+Ten minutes of stacking, and then the more interesting part.
+
+### The fix that was only half a fix
+
+After stacking, all three were still reported as wider than their box. They sit in
+`.table-scroll`, and the stylesheet declares its floor for **three** wrappers:
+
+```css
+.panel-body .table, .panel-body-flush .table, .table-scroll .table { min-width: 520px; }
+```
+
+The exemption written in §22 named two of them. On the pages the harness could
+reach, every stacked table happened to live in one of those two — so the third case
+had never been rendered by anything, and an exemption that would not have worked
+had been passing for a round. This is the exact shape of bug the harness exists
+for: **not wrong code, but code whose wrongness could not be displayed.**
+
+Both the rule and its exemption now name the same three wrappers, and
+`test/design.test.js` walks the list, so a fourth wrapper added to the floor has to
+be added to the exemption or the suite says why.
+
+### The suite caught its own version of this
+
+One test broke, and it was right to be checked: `test/geo.test.js` asserted
+`/<td>Restricted<\/td>/` — the raw verb in a cell with no attributes. Adding
+`data-label` to that cell (so a phone can label it) broke the pattern while leaving
+the behaviour intact. The assertion now allows attributes and still checks the
+thing it was written for: that a decision about the file reads as its own verb
+rather than the country phrasing. **A test that pins markup instead of meaning
+fails on the next good change**, which is worth knowing before it is mistaken for
+a regression.
+
+### What was run
+
+- `ci/eyes/sweep.mjs` — **48 clean, 0 with findings** (was 38: the ten extra
+  page-visits are the asset pages and the operator decision pages, at both widths).
+- `ci/eyes/columns.mjs` — **28 tables on 16 pages, 0 findings**, and the
+  "still scrolls sideways" list is empty: for the first time, every table the
+  harness can reach fits the phone it is read on.
+- `npm test` — **456 / 456 / 0**, after fixing the markup-pinning assertion.
+- Both pages looked at, full height at 390px.
+
+### And a note on the workspace, because it happened again
+
+Mid-round the environment was restored: an old `06e551c` in `git log`, `/tmp` gone,
+`node_modules` gone, Postgres and the web server down. The recovery is now routine
+and is written down at the top of this file — fetch, confirm the last-known tip is
+an ancestor, `reset --mixed`, and the overlay's content is preserved because it
+matches the push. `ci/dev-up.sh` brought the app back in eight seconds, `ci/eyes/setup.sh`
+rebuilt the browser, and the harness found the three violations above on the first
+run after the rebuild. **The verification tooling is what made a lost environment a
+twenty-minute interruption instead of a lost round**, which is the whole argument
+for having put it in the repository rather than in `/tmp`.

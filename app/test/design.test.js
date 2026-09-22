@@ -332,6 +332,13 @@ test('a stacked table keeps its labels, and keeps out of the floor', () => {
   // exactly why it was left pointing at the old class name for a while.
   assert.match(CSS, /\.panel-body \.table-stacked td:first-child,[\s\S]{0,160}?min-width: 0/,
     'the floor on the first cell does not reach a stacked table — it would push the page sideways');
+  // And the floor on the table itself, which is declared for three wrappers and has
+  // to be excused for the same three: excusing two of them left three stacked tables
+  // scrolling sideways inside their own panels on the two pages nothing checked.
+  for (const wrap of ['.panel-body', '.panel-body-flush', '.table-scroll']) {
+    assert.match(CSS, new RegExp(`${wrap.replace('.', '\\.')} \\.table-stacked[^{]*\\{[^}]*min-width: 0`),
+      `${wrap} .table-stacked must be excused from the 520px table floor`);
+  }
   // And the tables that opt in say what each of their cells is. Only the first is
   // exempt: it is the row's name, and a label above it would repeat it.
   const src = readFileSync(path.join(root, 'src/views.js'), 'utf8');

@@ -552,7 +552,9 @@ test('a country decision is logged as a country decision, and the table keeps th
   });
   assert.match(html, /Limited for India/, 'the country row reads as a country decision');
   assert.ok(!/Restricted <span class="fine">in India/.test(html), 'not the raw verb beside a state table');
-  assert.ok(/<td>Restricted<\/td>/.test(html), 'a decision about the file itself still reads as its own verb');
+  // The cell may carry a data-label — the phone labels it there — so this asserts
+  // what it means: the text in the cell is the verb, not the country phrasing.
+  assert.ok(/<td[^>]*>Restricted<\/td>/.test(html), 'a decision about the file itself still reads as its own verb');
   assert.match(html, /Copyright infringement/, 'and it still names the rule');
   assert.match(html, /What a country rule can and cannot do/, 'the limits list says what it is');
   assert.match(html, /on this page and everywhere else/, 'and that this is the file page’s copy of it');

@@ -31,7 +31,7 @@ tool that vanishes whenever the environment is rebuilt stops verifying.
 
 ```bash
 node check.mjs /admin /admin/plans /dashboard/bob@bob   # named pages, both widths
-node sweep.mjs                                          # every signed-in page
+node sweep.mjs                                          # every signed-in page, + the id-bearing ones
 node anon.mjs /s/ghost-store /nope                      # signed-out pages
 # EYES_BASE=http://127.0.0.1:3100 points every script at a second instance
 # (another port, another database) — sessions are cached per account and port.
@@ -138,9 +138,13 @@ Console errors are reported alongside, with expected 404s on 404 pages ignored.
 
 - It measures geometry, not taste. "Clean" means *nothing is broken*, not *this is
   good* — the screenshot still has to be looked at.
-- `sweep.mjs` and `columns.mjs` walk a LIST of pages, so pages whose URL carries an
-  id (a file, an operator's decision page) are in neither until a walk opens them.
-  A layout regression there is invisible to both.
+- The page list is in `pages.mjs`, and the pages whose URL carries an id are FOUND
+  rather than listed: the harness opens the page that links to them and reads the
+  hrefs out of the same markup a person clicks. It used to be a hardcoded list, and
+  two pages could not be on it at all — the seller's page for one file and the
+  operator's decision page for one file — because the id changes on every reseed.
+  When that was fixed, three rule-6 violations turned up on exactly those two pages,
+  in the one place nothing had ever looked.
 - It cannot login-throttle around the product's own limiters, so it reuses
   sessions; a check that needs a fresh no-cookie state has to say so.
 - The 404-page allowance is a string match on the console line. A page that

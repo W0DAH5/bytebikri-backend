@@ -1930,9 +1930,14 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
    compare is read across, not down, and stacking it destroys the comparison. It is
    for the tables that are wide AND scanned row by row. */
 @media (max-width: 700px) {
-  /* Two classes deep to beat `.panel-body-flush .table { min-width: 520px }`, which
-     is there for tables that scroll — these no longer do. */
-  .panel-body-flush .table-stacked, .table-stacked { min-width: 0; }
+  /* Two classes deep to beat the floor on the table itself — `.panel-body .table,
+     .panel-body-flush .table, .table-scroll .table { min-width: 520px }` — which is
+     there for tables that scroll, and these no longer do. All THREE wrappers, named
+     the way that rule names them: this was written for two of them, and the three
+     stacked tables sitting in `.table-scroll` kept their 520px floor inside a 350px
+     box, which is a stacked table the reader still has to scroll sideways. */
+  .panel-body .table-stacked, .panel-body-flush .table-stacked,
+  .table-scroll .table-stacked { min-width: 0; }
   .table-stacked thead { display: none; }
   .table-stacked tbody tr {
     display: block; padding: var(--space-4) 0;

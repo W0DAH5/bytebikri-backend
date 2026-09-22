@@ -2,19 +2,18 @@
 // catch a layout change that breaks a page nobody thought to open.
 import { chromium } from 'playwright';
 import { open, walk, measure, report, sessionFor } from './lib.mjs';
+import { pagesFor } from './pages.mjs';
 
 const b = await chromium.launch({ executablePath: '/tmp/chromium', args: ['--no-sandbox'] });
-const operatorPages = ['/admin', '/admin/stores', '/admin/stores/alice', '/admin/connections',
-  '/admin/payments', '/admin/reports', '/admin/moderation', '/admin/audit', '/admin/users', '/admin/plans', '/admin/earnings'];
-// Bob is on the sweep as well as Alice: he is the seller the demo keeps near his
-// plan's file ceiling, so his dashboard is where the usage meter lives, and a
+// The list lives in pages.mjs, which also finds the pages whose URL carries an id —
+// Bob is on the sweep as well as Alice because he is the seller the demo keeps near
+// his plan's file ceiling, so his dashboard is where the usage meter lives, and a
 // page that only appears in one account's state is a page the sweep would miss.
-const sellerPages = ['/dashboard/alice', '/dashboard/alice/earnings', '/dashboard/alice/billing',
-  '/dashboard/alice/slots', '/dashboard/alice/networks', '/dashboard/alice/settings', '/dashboard/alice/reviews'];
 let clean = 0, dirty = 0;
 
-for (const [who, pages] of [['operator', operatorPages], ['alice', sellerPages], ['bob', ['/dashboard/bob']]]) {
+for (const who of ['operator', 'alice', 'bob']) {
   const state = await sessionFor(b, who);
+  const pages = await pagesFor(b, who, { storageState: state });
   for (const vp of [{ w: 1440, h: 1000, tag: 'desktop' }, { w: 390, h: 844, tag: 'phone' }]) {
     const { ctx, p } = await open(b, { width: vp.w, height: vp.h, storageState: state });
     for (const url of pages) {
