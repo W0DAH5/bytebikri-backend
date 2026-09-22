@@ -75,6 +75,7 @@ const REVEAL_HASH = `sha256-${crypto.createHash('sha256').update(REVEAL_BOOTSTRA
 import * as auth from './src/auth.js';
 import { originCheck, rateLimit, cookieParser, setSessionCookie, clearSessionCookie } from './src/security.js';
 import * as recovery from './src/recovery.js';
+import * as verify from './src/verify.js';
 // Named separately so the page code reads 'the person's recovery history' rather
 // than 'the recovery module', which are two different things at the call site.
 const recoveryOf = recovery.personRecovery;
@@ -482,17 +483,15 @@ APP.get('/reset/:token', async (req, res, next) => {
     if (!check.valid) {
       // Nothing about WHY is passed on: one page, one sentence, one action.
       //
-      // And no consent banner, which is the second half of the same idea. The
-      // banner posts the current URL back to itself as `next` so a person stays
-      // where they are — which on this route would echo the dead token into the
-      // page's markup. A dead end sets no cookies, loads nothing third-party and
-      // shows no ads, so it has nothing to ask permission for; rendering it
-      // without the banner is both quieter and token-free.
-      return res.status(410).send(views.resetPassword({ user: req.user, consent: null }));
+      // And no consent banner — the view never renders one on a token route,
+      // because the banner posts the current URL back to itself as `next`, which
+      // would write a one-time credential into the page's markup. See the note
+      // above views.resetPassword.
+      return res.status(410).send(views.resetPassword({ user: req.user }));
     }
     // A valid link is not a session. The page renders signed-out on purpose: the
     // token authorises one action, not a visit to somebody's dashboard.
-    res.send(views.resetPassword({ user: null, consent: req.consent, token: req.params.token }));
+    res.send(views.resetPassword({ user: null, token: req.params.token }));
   } catch (err) { next(err); }
 });
 
@@ -502,7 +501,7 @@ APP.post('/reset/:token', async (req, res, next) => {
     const again = String(req.body.password2 || '');
     if (password !== again) {
       return res.send(views.resetPassword({
-        user: null, consent: req.consent, token: req.params.token,
+        user: null, token: req.params.token,
         error: 'Those two do not match. Nothing was changed — type it once more.',
       }));
     }
@@ -512,11 +511,11 @@ APP.post('/reset/:token', async (req, res, next) => {
       // and gets the same page as any other dead link.
       if (done.reason === 'short') {
         return res.send(views.resetPassword({
-          user: null, consent: req.consent, token: req.params.token,
+          user: null, token: req.params.token,
           error: `A password needs at least ${recovery.MIN_PASSWORD_LENGTH} characters. Length beats symbols.`,
         }));
       }
-      return res.status(410).send(views.resetPassword({ consent: req.consent }));
+      return res.status(410).send(views.resetPassword({}));
     }
 
     // Signed straight in: the person just proved control of the address and chose
@@ -533,6 +532,91 @@ APP.post('/reset/:token', async (req, res, next) => {
     });
     setSessionCookie(res, token, ttl);
     res.redirect('/?reset=1');
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// Confirming an address
+// ---------------------------------------------------------------------------
+// A confirmation link is not a session and never creates one. The GET renders a
+// button and the POST spends the token, because scanners fetch the URLs in a
+// message — see the note above views.verifyConfirm.
+//
+// Sending is rate limited for the same reason reset requests are: the platform
+// would otherwise mail any address on demand, and its own domain pays for that.
+
+const limitVerify = rateLimit({
+  windowMs: 60 * 60_000, max: 10, name: 'confirmation emails',
+  render: (info) => views.tooMany({ ...info, consent: null }),
+});
+
+const minutesAgo = (n) => `${Math.max(1, Math.round(n))} minute${Math.round(n) === 1 ? '' : 's'}`;
+
+APP.get('/verify', async (req, res, next) => {
+  if (!req.user) return res.redirect('/login?next=%2Fverify');
+  try {
+    const state = await verify.addressState(req.user.id);
+    const flash = req.query.sent === '1'
+      ? `A new link is on its way to ${req.user.email}. It works once and lasts 48 hours.`
+      : req.query.sent === 'wait'
+        // Named, dated, and not a new email: sending one would retire the link
+        // that may be arriving in the inbox right now, and that is a loop the
+        // person cannot see the shape of.
+        ? `The newest link is the one already out — sent ${minutesAgo(Number(req.query.age) || 1)} ago. Another would cancel it, so check the inbox and the spam folder first.`
+        : null;
+    res.send(views.verify({
+      user: req.user, state, flash, changed: req.query.changed === '1',
+      error: typeof req.query.error === 'string' ? req.query.error.slice(0, 40) : null,
+      next: safeNext(req.query.next) || '/',
+    }));
+  } catch (err) { next(err); }
+});
+
+APP.post('/verify', limitVerify, async (req, res, next) => {
+  if (!req.user) return res.redirect('/login?next=%2Fverify');
+  try {
+    const out = await verify.sendVerification({
+      user: req.user, baseUrl: publicBase(req), ip: req.ip, userAgent: req.get('user-agent'),
+    });
+    if (!out.sent && out.reason === 'confirmed') return res.redirect('/verify');
+    if (!out.sent) {
+      const q = new URLSearchParams({ sent: 'wait', age: String(out.ageMinutes ?? 1) });
+      return res.redirect(`/verify?${q}`);
+    }
+    res.redirect('/verify?sent=1');
+  } catch (err) { next(err); }
+});
+
+// Declared before POST /verify/:token, or "address" would be read as a token.
+APP.post('/verify/address', limitVerify, async (req, res, next) => {
+  if (!req.user) return res.redirect('/login?next=%2Fverify');
+  try {
+    const out = await verify.changeAddress({
+      userId: req.user.id, newEmail: req.body.email, baseUrl: publicBase(req),
+      ip: req.ip, userAgent: req.get('user-agent'),
+    });
+    if (!out.ok) return res.redirect(`/verify?error=${encodeURIComponent(out.reason)}`);
+    res.redirect('/verify?changed=1');
+  } catch (err) { next(err); }
+});
+
+APP.get('/verify/:token', async (req, res, next) => {
+  try {
+    const check = await verify.inspectLink({ token: req.params.token });
+    // One page for expired, used, replaced and invented links, and no banner:
+    // the same reasoning as the dead reset link, one page over.
+    if (!check.valid) return res.status(410).send(views.verifyResult({ user: req.user, outcome: 'dead' }));
+    res.send(views.verifyConfirm({ user: req.user }));
+  } catch (err) { next(err); }
+});
+
+APP.post('/verify/:token', async (req, res, next) => {
+  try {
+    const out = await verify.confirm({ token: req.params.token });
+    if (!out.ok) return res.status(410).send(views.verifyResult({ user: req.user, outcome: 'dead' }));
+    res.send(views.verifyResult({
+      user: req.user, email: out.email, outcome: out.alreadyConfirmed ? 'already' : 'confirmed',
+    }));
   } catch (err) { next(err); }
 });
 
@@ -670,6 +754,17 @@ APP.post('/signup', limitSignup, async (req, res, next) => {
     setSessionCookie(res, token, ttl);
     await store.audit('auth.signup', { userId: user.id },
       { actorId: user.id, subjectType: 'profile', subjectId: user.id });
+
+    // A confirmation link, sent after the account exists and NOT awaited: with a
+    // real provider the send is a network round trip, and making a person watch a
+    // spinner for it — or fail a sign-up because a mail provider is slow — would
+    // be paying for the wrong thing. It cannot fail the sign-up either way; the
+    // account works unconfirmed, and the strip on every page says so until the
+    // link is clicked.
+    verify.sendVerification({
+      user, baseUrl: publicBase(req), ip: req.ip, userAgent: req.get('user-agent'),
+    }).catch((err) => console.error('[verify] signup mail failed:', err.message));
+
     res.redirect('/');
   } catch (err) { next(err); }
 });
@@ -1797,6 +1892,11 @@ const SUCCESS_FLASH = {
   appeal_restored: () => 'Upheld — the file is live again, and its unlocks, files and reviews were never touched.',
   appeal_declined: () => "Declined. The hiding stands, and your note is now on the seller's page for this file.",
   appeal_withdrawn: () => 'Withdrawn. The appeal is closed and the file is exactly where it was.',
+  // The operator sending a confirmation link on somebody's behalf, while they are
+  // on the phone saying the email never arrived. The wait state is a refusal and
+  // still an answer: it names what is already in flight rather than doing nothing.
+  verify_sent: (v) => `Confirmation link sent to ${String(v || 'that address').slice(0, 120)}. It works once and lasts 48 hours.`,
+  verify_wait: (v) => `A link went out ${String(v || 'a few minutes')} ago and is still the newest one. Sending another would cancel it — ask them to check spam before you send again.`,
 };
 
 const ERROR_FLASH = {
@@ -1806,6 +1906,7 @@ const ERROR_FLASH = {
   listing: 'Explore is part of the paid plans. Switch to your own address, or upgrade on the billing page.',
   banner: 'The banner must be an image under 5 MB.',
   reference: 'Enter the transaction reference from your transfer — at least four characters.',
+  verify: 'Confirm the email address on this account first — an operator matches transfers by hand, and the receipt has to reach you. The button is on the verify page.',
   nothing: 'There is nothing waiting to be paid right now.',
   empty: 'A slot message needs a headline.',
   slot: 'That is not a position on your pages.',
@@ -2046,6 +2147,9 @@ APP.get('/dashboard/:slug/billing', async (req, res, next) => {
     const state = await billingState(channel);
     res.send(views.billing({
       channel, user: req.user, consent: req.consent, flash: flashFor(req.query),
+      // The view is told, rather than inferring it, so the gate can be rendered
+      // where the form was instead of as a refusal after the fact.
+      addressConfirmed: Boolean(req.user.email_verified_at),
       plan: state.plan,
       nextPlanCode: state.nextCode,
       pending: state.pending,
@@ -2109,6 +2213,11 @@ APP.post('/dashboard/:slug/billing/plan-payment', async (req, res, next) => {
     const subscript = await store.subscriptionOf(channel.id);
     if (!subscript?.pending_plan_code) return res.redirect(`${back}?error=nothing`);
 
+    // Money in is the only thing an unconfirmed address holds back, and the page
+    // says so before the form rather than after the refusal. Checked here as well
+    // because a page can be stale: this is the boundary that matters, not the view.
+    if (!req.user.email_verified_at) return res.redirect(`${back}?error=verify`);
+
     const reference = String(req.body.txnReference || '').trim().slice(0, 120);
     if (reference.length < 4) return res.redirect(`${back}?error=reference`);
 
@@ -2145,6 +2254,10 @@ APP.post('/dashboard/:slug/billing/rent-payment', async (req, res, next) => {
     if (!channel) return undefined;
     if (refuseWrite(req, res, channel)) return undefined;
     const back = `/dashboard/${encodeURIComponent(channel.slug)}/billing`;
+
+    // Same gate as the plan upgrade, for the same reason: rent is matched by hand
+    // too. Both are money IN; nothing else on the platform waits on an address.
+    if (!req.user.email_verified_at) return res.redirect(`${back}?error=verify`);
 
     const reference = String(req.body.txnReference || '').trim().slice(0, 120);
     if (reference.length < 4) return res.redirect(`${back}?error=reference`);
@@ -2804,9 +2917,9 @@ APP.get('/admin', async (req, res, next) => {
         // count comes from the mail log, not from a flag — "we wrote it and the
         // provider refused it" is a fact with a timestamp.
         ...(mailHealth.failed_deliveries ? [{
-          title: 'Recovery links that did not send',
+          title: 'Mail that did not send',
           count: mailHealth.failed_deliveries,
-          note: `${mailHealth.requested} requested in the last 30 days. A person waiting for one of these is locked out and thinks we are broken.`,
+          note: `${mailHealth.requested} reset link${mailHealth.requested === 1 ? '' : 's'} and ${mailHealth.confirmations_sent} confirmation link${mailHealth.confirmations_sent === 1 ? '' : 's'} went out in the last 30 days. Somebody waiting on one of these failures is locked out or stuck unconfirmed, and to them the platform is simply broken. The reason is recorded against each message.`,
           href: '/admin/audit?family=people',
         }] : []),
     ];
@@ -2822,6 +2935,9 @@ APP.get('/admin', async (req, res, next) => {
         // rendered, so an entity here would reach the page as &#39;.
         ["Held on a creator's behalf", '<strong>Nothing, ever</strong>'],
         ['Matched by', 'a person, against the bank or wallet statement'],
+        // Not a KPI — nobody acts on a count of links — but the question the
+        // launch asked and nothing answered: are people confirming at all?
+        ['Mail · last 30 days', `<strong>${Number(mailHealth.confirmations_sent || 0).toLocaleString('en-IN')}</strong> confirmation link${mailHealth.confirmations_sent === 1 ? '' : 's'} sent, <strong>${Number(mailHealth.addresses_confirmed || 0).toLocaleString('en-IN')}</strong> confirmed`],
       ],
       // Decisions, not logins: this strip is the operator's glance at what has
       // been decided lately, and the audit page is where the raw log lives.
@@ -3349,6 +3465,43 @@ APP.post('/admin/users/:userId', async (req, res, next) => {
       ruleCode: decision.ruleCode, actorId: req.user.id,
     });
     res.redirect(`/admin/users?q=${encodeURIComponent(target.email)}&saved_user=1`);
+  } catch (err) { next(err); }
+});
+
+/**
+ * Send a confirmation link on somebody's behalf.
+ *
+ * This exists because of a phone call that will happen: "I signed up and the
+ * email never came." The operator is looking at the account, can see that no
+ * link was ever delivered, and the alternative is asking the person to go and
+ * find a form. It sends exactly the email the verify page would send — same
+ * window, same reuse rules — so it cannot be used to flood an address, and it
+ * cannot confirm anything on its own. The address still has to answer.
+ */
+APP.post('/admin/users/:userId/verify-link', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    const target = await store.userById(req.params.userId);
+    if (!target) return res.status(404).send('No such account');
+    const back = `/admin/users/${encodeURIComponent(target.id)}`;
+
+    if (target.email_verified_at) {
+      return res.redirect(`${back}?verify_wait=${encodeURIComponent('this address is already confirmed')}`);
+    }
+
+    const out = await verify.sendVerification({
+      user: target, baseUrl: publicBase(req), ip: req.ip,
+      userAgent: `operator:${req.user.id}`,
+    });
+
+    await store.audit('auth.verify_sent_by_operator', {
+      to: target.email, sent: out.sent, reason: out.reason || null, actorId: req.user.id,
+    }, { actorId: req.user.id, subjectType: 'profile', subjectId: target.id });
+
+    if (!out.sent) {
+      return res.redirect(`${back}?verify_wait=${encodeURIComponent(`${Math.max(1, out.ageMinutes ?? 1)} minutes`)}`);
+    }
+    res.redirect(`${back}?verify_sent=${encodeURIComponent(target.email)}`);
   } catch (err) { next(err); }
 });
 

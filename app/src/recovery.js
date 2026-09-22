@@ -30,7 +30,6 @@
 //     new link either way.
 // ============================================================================
 
-import crypto from 'node:crypto';
 import { one, query } from './db.js';
 import { hashPassword, revokeAllSessions } from './auth.js';
 import { send } from './email.js';
@@ -38,13 +37,11 @@ import { send } from './email.js';
 // X in this module, so using it below was a ReferenceError that only fired when a
 // caller passed a short password — the happy path never touched the line.
 import { RESET_TTL_MINUTES, MIN_PASSWORD_LENGTH } from './security.js';
+import * as tokens from './tokens.js';
 
 // Re-exported so a caller importing the reset logic can state the same rule
 // without knowing which dependency-free module holds it.
 export { RESET_TTL_MINUTES, MIN_PASSWORD_LENGTH };
-
-const hashToken = (token) => crypto.createHash('sha256').update(String(token)).digest('hex');
-const hashIp = (ip) => (ip ? crypto.createHash('sha256').update(String(ip)).digest('hex').slice(0, 32) : null);
 
 /**
  * Ask for a link.
@@ -67,21 +64,13 @@ export async function requestReset({ email, ip = null, userAgent = null, baseUrl
   // still an oracle, and a test caught it by comparing key sets.
   if (!user) return { requested: true, mailed: false };
 
-  const token = crypto.randomBytes(32).toString('base64url');
-  const expires = new Date(now.getTime() + RESET_TTL_MINUTES * 60_000);
-
-  // Two statements, one transaction-by-necessity: the old link is spent before
-  // the new one exists, or the partial unique index rejects the insert and the
-  // user is told to try again for reasons that are not theirs.
-  await query('delete from password_resets where user_id = $1 and used_at is null', [user.id]);
-  await query(
-    `insert into password_resets (user_id, token_hash, expires_at, ip_hash, user_agent)
-     values ($1, $2, $3, $4, $5)`,
-    [user.id, hashToken(token), expires, hashIp(ip), String(userAgent || '').slice(0, 300)],
-  );
+  // The shared link machinery, so a reset and a confirmation cannot drift apart.
+  const { token, ttlMinutes } = await tokens.issue({
+    userId: user.id, kind: 'password_reset', ip, userAgent, now,
+  });
 
   const link = `${String(baseUrl).replace(/\/$/, '')}/reset/${token}`;
-  const minutes = RESET_TTL_MINUTES;
+  const minutes = ttlMinutes;
   const greeting = user.display_name ? `Hello ${user.display_name},` : 'Hello,';
 
   await send({
@@ -118,18 +107,7 @@ export async function requestReset({ email, ip = null, userAgent = null, baseUrl
  * person clicked it.
  */
 export async function inspectReset(token, now = new Date()) {
-  const raw = String(token || '');
-  if (!raw || raw.length > 200) return { valid: false, reason: 'missing' };
-  const row = await one(
-    `select r.*, p.email, p.display_name
-       from password_resets r join profiles p on p.id = r.user_id
-      where r.token_hash = $1`,
-    [hashToken(raw)],
-  );
-  if (!row) return { valid: false, reason: 'unknown' };
-  if (row.used_at) return { valid: false, reason: 'used' };
-  if (new Date(row.expires_at) <= now) return { valid: false, reason: 'expired' };
-  return { valid: true, row, user: { id: row.user_id, email: row.email, display_name: row.display_name } };
+  return tokens.inspect({ token, kind: 'password_reset', now });
 }
 
 /**
@@ -141,20 +119,12 @@ export async function inspectReset(token, now = new Date()) {
  * and the caller says the same thing either way.
  */
 export async function consumeReset({ token, password, now = new Date() }) {
-  const raw = String(token || '');
-  if (!raw || raw.length > 200) return { ok: false };
   if (String(password || '').length < MIN_PASSWORD_LENGTH) return { ok: false, reason: 'short' };
 
-  const spent = await query(
-    `update password_resets
-        set used_at = now()
-      where token_hash = $1 and used_at is null and expires_at > $2
-      returning user_id`,
-    [hashToken(raw), now],
-  );
-  if (!spent.rowCount) return { ok: false };
+  const spent = await tokens.spend({ token, kind: 'password_reset', now });
+  if (!spent.ok) return { ok: false };
 
-  const userId = spent.rows[0].user_id;
+  const userId = spent.userId;
   await query('update profiles set password_hash = $2 where id = $1', [userId, hashPassword(password)]);
   // Rule 4. Every session, including the one that asked — a reset is not a login.
   await revokeAllSessions(userId);
@@ -174,13 +144,17 @@ export async function consumeReset({ token, password, now = new Date() }) {
 export async function personRecovery(userId) {
   const row = await one(
     `select
-       (select count(*)::int from password_resets where user_id = $1) as requested,
-       (select count(*)::int from password_resets where user_id = $1 and used_at is not null) as completed,
-       (select max(created_at) from password_resets where user_id = $1) as last_requested,
+       (select count(*)::int from email_tokens where user_id = $1 and kind = 'password_reset') as requested,
+       (select count(*)::int from email_tokens
+         where user_id = $1 and kind = 'password_reset' and used_at is not null) as completed,
+       (select max(created_at) from email_tokens where user_id = $1 and kind = 'password_reset') as last_requested,
+       (select count(*)::int from email_tokens
+         where user_id = $1 and kind = 'email_verify') as verifications_sent,
        (select count(*)::int from outbound_emails
-          where user_id = $1 and kind = 'password_reset' and delivered = false and error is not null) as failed_deliveries,
+          where user_id = $1 and delivered = false and error is not null) as failed_deliveries,
        (select max(created_at) from outbound_emails
-          where user_id = $1 and kind = 'password_reset' and delivered = true) as last_delivered`,
+          where user_id = $1 and delivered = true) as last_delivered,
+       (select email_verified_at from profiles where id = $1) as address_confirmed_at`,
     [userId],
   );
   return row;
@@ -190,12 +164,23 @@ export async function personRecovery(userId) {
 export async function resetActivity({ days = 30 } = {}) {
   return one(
     `select
-       (select count(*)::int from password_resets where created_at > now() - ($1 || ' days')::interval) as requested,
-       (select count(*)::int from password_resets where used_at is not null and used_at > now() - ($1 || ' days')::interval) as completed,
-       (select count(*)::int from password_resets
-         where used_at is null and expires_at <= now() and created_at > now() - ($1 || ' days')::interval) as expired_unused,
+       (select count(*)::int from email_tokens
+         where kind = 'password_reset' and created_at > now() - ($1 || ' days')::interval) as requested,
+       (select count(*)::int from email_tokens
+         where kind = 'password_reset' and used_at is not null
+           and used_at > now() - ($1 || ' days')::interval) as completed,
+       (select count(*)::int from email_tokens
+         where kind = 'password_reset' and used_at is null and expires_at <= now()
+           and created_at > now() - ($1 || ' days')::interval) as expired_unused,
+       -- Every transactional message, not just resets: a confirmation link that
+       -- never left is the same operator problem as a reset link that never left,
+       -- and separating them would hide half of the failures behind a kind filter.
+       (select count(*)::int from email_tokens
+         where kind = 'email_verify' and created_at > now() - ($1 || ' days')::interval) as confirmations_sent,
+       (select count(*)::int from profiles
+         where email_verified_at > now() - ($1 || ' days')::interval) as addresses_confirmed,
        (select count(*)::int from outbound_emails
-         where kind = 'password_reset' and delivered = false and error is not null
+         where kind in ('password_reset', 'email_verify') and delivered = false and error is not null
            and created_at > now() - ($1 || ' days')::interval) as failed_deliveries`,
     [String(Math.max(Number(days) || 30, 1))],
   );

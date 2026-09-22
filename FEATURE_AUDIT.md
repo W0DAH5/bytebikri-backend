@@ -247,8 +247,7 @@ cannot hover.
 |---|---|
 | **Network tag render layer** | slots draw now — the store's own message and the house ad — and a network can be connected and verified. Serving a real network's *tag* still needs one real network account: we store no third-party script, and the slot carries only the seam (`data-adapter`) for the adapter that will mount it |
 | **`ads.txt`** | ad networks require it; needs a publisher ID |
-| **Password reset** | no way back into an account. Needs SMTP |
-| **Email verification** | anyone can register any address |
+| **A mail sender on a domain we own** | both flows that need mail are built and tested (§17): password reset and address confirmation. Production refuses to boot on `EMAIL_DRIVER=console` or with no driver, so the last thing between this and sending anything is `EMAIL_DRIVER=resend`/`smtp` plus an `EMAIL_FROM` on a domain you control |
 | **Moderation workflow** | the states are enforced, the operator page exists (§14) and the seller can now answer a report-driven hiding (§14a); still missing: an asset-level queue, country rules |
 | **A second app-facing auth path** | the app signs in through the web form; sign-up in the app needs a JSON endpoint or a WebView |
 
@@ -889,3 +888,91 @@ Verified live: suspend → sign-in **403** with a sentence, the old cookie **302
 to sign-in, `/s/bob` **404 to a stranger and to its own owner**, out of Explore
 and out of search, `moderation_actions` row citing `financial_scam`; reinstate →
 sign-in works, storefront 200, back in Explore.
+
+---
+
+## 17. This round: getting back in, and proving an address
+
+Two gaps that were on the launch list for the same reason: both are about an
+address being real. A forgotten password had no way back, and anybody could type
+any address into the sign-up form and we would treat it as theirs.
+
+### The mail layer
+
+`src/email.js`. **The row is written before the send is attempted**, always, so
+"we said we sent it" and "it left" are different facts and the second one is
+recorded rather than assumed: `outbound_emails` carries the kind, the address,
+the subject, the text, which driver carried it, whether it delivered, and the
+provider's error if it did not. Three drivers — `console` (prints, delivers
+nothing, the development default), `resend`, `smtp` — and the config refuses to
+start in production on `console` or with no driver at all, because a server that
+looks healthy while every reset link goes to a log file is worse than one that
+refuses to boot.
+
+### A link is one object
+
+Migration 0023 replaced `password_resets` with `email_tokens` and a `kind`. Two
+tables with identical columns drift: one gets the fix for the resend race and the
+other does not. The "one live link" rule is unique on `(user_id, kind)` — per
+kind, so a pending confirmation cannot silently cancel the password reset somebody
+is waiting for.
+
+Four rules, each from something that goes wrong without it:
+
+| Rule | What it prevents |
+|---|---|
+| Only the sha256 is stored | a leaked dump is boring; the token is in the mail and the URL, nowhere else |
+| One live link per (user, kind) | a forwarded or stale email stops working the moment a new one is asked for |
+| Spending is a single guarded `UPDATE` | two simultaneous clicks cannot both succeed, and a rejected attempt does not consume the link |
+| A resend inside 10 minutes does not mint a new token | the loop where asking again kills the link that is arriving right now, so the person asks again — the bug is real and has a fix upstream |
+
+The last one has exactly one exception, and it is the reason the rule looks at the
+mail log rather than at a clock: **if the last message was recorded as failed,
+there is no link in anybody's inbox, so a fresh one goes out immediately.** Telling
+somebody whose mail bounced to wait ten minutes would be the rule protecting
+nothing.
+
+### Reset
+
+60 minutes, single-use, "one page for four reasons" for every dead link, and
+success ends every session. The request form answers identically whether or not
+the address has an account, because a form that says "no such account" is a way
+to test which addresses belong to people here.
+
+### Confirmation
+
+48 hours, single-use, soft in a specific and deliberate way. It does **not** block
+sign-in, browsing, publishing, unlocking, or the store staying live. It gates
+exactly one thing: **submitting a payment reference**, for a plan upgrade or for
+rent. Both are matched by hand against a bank or wallet statement and the receipt
+goes to the address on file, so an unconfirmed address means money arrives with no
+way to tell whose it is. The billing page replaces the submit form with the reason
+and leaves everything else — the amount, the account numbers, the working — exactly
+where it was, because the seller still has to be able to send it.
+
+Two details that are easy to get wrong and were not:
+
+- **The GET does not confirm.** Mail providers, security scanners and link-preview
+  bots fetch every URL in a message. A GET that spent the token would confirm
+  addresses no person ever opened — silently, in a way that looks like success.
+  So the link opens a page with one button, the form posts to its own URL, and the
+  token appears nowhere in the markup.
+- **Changing an address mails the new one and tells the old one**, always, even if
+  the new send fails. The old address is the only channel that still belongs to the
+  previous owner, and that notice is the only warning they will ever get.
+
+### Operator surfaces
+
+`/admin/users/<id>` answers the support question the phone call brings — *"I
+signed up and the email never came"* — with the address state, how many links went
+out, and whether any message actually failed, plus a button that sends the link on
+the person's behalf (same window, same reuse rules; it cannot confirm anything by
+itself). `/admin` gained one fact row: confirmation links sent and addresses
+confirmed in 30 days, and a queue row that appears **only** when mail failed to
+send, because a queue that reads "0" every day is how an operator learns to skim
+past the one that matters.
+
+Verified live, not just in the suite: sign-up → strip under the header → link in
+the log → `200` on the button page → **token in the markup: 0** → `POST` →
+"Address confirmed" → strip gone; and the gate, refused with `?error=verify`
+before confirmation and accepted after it.

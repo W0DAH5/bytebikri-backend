@@ -198,14 +198,22 @@ Stated plainly so nobody assumes otherwise:
   them, and a store can connect one, but nothing renders a creative yet. Slots
   only appear once a store actually has a working connection, so an unconfigured
   storefront shows no empty boxes.
-- **No email sender yet, and this one now matters.** Password reset is built and
-  tested end to end: a person can ask for a link, open it, choose a new password,
-  and the old sessions end. `EMAIL_DRIVER=console` prints that link to the server
-  log instead of sending it, which is right for a development machine and useless
-  in production — so the server **refuses to start** with no driver, and refuses
-  `console`, rather than looking healthy while every forgotten password becomes a
-  lost account. Set `EMAIL_DRIVER=resend` with `RESEND_API_KEY`, or `smtp` with
-  `SMTP_URL`, plus an `EMAIL_FROM` on a domain you control. Receipts are still
+- **Address confirmation gates money in, and nothing else.** A seller whose address
+  is unconfirmed signs in, publishes, unlocks and keeps their store exactly as it
+  is; the one thing that waits is submitting a transfer reference for a plan
+  upgrade or rent, because those are matched by hand and the receipt has to reach
+  somebody. `/verify` explains it, the strip under the header carries it, and
+  `/admin/users/<id>` lets an operator send the link on somebody's behalf.
+- **No email sender yet, and this one now matters.** Password reset and address
+  confirmation are both built and tested end to end: a person can ask for a link,
+  open it, choose a new password, and the old sessions end; a new account gets a
+  link that confirms the address it signed up with. `EMAIL_DRIVER=console` prints
+  those links to the server log instead of sending them, which is right for a
+  development machine and useless in production — so the server **refuses to
+  start** with no driver, and refuses `console`, rather than looking healthy while
+  every forgotten password becomes a lost account. Set `EMAIL_DRIVER=resend` with
+  `RESEND_API_KEY`, or `smtp` with `SMTP_URL`, plus an `EMAIL_FROM` on a domain you
+  control. Receipts are still
   printed, not sent.
 - **No payment collection.** Store upgrades and annual rent exist in the data
   model with a manual-verification path; no processor is wired up, because a

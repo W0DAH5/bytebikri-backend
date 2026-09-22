@@ -83,7 +83,9 @@ test('the emailed link works, and the token is nowhere in the database', async (
   // The property a database dump must not break. A reset link is a bearer
   // credential: whoever has the text of it becomes the account, so the only thing
   // that may be stored is a hash.
-  const rows = await query('select token_hash from password_resets where user_id = $1', [user.id]);
+  // The shared table now, with the kind named: one table holds both flows.
+  const rows = await query(
+    "select token_hash from email_tokens where user_id = $1 and kind = 'password_reset'", [user.id]);
   assert.equal(rows.rowCount, 1);
   assert.notEqual(rows.rows[0].token_hash, token);
   assert.equal(rows.rows[0].token_hash, crypto.createHash('sha256').update(token).digest('hex'));
@@ -108,7 +110,8 @@ test('a spent link is dead — the second click cannot reset the password again'
   assert.equal(await passwordIs(user.id, 'second-password-loses'), false);
   // The row survives, with the time it was spent. "Was this account taken over,
   // and when" is answerable only if the row is not deleted on use.
-  const row = await one('select used_at from password_resets where user_id = $1', [user.id]);
+  const row = await one(
+    "select used_at from email_tokens where user_id = $1 and kind = 'password_reset'", [user.id]);
   assert.ok(row.used_at instanceof Date);
 });
 
@@ -129,7 +132,8 @@ test('asking for a second link kills the first, so a forwarded email expires', a
 
   // One live row per account, which is what the index guarantees under a race.
   const live = await one(
-    'select count(*)::int as n from password_resets where user_id = $1 and used_at is null', [user.id]);
+    "select count(*)::int as n from email_tokens where user_id = $1 and kind = 'password_reset' and used_at is null",
+    [user.id]);
   assert.equal(live.n, 1);
 });
 
@@ -139,7 +143,8 @@ test('an expired link does not work, and the clock is the link\'s own', async ()
   const { token } = await linkFromMail(user.id);
 
   // Just inside the window, measured against the row rather than a sleep.
-  const row = await one('select expires_at from password_resets where user_id = $1', [user.id]);
+  const row = await one(
+    "select expires_at from email_tokens where user_id = $1 and kind = 'password_reset'", [user.id]);
   const justInside = new Date(new Date(row.expires_at).getTime() - 1000);
   assert.equal((await recovery.inspectReset(token, justInside)).valid, true);
 
@@ -280,15 +285,18 @@ test('expired, used, unknown and tampered links render one page, byte for byte',
   // for a visitor who has not answered the banner yet.
   assert.equal(/role="region" aria-label="Cookies"/.test(page), false, 'the dead-link page rendered a cookie banner');
 
-  // The live page is the opposite case, and this is the deliberate half: there,
-  // the banner stays, and it carries the token in a same-origin form so that
-  // answering it returns the person to the form they were reading. Written down
-  // because it is a choice, not an oversight.
-  const live = views.resetPassword({
-    token: 'a-live-looking-token', consent: { outstanding: true, returnTo: '/reset/a-live-looking-token' },
-  });
-  assert.match(live, /aria-label="Cookies"/);
-  assert.match(live, /value="\/reset\/a-live-looking-token"/);
+  // The rule is the same on the LIVE page, and pinning it here is the point: a
+  // token route never renders the banner, on any state, for anybody. The banner
+  // posts the current URL back to itself as `next`, so on this route it writes a
+  // working credential into the page's own markup — where a screenshot, a
+  // page-source view, a DOM-reading extension or the Referer of any later request
+  // to another origin keeps a copy of it. Whoever is reading the page already has
+  // the URL; nothing needs a second copy of it.
+  const live = views.resetPassword({ token: 'a-live-looking-token' });
+  assert.equal(/aria-label="Cookies"/.test(live), false, 'a token route rendered a cookie banner');
+  // The token appears exactly where it must — in the form that submits it — and
+  // nowhere else in the page.
+  assert.equal((live.match(/a-live-looking-token/g) || []).length, 1, 'the live page carries the token more than once');
 
   // And the reasons really are distinct underneath, so the sameness above is a
   // deliberate choice rather than a test that cannot fail.

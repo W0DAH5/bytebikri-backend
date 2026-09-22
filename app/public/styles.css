@@ -1499,6 +1499,39 @@ a.kpi:hover { border-color: var(--border-strong); text-decoration: none; box-sha
   pointer-events: none;
 }
 
+/* ── confirm-your-address strip ──────────────────────────────────────────── */
+/* Under the header, in the page flow rather than pinned to it.
+   Two decisions worth stating. It SCROLLS AWAY, unlike the header and unlike
+   the consent banner: the header stays because navigation is always wanted, and
+   the banner stays because a consent decision is pending, but this is a reminder
+   about something that can wait, and a website with two fixed bars is a website
+   whose first inch of content is always missing. And it is a STRIP rather than a
+   modal or a toast: it never covers content, it cannot be dismissed into
+   invisibility (the state is real until the address is confirmed), and it puts
+   its button exactly where the sentence that explains the button ends. */
+.notice-strip {
+  background: var(--warning-soft);
+  border-bottom: 1px solid var(--border-subtle);
+  /* The accent reads as a margin note in the page — the same 3px language the
+     KPI cards use for a number that wants attention. */
+  box-shadow: inset 3px 0 0 0 var(--warning-text);
+}
+.notice-strip-inner {
+  display: flex; align-items: center; gap: var(--space-4);
+  padding-block: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+.notice-strip-inner > span { flex: 1 1 auto; max-width: var(--measure); }
+.notice-strip-inner strong { color: var(--text-primary); font-weight: 620; }
+.notice-strip-inner .btn { flex: 0 0 auto; }
+@media (max-width: 760px) {
+  /* Full width and last, so the button is a comfortable target and the order of
+     reading stays sentence-then-action. */
+  .notice-strip-inner { flex-direction: column; align-items: stretch; gap: var(--space-3); }
+  .notice-strip-inner .btn { justify-content: center; }
+}
+
 /* ── consent ─────────────────────────────────────────────────────────────── */
 /* Pinned to the bottom rather than centred, so it never covers the thing the
    visitor came for. On a phone it stacks; the two real buttons stay side by side

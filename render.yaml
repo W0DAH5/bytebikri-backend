@@ -39,6 +39,19 @@ services:
         sync: false
       - key: OPERATOR_DISTRICT
         sync: false
+      - key: EMAIL_DRIVER
+        # A production deploy must name a real driver. `console` prints the reset
+        # link to the log and delivers nothing, and the server refuses to boot
+        # with it — so this value is a placeholder that has to be replaced with
+        # `resend` (plus RESEND_API_KEY) or `smtp` (plus SMTP_URL).
+        sync: false
+      - key: EMAIL_FROM
+        # Must be on a domain you control, or every message lands in spam.
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SMTP_URL
+        sync: false
       - key: STORAGE_DRIVER
         value: local
       # Uploads live on this disk. Without it they are lost on every deploy —

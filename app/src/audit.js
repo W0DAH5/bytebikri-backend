@@ -47,7 +47,11 @@ export const AUDIT_FAMILIES = [
     key: 'people',
     label: 'Accounts',
     note: 'Sign-ups, consent decisions, payout details declared, and passwords recovered. The record of who agreed to what, and when — and the first place to look when somebody says their account moved without them.',
-    prefixes: ['auth.signup', 'auth.password_reset', 'consent.', 'payout_account.'],
+    // Every way an account changes hands: signing up, getting back in, and the
+    // address it is reachable at. The address actions belong here rather than in
+    // a family of their own because "who controls this account, and since when"
+    // is one question, and it is asked after an incident rather than before.
+    prefixes: ['auth.signup', 'auth.password_reset', 'auth.email_verified', 'auth.email_changed', 'auth.verify_sent_by_operator', 'consent.', 'payout_account.'],
     decisions: true,
   },
   {

@@ -169,6 +169,36 @@ function avatar(name) {
  * It is a plain form POST, so it works with no JavaScript and cannot be
  * silently skipped by a script failure.
  */
+/**
+ * The unconfirmed-address strip.
+ *
+ * It is a strip and not a modal for the same reason the plan meter is a sentence
+ * below 80%: an account whose address is unconfirmed still works, and a platform
+ * that interrupts somebody to tell them about a thing they can fix in ten seconds
+ * is a platform people close. It sits under the header on every signed-in page
+ * until the address is confirmed, links to one page that does the explaining, and
+ * says what confirming is FOR rather than what is wrong.
+ *
+ * Not shown to admins: the operator account is created by the boot path from
+ * `OPERATOR_EMAIL`, so confirming it is a deploy step rather than a person's
+ * loose end — and the console is where that state belongs, not every page of it.
+ */
+function addressNotice(user) {
+  if (!user || user.role === 'admin' || user.email_verified_at) return '';
+  return `
+<div class="notice-strip">
+  <div class="wrap notice-strip-inner">
+    <span>
+      <strong>Confirm your email address.</strong>
+      Until the address on this account answers, we cannot send you a receipt, an invoice or a
+      dispute notice — and a plan payment needs all three. <span class="mono">${esc(user.email)}</span>
+      is on the account, unconfirmed.
+    </span>
+    <a class="btn btn-sm" href="/verify">Confirm it</a>
+  </div>
+</div>`;
+}
+
 function consentBanner(consent) {
   if (!consent || !consent.outstanding) return '';
   return `
@@ -222,7 +252,14 @@ export const REVEAL_BOOTSTRAP =
 export function layout({
   title, user, body, activeChannel = null, wide = false, current = '', consent = null,
   reveal = false,
+  /**
+   * The unconfirmed-address strip is on every signed-in page except the one that
+   * exists to explain it. A reminder pointing at the page you are already reading
+   * is noise, and noise is how the reminders that matter get skimmed past.
+   */
+  showAddressNotice = true,
 }) {
+  const onAddressPage = current === 'verify';
   const navLink = (href, label, key) =>
     `<a href="${esc(href)}"${current === key ? ' aria-current="page"' : ''}>${esc(label)}</a>`;
 
@@ -263,6 +300,7 @@ export function layout({
   </div>
   <span class="scroll-progress" aria-hidden="true"></span>
 </header>
+${showAddressNotice && !onAddressPage ? addressNotice(user) : ''}
 <main id="main"${wide ? '' : ''} class="wrap">${body}</main>
 ${consentBanner(consent)}
 <footer class="footer">
@@ -1193,12 +1231,19 @@ export function forgotPassword({ user = null, consent = null, sent = false, emai
 /**
  * The reset form — and the page a dead link gets.
  *
- * The dead-link page is rendered with `consent: null` — no cookie banner. That is
- * deliberate and it is the second half of "one page for four states": the banner
- * posts the current URL back to itself as `next`, which on this route would write
- * the token into the markup of a page whose whole job is to say the token is
- * worthless. (A LIVE link keeps the banner, because there the person answering it
- * needs to land back on the form they are looking at rather than somewhere else.)
+ * Neither renders the cookie banner, and the reason generalises to every page
+ * whose URL carries a one-time token: the banner posts the current URL back to
+ * itself as `next`, which writes the token into the page's markup. The URL is the
+ * secret and it is already in the right hands; the markup is a copy of it that
+ * survives in screenshots, in a page-source view, in anything that reads the DOM,
+ * and in the Referer of any request the page ever makes to another origin.
+ *
+ * An earlier version kept the banner on the LIVE page only, on the argument that
+ * answering it lands the person back on the form they were reading. That was a
+ * real benefit and a bad rule: "no token in markup, except here" is a rule with a
+ * hole in it, and the benefit is nil — the banner is still there on the page the
+ * person lands on after the reset (`/?reset=1`), so nothing is skipped, it is
+ * only asked somewhere the answer cannot be written next to a credential.
  *
  * Expired, already used, never existed, and tampered with all render THIS page,
  * byte for byte, with the same sentence. Telling the four apart helps exactly one
@@ -1208,10 +1253,10 @@ export function forgotPassword({ user = null, consent = null, sent = false, emai
  * on the difference — in every case the answer is a new link — so the page does
  * not offer one, and there is no parameter that could be passed to make it.
  */
-export function resetPassword({ user = null, consent = null, token = '', error = null }) {
+export function resetPassword({ user = null, token = '', error = null }) {
   if (!token) {
     return layout({
-      title: 'Reset link', user, consent,
+      title: 'Reset link', user, consent: null,
       body: `
 <div class="section auth-card" style="margin-top:var(--space-12)">
   <h1 style="font-size:var(--text-2xl)">That link cannot be used</h1>
@@ -1235,7 +1280,7 @@ export function resetPassword({ user = null, consent = null, token = '', error =
   }
 
   return layout({
-    title: 'Choose a new password', user, consent,
+    title: 'Choose a new password', user, consent: null,
     body: `
 <div class="section auth-card" style="margin-top:var(--space-12)">
   <h1 style="font-size:var(--text-2xl)">Choose a new password</h1>
@@ -1263,6 +1308,188 @@ export function resetPassword({ user = null, consent = null, token = '', error =
       Save and sign in
     </button>
   </form>
+</div>`,
+  });
+}
+
+/**
+ * /verify — the one page that explains the state of an address.
+ *
+ * It has to answer four things without being asked, because each one is a
+ * support message otherwise: is my address confirmed, when did you last send
+ * something, did that message actually leave, and what do I do if I typed the
+ * address wrong. The last one is a form, not a sentence — "contact us" is not an
+ * answer for somebody whose account is attached to an address they cannot read.
+ */
+export function verify({
+  user, state = null, flash = null, changed = false, error = null, next = '/',
+}) {
+  const confirmed = Boolean(state?.email_verified_at);
+  const sent = state?.last_sent_at ? relTime(state.last_sent_at) : null;
+  // A past delivery failure is only worth showing while somebody is still
+  // waiting. Once the address is confirmed it is history: the message that
+  // matters arrived, and telling a person about an old failure they have already
+  // worked around is noise dressed up as honesty.
+  const failed = !confirmed && Number(state?.failed_deliveries || 0) > 0;
+
+  const shown = {
+    flash: flash || (changed ? 'Address changed. A link is on its way to the new one, and the old address has been told.' : null),
+    error: error === 'shape' ? 'That does not look like an email address.'
+      : error === 'taken' ? 'Another account already uses that address. If it is yours, sign in to it — or ask the operator to help.'
+        : error === 'same' ? 'That is already the address on this account.'
+          : error === 'too-often' ? 'A link has just gone out. Give it a few minutes before asking for another.'
+            : error === 'throttled' ? 'Too many requests from this connection. Try again shortly.'
+              : null,
+  };
+
+  return layout({
+    title: confirmed ? 'Address confirmed' : 'Confirm your email address', user, consent: null,
+    current: 'verify',
+    body: `
+<div class="section auth-card" style="margin-top:var(--space-10)">
+  <h1 style="font-size:var(--text-2xl)">${confirmed ? 'Your address is confirmed' : 'Confirm your email address'}</h1>
+
+  ${shown.flash ? `<div class="note note-info" style="margin-top:var(--space-5)" role="status">${esc(shown.flash)}</div>` : ''}
+  ${shown.error ? `<div class="note note-danger" style="margin-top:var(--space-5)" role="alert">${esc(shown.error)}</div>` : ''}
+
+  <div class="panel" style="margin-top:var(--space-5)"><div class="panel-body">
+    <dl class="kv">
+      <dt>Address</dt><dd><span class="mono">${esc(state?.email || user.email)}</span></dd>
+      <dt>Status</dt><dd>${confirmed
+    ? `<span class="pill pill-success">confirmed</span> <span class="fine">· ${esc(isoDay(state.email_verified_at))}</span>`
+    : '<span class="pill pill-warning">not confirmed</span>'}</dd>
+      <dt>Links sent</dt><dd>${num(state?.links_sent || 0)}${sent ? ` <span class="fine">· the most recent ${esc(sent)}</span>` : ''}</dd>
+      ${failed ? `<dt>Delivery</dt><dd><span class="pill pill-danger">a message failed</span>
+        <span class="fine">${esc(state?.last_error || '')}</span></dd>` : ''}
+    </dl>
+  </div></div>
+
+  ${confirmed ? `
+  <p class="small" style="margin-top:var(--space-5)">
+    Nothing to do. This is the address every receipt, invoice and notice goes to, and the one a
+    reset link can reach. Changing it is below.
+  </p>` : `
+  <p class="small" style="margin-top:var(--space-5)">
+    We sent a link that works once and lasts 48 hours. Confirming it does not sign you in anywhere —
+    it only means the platform knows somebody reads mail at this address. Until then everything works
+    except handing us money: a plan payment needs an address we can send a receipt to and reach a
+    person at, because an operator matches those transfers by hand.
+  </p>
+  ${failed ? `<p class="small">The last message did not leave our side, so asking again is the right move — the
+    failure is recorded here rather than being something you have to guess at.</p>` : ''}
+  <form method="post" action="/verify" style="margin-top:var(--space-5)">
+    <button class="btn btn-primary" type="submit">Send the link again</button>
+    <p class="fine" style="margin-top:var(--space-3)">The newest link is always the one that works.</p>
+  </form>`}
+
+  <div class="section-head" style="margin-top:var(--space-8)">
+    <h2 style="font-size:var(--text-md)">${confirmed ? 'Move to a different address' : 'Typed it wrong?'}</h2>
+    <p>${confirmed
+    ? 'The new address has to confirm, and the old one is told either way.'
+    : 'Change it here and the link goes to the new one — you do not need to be able to read the old address.'}</p>
+  </div>
+  <form method="post" action="/verify/address" class="card card-pad-lg">
+    <div class="field">
+      <label for="new-email">New address</label>
+      <input class="input" id="new-email" name="email" type="email" required autocomplete="email"
+             placeholder="you@example.com">
+      <span class="hint">We email this address to confirm it, and we tell the old address what happened.</span>
+    </div>
+    <button class="btn" type="submit">Use this address</button>
+  </form>
+
+  <p class="auth-switch" style="margin-top:var(--space-6)"><a href="${esc(next)}">Back to the site</a></p>
+</div>`,
+  });
+}
+
+/**
+ * Where a confirmation link lands.
+ *
+ * Three outcomes, and the dead one is deliberately the same page for expired,
+ * already-used, invented and tampered-with links: telling those apart helps only
+ * whoever is holding a link that is not theirs. It renders without the cookie
+ * banner, like the reset dead end, so no token is echoed into the markup.
+ */
+/**
+ * The page a confirmation link opens.
+ *
+ * It has a button, and the button is the point. Mail providers, security scanners
+ * and link-preview bots fetch every URL in a message, so a GET that spent the
+ * token would mark addresses confirmed that no person ever opened — the exact
+ * opposite of the evidence this flow exists to collect, and worse, it would fail
+ * silently and look like success. So the GET inspects and renders, and only the
+ * POST spends.
+ *
+ * That has a second benefit worth naming: the form's action is this same URL, so
+ * the token never appears in the page's markup at all — not in an action, not in
+ * a hidden field. The word "confirm" is the only thing on the page that is not
+ * navigation.
+ */
+export function verifyConfirm({ user = null }) {
+  return layout({
+    title: 'Confirm your email address', user, consent: null, current: 'verify',
+    body: `
+<div class="section auth-card" style="margin-top:var(--space-12)">
+  <h1 style="font-size:var(--text-2xl)">Confirm this address</h1>
+  <p class="small" style="margin-top:var(--space-3)">
+    One click, and it works once. Confirming proves somebody reads mail here — it does
+    <strong>not</strong> sign you in, so a link opened on a shared computer confirms the address and
+    nothing else.
+  </p>
+  <form method="post" action="" class="card card-pad-lg" style="margin-top:var(--space-6)">
+    <button class="btn btn-primary btn-lg" style="width:100%" type="submit">Confirm this address</button>
+  </form>
+  <p class="auth-switch" style="margin-top:var(--space-6)"><a href="/">Back to the site</a></p>
+</div>`,
+  });
+}
+
+/**
+ * Where a confirmation link lands, once it has been clicked.
+ *
+ * The dead outcome is one page for expired, already-used, invented and
+ * tampered-with links, and it renders without the cookie banner for the same
+ * reason every token route does: the banner would write the URL into the markup.
+ * The two outcomes that are NOT dead say what changed and what did not, because
+ * "confirmed" by itself invites the question "and signed in as whom?".
+ */
+export function verifyResult({ user = null, outcome = 'dead', email = null }) {
+  const body = outcome === 'confirmed' ? {
+    title: 'Address confirmed',
+    note: `<strong>${esc(email || 'Your address')} is confirmed.</strong> Everything on ByteBikri is
+      open to you now, including a plan payment — the receipt, the matching note and any dispute all go
+      to an address somebody has answered.`,
+    extra: `Confirming does not sign you in, and this page shows nothing about the account the address
+      belongs to — which is why it is safe to open one on a machine that is not yours.`,
+  } : outcome === 'already' ? {
+    title: 'Already confirmed',
+    note: '<strong>This address was already confirmed.</strong> Nothing was changed, and nothing needed to be.',
+    extra: `If you did not expect this, sign in and look at the address on the account: moving it is one
+      form, and the address being left behind is told when it happens.`,
+  } : {
+    title: 'That link cannot be used',
+    note: `<strong>That link cannot be used.</strong> Confirmation links work once and last 48 hours, and
+      asking for a new one replaces the old one — so those cases look the same here on purpose, because
+      the answer to all of them is the same.`,
+    extra: `A new link goes to whichever address is on the account you are signed in to, and it takes a
+      moment to arrive.`,
+  };
+
+  return layout({
+    title: body.title, user, consent: null,
+    body: `
+<div class="section auth-card" style="margin-top:var(--space-12)">
+  <h1 style="font-size:var(--text-2xl)">${esc(body.title)}</h1>
+  <div class="note ${outcome === 'dead' ? 'note-warning' : 'note-success'}" style="margin-top:var(--space-5)">
+    ${body.note}
+  </div>
+  <p class="small" style="margin-top:var(--space-5)">${body.extra}</p>
+  <p class="auth-switch" style="margin-top:var(--space-6)">
+    ${outcome === 'dead'
+    ? '<a class="btn btn-primary" href="/verify">Send a new link</a><a class="btn btn-sm" href="/" style="margin-left:var(--space-2)">Back to the site</a>'
+    : '<a class="btn btn-primary" href="/">Back to the site</a>'}
+  </p>
 </div>`,
   });
 }
@@ -1666,22 +1893,57 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
  * reset signs the account out everywhere, so a person who just recovered their
  * password is *supposed* to see zero live sessions.
  */
+/**
+ * "They say they cannot get in" — answered on the page.
+ *
+ * Three facts decide what an operator does next, and all three were previously in
+ * a database client or nowhere: is the address confirmed, did the messages we
+ * sent actually leave, and how many links have gone out. The last one matters
+ * because a person who has asked for four links is not having a link problem.
+ *
+ * The delivery row is the one that changes behaviour. With the console driver in
+ * development nothing is delivered and nothing has failed, which is a different
+ * state from "the provider refused it" — so the page reports them differently
+ * rather than treating "not delivered" as an error.
+ */
 function recoveryNote(r, person) {
   if (!r) return '';
   const when = r.last_requested ? relTime(r.last_requested) : null;
+  const confirmed = r.address_confirmed_at;
+  const failed = Number(r.failed_deliveries || 0);
 
-  if (r.failed_deliveries) {
-    return `<div class="note note-danger" style="margin-top:var(--space-5)">
-      <strong>${num(r.failed_deliveries)} reset ${r.failed_deliveries === 1 ? 'link' : 'links'} to this address did not send.</strong>
-      The message was written and the provider refused it, so the person is waiting for something that is not
-      coming — and they will assume the platform is broken, which today it is. The reason is recorded against
-      the message, on the mail log, and the fix is in the mail settings rather than in this account.
+  const delivery = failed
+    ? `<div class="note note-danger" style="margin-top:var(--space-5)">
+      <strong>${num(failed)} message${failed === 1 ? '' : 's'} to this address did not send.</strong>
+      They were written and the provider refused them, so somebody is waiting for a message that is not
+      coming — and they will conclude the platform is broken, which today it is. The reason is recorded
+      against the message itself, on the mail log; the fix is in the mail settings, not in this account.
       ${when ? `The most recent attempt was ${esc(when)}.` : ''}
-    </div>`;
-  }
+    </div>`
+    : '';
+
+  const address = confirmed
+    ? `<p class="fine" style="margin-top:var(--space-4)">
+        <strong>Address confirmed</strong> ${esc(relTime(confirmed))}.
+        ${r.verifications_sent ? `${num(r.verifications_sent)} confirmation ${r.verifications_sent === 1 ? 'link' : 'links'} sent in total.` : ''}
+        Nothing about money is held back for this account.
+      </p>`
+    : `<div class="note note-warning" style="margin-top:var(--space-5)">
+        <strong>Address not confirmed.</strong>
+        ${r.verifications_sent
+    ? `${num(r.verifications_sent)} confirmation ${r.verifications_sent === 1 ? 'link has' : 'links have'} gone to this address.`
+    : 'No confirmation link has ever been sent to this address.'}
+        Everything works — signing in, publishing, unlocking, the store staying live — except submitting a
+        transfer reference, because an operator matches those by hand and the receipt has to reach somebody.
+        ${person?.email ? `Their address is <span class="mono">${esc(person.email)}</span>.` : ''}
+        <form method="post" action="/admin/users/${esc(person.id)}/verify-link" style="margin-top:var(--space-4)">
+          <button class="btn btn-sm" type="submit">Send a confirmation link for them</button>
+        </form>
+      </div>`;
 
   if (!r.requested) {
-    return `<p class="fine" style="margin-top:var(--space-4)">
+    return `${delivery}${address}
+    <p class="fine" style="margin-top:var(--space-4)">
       No reset link has ever been requested for this address. If somebody says they cannot get in, this is
       normally a forgotten password rather than a lost one, and asking them to use “Forgot your password?”
       is the whole answer.
@@ -1689,11 +1951,13 @@ function recoveryNote(r, person) {
   }
 
   const done = r.completed
-    ? `Recovered ${r.completed === 1 ? 'once' : `${num(r.completed)} times`}${r.last_delivered ? `, the last time ${esc(relTime(r.last_delivered))}` : ''}.`
+    ? `Recovered ${r.completed === 1 ? 'once' : `${num(r.completed)} times`}.
+       Asking for a second link cancels the first, so only the newest one is ever live.`
     : 'Never completed — links were asked for and none was used.';
-  return `<p class="fine" style="margin-top:var(--space-4)">
+  return `${delivery}${address}
+  <p class="fine" style="margin-top:var(--space-4)">
     <strong>${num(r.requested)} reset ${r.requested === 1 ? 'link' : 'links'} requested</strong>${when ? `, most recently ${esc(when)}` : ''}.
-    ${esc(done)} Asking for a second link cancels the first, so only the newest one is ever live.
+    ${esc(done)}
   </p>`;
 }
 
@@ -1716,10 +1980,19 @@ export function adminUser({
     .join('');
   const id8 = esc(p.id.slice(0, 8));
 
+  // The flash is rendered HERE because adminShell does not take one — it was
+  // passed through and silently dropped, so an operator action that returns to
+  // this page (sending somebody a confirmation link) looked like it had done
+  // nothing at all.
+  const flashNote = flash?.message
+    ? `<div class="note note-${flash.kind}" role="status" style="margin-top:var(--space-5)">${esc(flash.message)}</div>`
+    : '';
+
   return adminShell({
-    user, consent, flash, title: p.display_name || p.email,
+    user, consent, title: p.display_name || p.email,
     lede: p.email,
     body: `
+${flashNote}
 <section class="section">
   <div class="row" style="align-items:center;gap:var(--space-3);flex-wrap:wrap">
     <a class="btn btn-sm" href="/admin/users">← All accounts</a>
@@ -3012,9 +3285,40 @@ export function billing({
   channel, user, consent = null, flash = null, plan, nextPlanCode, pending = null, quote, upgrade,
   subscription, invoice, estimate = {}, pageviews = 0, paidTotal = 0, payments = [],
   invoices = [], rails = [], railsReady = false, payee = null, benefits = [],
-  notCharged = [], slots = [],
+  notCharged = [], slots = [], addressConfirmed = true,
 }) {
   const periodEnd = subscription?.period_end;
+
+  /**
+   * The one place an unconfirmed address stops anything.
+   *
+   * Everything else works without it: signing in, publishing, unlocking, keeping
+   * the store live, being paid by the network straight into the store's own
+   * account. Submitting a transfer reference is the single exception, because a
+   * person on our side matches that transfer by hand against a bank statement and
+   * sends the receipt to the address on file. If nobody has answered at that
+   * address, the money lands with no way to tell whose it is.
+   *
+   * The form is REPLACED rather than shown-and-refused: the amount, the account
+   * numbers and the working stay visible — the seller needs those to send the
+   * money at all — and only the last step is held. Telling somebody to do
+   * something and then refusing it is how a person concludes the page is broken.
+   */
+  const verifyGate = (kind) => `
+    <div class="note note-warning" style="margin-top:var(--space-5)">
+      <strong>Confirm the email address on this account, then submit the reference.</strong>
+      A transfer is matched to a person by hand, and the receipt goes to the address on file.
+      ${user?.email ? `<span class="mono">${esc(user.email)}</span> has` : 'Your address has'}
+      not been confirmed yet, so a reference sent now would have nowhere to land — and an operator
+      would have no way to ask you about it.
+      <div style="margin-top:var(--space-4)">
+        <a class="btn btn-sm btn-primary" href="/verify">Confirm it — takes a minute</a>
+      </div>
+      <p class="fine" style="margin-top:var(--space-3)">
+        Nothing else is held back by this: the ${esc(kind)} is still yours to send — only the last
+        step waits.
+      </p>
+    </div>`;
 
   const railList = rails.filter((r) => r.id !== 'other');
 
@@ -3092,7 +3396,7 @@ export function billing({
              need to do anything else.`
           : 'Send it to one of the accounts below, then submit the reference from the receipt.'}
       </div>
-      ${pending.reference ? '' : payForm('plan')}
+      ${pending.reference ? '' : (addressConfirmed ? payForm('plan') : verifyGate('amount'))}
       <p class="fine" style="margin-top:var(--space-4)">
         Your ${esc(plan.name)} plan stays exactly as it is until the money is matched — asking for an
         upgrade never takes away what you have already paid for.
@@ -3196,7 +3500,7 @@ export function billing({
       This is the working, in full: one rent slot's share of thirty days of pageview value, times
       twelve. It is an estimate at an assumed rate, not a statement — you can check every number in it.
     </p>
-    ${invoice.status === 'issued' ? payForm('rent') : ''}
+    ${invoice.status === 'issued' ? (addressConfirmed ? payForm('rent') : verifyGate('amount')) : ''}
   </div>
 </div>`;
   })();
