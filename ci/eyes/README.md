@@ -37,6 +37,21 @@ node anon.mjs /s/ghost-store /nope                      # signed-out pages
 # (another port, another database) — sessions are cached per account and port.
 node csvcheck.mjs                                       # the exports, end to end
 node pager.mjs [/admin/audit?family=all]                # a pager that pages
+
+# One page, one element, at a real viewport — for looking closely at one thing:
+node shot.mjs /dashboard/alice/billing alice /tmp/eyes/billing.png "main#main" 900 1200
+node shot.mjs "/s/alice?country=IN" "" /tmp/eyes/blocked.png ".note:has(strong)" 390 700
+```
+
+`shot.mjs` carries two capture-hygiene lessons that cost real time: it waits under
+`prefers-reduced-motion` (an entrance animation caught mid-flight reads as clipped
+text — this repository went looking for a layout bug that did not exist), and it
+hides the fixed consent bar (which paints over the foot of the viewport and was
+captured instead of the note's last line). Both are about the CAPTURE, not the
+product.
+
+```bash
+# A store, a dashboard, a plan page — the same script, three widths.
 ```
 
 `page@account` picks who is signed in (`@bob` for a seller dashboard, operator by

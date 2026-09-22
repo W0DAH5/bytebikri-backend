@@ -2985,11 +2985,14 @@ export const store = {
    */
   async ensurePlatformCreative({ slotKey = '*', headline, body = null, linkUrl = null, linkLabel = null }) {
     return one(
-      `insert into slot_creatives (owner, channel_id, slot_key, headline, body, link_url, link_label)
-       values ('platform', null, $1, $2, $3, $4, $5)
+      `insert into slot_creatives (owner, channel_id, slot_key, headline, body, link_url, link_label, is_house)
+       values ('platform', null, $1, $2, $3, $4, $5, true)
        on conflict (slot_key) where owner = 'platform' do update
          set headline = excluded.headline, body = excluded.body,
              link_url = excluded.link_url, link_label = excluded.link_label,
+             -- Set on every boot, so a row written before this column existed is
+             -- marked by the only writer that produces house rows.
+             is_house = true,
              active = true, updated_at = now()
        returning *`,
       [slotKey, headline, body, linkUrl, linkLabel],

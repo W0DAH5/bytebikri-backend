@@ -420,7 +420,7 @@ test('a day we did not measure is never drawn as a day with no traffic', () => {
   // Every measured day is a bar, including the measured zero.
   assert.equal((html.match(/class="chart-bar/g) || []).length, 4);
   assert.match(html, /chart-bar-zero/, 'a day we measured at zero is a stub, not an absence');
-  assert.match(html, /2026-09-03: 0 views \(measured, none\)/, 'and its tooltip says we looked');
+  assert.match(html, /3 Sep 2026: 0 views \(measured, none\)/, 'and its tooltip says we looked');
   // Gaps are bands, drawn behind, and there is no bar for them.
   assert.equal((html.match(/class="chart-gap"/g) || []).length, 1, 'a gap run is one band');
   assert.ok(!/2026-09-02:/.test(html), 'an unmeasured day has no value to report');
@@ -432,6 +432,42 @@ test('a day we did not measure is never drawn as a day with no traffic', () => {
   assert.match(label, /across 4 measured days/);
 });
 
+test('the axis reads as dates and a wide unmeasured band says what it is', () => {
+  const { trafficChart } = viewsModule;
+  // Thirty days, twenty-five of them with no row: the shape of the real dashboard,
+  // where the band is most of the plot.
+  const points = [
+    ...series([3, 5, 0, 8, 4], { gapAt: [1] }),
+    ...Array.from({ length: 25 }, (_, i) => ({
+      day: `2026-10-${String(i + 1).padStart(2, '0')}`, value: 4, measured: false,
+    })),
+  ];
+  const html = trafficChart({ points, label: 'Views' });
+
+  // A band that large is labelled in place. Unlabelled it reads as a filled area,
+  // which is the misreading the band exists to prevent.
+  assert.match(html, /class="chart-gap-note"[^>]*>25 days not recorded</);
+  assert.match(html, /class="chart-max"[^>]*>peak 8</, 'the scale top says it is the peak');
+
+  // A narrow band is not labelled — there is no room for the words, and the
+  // footnote and the tooltip still carry the fact.
+  const narrow = trafficChart({ points: series([3, 5, 0, 8, 4], { gapAt: [1] }) });
+  assert.ok(!/chart-gap-note/.test(narrow), '1 of 5 days has no room for a label');
+  assert.match(narrow, /class="chart-gap"/, 'but the band is still drawn and still hoverable');
+
+  // Dates, in day-month order, with the year only when the window crosses one.
+  assert.match(html, /<span>1 Sep<\/span>/);
+  assert.match(html, /<span>25 Oct<\/span>/);
+  const crossing = trafficChart({ points: [
+    { day: '2026-12-30', value: 2, measured: true },
+    { day: '2027-01-02', value: 3, measured: true },
+  ] });
+  assert.match(crossing, /<span>30 Dec 2026<\/span>/);
+  assert.match(crossing, /<span>2 Jan 2027<\/span>/);
+  assert.ok(!/[0-9]{4}-[0-9]{2}-[0-9]{2}/.test(html.replace(/<title>[^<]*<\/title>/g, '')),
+    'no ISO string is printed as if it were a label');
+});
+
 test('a chart describes itself in one sentence, with direction and peak', () => {
   const { trafficChart } = viewsModule;
   const rising = trafficChart({ points: series([1, 1, 1, 9, 9, 9]), label: 'Views' });
@@ -439,7 +475,7 @@ test('a chart describes itself in one sentence, with direction and peak', () => 
   const falling = trafficChart({ points: series([9, 9, 9, 1, 1, 1]), label: 'Views' });
   assert.match(/aria-label="([^"]+)"/.exec(falling)[1], /falling across the window/);
   const flat = trafficChart({ points: series([4, 4, 4, 4]), label: 'Views' });
-  assert.match(/aria-label="([^"]+)"/.exec(flat)[1], /peak 4 on 2026-09-01/);
+  assert.match(/aria-label="([^"]+)"/.exec(flat)[1], /peak 4 on 1 Sep/);
 
   // One highlight, never several: marking peak, trough, first and last at once
   // is the documented way to defeat the point of a sparkline.

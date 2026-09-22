@@ -1321,6 +1321,49 @@ a.kpi:hover { border-color: var(--border-strong); text-decoration: none; box-sha
      pages put tables in prose rather than in a panel — the page scrolled
      sideways and every paragraph moved under a reader's thumb. */
   .panel-body .table, .panel-body-flush .table, .table-scroll .table { min-width: 520px; }
+  /* …but a 520px floor does not stop auto layout from crushing a COLUMN. The
+     first column is the row's name — the thing the eye scans for — and it is the
+     only flexible one in most of these tables: the chip and number columns are
+     sized by their own content, so the name gets whatever is left over, which on
+     the files table was the width of its own slug and six lines of wrapping. A
+     floor rather than a width, so the table still scrolls — it just scrolls with
+     the name readable, and the rows get shorter instead of taller. Measured at
+     390px it was 16 tables across 10 pages.
+     The audit log is excepted twice over: on a phone it stops being a table
+     (below), and a block cell with a min-width would push the page wide. */
+  .panel-body .table td:first-child, .panel-body-flush .table td:first-child,
+  .table-scroll .table td:first-child { min-width: 11rem; }
+
+  /* A table that scrolls inside its box has to LOOK like it does. Without a cue
+     the first thing a reader meets is a column heading cut in half — "ACCES" —
+     which is the failure the header comment above already names for the nav: a
+     clipped label is worse than a taller layout, because a reader cannot tell
+     whether the page is broken or the site is just bad.
+     These are scrolling shadows, in the form Lea Verou published in 2012
+     (lea.verou.me/2012/04/background-attachment-local/, from @kizmarh): two shadow
+     layers glued to the container and two cover layers glued to the CONTENT. When
+     there is nothing to scroll the cover sits exactly over its shadow and hides
+     it, so the cue appears when — and only when — there is more to the right. No
+     JavaScript, no scroll listener, nothing to keep in sync, and a browser
+     without `background-attachment: local` degrades to exactly the state we were
+     already in.
+     The covers are the panel's own colour, opaque, because the table is
+     transparent and a translucent scrim would tint the rows it sits over. */
+  .panel-body, .panel-body-flush, .table-scroll {
+    background-image:
+      linear-gradient(to right, var(--surface-raised) 45%, transparent),
+      linear-gradient(to left, var(--surface-raised) 45%, transparent),
+      radial-gradient(farthest-side at 0 50%,
+        color-mix(in srgb, var(--gray-950) 50%, transparent), transparent),
+      radial-gradient(farthest-side at 100% 50%,
+        color-mix(in srgb, var(--gray-950) 50%, transparent), transparent);
+    background-position: left center, right center, left center, right center;
+    background-repeat: no-repeat;
+    background-size: 28px 100%, 28px 100%, 12px 100%, 12px 100%;
+    background-attachment: local, local, scroll, scroll;
+  }
+  .panel-body .table-audit td:first-child, .panel-body-flush .table-audit td:first-child,
+  .table-scroll .table-audit td:first-child { min-width: 0; }
 
   /* KPI tiles, two to a row.
      Full width, four of them are four tall blocks — roughly three screenfuls of
@@ -1941,6 +1984,17 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   position: absolute; top: -2px; left: 0;
   font-size: var(--text-2xs); color: var(--text-faint);
   font-variant-numeric: tabular-nums;
+}
+/* The label inside a wide unmeasured band. Positioned in HTML over the plot, not
+   drawn into the SVG, because the plot scales its columns with
+   `preserveAspectRatio="none"` and would stretch the letters with them. The
+   renderer only emits it when the band is a large share of the window, so the
+   width guard lives with the text it is guarding; here it only has to stay
+   centred, deletable and out of the way of the pointer. */
+.chart-gap-note {
+  position: absolute; top: 50%; transform: translate(-50%, -50%);
+  font-size: var(--text-2xs); color: var(--text-faint);
+  white-space: nowrap; pointer-events: none;
 }
 .chart-foot {
   display: flex; align-items: center; gap: var(--space-3);

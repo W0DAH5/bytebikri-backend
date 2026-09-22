@@ -19,6 +19,10 @@ const {
   composeSlot, composeSlots, sanitizeUrl, normaliseCreative, slotFraming,
   HOUSE_CREATIVE, SLOT_PURPOSE,
 } = await import('../src/creatives.js');
+// The renderer is imported, not re-implemented: the point of this test is that the
+// view reads the flag, and a copy of the view's logic here would pass while the
+// real one kept drawing the box.
+const { renderSlot } = await import('../src/views.js');
 
 const slot = (over = {}) => ({
   slotKey: 'top_leaderboard', label: 'Top of store', rank: 1, maxHeightPx: 250,
@@ -208,4 +212,55 @@ test('the house creative is upserted, not appended', async () => {
   const rows = await store.platformCreatives();
   assert.equal(rows.length, 1);
   assert.equal(rows[0].headline, 'House v2');
+});
+
+test('our own placeholder does not reserve a billboard, and a sold creative still does', () => {
+  /**
+   * The rule this module already stated — "an empty box is a hole, not a
+   * commitment" — was applied to a store's unfilled slot and not to the platform's
+   * house fallback, which rendered at the slot's full reserved height (280px) with
+   * our own message centred inside it. On a storefront holding one file, our
+   * placeholder took more vertical room than the content did, and a large empty
+   * panel is what a broken banner looks like.
+   *
+   * The distinction the renderer needs is not "is there a creative" but "did
+   * anybody buy this space": the reservation exists so a real tag arriving late
+   * does not shove the page down, and a fallback is not a tag on its way.
+   */
+  const platformSlot = (creative) => composeSlot({
+    slot: slot({ owner: 'platform', slotKey: 'footer_native', surface: 'storefront' }),
+    creative,
+  });
+
+  const fallback = platformSlot(null);
+  assert.equal(fallback.houseFallback, true, 'the house message is marked as ours, not as a sale');
+  assert.equal(fallback.serves, true, 'it is still something to show');
+
+  const sold = platformSlot({
+    owner: 'platform', slot_key: '*', headline: 'Bought space', active: true, rank: 100,
+  });
+  assert.equal(sold.houseFallback, false, 'a sold creative is not a placeholder');
+  assert.equal(sold.creative.headline, 'Bought space');
+
+  // The row that actually exists in a running system is a STORED house row: the
+  // boot upsert writes it, so on a live page the fallback branch above is never
+  // the one taken. The first version of this change inferred the flag from "was
+  // there a row at all", and therefore changed nothing on the real page. The flag
+  // has to come from the row.
+  const storedHouse = platformSlot({
+    owner: 'platform', slot_key: '*', headline: HOUSE_CREATIVE.headline,
+    body: HOUSE_CREATIVE.body, is_house: true, active: true, rank: 100,
+  });
+  assert.equal(storedHouse.houseFallback, true,
+    'the stored house row is our placeholder, not sold inventory');
+
+  // And the renderer reads it: both kinds of placeholder come out compact (no
+  // reserved height), the sold creative keeps its box.
+  const tall = (html) => /min-height:\d+px/.test(html);
+  const placeholderHtml = renderSlot({ ...fallback, isOwner: false });
+  const storedHtml = renderSlot({ ...storedHouse, isOwner: false });
+  const soldHtml = renderSlot({ ...sold, isOwner: false });
+  assert.ok(!tall(storedHtml), 'the stored house row still reserves a billboard');
+  assert.ok(!tall(placeholderHtml), 'the placeholder still reserves a billboard');
+  assert.ok(tall(soldHtml), 'a sold creative lost its reserved height, which is what CLS-proofs it');
 });

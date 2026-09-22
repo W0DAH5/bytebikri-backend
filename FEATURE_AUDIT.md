@@ -1345,3 +1345,176 @@ the carve-out at 200 behind a 451 storefront, the lift restoring the world), and
 the review walk green on all eight (waiting → **200** at the link, listed,
 **absent from search**, one queue item, approved → found, the next file not waiting,
 removed → gone from search, 404 for a stranger and 200 for its owner).
+
+---
+
+## 21. This round: the storefront and the dashboard, opened and looked at
+
+The same treatment the operator's pages got last round, applied to the two surfaces
+a creator and a buyer actually live in: home, a storefront, and the dashboard, at
+1440 and 390. Three findings, and two of them were mine.
+
+### A store page that said "0 files" about a file that has none
+
+The demo store in the preview read **"0 files"**, and the reason was not the
+product: `ci/demo-state.mjs` had crashed once between `createAsset` and `addFile`
+(`storage` imported from the wrong module), and its "does this asset already exist?"
+check then found an asset and skipped the file for ever. A script whose idempotency
+check covers only the first half of a two-part write will bless a half-created
+state, and the visible result was a store page looking like it was lying.
+
+The check is per half now — asset first, then the file's bytes — and the missing
+piece is repaired rather than skipped. The same run gives the demo store a cover, so
+the storefront card is a picture rather than a generated placeholder; a store whose
+only item has no artwork looks unfinished in Explore, and every other demo store
+has one.
+
+### Our own placeholder was reserving a billboard
+
+On the store with one file, bytebikri's own house message rendered at the platform
+slot's **full reserved height**: 280px of our copy, taller than the store's content.
+The codebase already stated the rule in this exact place — *"an empty box is a hole,
+not a commitment"* — and the reserved height exists for one reason: a network's tag
+mounts after the page has loaded, and reserving the space is what stops a late tag
+from shoving the page down.
+
+So the distinction the renderer needs is not "is there a creative" but "did anybody
+**buy** this space", and the schema had no way to say it: the boot upsert writes the
+house message as a real `slot_creatives` row, indistinguishable from a sold one.
+Migration **0025** adds `is_house`, the boot upsert sets it, and a sold creative is
+`false` by default — the honest case (a tag is coming, reserve the space) is the one
+you get by forgetting. Measured on the live page: the slot went from a fixed 280px
+to 205px, which is its own content.
+
+**Worth recording: the first attempt at this changed nothing and the test still
+passed.** It inferred the flag from "was there a row at all", which is true for the
+code fallback and false for the row that actually exists in a running system. The
+test passed because it exercised the fallback; the live page kept the 280px box.
+It was caught by opening the page and *measuring the element* rather than by reading
+the diff — the second time in this audit that looking beat testing. The test now
+pins the stored row, which is the case that actually happens.
+
+### The dashboard chart was not saying what it thought it was saying
+
+The traffic chart drew a thirty-day window in which sixteen days have no row at all.
+Those days are drawn as a grey band — deliberately, and the code says why: *"a day we
+did not measure is a band, not a bar. It must be impossible to read as 'no traffic'."*
+But the band was **unlabelled**, it covered more than half the plot, and at 11px a
+large grey rectangle does not read as "no records": it reads as a filled area, days
+that happened and are being counted. The fact was in the footnote and in a tooltip,
+which is to say it was everywhere except where the eye was.
+
+Two more things were wrong at the same size. The axis printed the raw `MM-DD` slice of
+the ISO day — `08-24` and `09-22` — and at 11px that is not a date, it is two numbers
+with a dash between them; read either way round it looks like a range, and there is no
+month name anywhere on the chart. And the scale top was a bare `62` floating over the
+grey band, which is exactly where a reader will assume it belongs to the band rather
+than to the axis.
+
+The fixes, and where they come from:
+
+- **Wide bands are labelled in place** ("16 days not recorded"). The UX Stack Exchange
+  thread on showing missing data in a daily chart is unanimous that the gap must be
+  labelled where it is drawn — "label appropriately… explain that the data is missing"
+  — with the alternatives being a dotted baseline or a `?`, both of which are weaker
+  than the words. The label is HTML positioned over the plot rather than text inside
+  the SVG, because the plot scales its columns with `preserveAspectRatio="none"` and
+  would stretch the letters with them. It is emitted only when the band is a large
+  share of the window, so a one-day hole still relies on the footnote and its tooltip —
+  a rule the test pins in both directions.
+- **The axis reads as dates** — `24 Aug`, `22 Sep` — with the year added only when the
+  window crosses New Year, where the year is the only thing separating two identical
+  labels. Numeric date defaults are the single most-complained-about thing in chart
+  axes, and the fix everybody lands on is the short month name; day-month is the order
+  this country reads. The tooltip keeps the unambiguous full form (`3 Sep 2026`) and
+  the screen-reader sentence uses the same words as the print.
+- **The scale top says `peak 62`**, so it cannot be mistaken for the band's own value
+  or for a total.
+
+Checked rather than assumed: nothing inside `figure.chart` leaves the figure at 320,
+360, 390, 768 or 1440px, and the band label is present at all five widths (117px of
+text inside a band that is 126px at its narrowest). The chart's own test grew one case
+that measures both the label and the axis strings.
+
+### Phone width: 16 tables were crushing the one column that matters
+
+The audit up to here had been at 1440. Opening the dashboard at 390 showed the file
+table with its name column — the column the eye scans for — squeezed to about a
+hundred pixels: `Free sample pack` broken over two lines, its slug and metadata over
+four, and the `ACCESS` heading cut in half at the right edge. `public/styles.css`
+already documents the intent for exactly this ("a table that is allowed to be wider
+than its container scrolls, and one that is squeezed crushes a column into two
+characters per line"), and the table *was* scrolling. The 520px floor is what the
+comment missed: **a floor on the table does not protect a column**, because auto layout
+sizes the chip columns from their own content and hands the single flexible column —
+the name — whatever is left.
+
+Rather than fix the page I was looking at, I wrote the check as a script and ran it
+across every signed-in page at 390px: **16 tables on 10 pages**, name cells between 71
+and 138px wide, wrapping to between three and nine lines (`/admin/stores` six lines,
+`/dashboard/alice/networks` nine). The fix is one rule in the phone block — a
+`min-width` floor on the first cell — and the scan is now zero. On the files table the
+name cell went from 125px to 176px and the rows got *shorter*, because a name with room
+to breathe needs fewer lines. The audit log is excepted twice over: on a phone it stops
+being a table and becomes labelled blocks, and a min-width on a display:block cell
+would push the page wide.
+
+### A clipped label is a bug, so the table says it scrolls
+
+Even with readable columns the table still cut a column heading in half at its right
+edge, and the stylesheet already has a rule about that, written for the navigation: *"A
+clipped label is worse than a tall header: the reader cannot tell whether the page is
+broken or the site is just bad."* A table can scroll where a header can wrap, but only
+if the reader can tell it does.
+
+So the scrolling box now carries **scrolling shadows** — the pattern Lea Verou
+published in 2012 (`lea.verou.me/2012/04/background-attachment-local/`, from @kizmarh):
+two shadow layers glued to the container and two cover layers glued to the content, so
+when there is nothing to scroll the cover sits exactly over its shadow and hides it.
+The cue appears when, and only when, there is more to the right. No JavaScript, no
+scroll listener, nothing to keep in sync, and a browser without
+`background-attachment: local` degrades to exactly the state we were in before. It was
+verified in both states rather than trusted: at scroll 0 the right edge is faded, at the
+end of the 340px of scroll the right edge is clean and the left one is faded. Desktop is
+untouched — the rule lives inside the phone media query, and the same probe reads
+`cellMin: 0px`, no shadow layers, at 1440.
+
+### Three misreads, all from the same habit
+
+This round produced three "bugs" that were artefacts of reading a 3×-downscaled PNG:
+`ADVERTISMENT` (the label is correct), a red Sign out (it is a ghost button), and the
+active tab apparently sitting on `Ad slots` (it is on `Overview`, with
+`aria-current="page"`). Each was resolved by reading the DOM or taking an element shot
+at native scale, and none of them cost anything but the habit is worth naming: **the
+downscaled screenshot is a map, not evidence.** The chart's date labels were the same
+kind of misread (`10-24` for `08-24`) and they still led to a real fix — but the reason
+to change them was the string measured at 1:1, not the blur.
+
+### What the audit did not find
+
+Worth writing down, because a report that only lists problems is not a measurement:
+
+- The home page's numbers (*3 stores, 21 unlockable files, 1 unlock granted, 0% cut
+  of ad revenue*) match the database exactly, and the hero's four-cell money panel
+  states who pays, where it lands, what bytebikri holds and what our share is — the
+  standing rule about money, in one glance.
+- The store page's ad slot is labelled *"Advertisement · Platform space. The store
+  rents it to ByteBikri; the store is not the advertiser."* — and the spelling I
+  thought was wrong on the first screenshot was correct in the HTML. The label was
+  read from a downscaled image; the markup is the authority.
+- No overflow, no clipped text and no mis-clipped control at either width in
+  `sweep.mjs`'s 38 pages, which is what that harness is for.
+
+### Tooling, made reproducible again
+
+`ci/eyes/shot.mjs` is now in the repository: one page, one element, a real viewport,
+with the two capture-hygiene lessons baked in (reduced motion, or an entrance
+animation caught mid-flight reads as clipped text; the fixed consent bar hidden, or
+it paints over the note being photographed). And `ci/eyes/setup.sh` now copies the
+harness scripts into `$DIR` as well as rebuilding the browser — it rebuilt the
+browser and left the folder with no scripts in it, so the flow in its own README
+(`cd /tmp/eyes && node sweep.mjs`) answered "Cannot find module" after a rebuild.
+**Rebuilding the environment and calling the result ready is worse than not
+rebuilding it**, because the second run after a restore is the one that looks
+broken. `setup.sh` also resolves its own directory before its first `cd`, since a
+relative `BASH_SOURCE` is relative to where the script started.

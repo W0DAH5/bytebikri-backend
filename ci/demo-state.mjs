@@ -27,6 +27,7 @@ process.env.DATABASE_URL ||= 'postgres://postgres:postgres@127.0.0.1:55432/byteb
 const { many, one, close } = await import('../app/src/db.js');
 const { store, storage } = await import('../app/src/store.js');
 const { createHash } = await import('node:crypto');
+const fs = await import('node:fs/promises');
 
 const say = (label, value) => console.log(`  ${label.padEnd(28)} ${value}`);
 
@@ -89,36 +90,62 @@ if (owner) {
   say('demo sign-in', `${NIMA} / ${process.env.DEMO_PASSWORD || 'bytebikri-demo'}`);
 }
 
-const existing = await one('select id, title, moderation_state from assets where channel_id = $1', [nima.id]);
-if (!existing) {
-  // Through `createAsset`, so the state is whatever the rule says it is — which
-  // is the entire point of this half of the demo.
-  const asset = await store.createAsset({
+let waiting = await one(
+  'select id, title, moderation_state from assets where channel_id = $1 and slug = $2',
+  [nima.id, 'pokhara-notebook-set'],
+);
+if (!waiting) {
+  // Through `createAsset`, so the state is whatever the rule says it is — which is
+  // the entire point of this half of the demo.
+  waiting = await store.createAsset({
     channelId: nima.id, title: 'Pokhara notebook set',
     slug: 'pokhara-notebook-set',
     description: 'Twelve hand-bound notebooks, photographed and scanned. A new store, before anybody has looked at it.',
   });
+  say('waiting file', `${waiting.title} — state ${waiting.moderation_state} (the rule decided)`);
+} else {
+  say('waiting file', `${waiting.title} — state ${waiting.moderation_state}`);
+}
+
+// The file's BYTES, checked separately from the asset.
+//
+// This script crashed once between `createAsset` and `addFile` — `storage` is
+// imported from the store module and the first version imported it from the wrong
+// place — and the "does an asset already exist?" check above then saw an asset and
+// skipped the file forever. The result was a store page reading "0 files" for a
+// file that has none, a bug that looks like the product lying and was this script
+// not finishing its job. So each half is checked, not just the first.
+const hasFile = (await many('select id from asset_files where asset_id = $1', [waiting.id])).length > 0;
+if (!hasFile) {
   const body = Buffer.from('ByteBikri demo file (Nima Crafts).\n');
   await store.addFile({
-    assetId: asset.id, storageKey: await storage.put(body, 'pokhara-notebook-set.txt'),
+    assetId: waiting.id, storageKey: await storage.put(body, 'pokhara-notebook-set.txt'),
     filename: 'pokhara-notebook-set.txt', mimeType: 'text/plain', sizeBytes: body.length,
     checksum: createHash('sha256').update(body).digest('hex'),
   });
-  say('waiting file', `${asset.title} — state ${asset.moderation_state} (the rule decided)`);
-} else {
-  say('waiting file', `${existing.title} — state ${existing.moderation_state}`);
+  say('its file', 'added (was missing — half-created state repaired)');
+}
+// And a cover, so the storefront card is a picture rather than a generated
+// placeholder: a store whose only item has no artwork looks unfinished in Explore,
+// and every other demo store has one.
+if (!(await one('select cover_url from assets where id = $1', [waiting.id]))?.cover_url) {
+  const cover = await fs.readFile(new URL('../app/public/img/demo/sample-pack.jpg', import.meta.url));
+  await store.updateAsset(waiting.id, {
+    cover_url: `/media/${await storage.put(cover, 'pokhara-notebook-cover.jpg', { namespace: 'public' })}`,
+  });
+  say('its cover', 'set');
 }
 
 // ── What the database now holds ──────────────────────────────────────────────
 const rules = await many(`select r.country_code, r.state, r.source, a.title
                             from asset_country_rules r join assets a on a.id = r.asset_id`);
-const waiting = await many(`select a.title, a.moderation_state, c.name
-                              from assets a join channels c on c.id = a.channel_id
-                             where a.moderation_state = 'pending'`);
+const waitingNow = await many(`select a.title, a.moderation_state, c.name
+                                 from assets a join channels c on c.id = a.channel_id
+                                where a.moderation_state = 'pending'`);
 console.log('\n  country rules:',
   rules.map((r) => `${r.title} ${r.country_code} ${r.state} (${r.source})`).join(', ') || 'none');
 console.log('  waiting files:',
-  waiting.map((w) => `${w.title} at ${w.name}`).join(', ') || 'none');
+  waitingNow.map((w) => `${w.title} at ${w.name}`).join(', ') || 'none');
 console.log('\n  open the preview at /  ·  the creator’s view at /dashboard/alice'
   + '  ·  the queue at /admin\n');
 

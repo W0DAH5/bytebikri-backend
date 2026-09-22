@@ -129,6 +129,10 @@ export function normaliseCreative(row) {
     linkUrl,
     linkLabel: linkUrl && typeof row.link_label === 'string' && row.link_label.trim()
       ? row.link_label.trim().slice(0, 40) : null,
+    // Carried through, not decided here: whether a creative is bytebikri's own
+    // placeholder is a fact about the row (see migration 0025), and the render
+    // needs it to know whether to reserve the slot's height for a tag.
+    isHouse: row.is_house === true,
   };
 }
 
@@ -157,8 +161,27 @@ export function composeSlot({
   // the wrong party's message in someone else's space.
   const usable = stored && stored.owner === owner ? stored : null;
 
-  const house = owner === 'platform' ? normaliseCreative({ ...HOUSE_CREATIVE, owner: 'platform' }) : null;
+  const house = owner === 'platform'
+    ? normaliseCreative({ ...HOUSE_CREATIVE, owner: 'platform', is_house: true })
+    : null;
   const filled = usable || house;
+  // Whether what is rendering is our own placeholder rather than a creative
+  // somebody bought.
+  //
+  // It matters because a platform slot reserves its height for a tag that is on
+  // its way — that reservation is what stops a real ad from shoving the page down
+  // as it loads — and a placeholder is not a tag on its way. This module already
+  // says so two lines below: "an empty box is a hole, not a commitment". Our own
+  // house message was the one case that ignored it, and it rendered at the slot's
+  // full reserved height on a storefront holding a single file: 280px of our copy,
+  // which is both odd to show a visitor and what a broken banner looks like.
+  //
+  // Read from the row (`is_house`, migration 0025) rather than inferred from the
+  // copy or from "was there a row at all". The first attempt inferred it from the
+  // fallback alone and changed nothing on the live page, because the boot upsert
+  // had already written the house message as a real row — a distinction the data
+  // had to carry, not one a comparison of headlines should guess at.
+  const houseFallback = filled !== null && (usable ? usable.isHouse === true : true);
 
   return {
     ...slot,
@@ -172,6 +195,7 @@ export function composeSlot({
     // to a slot that is rendering and waiting for a tag, not to a space nobody
     // has filled — an empty box is a hole, not a commitment.
     serves: filled !== null,
+    houseFallback,
     from: usable ? (owner === 'platform' ? 'house' : 'store') : (filled ? 'house' : 'none'),
     // A creator looking at their own empty slot gets told what to do about it;
     // a visitor gets a sentence that does not address them.

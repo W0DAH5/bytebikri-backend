@@ -2712,6 +2712,30 @@ function proof(value, label, literal = null) {
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 /** A short human sentence describing a series, for the accessible name. */
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * A date a person can read at 11px.
+ *
+ * The axis used to print the raw `MM-DD` slice of the ISO day — `08-24` and
+ * `09-22` — and at 11px that is not a date, it is two numbers with a dash between
+ * them. Read either way round it looks like a range, and there is no month name
+ * anywhere on the chart. Numeric date defaults are the thing every spreadsheet
+ * user complains about and the standard fix is the short month name; the unit is
+ * what has to be legible, and the day-month order is the one this country reads
+ * (`public/locale`, prices and dates elsewhere in this file are en-IN too).
+ * `year` is off by default and switched on by callers whose window spans a
+ * New Year, where the year is the only thing separating two identical labels —
+ * and by tooltips, where there is room for the unambiguous form.
+ */
+export function humanDay(iso, { year = false } = {}) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso));
+  if (!m) return String(iso);
+  const label = `${Number(m[3])} ${MONTHS[Number(m[2]) - 1] || m[2]}`;
+  return year ? `${label} ${m[1]}` : label;
+}
+
 function describeSeries(points, { unit = 'views' } = {}) {
   const measured = points.filter((p) => p.measured !== false);
   if (!measured.length) return `No ${unit} have been measured yet.`;
@@ -2730,7 +2754,7 @@ function describeSeries(points, { unit = 'views' } = {}) {
   }
   const parts = [
     `${total.toLocaleString('en-IN')} ${unit} across ${measured.length} measured ${measured.length === 1 ? 'day' : 'days'}`,
-    peak ? `peak ${peak.toLocaleString('en-IN')} on ${peakDay.day}` : 'no activity yet',
+    peak ? `peak ${peak.toLocaleString('en-IN')} on ${humanDay(peakDay.day)}` : 'no activity yet',
     `${direction} across the window`,
   ];
   // Say the gaps out loud rather than letting the reader assume the line is solid.
@@ -2784,14 +2808,40 @@ export function trafficChart({ points = [], height = 132, label = 'Views' } = {}
     const cls = value > 0 ? (i === peakIndex ? 'chart-bar chart-bar-peak' : 'chart-bar') : 'chart-bar chart-bar-zero';
     return `<rect class="${cls}" x="${(i * colW + colW * 0.18).toFixed(2)}%" y="${y.toFixed(1)}" `
       + `width="${(colW * 0.64).toFixed(2)}%" height="${h.toFixed(1)}" `
-      + `rx="${Math.min(colW * 0.18, 1.2).toFixed(2)}"><title>${esc(p.day)}: ${value.toLocaleString('en-IN')} ${esc(label.toLowerCase())}${value === 0 ? ' (measured, none)' : ''}</title></rect>`;
+      + `rx="${Math.min(colW * 0.18, 1.2).toFixed(2)}"><title>${esc(humanDay(p.day, { year: true }))}: `+ `${value.toLocaleString('en-IN')} ${esc(label.toLowerCase())}${value === 0 ? ' (measured, none)' : ''}</title></rect>`;
   }).join('');
 
   const bandShapes = bands.map(([from, to]) => `<rect class="chart-gap" x="${(from * colW).toFixed(2)}%" y="10" `
     + `width="${((to - from) * colW).toFixed(2)}%" height="${plot}" rx="2"><title>No daily row for these days</title></rect>`).join('');
 
-  const first = points[0].day.slice(5);
-  const last = points[n - 1].day.slice(5);
+  // A stretch we did not record is drawn as a band, and on a thirty-day chart the
+  // band is often most of the plot. Unlabelled, a large grey block does not read
+  // as "no records": it reads as a filled area — days that happened and are being
+  // counted — which is the exact misreading the band exists to prevent. So wide
+  // bands are labelled in place. The text has to live in HTML rather than in the
+  // SVG, because the plot's `preserveAspectRatio="none"` would stretch it
+  // sideways with the columns.
+  //
+  // Shown by measured width, not by taste: the plot's pixel width is not known
+  // here, so the band's share of the window is the only handle available, and the
+  // thresholds are set so the longest string fits at the narrowest phone the
+  // layout supports. A one-day hole keeps the footnote and its tooltip.
+  const gapNotes = bands.map(([from, to]) => {
+    const span = (to - from) * colW;
+    const days = to - from;
+    const text = span >= 45 ? `${days} ${days === 1 ? 'day' : 'days'} not recorded`
+      : span >= 26 ? 'not recorded' : null;
+    if (!text) return '';
+    const centre = (((from + to) / 2) * colW).toFixed(2);
+    return `<span class="chart-gap-note" style="left:${centre}%">${esc(text)}</span>`;
+  }).join('');
+
+  // The year appears only when the window straddles two of them: repeating it on
+  // a thirty-day chart is noise, and leaving it off a chart that crosses New Year
+  // makes the last label look earlier than the first.
+  const crossedYear = String(points[0].day).slice(0, 4) !== String(points[n - 1].day).slice(0, 4);
+  const first = humanDay(points[0].day, { year: crossedYear });
+  const last = humanDay(points[n - 1].day, { year: crossedYear });
 
   return `<figure class="chart" data-chart>
   <div class="chart-plot" style="height:${height}px">
@@ -2800,7 +2850,8 @@ export function trafficChart({ points = [], height = 132, label = 'Views' } = {}
       ${bandShapes}${bars}
       <line class="chart-axis" x1="0" y1="${plot + 10}" x2="100" y2="${plot + 10}" vector-effect="non-scaling-stroke"></line>
     </svg>
-    ${max > 0 ? `<span class="chart-max" aria-hidden="true">${max.toLocaleString('en-IN')}</span>` : ''}
+    ${gapNotes}
+    ${max > 0 ? `<span class="chart-max" aria-hidden="true">peak ${max.toLocaleString('en-IN')}</span>` : ''}
   </div>
   <figcaption class="chart-foot">
     <span>${esc(first)}</span>
@@ -3263,7 +3314,14 @@ export function renderSlot(slot) {
    * and on their dashboard it is a compact prompt rather than a hole.
    */
   if (!creative && owner === 'channel' && !slot.isOwner) return '';
-  const compact = !creative && owner === 'channel';
+  // What decides the shape: whether anybody BOUGHT this space. A store's unfilled
+  // slot is a prompt; the platform's house message is a placeholder; a sold
+  // creative is the only one that reserves height, because it is the only one
+  // that is a tag waiting to arrive. The house fallback used to render as a 280px
+  // billboard on a store with a single item — our own message taking more room
+  // than the store's content, and a large empty box is what a broken banner looks
+  // like.
+  const compact = slot.houseFallback === true || (!creative && owner === 'channel');
   const cls = ['slot', `slot-${owner}`, from === 'none' ? 'slot-empty' : 'slot-filled'];
   if (slot.surface === 'app_native') cls.push('slot-app');
 
