@@ -1281,3 +1281,34 @@ store page lists it → **search returns nothing** → the operator's queue hold
 exactly one item → approved → **search returns it** → the next upload from the same
 store does not wait → and removing it takes it out of search again with **404** for
 a stranger and **200** for its owner. Full suite **452/452**.
+
+### The operator's side of it, looked at rather than reasoned about
+
+The operator's pages were only ever checked as text, so they were opened in a
+browser — the queue, the file page, at 1440 and 390 — and two things came out of
+it that no assertion had an opinion about.
+
+**Five surfaces show a moderation state and they had drifted into four different
+colour mappings.** The state they disagreed about was always `pending`: two of them
+painted it **red**, the colour a removal gets — and `pending` is the state every
+store's first file is in until somebody looks at it. A queue that shouts about the
+routine case is a queue whose shouting stops carrying information, and the cost of
+that lands on the day something really is wrong. There is one helper now
+(`stateTone`), and the rule it encodes is: red withholds something from somebody,
+amber limits it without hiding, green was approved by a person, and a state nobody
+has decided yet is quiet. The queue row already says "needs a decision" in its
+heading, its count and its `!` — the pill does not have to say it in colour too.
+`test/ui.test.js` renders the operator's queue and file page and checks the pill
+for each state, so the mappings cannot drift apart again silently.
+
+**An instruction that vanished as soon as it was needed.** The remedy field on the
+file page carried *"One line, in your own words. It is shown with the rule's own
+wording."* as a **placeholder** — which stops existing the moment somebody starts
+typing, and on a 390px screen was truncated mid-sentence to *"It is show…"*. The
+other two remedy forms on the same page already printed it as a persistent hint
+line, so the same sentence was permanent in one form and invisible in another. It
+is a hint everywhere now, and the placeholder is what a placeholder is for: a short
+example of the shape.
+
+Both found by looking. Neither would have failed a test — and the second one had
+been on that page since the console round.

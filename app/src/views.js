@@ -122,6 +122,30 @@ function pill(text, kind = '') {
 }
 
 /**
+ * How a moderation state looks — the one place the colour is decided.
+ *
+ * Five call sites had grown four different mappings, and the state they
+ * disagreed about was `pending`: the state every store passes through, and the
+ * state every store's first file is in until somebody looks at it. Two of those
+ * sites painted it red, the colour of a takedown, which makes a queue that
+ * shouts about the routine case a queue whose shouting stops meaning anything.
+ *
+ * The rule: red is a decision that withholds something from somebody; amber is a
+ * decision that limits without hiding; a green state is one somebody approved;
+ * and a state nobody has decided yet is quiet. A queue row already says "this
+ * needs a decision" in its heading, its count and its `!` marker — the pill does
+ * not have to repeat it in colour.
+ */
+const STATE_TONE = {
+  pending: '',
+  approved: 'success',
+  restricted: 'warning',
+  suspended: 'danger',
+  removed: 'danger',
+};
+const stateTone = (state) => STATE_TONE[state] ?? 'warning';
+
+/**
  * A moderation notice, for the one person who can act on it.
  *
  * Three parts, in the order a seller needs them: what state the store is in,
@@ -1710,7 +1734,7 @@ export function adminModeration({
       <a href="/s/${esc(c.slug)}"><strong>${esc(c.name)}</strong></a>
       <span class="fine">/s/${esc(c.slug)}</span>
       <span class="spacer"></span>
-      ${pill(c.moderation_state, c.moderation_state === 'restricted' ? 'warning' : 'danger')}
+      ${pill(c.moderation_state, stateTone(c.moderation_state))}
     </div>
     <div class="panel-body">
       <p class="small" style="margin:0">
@@ -1761,7 +1785,7 @@ export function adminModeration({
         ${f.country_summary ? ` · <span class="mono">${esc(f.country_summary)}</span>` : ''}</span>
     </span>
     <span class="spacer"></span>
-    ${pill(f.moderation_state, f.moderation_state === 'approved' ? 'warning' : 'danger')}
+    ${pill(f.moderation_state, stateTone(f.moderation_state))}
     <span class="fine">${esc(relTime(f.decided_at || f.created_at))}</span>
   </a>`;
 
@@ -2028,7 +2052,7 @@ export function adminModerationFile({
 <div class="section" style="margin-bottom:0">
   <div class="row">
     <h1>${esc(asset.title)}</h1>
-    ${pill(asset.moderation_state, asset.moderation_state === 'approved' ? 'success' : 'danger')}
+    ${pill(asset.moderation_state, stateTone(asset.moderation_state))}
     <span class="spacer"></span>
     <a class="btn btn-sm" href="/s/${esc(channel.slug)}/a/${esc(asset.slug)}">See it as a visitor</a>
   </div>
@@ -2070,8 +2094,15 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-5)
       </div>
       <div class="field" style="margin-top:var(--space-4)">
         <label for="fm">What should the owner do?</label>
+        <!-- The instruction is a hint line, not a placeholder: a placeholder
+             stops existing the moment somebody types, and on a phone this one was
+             truncated mid-sentence. The other two remedy forms on this page
+             already do it this way, so the same sentence cannot be persistent in
+             one place and invisible in another. (No backticks in here: this whole
+             block is inside a template literal, and one of them ends it.) -->
         <input class="input" id="fm" name="remedy" maxlength="280"
-               placeholder="One line, in your own words. It is shown with the rule's own wording.">
+               placeholder="One line, in your own words.">
+        <span class="hint">Up to 280 characters. It is shown to the owner with the rule's own wording.</span>
       </div>
       <button class="btn btn-primary" type="submit" style="margin-top:var(--space-4)">Record decision</button>
     </div>
@@ -2535,7 +2566,7 @@ ${detail.stores.length ? `<section class="section">
           <a href="/admin/stores/${esc(c.slug)}"><strong>${esc(c.name)}</strong></a>
           <div class="fine">/s/${esc(c.slug)}${c.listing_mode === 'marketplace' ? ' · listed' : ''}</div>
         </td>
-        <td>${pill(c.moderation_state, c.moderation_state === 'approved' ? 'success' : c.moderation_state === 'pending' ? '' : 'warning')}</td>
+        <td>${pill(c.moderation_state, stateTone(c.moderation_state))}</td>
         <td class="num">${num(c.files)}</td>
         <td class="num">${num(c.views_30d)}</td>
         <td class="fine">${esc(isoDay(c.created_at))}</td>
@@ -5128,7 +5159,7 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
         <dt>Owner</dt><dd>${esc(c.owner_name || 'no name')}<div class="fine">${esc(c.owner_email || 'no email on file')}</div></dd>
         <dt>Opened</dt><dd>${esc(relTime(c.created_at))}</dd>
         <dt>Listing</dt><dd>${c.listing_mode === 'marketplace' ? 'In the marketplace' : 'Unlisted — link only'}</dd>
-        <dt>State</dt><dd>${pill(c.moderation_state, c.moderation_state === 'approved' ? 'success' : c.moderation_state === 'restricted' ? 'warning' : 'danger')}
+        <dt>State</dt><dd>${pill(c.moderation_state, stateTone(c.moderation_state))}
           ${c.moderation_reason ? `<div class="fine">holds reason <span class="mono">${esc(c.moderation_reason)}</span></div>` : ''}</dd>
         <dt>Ad connections</dt><dd>${c.live_connections ? plural(c.live_connections, 'live connection') : 'none active'}</dd>
       </dl>

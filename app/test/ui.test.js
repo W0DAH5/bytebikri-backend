@@ -219,8 +219,10 @@ test('every class the views emit has a rule in the stylesheet', () => {
 // assertions are about what the page SAYS, not that it renders.
 // ---------------------------------------------------------------------------
 
-const { billing: billingView, storeSettings, dashboardReviews, assetManage, operatorBilling, marketplace } =
-  await import('../src/views.js');
+const {
+  billing: billingView, storeSettings, dashboardReviews, assetManage, operatorBilling, marketplace,
+  adminModeration, adminModerationFile,
+} = await import('../src/views.js');
 // store.js loads the pool; the pool refuses to exist under `node --test` unless it
 // points at a test database. This file only reads PLANS, but it still has to say so.
 process.env.DATABASE_URL ||= 'postgres://postgres:postgres@127.0.0.1:55432/bytebikri_test';
@@ -521,4 +523,53 @@ test('a file that is waiting for review says so, and says what it does not block
   });
   assert.ok(!/Waiting for its first review/.test(approved),
     'an approved file is still announced as waiting');
+});
+
+test('a state nobody has decided yet is painted quiet, everywhere it appears', () => {
+  /**
+   * Five surfaces show a moderation state and they had drifted into four
+   * mappings. The disagreement was always about `pending` — the state every
+   * store's first file sits in until a person looks at it — and two of them
+   * painted it red, the colour a takedown gets. A queue that shouts about the
+   * routine case is a queue whose shout stops carrying information, and the cost
+   * lands on the day something really is wrong.
+   *
+   * The rule lives in one helper now, and this test checks it where a person
+   * would notice: in the rendered markup, on the three surfaces that show a
+   * pending thing.
+   */
+  const file = {
+    id: '77777777-7777-4777-8777-777777777777', title: 'Waiting file', slug: 'waiting',
+    moderation_state: 'pending', created_at: new Date().toISOString(), decided_at: null,
+    channel_name: 'Nima Crafts', owner_email: 'nima@bytebikri.local', country_summary: null,
+  };
+  // The operator's file queue.
+  const queue = adminModeration({ user: null, rows: [], rules: [], files: [file] });
+  assert.match(queue, /<span class="pill">pending<\/span>/,
+    'the queue paints a waiting file as something other than routine');
+
+  // The operator's page for that file.
+  const page = adminModerationFile({
+    user: null, rules: [],
+    asset: { ...file, description: 'x', status: 'live', channel_id: 'c', has_files: 1 },
+    channel: { slug: 'nima-crafts', name: 'Nima Crafts' },
+  });
+  assert.ok(page.length > 500, 'the file page rendered');
+  assert.match(page, /<span class="pill">pending<\/span>/,
+    "the operator's own page paints a waiting file as something other than routine");
+
+  // And the states that ARE decisions keep their colours: red still means a
+  // decision that withholds, amber one that limits.
+  const removed = adminModerationFile({
+    user: null, rules: [],
+    asset: { ...file, moderation_state: 'removed' },
+    channel: { slug: 'nima-crafts', name: 'Nima Crafts' },
+  });
+  assert.match(removed, /pill-danger">removed/, 'a removal must still look like a removal');
+  const restricted = adminModerationFile({
+    user: null, rules: [],
+    asset: { ...file, moderation_state: 'restricted' },
+    channel: { slug: 'nima-crafts', name: 'Nima Crafts' },
+  });
+  assert.match(restricted, /pill-warning">restricted/, 'a limitation must still look like one');
 });
