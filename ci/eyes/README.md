@@ -38,6 +38,7 @@ node anon.mjs /s/ghost-store /nope                      # signed-out pages
 node csvcheck.mjs                                       # the exports, end to end
 node pager.mjs [/admin/audit?family=all]                # a pager that pages
 node columns.mjs                                        # tables on a phone: floors, labels, headings
+node bulk-click.mjs alice /dashboard/alice              # the file list's selection, ticked for real
 
 # Accounts the harness knows (ci/eyes/pages.mjs): operator, alice, nima, bob.
 # Nima's store is the demo's deliberately awkward one — her identity check is inside
@@ -53,6 +54,14 @@ node shot.mjs "/s/alice?country=IN" "" /tmp/eyes/blocked.png ".note:has(strong)"
 # end to end (and the only honest way to shoot anything under a sticky header):
 node fullpage.mjs alice /dashboard/alice/earnings /dashboard/alice/networks
 ```
+
+`bulk-click.mjs` exists because two claims about the seller's file list can only be
+checked with a browser: that the bar's count follows the ticks, and that the bar is
+pinned to the foot of the **window**. The second one was false for a whole round while
+a check on the class name passed — `.panel`'s `overflow: hidden` made the form the
+sticky context, so the bar stuck to the bottom of an 1,865px form. It now measures
+`getBoundingClientRect().bottom` against `innerHeight`, which is the only reading that
+can tell the difference.
 
 `shot.mjs` carries two capture-hygiene lessons that cost real time: it waits under
 `prefers-reduced-motion` (an entrance animation caught mid-flight reads as clipped
