@@ -15,7 +15,10 @@
  *     unlocked?" would, and would block rendering to do it.
  */
 
-import { REPORT_REASONS, REPORT_HONESTY, NOTE_LIMIT, reporterMessage, reportVerdict, AUTO_HIDE_AFTER } from './reports.js';
+import {
+  REPORT_REASONS, REPORT_HONESTY, NOTE_LIMIT, reporterMessage, reportVerdict,
+  AUTO_HIDE_AFTER, hidingNotice, canAppeal, APPEAL_LIMIT, sellerReasonLabel,
+} from './reports.js';
 // The calibration judgement lives in the domain file next to gapVerdict, so the
 // operator's page and the seller's page can never disagree about what a gap means.
 import { calibrationRowState } from './earnings.js';
@@ -23,7 +26,7 @@ import { calibrationRowState } from './earnings.js';
 // definition of "how full is this plan", used by the dashboard, the operator's
 // plans page and the message at the upload wall.
 import { planUsage, rentAge, AGE_BUCKETS, RENT_TERMS } from './billing.js';
-import { isoDay } from './dates.js';
+import { isoDay, daysBetween } from './dates.js';
 // The audit vocabulary and the two renderers that make a row readable: who did it
 // (a person, the platform, or a visitor) and what it was about.
 import { AUDIT_FAMILIES, actorOf, subjectOf } from './audit.js';
@@ -1843,6 +1846,10 @@ export function dashboard({
   channel, slots, connections, providers, plan, estimate, pageviews, adViews,
   upgrade, user, pendingPayments = [], flash = null, consent = null,
   assets = [], assetStats = [], moderation = null,
+  // Live + paused, for the seller's own table. `assets` stays live-only: it is the
+  // plan-usage count, and a paused file must not count against the same ceiling a
+  // publish is checked against.
+  ownerAssets = null,
   // How full this seller's plan is, and what the next tier would give them.
   // Both come from `planUsage` so this panel, the refusal message and the
   // operator's pages cannot disagree about the same account.
@@ -1989,16 +1996,31 @@ ${traffic.length ? `
   </div>
 </div>
 
-${assets.length ? `
+${(() => {
+    // Live first, then whatever is not live — a seller scrolling their own files
+    // should not have to hunt past a hidden one to find what is earning.
+    const list = (ownerAssets ?? assets).slice().sort((a, b) => (a.status === 'live' ? 0 : 1) - (b.status === 'live' ? 0 : 1));
+    const hiddenCount = list.filter((a) => a.hidden_by_reports).length;
+    const pausedCount = list.filter((a) => a.status !== 'live' && !a.hidden_by_reports).length;
+    return list.length ? `
 <section class="section">
   <div class="section-head">
     <h2>Your files</h2>
-    <p>${plural(assets.length, 'file')} published. Everything here is editable — nothing is
-      reviewed before it appears, and nothing is locked after it does.</p>
+    <p>${plural(list.length, 'file')}${hiddenCount ? `, ${hiddenCount} hidden after reports` : ''}${
+      pausedCount ? `${hiddenCount ? ' and' : ','} ${pausedCount} paused by you` : ''}.
+      Everything here is editable — nothing is reviewed before it appears.${hiddenCount
+      ? ' A hidden file says so in its own row, with the way to answer it.' : ''}</p>
   </div>
   <div class="panel"><div class="panel-body panel-body-flush">
     <table class="table">
-      <thead><tr><th>File</th><th>Access</th><th>State</th>
+      ${/* State before Access, not after.
+             The two swap because of a phone: at 390px the table scrolls inside
+             its own box by design (`public/styles.css` argues for that over a
+             card layout), and the first visible window fits the title and one
+             more column. "Am I live?" is the question a seller opens this page
+             with, so that is the column they get without swiping; how a file
+             unlocks changes twice in its life. */''}
+      <thead><tr><th>File</th><th>State</th><th>Access</th>
         <th class="num">Unlocks</th><th>Ad views · 30d</th><th class="num"></th></tr></thead>
       <tbody>${(() => {
     // One scale for every row. If each chart picked its own maximum, the file
@@ -2007,11 +2029,11 @@ ${assets.length ? `
       const raw = adViewSeries?.get ? adViewSeries.get(id) : null;
       return raw ? raw.map((p) => ({ day: p.day, value: p.views })) : [];
     };
-    const sharedMax = assets.reduce((best, a) => {
+    const sharedMax = list.reduce((best, a) => {
       const peak = seriesOf(a.id).reduce((m, p) => Math.max(m, p.value), 0);
       return Math.max(best, peak);
     }, 0);
-    return assets.map((a) => {
+    return list.map((a) => {
       const st = assetStats.find((x) => x.id === a.id) || { files: 0, unlocks: 0 };
       const series = seriesOf(a.id);
       const monthTotal = series.reduce((t, p) => t + p.value, 0);
@@ -2019,10 +2041,16 @@ ${assets.length ? `
         <td><strong>${esc(a.title)}</strong>
           <div class="fine">${esc(a.slug)} · ${plural(Number(st.files) || 0, 'file')}${
     a.unlock_mode === 'open' ? ' · open to everyone' : ''}</div></td>
+        <td>${/* A file the report threshold hid is not the same as one the seller
+                paused, and calling both "Paused" told a seller they had done something
+                they had not done — while hiding the one thing they needed to know. The
+                pill says who acted, and the row links straight to the answer. */
+    a.hidden_by_reports ? pill('Hidden after reports', 'danger')
+      : a.status === 'paused' ? pill('Paused by you', 'warning')
+        : a.status === 'removed' ? pill('Removed', 'danger') : pill('Live', 'success')}
+          ${a.hidden_by_reports ? `<div class="fine" style="margin-top:var(--space-1)">
+            <a href="/dashboard/${esc(channel.slug)}/assets/${esc(a.id)}">Your side of it →</a></div>` : ''}</td>
         <td>${a.unlock_mode === 'open' ? pill('Free', 'success') : pill('Ad-gated', 'locked')}</td>
-        <td>${a.status === 'paused'
-    ? pill('Paused', 'warning')
-    : a.status === 'removed' ? pill('Removed', 'danger') : pill('Live', 'success')}</td>
         <td class="num">${num(Number(st.unlocks) || 0)}</td>
         <td>${series.length
     ? `<div class="row" style="gap:var(--space-3);align-items:center">${sparkline({ points: series, max: sharedMax })}
@@ -2034,7 +2062,8 @@ ${assets.length ? `
   })()}</tbody>
     </table>
   </div></div>
-</section>` : ''}
+</section>` : '<div class="empty">Nothing published yet. Your storefront is live — the first file is what makes it a store.</div>';
+  })()}
 
 <section class="section">
   <div class="section-head">
@@ -3266,8 +3295,20 @@ ${flashNote(flash)}
 export function assetManage({
   channel, asset, user, consent = null, flash = null, files = [],
   policy = {}, stats = {}, unlocks = 0,
+  // The case against this file as its seller may see it (counts and rule codes,
+  // never a reporter), and their own appeal history. Both optional: a caller that
+  // passes neither gets the page it always got, and no appeal panel — which is the
+  // correct rendering for a file nobody has reported.
+  caseFile = null, appeals = [],
 }) {
   const publicHref = `/s/${channel.slug}/a/${asset.slug}`;
+  const openAppeal = appeals.find((a) => a.status === 'open') || null;
+  const decidedAppeals = appeals.filter((a) => a.status !== 'open');
+  const hiddenByReports = Boolean(asset.hidden_by_reports);
+  const notice = hiddenByReports || caseFile?.reporters
+    ? hidingNotice({ reasons: caseFile?.reasons || [], reporters: caseFile?.reporters || 0, appeal: openAppeal })
+    : null;
+  const appealAllowed = canAppeal({ asset, openAppeal });
 
   /**
    * One form, one Save.
@@ -3283,6 +3324,84 @@ export function assetManage({
     body: `
 ${pageHead(channel, 'overview', asset.title, `Published at <a href="${esc(publicHref)}">${esc(publicHref)}</a>.`)}
 ${flashNote(flash)}
+
+${notice ? `
+<section class="section" style="margin-bottom:0">
+  <div class="note ${hiddenByReports ? 'note-warning' : 'note-info'}">
+    <strong>${esc(notice.headline)}.</strong> ${esc(notice.detail)}
+    ${notice.next ? `<div class="fine" style="margin-top:var(--space-2)">${esc(notice.next)}</div>` : ''}
+  </div>
+
+  ${hiddenByReports ? (openAppeal ? '' : appealAllowed.ok ? `
+    <div class="panel" style="margin-top:var(--space-4)">
+      <div class="panel-head"><h2>Answer this</h2></div>
+      <div class="panel-body">
+        <p class="small">
+          Three reports is a signal, not a verdict — ${AUTO_HIDE_AFTER} separate accounts clicked a button, and
+          nobody has read your side of it yet. Say what you want a person to know, and an operator reads it.
+        </p>
+        <form method="post" action="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}/appeal">
+          <div class="field" style="margin-top:var(--space-4)">
+            <label for="ap-statement">Your side of it</label>
+            <textarea class="input" id="ap-statement" name="statement" rows="5" maxlength="${APPEAL_LIMIT}"
+              placeholder="Where the work came from, what the licence is, or why the file is not what it was reported as."></textarea>
+            <span class="hint">Up to ${num(APPEAL_LIMIT)} characters. One appeal per file while it is open.</span>
+          </div>
+          <div class="row" style="margin-top:var(--space-4);align-items:center;gap:var(--space-4);flex-wrap:wrap">
+            <button class="btn btn-primary" type="submit">Send it to an operator</button>
+            <span class="fine">This does not put the file back by itself. A person decides.</span>
+          </div>
+        </form>
+      </div>
+    </div>`
+    : `<div class="empty" style="margin-top:var(--space-4)">${esc(appealAllowed.why)}</div>`)
+    // An open appeal is already on the page below, in full. Repeating the refusal
+    // above it said the same thing twice and made the seller read three sentences
+    // to learn one fact.
+    : ''}
+
+  ${openAppeal ? `
+    <div class="panel" style="margin-top:var(--space-4)">
+      <div class="panel-head">
+        <div class="row" style="align-items:center;gap:var(--space-3)">
+          <h2>Your appeal</h2>
+          ${pill('waiting', 'info')}
+          <span class="spacer"></span>
+          <span class="fine">Sent ${esc(relTime(openAppeal.created_at))}</span>
+        </div>
+      </div>
+      <div class="panel-body">
+        <blockquote class="quote">${esc(openAppeal.statement)}</blockquote>
+        <p class="fine" style="margin-top:var(--space-4)">
+          It answers ${plural(openAppeal.report_count, 'report')}${
+    (openAppeal.reasons || []).length
+      ? ` — the file was reported for ${esc((openAppeal.reasons || []).map(sellerReasonLabel).filter(Boolean).join(' and '))}`
+      : ''}.
+          The file stays hidden while an operator reads it; an appeal that restored the file on its own would be
+          a two-click bypass of the threshold.
+        </p>
+        <form method="post" action="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}/appeal/withdraw"
+              style="margin-top:var(--space-4)">
+          <button class="btn btn-sm" type="submit">Withdraw the appeal</button>
+        </form>
+      </div>
+    </div>` : ''}
+
+  ${decidedAppeals.length ? `
+    <div class="panel" style="margin-top:var(--space-4)">
+      <div class="panel-head"><h2>Earlier appeals</h2></div>
+      <div class="panel-body">
+        ${decidedAppeals.map((a) => `
+          <div class="row" style="align-items:baseline;gap:var(--space-3);flex-wrap:wrap">
+            ${pill(a.status, a.status === 'upheld' ? 'success' : a.status === 'declined' ? 'danger' : '')}
+            <span class="fine">${esc(relTime(a.decided_at || a.created_at))}</span>
+          </div>
+          <blockquote class="quote">${esc(a.statement)}</blockquote>
+          ${a.decision_note ? `<p class="small" style="margin-top:var(--space-2)">An operator wrote: ${esc(a.decision_note)}</p>` : ''}
+        `).join('<hr>')}
+      </div>
+    </div>` : ''}
+</section>` : ''}
 
 <form class="cols-2" method="post" action="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}">
   <div class="panel">
@@ -3309,11 +3428,17 @@ ${flashNote(flash)}
         </div>
         <div class="field" style="flex:1 1 160px">
           <label for="a-status">State</label>
-          <select class="input" id="a-status" name="status">
+          ${hiddenByReports ? `
+          <select class="input" id="a-status" disabled aria-describedby="a-status-why">
+            <option>Hidden after reports</option>
+          </select>
+          <span class="hint" id="a-status-why">An operator's call, not a punishment — it is what keeps three
+          reports from meaning nothing. Everything else on this page still saves.</span>`
+    : `<select class="input" id="a-status" name="status">
             <option value="live" ${asset.status === 'live' ? 'selected' : ''}>Live</option>
             <option value="paused" ${asset.status === 'paused' ? 'selected' : ''}>Paused — hidden</option>
           </select>
-          <span class="hint">Pausing hides it without deleting anything.</span>
+          <span class="hint">Pausing hides it without deleting anything.</span>`}
         </div>
       </div>
       <div class="field">
@@ -4406,7 +4531,10 @@ ${open.length ? `<section class="section">
   });
 }
 
-export function adminReports({ user, consent = null, flash = null, rows = [], ruleTitles = {} }) {
+export function adminReports({
+  user, consent = null, flash = null, rows = [], ruleTitles = {},
+  appeals = [], decided = [],
+}) {
   const row = (r) => {
     const verdict = reportVerdict({ reporters: r.reporters, byReason: r.byReason });
     const reasons = Object.entries(r.byReason).sort((a, b) => b[1] - a[1])
@@ -4425,6 +4553,12 @@ export function adminReports({ user, consent = null, flash = null, rows = [], ru
         <p class="small" style="margin:0"><strong>${esc(verdict.summary)}</strong></p>
         <p class="fine" style="margin:var(--space-2) 0 0">${esc(reasons)}${r.with_notes ? ` · ${r.with_notes} with a note` : ''}
           · first ${esc(relTime(r.first_at))}, latest ${esc(relTime(r.latest))}</p>
+        ${r.decidedAppeal ? `<div class="note note-info" style="margin-top:var(--space-3)">
+          <span class="fine">An appeal on this file was <strong>${esc(r.decidedAppeal.status)}</strong>
+          ${esc(relTime(r.decidedAppeal.decided_at || r.decidedAppeal.created_at))}${r.decidedAppeal.status === 'declined'
+    ? ' — dismissing these reports would put the file back and reverse that, so read the note below before you do.' : '.'}</span>
+          ${r.decidedAppeal.decision_note ? `<div class="fine" style="margin-top:var(--space-1)">Your note then: “${esc(r.decidedAppeal.decision_note)}”</div>` : ''}
+        </div>` : ''}
         ${r.notes && r.notes.length ? `<ul class="list-plain" style="margin-top:var(--space-3)">
           ${r.notes.map((nt) => `<li class="fine">${esc(nt.note)}</li>`).join('')}
         </ul>` : ''}
@@ -4443,14 +4577,97 @@ export function adminReports({ user, consent = null, flash = null, rows = [], ru
     </div>`;
   };
 
+  /**
+   * One appeal: everything needed to decide it without opening another tab.
+   *
+   * The charge is shown TWICE on purpose — what the seller was answering when
+   * they wrote (snapshotted at filing) and what stands now. They are different
+   * numbers whenever reports have been dismissed in between, and a queue that
+   * showed only the current one would let an operator decline an appeal for
+   * reports the file no longer has.
+   */
+  const appealCard = (a) => {
+    const filedAgo = daysBetween(a.created_at, new Date());
+    const labels = (a.reasons || []).map((c) => ruleTitles[c] || c).join(', ').toLowerCase();
+    const grew = a.reports_now > (a.report_count || 0);
+    const shrank = a.reports_now < (a.report_count || 0);
+    const alreadyBack = !a.hidden_by_reports;
+    return `
+    <div class="panel report-row" id="appeal-${esc(a.id)}">
+      <div class="panel-head">
+        <a href="/s/${esc(a.channel_slug)}/a/${esc(a.asset_slug)}" target="_blank" rel="noopener"><strong>${esc(a.asset_title)}</strong></a>
+        <span class="fine">${esc(a.channel_name)} · ${esc(a.seller_email || 'seller')}</span>
+        <span class="spacer"></span>
+        ${pill(filedAgo === 0 ? 'filed today' : `${filedAgo} day${filedAgo === 1 ? '' : 's'} waiting`, filedAgo >= 3 ? 'warning' : 'info')}
+      </div>
+      <div class="panel-body">
+        <blockquote class="quote">${esc(a.statement)}</blockquote>
+        <p class="fine" style="margin-top:var(--space-4)">
+          Answering <strong>${plural(a.report_count || 0, 'report')}</strong>${labels ? ` for ${esc(labels)}` : ''}.
+          ${alreadyBack
+    ? 'The file is back already — the reports against it were dismissed, so the threshold is not holding anything down.'
+    : `It is still hidden. ${plural(a.reports_now || 0, 'report')} open on it now${grew ? ` (up from ${a.report_count} when this was written)` : shrank ? ` (down from ${a.report_count} when this was written)` : ''}.`}
+          Reporters are not shown here, by design — the seller does not get to learn who complained.
+        </p>
+        ${/* ONE form, two named submit buttons.
+              The first cut had two forms and the note field in only one of them, so
+              the decline button posted an empty note and the route refused every
+              decline there could ever be — a decision that could not be made. A
+              button's name/value pair is submitted with its own form, which is all
+              this needs: whichever button is pressed carries the note beside it. */''}
+        <form method="post" action="/admin/appeals/${esc(a.id)}" style="margin-top:var(--space-4)">
+          <div class="field">
+            <label for="note-${esc(a.id)}">Your line to the seller</label>
+            <textarea class="input" id="note-${esc(a.id)}" name="note" rows="2" maxlength="300"
+                      placeholder="e.g. The excerpt is 20 seconds and credited, so the copyright claim does not hold."></textarea>
+            <span class="hint">Required to decline — it is the only part of this decision the seller ever sees. Optional when upholding.</span>
+          </div>
+          <div class="row" style="margin-top:var(--space-3);gap:var(--space-3);flex-wrap:wrap">
+            <button class="btn btn-sm btn-primary" type="submit" name="decision" value="upheld">Uphold — restore the file</button>
+            <button class="btn btn-sm" type="submit" name="decision" value="declined">Decline — the hiding stands</button>
+          </div>
+        </form>
+        <p class="fine" style="margin-top:var(--space-3)">
+          Upholding restores a file only if the report threshold is what is hiding it — never a file the seller paused.
+          Declining changes nothing about the file, and the note travels with it to the seller's page.
+        </p>
+      </div>
+    </div>`;
+  };
+
   return adminShell({
     user, consent, current: 'reports', title: 'Reports',
     lede: `A report is a claim, not a verdict. ${AUTO_HIDE_AFTER} distinct reporters hide a file while it waits; one never does.`,
     body: `
 ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)" role="status">${esc(flash.message)}</div>` : ''}
+<section class="section" id="appeals">
+  <div class="section-head">
+    <h2>Waiting on a person</h2>
+    <p>${appeals.length
+    ? `${plural(appeals.length, 'appeal')} — a seller whose file is dark has written in and nobody has read it yet. Oldest first.`
+    : 'Nothing here. A seller whose file the threshold hid can answer once, and it lands here.'}</p>
+  </div>
+  ${appeals.length ? appeals.map(appealCard).join('') : '<div class="empty">No appeals waiting.</div>'}
+  ${decided.length ? `
+  <details class="disclosure" style="margin-top:var(--space-5)">
+    <summary class="disclosure-head">
+      <span class="disclosure-title" style="font-size:var(--text-sm)">Already decided</span>
+      <span class="disclosure-note">${plural(decided.length, 'appeal')}, newest first — the seller sees the note you left</span>
+      <span class="disclosure-chevron" aria-hidden="true"></span>
+    </summary>
+    <div class="panel-body" style="border-top:1px solid var(--border-subtle)">
+      ${decided.map((a) => `<div class="row" style="align-items:baseline;gap:var(--space-3);flex-wrap:wrap">
+        ${pill(a.status, a.status === 'upheld' ? 'success' : a.status === 'declined' ? 'danger' : '')}
+        <span>${esc(a.asset_title)}</span>
+        <span class="fine">${esc(a.decided_by_name || 'operator')} · ${esc(relTime(a.decided_at || a.created_at))}${a.restored ? ' · file restored' : ''}</span>
+      </div>${a.decision_note ? `<p class="fine" style="margin:var(--space-1) 0 0">${esc(a.decision_note)}</p>` : ''}
+      `).join('<hr>')}
+    </div>
+  </details>` : ''}
+</section>
 <section class="section">
   <div class="section-head">
-    <h2>Open</h2>
+    <h2>Open reports</h2>
     <p>${plural(rows.length, 'file')} reported, ordered by how many people said it.</p>
   </div>
   ${rows.length ? rows.map(row).join('') : '<div class="empty">Nothing has been reported.</div>'}

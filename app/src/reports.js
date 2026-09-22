@@ -44,13 +44,25 @@ export const AUTO_HIDE_AFTER = 3;
 export const ESCALATE_AFTER = 2;
 
 /** Reasons a reporter may pick, most common first, mapped to `policy_rules`. */
+/**
+ * A reason carries two sentences, because it is read by two different people.
+ *
+ * `label` is the reporter's radio button — written in the first person, because
+ * the person clicking it is describing what they think. `seller` is the same
+ * charge written for the file's owner, as a noun phrase, because the seller reads
+ * it inside "It was reported for …".
+ *
+ * The first version used the reporter's sentence in both places and the notice
+ * came out as "It was reported for it is somebody else's work, it is harmful to
+ * open" — which is how a platform tells a creator that nobody read the copy.
+ */
 export const REPORT_REASONS = [
-  { code: 'malware', label: 'It is harmful to open' },
-  { code: 'scam', label: 'It is not what was described' },
-  { code: 'copyright', label: "It is somebody else's work" },
-  { code: 'adult', label: 'It should not be offered here' },
-  { code: 'illegal', label: 'I think it breaks the law' },
-  { code: 'contact', label: 'Something else' },
+  { code: 'malware', label: 'It is harmful to open', seller: 'being harmful to open' },
+  { code: 'scam', label: 'It is not what was described', seller: 'not being what the listing describes' },
+  { code: 'copyright', label: "It is somebody else's work", seller: "using somebody else's work" },
+  { code: 'adult', label: 'It should not be offered here', seller: 'not being allowed here' },
+  { code: 'illegal', label: 'I think it breaks the law', seller: 'breaking the law' },
+  { code: 'contact', label: 'Something else', seller: 'something the reporter could not name' },
 ];
 
 /**
@@ -68,6 +80,108 @@ export const EXTRA_POLICY_RULES = [
 
 export const NOTE_LIMIT = 400;
 
+/**
+ * The one sentence a seller reads when their file was hidden by reports.
+ *
+ * The seller's dashboard said "Paused" — the same word it uses for the pause
+ * they chose themselves. So a store owner whose file was taken down by a
+ * threshold could not tell the platform's decision from their own switch, could
+ * not see what it was accused of, and had nothing to click. That is the version
+ * of this feature that loses a creator permanently: not the takedown, the
+ * silence around it.
+ *
+ * Says three things in order: what happened, what it was reported as (rules, not
+ * people), and that nothing is deleted and a person will look.
+ */
+/**
+ * Who may open a file that is not live.
+ *
+ * The answer used to be "anyone", because the file page never looked at the
+ * file's status. Hidden meant hidden from the grid and from Explore and visible
+ * to the rest of the internet at the one URL a report or a share carries.
+ *
+ * Three exceptions, each with a reason: the owner (it is their file, and their
+ * dashboard links to it), an operator (they are the person deciding about it),
+ * and anyone who holds an unlock from when it was live — an unlock was earned
+ * with attention, and a moderation decision about a listing does not confiscate
+ * what somebody already earned.
+ */
+export function maySeeHiddenFile({ asset, user = null, ownerId = null, holdsUnlock = false } = {}) {
+  if (!asset) return false;
+  if (asset.status === 'live') return true;
+  if (holdsUnlock) return true;
+  if (!user) return false;
+  return user.id === ownerId || user.role === 'admin';
+}
+
+export function hidingNotice({ reasons = [], reporters = 0, appeal = null } = {}) {
+  const labels = reasons.map(sellerReasonLabel).filter(Boolean);
+  const charge = labels.length
+    ? asList(labels)
+    : 'a policy this platform has';
+  const state = appeal?.status === 'open'
+    ? 'An appeal is with an operator.'
+    : appeal?.status === 'upheld' ? 'Your appeal was upheld.'
+      : appeal?.status === 'declined' ? 'Your appeal was considered and declined.'
+        : appeal?.status === 'withdrawn' ? 'You withdrew your appeal.' : null;
+  return {
+    // A threshold hiding is never "you broke the rules" — three people clicking is
+    // a signal, not a verdict, and the copy must not convict before a person has.
+    headline: reporters >= AUTO_HIDE_AFTER
+      ? `${plural(reporters, 'independent report')} hid this file`
+      : `${plural(reporters, 'report')} on this file`,
+    // One template literal, not a concatenation inside one: the first version of
+    // this line merged the two and would have rendered the quote marks and the
+    // plus sign onto the page.
+    //
+    // The last clause is the one that used to be a lie. "Hidden" was true of the
+    // grid and of Explore and false of the file's own URL, which every share and
+    // every report carries — so the sentence now states the reach exactly, and the
+    // code behind it makes it true.
+    detail: `It was reported for ${charge}. The file is hidden from your storefront, from Explore, `
+      + 'and from its own link for anybody who has not already unlocked it. Nothing has been deleted — '
+      + 'the file, its reviews and its unlocks are all here.',
+    next: state || (appeal ? null : 'You can answer once, in your own words. A person reads it.'),
+    appeal,
+  };
+}
+
+// A local pluraliser: `reports.js` has no view helpers by design — it is the
+// domain layer, and importing from `views.js` would make the rules depend on the
+// rendering (and create a cycle the first time a view wanted a rule).
+const plural = (n, singular, many = `${singular}s`) => `${n} ${Number(n) === 1 ? singular : many}`;
+
+/** How long an appeal may be. Same spirit as NOTE_LIMIT, generous by design. */
+export const APPEAL_LIMIT = 1200;
+
+export function cleanStatement(text) {
+  return String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, APPEAL_LIMIT);
+}
+
+/**
+ * Whether this seller may appeal, and why not when they may not.
+ *
+ * Deliberately boring rules, all checkable: the file must actually be hidden by
+ * reports (not paused by the seller, not removed by an operator), and there must
+ * be no open appeal already. A refusal always says which of the two it is — a
+ * disabled button with no reason is the thing this whole feature exists to fix.
+ */
+export function canAppeal({ asset = null, openAppeal = null } = {}) {
+  if (!asset) return { ok: false, why: 'That file does not exist.' };
+  if (openAppeal) {
+    return { ok: false, why: 'You have already appealed this file. An operator reads it before your next one.' };
+  }
+  if (asset.moderation_state && asset.moderation_state !== 'approved') {
+    return { ok: false, why: 'An operator has restricted this file. That is a separate decision, and it is not reopened by an appeal here.' };
+  }
+  if (!asset.hidden_by_reports) {
+    return { ok: false, why: asset.status === 'paused'
+      ? 'You paused this file yourself, so there is nothing to appeal.'
+      : 'This file is not hidden by reports.' };
+  }
+  return { ok: true, why: null };
+}
+
 export function cleanNote(text) {
   const flat = String(text ?? '')
     // eslint-disable-next-line no-control-regex -- stripping control characters is the point
@@ -84,6 +198,26 @@ export function knownReportReason(code) {
 
 export function reasonLabel(code) {
   return REPORT_REASONS.find((r) => r.code === String(code ?? ''))?.label ?? null;
+}
+
+/**
+ * The charge, written for the seller, with a fallback that never prints nothing.
+ *
+ * A retired rule keeps its reports and loses nothing here: an unknown code is
+ * described plainly rather than dropped, because dropping it would tell a seller
+ * their file was hidden for no reason at all.
+ */
+export function sellerReasonLabel(code) {
+  const known = REPORT_REASONS.find((r) => r.code === String(code ?? ''));
+  if (known) return known.seller;
+  const title = EXTRA_POLICY_RULES.find((r) => r.code === String(code ?? ''))?.title;
+  return title ? title.toLowerCase() : 'a policy the platform applies';
+}
+
+/** "a, b and c" — a list as a sentence reads it. */
+function asList(items) {
+  if (items.length <= 1) return items[0] || '';
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }
 
 /**

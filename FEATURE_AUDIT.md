@@ -249,7 +249,7 @@ cannot hover.
 | **`ads.txt`** | ad networks require it; needs a publisher ID |
 | **Password reset** | no way back into an account. Needs SMTP |
 | **Email verification** | anyone can register any address |
-| **Moderation workflow** | the states are enforced and the operator page exists (§14); still missing: a seller-facing report button, an asset-level queue, country rules |
+| **Moderation workflow** | the states are enforced, the operator page exists (§14) and the seller can now answer a report-driven hiding (§14a); still missing: an asset-level queue, country rules |
 | **A second app-facing auth path** | the app signs in through the web form; sign-up in the app needs a JSON endpoint or a WebView |
 
 ### Missing product surface
@@ -637,8 +637,9 @@ The operator page at `/admin/moderation` exists because a mechanism nobody can
 invoke is the same problem as a column nobody sets. It is plain on purpose and it
 is **not** a report queue: nothing in it says which store to look at, because a
 seller-facing report button is a separate feature with its own design. Still
-missing: that report button, an asset-level queue, and country rules
-(`policy_rules.scope = 'country'` is modelled and unused).
+missing: an asset-level queue and country rules (`policy_rules.scope = 'country'`
+is modelled and unused). The seller-facing report button and the appeal surface
+it feeds are both built (§14a).
 
 Verified live: a bogus rule code came back `?error=rule`, a suspension with no
 rule came back `?error=reason`, a real one saved; `/s/bob` then answered **404 to
@@ -763,10 +764,32 @@ Verified live end to end: three accounts (bob, dave, erin) reported alice's
 `Free sample pack` → after the third, the asset went `live → paused`, the queue
 showed **3** with the reporter's notes and no names, and the nav badge read 3.
 
-**Still missing:** a seller appeal surface (the operator can dismiss, the seller
-cannot ask), a report on a whole store rather than a file, rate limiting on the
-report endpoint, and country rules (`policy_rules.scope = 'country'` is modelled
-and unused).
+### 14a. The seller's side of a hiding, and what building it exposed
+
+The operator could dismiss a report. The seller could not answer one, and worse,
+could not tell a report-driven hiding from the pause they had chosen themselves:
+both read **"Paused"**, with no reason and nothing to click. `asset_appeals`
+(0021) gives the seller one written answer per hiding, which lands in a queue on
+`/admin/reports` above the reports; `/admin/appeals/:id` upholds or declines it,
+and a decline must carry a line for the seller, because a decline that records
+nothing rebuilds exactly the silence the feature exists to end.
+
+Building it turned up four things that were wrong and are now fixed:
+
+| Found | Fix |
+| **A report-hidden file was public at its own URL** — the storefront grid and Explore dropped it, the file page never looked at `status`, and it rendered title, description and an unlock button. An `ad_gated` file was unlockable again via the real postback; an `open` file was auto-granted an unlock on first fetch. "Hidden while it is reviewed" was false at the one URL every report and share carries | `maySeeHiddenFile` (owner, operator, or an unlock earned while it was live) on the page; the auto-grant and the ad postback both refuse a file that is not live — except a view that *started* before the hide, because that ad already paid the creator |
+| **Two clicks from the seller un-hid their own file**: any status the seller saved cleared `hidden_by_reports`, so "Paused → Live → Save" made a reported file public again and the appeal form beside it was theatre | While the threshold is hiding a file, the platform owns its state: the select is disabled, the patch ignores `status`, and every other field still saves |
+| **A paused file disappeared from its owner's dashboard** (`assetsOf` is the public list, live-only), so the appeal page had no route to it at all | `assetsForOwner` (live + paused) feeds the owner's table; the public list is untouched. The row names who acted — "Hidden after reports" vs "Paused by you" — and links straight to the answer |
+| **Declining an appeal was impossible**: two forms, the note field in one of them, so every decline posted an empty note and hit the validation | One form, two named submit buttons, one shared note |
+
+Rate limiting on the report endpoint is also in: six an hour per account and per
+address. It does not fix the arithmetic that three throwaway accounts still hide
+a file — nothing client-side can — but one account can no longer be the whole
+attack, and a looping client is bounded.
+
+**Still missing:** a report on a whole store rather than a file, an asset-level
+moderation queue distinct from the report queue, and country rules
+(`policy_rules.scope = 'country'` is modelled and unused).
 
 ---
 

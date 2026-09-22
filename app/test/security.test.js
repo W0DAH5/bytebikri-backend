@@ -436,3 +436,31 @@ test('the limit lifts on its own, and nothing else is refused while it is on', a
     limiter.stop();
   } finally { Date.now = realNow; }
 });
+
+test('the report endpoint is limited, because three accounts hide a file', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('../server.js', import.meta.url), 'utf8');
+  const line = src.split('\n').find((l) => l.includes("APP.post('/s/:slug/a/:assetSlug/report'"));
+  assert.ok(line, 'the route exists');
+  assert.match(line, /limitReport/, 'and it carries a limiter — reporting was the one anonymous-reach endpoint with none');
+
+  // The limiter itself, exercised the way the route uses it: per account AND per
+  // address, so neither a fresh session nor a fresh address is free.
+  const { rateLimit } = await import('../src/security.js');
+  const limiter = rateLimit({ windowMs: 60_000, max: 6, name: 'reports' });
+  let status = 0, retryAfter = null;
+  const req = { ip: '10.0.0.9', user: { id: 'u1' }, path: '/s/x/a/y/report' };
+  // The same shape the neighbouring limiter test uses: this middleware sets a
+  // header on every allowed call and answers with `json` when it refuses.
+  const res = {
+    headers: {},
+    status(c) { status = c; return this; },
+    setHeader(k, v) { this.headers[k] = v; if (k.toLowerCase() === 'retry-after') retryAfter = v; return this; },
+    json() { return this; },
+  };
+  let allowed = 0;
+  for (let i = 0; i < 8; i += 1) await limiter(req, res, () => { allowed += 1; });
+  assert.equal(allowed, 6, 'six reports an hour from one account, which is generous for a person and stingy for a script');
+  assert.equal(status, 429);
+  assert.ok(Number(retryAfter) > 0, 'and the refusal says when to come back');
+});

@@ -146,6 +146,23 @@ const houseSecret = () => readSecret('AD_POSTBACK_SECRET');
  *   4. Grant only on state === 'complete'. `pending` offerwall conversions,
  *      survey screenouts and fraud bans all arrive on this same endpoint.
  */
+/**
+ * Does an ad view still earn its unlock after the file stopped being live?
+ *
+ * Pure, and separate, because it is a promise about fairness that deserves a test
+ * rather than a condition in the middle of a transaction: the viewer watched the
+ * ad before anybody hid the file, so the network has already paid the creator and
+ * refusing them access would punish them for the platform's timing. A view that
+ * STARTS while the file is hidden gets nothing — the unlock button should not have
+ * been there, and "should not have been there" is not a reason to hand over the
+ * bytes.
+ */
+export function viewSurvivesHiding({ view, asset } = {}) {
+  if (!asset || asset.status === 'live') return true;
+  if (!view?.created_at || !asset.updated_at) return false;
+  return new Date(view.created_at).getTime() < new Date(asset.updated_at).getTime();
+}
+
 export async function handlePostback({ providerId, connectionId, ctx }) {
   const connection = await store.activeConnection(connectionId, providerId);
   if (!connection) {
@@ -190,6 +207,29 @@ export async function handlePostback({ providerId, connectionId, ctx }) {
   userId = view.user_id;
 
   const policy = await store.unlockPolicy(view.asset_id);
+
+  /**
+   * A file that is no longer live does not release new access.
+   *
+   * This is the path a real ad actually goes through, so it is the one that
+   * matters most: a report-hidden file whose page still offered "Watch 1 ad to
+   * unlock" would grant a full unlock, watermark and all, for content no person
+   * had yet decided was allowed to be here.
+   *
+   * One exception, and it is about fairness rather than moderation: if the view
+   * STARTED before the file was hidden, the ad has already been watched and the
+   * network has already paid the creator. Refusing that grant would punish the
+   * viewer for the platform's timing, so the comparison is against the view's own
+   * `created_at`. `updated_at` is when the hide was written.
+   */
+  const asset = await store.assetById(view.asset_id);
+  if (!viewSurvivesHiding({ view, asset })) {
+    await store.audit('postback.no_grant', {
+      providerId, connectionId, viewId: view.id, assetId: view.asset_id,
+      state: event.state, reason: 'file is not live',
+    });
+    return { ok: true, unlocked: false, state: event.state, reason: 'the file is not live' };
+  }
 
   // (3) claim + grant, atomically.
   const result = await store.withTransaction(async (client) => {

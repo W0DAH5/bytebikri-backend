@@ -796,6 +796,167 @@ export const store = {
     })));
   },
 
+  /**
+   * The case against a file, as its SELLER may see it.
+   *
+   * The count and the rule codes, never a reporter and never a note. The operator's
+   * queue has the same rule for the same reason: a queue that names complainants
+   * is a harassment tool, and handing those names to the person being complained
+   * about is worse. `reporterMessage` on the seller's side says three people
+   * reported it; it does not say who, and cannot be made to.
+   */
+  fileCase(assetId) {
+    return one(
+      `select count(distinct reporter_id)::int as reporters,
+              array(select distinct reason from asset_reports
+                     where asset_id = $1 and status = 'open') as reasons,
+              min(created_at) as first_at,
+              max(created_at) as latest_at
+         from asset_reports where asset_id = $1 and status = 'open'`,
+      [assetId],
+    ).then((r) => ({
+      reporters: r?.reporters ?? 0,
+      reasons: r?.reasons ?? [],
+      firstAt: r?.first_at ?? null,
+      latestAt: r?.latest_at ?? null,
+    }));
+  },
+
+  /** This seller's appeals, newest first — their history of asking. */
+  appealsOfChannel(channelId) {
+    return many(
+      `select ap.*, a.title as asset_title, a.slug as asset_slug, a.status as asset_status,
+              p.display_name as decided_by_name, p.email as decided_by_email
+         from asset_appeals ap
+         join assets a on a.id = ap.asset_id
+         left join profiles p on p.id = ap.decided_by
+        where ap.channel_id = $1
+        order by ap.created_at desc`,
+      [channelId],
+    );
+  },
+
+  openAppealFor(assetId) {
+    return one(
+      `select * from asset_appeals where asset_id = $1 and status = 'open'`,
+      [assetId],
+    );
+  },
+
+  /**
+   * File an appeal.
+   *
+   * The partial unique index is the real guard: two taps at once cannot produce
+   * two open appeals, and the route can tell the difference between "filed" and
+   * "you already have one" without racing. Nothing here touches the asset — an
+   * appeal is a request for a person, not a lever.
+   */
+  async fileAppeal({ assetId, channelId, sellerId, statement, reasons = [], reportCount = 0 }) {
+    try {
+      const row = await one(
+        `insert into asset_appeals (asset_id, channel_id, seller_id, statement, reasons, report_count)
+         values ($1, $2, $3, $4, $5, $6) returning *`,
+        [assetId, channelId, sellerId, statement, reasons, reportCount],
+      );
+      await this.audit('asset.appealed', {
+        assetId, channelId, reportCount, reasons,
+      }, { actorId: sellerId, subjectType: 'asset', subjectId: assetId });
+      return { filed: true, appeal: row };
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      return { filed: false, appeal: await this.openAppealFor(assetId) };
+    }
+  },
+
+  /**
+   * The operator's appeal queue: open first, and each one carries everything the
+   * decision needs — the seller's words, the charge they were answering, the
+   * reports still open, and whether the file is still the threshold's to restore.
+   */
+  openAppeals() {
+    return many(
+      `select ap.id, ap.asset_id, ap.channel_id, ap.statement, ap.reasons, ap.report_count,
+              ap.created_at, ap.status,
+              a.title as asset_title, a.slug as asset_slug, a.status as asset_status,
+              a.hidden_by_reports,
+              c.slug as channel_slug, c.name as channel_name,
+              u.email as seller_email, u.display_name as seller_name,
+              (select count(distinct r.reporter_id)::int from asset_reports r
+                where r.asset_id = ap.asset_id and r.status = 'open') as reporters_now,
+              (select count(*)::int from asset_reports r
+                where r.asset_id = ap.asset_id and r.status = 'open') as reports_now
+         from asset_appeals ap
+         join assets a on a.id = ap.asset_id
+         join channels c on c.id = ap.channel_id
+         left join profiles u on u.id = ap.seller_id
+        where ap.status = 'open'
+        order by ap.created_at asc
+        limit 100`,
+    );
+  },
+
+  /** Every appeal ever, for the audit trail — decided ones included. */
+  recentAppeals({ limit = 50 } = {}) {
+    return many(
+      `select ap.*, a.title as asset_title, c.slug as channel_slug, c.name as channel_name,
+              p.display_name as decided_by_name
+         from asset_appeals ap
+         join assets a on a.id = ap.asset_id
+         join channels c on c.id = ap.channel_id
+         left join profiles p on p.id = ap.decided_by
+        order by ap.created_at desc limit $1`,
+      [limit],
+    );
+  },
+
+  /**
+   * Decide an appeal.
+   *
+   * `upheld` restores the file — but ONLY if the threshold is still what is
+   * hiding it (`hidden_by_reports`), so upholding an appeal can never quietly
+   * un-pause a file its seller took down, nor lift an operator's own suspension.
+   * `declined` changes nothing about the file, which is the point: the queue is
+   * for reading carefully, not for flipping switches.
+   *
+   * Guarded on `status = 'open'` so a double-submit cannot overwrite a decision
+   * that has already been made and recorded.
+   */
+  async decideAppeal({ appealId, decision, note = null, actorId }) {
+    if (!['upheld', 'declined', 'withdrawn'].includes(decision)) return { ok: false, error: 'decision' };
+    const appeal = await one('select * from asset_appeals where id = $1', [appealId]);
+    if (!appeal) return { ok: false, error: 'missing' };
+    if (appeal.status !== 'open') return { ok: false, error: 'decided' };
+
+    const decided = await one(
+      `update asset_appeals
+          set status = $2, decided_at = now(), decided_by = $3, decision_note = $4
+        where id = $1 and status = 'open'
+        returning *`,
+      [appealId, decision, actorId, note],
+    );
+    if (!decided) return { ok: false, error: 'decided' };
+
+    let restored = false;
+    if (decision === 'upheld') {
+      const asset = await one('select * from assets where id = $1', [appeal.asset_id]);
+      if (asset?.hidden_by_reports) {
+        // The same reversibility the dismissal path uses, and for the same
+        // reason: only the threshold's hiding is un-done here.
+        const back = await one(
+          `update assets set status = 'live', hidden_by_reports = false, updated_at = now()
+            where id = $1 and hidden_by_reports = true returning id`,
+          [appeal.asset_id],
+        );
+        restored = Boolean(back);
+      }
+    }
+    await this.audit('asset.appeal_decided', {
+      assetId: appeal.asset_id, appealId, decision, restored,
+      note: note || null,
+    }, { actorId, subjectType: 'asset', subjectId: appeal.asset_id });
+    return { ok: true, appeal: decided, restored };
+  },
+
   /** The individual reports behind one queue row, with the reporter hidden. */
   reportsForAsset(assetId) {
     return many(
@@ -1013,6 +1174,28 @@ export const store = {
   async assetBySlug(channelId, slug) {
     return one('select * from assets where channel_id = $1 and slug = $2', [channelId, slug]);
   },
+  /**
+   * The seller's own list, for the seller's own dashboard: live AND paused.
+   *
+   * `assetsOf` above is the PUBLIC list — live only, and it must stay that way,
+   * because it feeds the storefront and the public API. The dashboard was using
+   * it too, which meant a paused file simply disappeared from its owner's list
+   * with no explanation. For a file the report threshold hid that was worse than
+   * an inconvenience: the appeal page was unreachable, because the only route to
+   * it is the file's own row. A seller cannot be asked to answer something they
+   * cannot find.
+   *
+   * `removed` stays out: that is an operator's decision about the listing itself,
+   * it keeps its own route, and listing it here would put a file back in front of
+   * its owner as though nothing had happened.
+   */
+  assetsForOwner(channelId) {
+    return many(
+      `select * from assets where channel_id = $1 and status <> 'removed' order by created_at desc`,
+      [channelId],
+    );
+  },
+
   assetsOf(channelId) {
     return many(
       `select * from assets where channel_id = $1 and status = 'live' order by created_at desc`,
@@ -1856,20 +2039,35 @@ export const store = {
       // must not be able to reach either.
       status: (v) => (v === 'paused' ? 'paused' : 'live'),
     };
+    // While the report threshold is hiding a file, the platform owns that file's
+    // state, not its seller.
+    //
+    // This used to be the other way round — any status the seller saved cleared
+    // `hidden_by_reports` — and the effect was that the threshold was optional:
+    // open the edit page, set the state back to Live, press Save, and a file
+    // three people reported was public again. Two clicks, no operator, and the
+    // appeal form sitting next to it would have been theatre. The seller keeps
+    // every other field; only the state waits for a person.
+    const current = await this.assetById(assetId);
+    const stateLocked = Boolean(current?.hidden_by_reports);
+
     const sets = [];
+    let statusApplied = false;
     const values = [assetId];
     for (const [key, coerce] of Object.entries(allowed)) {
       if (!(key in patch)) continue;
+      if (stateLocked && key === 'status') continue;
       if (key === 'title' && !String(patch.title || '').trim()) continue;
       values.push(coerce(patch[key]));
       sets.push(`${key} = $${values.length}`);
+      if (key === 'status') statusApplied = true;
     }
     if (!sets.length) return this.assetById(assetId);
-    // A seller setting the status is the seller taking the decision back: the
-    // file stops being "hidden by reports" from that moment, whichever way they
-    // set it. Without this, dismissing an old report would later un-pause a file
-    // its owner had deliberately taken down.
-    if ('status' in patch) sets.push('hidden_by_reports = false');
+    // A seller who sets the status on a file nobody reported is the seller taking
+    // the decision back, and clears any stale flag. On a reported file the branch
+    // above never reaches here, so dismissing an old report can no longer un-pause
+    // a file its owner deliberately took down.
+    if (statusApplied) sets.push('hidden_by_reports = false');
     return one(
       `update assets set ${sets.join(', ')}, updated_at = now() where id = $1 returning *`,
       values,

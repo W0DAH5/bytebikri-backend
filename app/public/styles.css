@@ -1432,6 +1432,18 @@ a.kpi:hover { border-color: var(--border-strong); text-decoration: none; box-sha
   max-width: 78ch;
 }
 .lede { font-size: var(--text-lg); color: var(--text-muted); max-width: var(--measure); }
+/*
+ * The seller's own words, quoted back to them (and to the operator deciding).
+ * `pre-wrap` matters more than the border: an appeal is written in paragraphs, and
+ * collapsing them turns a considered explanation into a wall.
+ */
+.quote {
+  margin: 0; padding: var(--space-3) 0 var(--space-3) var(--space-4);
+  border-left: 2px solid var(--border-subtle);
+  color: var(--text-primary); white-space: pre-wrap; overflow-wrap: anywhere;
+  font-size: var(--text-sm); line-height: 1.6;
+}
+
 .empty {
   padding: var(--space-10) var(--space-5); text-align: center;
   color: var(--text-muted); font-size: var(--text-sm);

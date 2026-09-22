@@ -36,7 +36,11 @@ import {
   changesVisibility, decisionNote, isPublic, isPublicChannel, normaliseState,
   personStateFor, stateFor, validateDecision,
 } from './src/moderation.js';
-import { AUTO_HIDE_AFTER, orderQueue, reportVerdict, validateReport } from './src/reports.js';
+import {
+  AUTO_HIDE_AFTER, orderQueue, reportVerdict, validateReport,
+  hidingNotice, canAppeal, cleanStatement, APPEAL_LIMIT, reporterMessage,
+  maySeeHiddenFile,
+} from './src/reports.js';
 import {
   onboardingFor, connectable, postbackUrl, validateCredential, maskSecret,
   connectionHealth, unconnectableNote,
@@ -691,10 +695,32 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
     }
     const asset = await store.assetBySlug(channel.id, req.params.assetSlug);
     if (!asset) return notFoundPage(req, res, 'file');
+
+    /**
+     * A file that is not live is not on the public web.
+     *
+     * "Hidden while it is reviewed" was true of the storefront grid and of
+     * Explore and false of the one URL every report, share and screenshot
+     * carries: this route rendered the whole listing — title, description, the
+     * unlock button — for a paused or report-hidden file, because it never looked
+     * at `status`. So a file three people reported for being harmful was still
+     * advertised to anyone holding the link, and still unlockable.
+     *
+     * The exceptions are the people who have a reason to be here: the owner, an
+     * operator deciding, and anyone who unlocked it while it was live. That last
+     * one is deliberate — an unlock was earned by watching an ad, and hiding a
+     * listing is a decision about the STOREFRONT, not a way to take back what
+     * somebody already paid for with their attention.
+     */
+    const holdsUnlock = req.user ? await store.isUnlocked(asset.id, req.user.id) : false;
+    if (!maySeeHiddenFile({ asset, user: req.user, ownerId: channel.owner_id, holdsUnlock })) {
+      // A 404, not a 403: "you may not see this file" confirms the file exists,
+      // and for a report about illegal content that is already too much said.
+      return notFoundPage(req, res, 'file');
+    }
     await store.bumpPageView(channel.id);
 
-    const unlocked = asset.unlock_mode === 'open'
-      || (req.user ? await store.isUnlocked(asset.id, req.user.id) : false);
+    const unlocked = asset.unlock_mode === 'open' || holdsUnlock;
 
     // Content URLs are minted per request, per user, and expire. They are only
     // produced when an unlock actually exists — never baked into the HTML.
@@ -834,6 +860,10 @@ APP.get('/dashboard/:slug', async (req, res, next) => {
       nextPlan: nextPlan(plan.code),
       adViews: await store.adViews({ channelId: channel.id }),
       assets,
+      // The table lists everything the seller owns except what an operator
+      // removed; `assets` above stays the live-only list, because that is the
+      // number the publish check and the plan meter both count.
+      ownerAssets: await store.assetsForOwner(channel.id),
       assetStats: await store.assetStats(channel.id),
       traffic: await store.trafficSeries(channel.id, { days: 30 }),
       adViewSeries: await store.assetAdViewSeries(channel.id, { days: 30 }),
@@ -1351,7 +1381,14 @@ async function resolveContentRequest(req, res, { event }) {
    */
   const asset = await store.assetById(a);
   if (!asset) { res.status(404).json({ ok: false, error: 'file not found' }); return null; }
-  if (asset.unlock_mode === 'open' && !await store.isUnlocked(a, u)) {
+  // A free file hands out an unlock row on first fetch — but not a file that is
+  // paused or hidden pending review. Without this line, hiding a free file
+  // changed only what the storefront showed: the file itself kept being served
+  // to anyone who had the URL, which is the opposite of the promise.
+  //
+  // Someone who already holds an unlock keeps it: the check below is on NEW
+  // grants, and `isUnlocked` is consulted first.
+  if (asset.unlock_mode === 'open' && asset.status === 'live' && !await store.isUnlocked(a, u)) {
     await store.grantUnlock({
       assetId: a, channelId: asset.channel_id, userId: u, method: 'open', adsCompleted: 0,
       policy: { unlock_hours: 0 },   // free access does not expire
@@ -1652,6 +1689,15 @@ const SUCCESS_FLASH = {
   saved_moderation: () => 'Decision recorded. The seller sees the reason and the note on their dashboard.',
   saved_user: () => 'Decision recorded. A suspended account is signed out everywhere, and its stores disappear from the public site.',
   saved_report: () => 'Report closed. The file is paused if you removed it, and every report on it is resolved.',
+  appeal_sent: () => 'Sent. An operator reads your side before anything else happens to the file.',
+  // Successes belong in this map. They were written into ERROR_FLASH first, which
+  // meant the operator's most important action — putting somebody's file back —
+  // redirected to a page with no confirmation on it at all, and the seller's
+  // "declined" notice was never rendered either.
+  appeal_upheld: () => 'Upheld. The file is back in the storefront if the report threshold was what hid it.',
+  appeal_restored: () => 'Upheld — the file is live again, and its unlocks, files and reviews were never touched.',
+  appeal_declined: () => "Declined. The hiding stands, and your note is now on the seller's page for this file.",
+  appeal_withdrawn: () => 'Withdrawn. The appeal is closed and the file is exactly where it was.',
 };
 
 const ERROR_FLASH = {
@@ -1682,6 +1728,12 @@ const ERROR_FLASH = {
   // Falls back to the plain sentence when the state is not known (a link on an
   // old page, a bookmarked URL), because the fallback must never be worse than
   // what was there before.
+  appeal_decision: 'That is not a decision this queue can record.',
+  appeal_note: 'A decline needs a line for the seller — at least a sentence. It is the only part of this they ever see.',
+  appeal_decided: 'That appeal was already decided. Nothing was overwritten; the first decision stands.',
+  appeal_state: 'That file is not in a state where an appeal can be filed. If it is paused by you, or an operator has restricted it, the page explains what applies.',
+  appeal_short: 'An appeal needs at least a sentence — 20 characters or more, so an operator has something to read.',
+  appeal_double: 'There is already an appeal open on this file. An operator reads it before the next one.',
   limit: ({ usage, plan, next } = {}) => (usage && plan && usage.files.level !== 'unlimited'
     ? `${usage.files.used} of ${usage.files.limit} published files on ${plan.name}. `
       + `${next ? `${next.name} raises that to ${next.capabilities.max_assets === -1 ? 'unlimited' : next.capabilities.max_assets}` : 'Upgrade to publish more'}. `
@@ -2393,6 +2445,8 @@ APP.get('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
       policy: await store.unlockPolicy(asset.id),
       stats: await store.reviewStatsOfAsset(asset.id),
       unlocks: (await store.unlocksOfChannel(channel.id)).filter((u) => u.asset_id === asset.id).length,
+      caseFile: await store.fileCase(asset.id),
+      appeals: await store.appealsOfChannel(channel.id).then((all) => all.filter((a) => a.asset_id === asset.id)),
     }));
   } catch (err) { return next(err); }
 });
@@ -2456,7 +2510,23 @@ APP.post('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
  * `AUTO_HIDE_AFTER` distinct reporters, one per person, enforced by a unique
  * index rather than by the route counting carefully.
  */
-APP.post('/s/:slug/a/:assetSlug/report', async (req, res, next) => {
+/**
+ * Reporting is the one endpoint on this platform where a stranger can change
+ * something about somebody else's store, and it had no limiter. Three distinct
+ * reports hide a file, and "distinct" means distinct ACCOUNTS — so the cost of a
+ * targeted takedown was three throwaway sign-ups. The limiter does not fix that
+ * arithmetic; it stops one account from being the whole attack on its own, and it
+ * bounds a bad client that loops.
+ *
+ * Six an hour is generous for a person reading a storefront and stingy for a
+ * script, and it is per account and per address like every other limiter here.
+ */
+const limitReport = rateLimit({
+  windowMs: 60 * 60_000, max: 6, name: 'reports',
+  render: (info) => views.tooMany({ ...info, consent: null }),
+});
+
+APP.post('/s/:slug/a/:assetSlug/report', limitReport, async (req, res, next) => {
   const back = `/s/${encodeURIComponent(req.params.slug)}/a/${encodeURIComponent(req.params.assetSlug)}`;
   try {
     if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
@@ -2791,11 +2861,94 @@ APP.get('/admin/reports', async (req, res, next) => {
       ...r, notes: (await store.reportsForAsset(r.asset_id)).filter((x) => x.status === 'open' && x.note).slice(0, 4),
     })));
     const rules = await store.policyRules();
+    // Appeals come from the same page because they are the same argument, one
+    // step later: the report queue decides whether a file is hidden, the appeal
+    // queue decides whether that was right, and both are answered by reading.
+    const recent = await store.recentAppeals({ limit: 40 });
+    const decided = recent.filter((a) => a.status !== 'open');
+    // A decided appeal is context for the reports still sitting on the same file.
+    // Without it, an operator can decline an appeal ("the reports stand") and then
+    // dismiss those same reports from the row below, putting the file back — the
+    // platform contradicting itself in two clicks, with the seller reading both.
+    const byAsset = new Map();
+    for (const a of decided) if (!byAsset.has(a.asset_id)) byAsset.set(a.asset_id, a);
     res.send(views.adminReports({
       user: await withBadges(req.user), consent: req.consent, flash: flashFor(req.query),
-      rows, ruleTitles: Object.fromEntries(rules.map((r) => [r.code, r.title])),
+      rows: rows.map((r) => ({ ...r, decidedAppeal: byAsset.get(r.asset_id) ?? null })),
+      ruleTitles: Object.fromEntries(rules.map((r) => [r.code, r.title])),
+      appeals: await store.openAppeals(),
+      decided,
     }));
   } catch (err) { next(err); }
+});
+
+/**
+ * File the seller's answer to a report-driven hiding.
+ *
+ * The appeal does not restore the file. That is the whole design: a hidden file
+ * plus an appeal button that puts it back would be a two-click bypass of a
+ * three-report threshold, and the threshold exists because a single report is a
+ * competitor weapon. What the seller gets is a person reading their words.
+ */
+APP.post('/dashboard/:slug/assets/:assetId/appeal', async (req, res, next) => {
+  const back = `/dashboard/${encodeURIComponent(req.params.slug)}/assets/${encodeURIComponent(req.params.assetId)}`;
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    const asset = await store.assetById(req.params.assetId);
+    if (!asset || asset.channel_id !== channel.id) return res.status(404).send('Not found');
+
+    const allowed = canAppeal({ asset, openAppeal: await store.openAppealFor(asset.id) });
+    if (!allowed.ok) return res.redirect(`${back}?error=appeal_state`);
+
+    const statement = cleanStatement(req.body?.statement);
+    if (statement.length < 20) return res.redirect(`${back}?error=appeal_short`);
+
+    const open = await store.fileCase(asset.id);
+    const result = await store.fileAppeal({
+      assetId: asset.id, channelId: channel.id, sellerId: req.user.id,
+      statement, reasons: open.reasons, reportCount: open.reporters,
+    });
+    if (!result.filed) return res.redirect(`${back}?error=appeal_double`);
+    res.redirect(`${back}?appeal_sent=1`);
+  } catch (err) { return next(err); }
+});
+
+/** Withdrawing is allowed, because a queue entry nobody intends to act on is worse than none. */
+APP.post('/dashboard/:slug/assets/:assetId/appeal/withdraw', async (req, res, next) => {
+  const back = `/dashboard/${encodeURIComponent(req.params.slug)}/assets/${encodeURIComponent(req.params.assetId)}`;
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    const asset = await store.assetById(req.params.assetId);
+    if (!asset || asset.channel_id !== channel.id) return res.status(404).send('Not found');
+    const open = await store.openAppealFor(asset.id);
+    if (!open) return res.redirect(`${back}?error=appeal_state`);
+    await store.decideAppeal({ appealId: open.id, decision: 'withdrawn', actorId: req.user.id });
+    res.redirect(`${back}?appeal_withdrawn=1`);
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Decide a seller's appeal.
+ *
+ * A decline needs a line for the seller. The whole reason this feature exists is
+ * that a hidden file used to read as "Paused" with no reason and no reply path;
+ * a decline button that recorded nothing would rebuild exactly that silence at
+ * the end of a process that was supposed to end it. Upholding carries the note
+ * too, because "yes, and here is why" is worth more to the next reader than "yes".
+ */
+APP.post('/admin/appeals/:appealId', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    const decision = String(req.body?.decision || '');
+    const note = cleanStatement(req.body?.note).slice(0, 300);
+    if (!['upheld', 'declined'].includes(decision)) return res.redirect('/admin/reports?error=appeal_decision');
+    if (decision === 'declined' && note.length < 10) return res.redirect('/admin/reports?error=appeal_note');
+    const out = await store.decideAppeal({ appealId: req.params.appealId, decision, note: note || null, actorId: req.user.id });
+    if (!out.ok) return res.redirect('/admin/reports?error=appeal_decided');
+    res.redirect(`/admin/reports?appeal_${out.restored ? 'restored' : decision}=1#appeals`);
+  } catch (err) { return next(err); }
 });
 
 APP.post('/admin/reports/:assetId', async (req, res, next) => {
