@@ -1,3 +1,5 @@
+import { asDay, isoDay, daysBetween } from './dates.js';
+
 /**
  * Billing — the only two things bytebikri charges for.
  *
@@ -30,6 +32,65 @@
  */
 
 /** The rails a seller can actually use from Nepal. Order is preference order. */
+/**
+ * The terms rent is owed on.
+ *
+ * Stated in one place because the invoice, the seller's billing page and the
+ * operator's aging view all have to agree about what "late" means. The number is
+ * deliberately generous — the rail is a manual transfer to a Nepali wallet, the
+ * payer is often a person running a small store, and a platform that treats day
+ * 31 as misconduct has misunderstood its own market. What matters is not the
+ * number; it is that there IS one, that it is written down, and that the same one
+ * is used everywhere.
+ *
+ * `dueDays` is stamped onto each invoice as `due_at` at issue, so changing this
+ * value changes future invoices and never re-ages one already sent.
+ */
+export const RENT_TERMS = {
+  dueDays: 30,
+  why: 'A bank or wallet transfer, matched by hand against the statement, so the '
+    + 'first month is administrative time rather than a late period.',
+  /** What a seller is told when an invoice is issued, and what the console repeats. */
+  sentence: 'Due 30 days after it is issued, by transfer — matched by hand against our statement.',
+};
+
+/**
+ * How late something is, and what to call it.
+ *
+ * The buckets are the operator's, not an accountant's: "not yet due" is a
+ * different conversation from "a month late", and "three months late" is a
+ * decision rather than a reminder. Returned as a level so the view can style it
+ * and the copy can stay in one place.
+ */
+export function rentAge(dueAt, now = new Date()) {
+  if (!dueAt) return { days: null, level: 'unknown', label: 'no due date' };
+  // `daysBetween` reads a `Date` (what pg returns for a date column) as readily as
+  // a string, and returns null rather than NaN when it cannot. The first version
+  // of this line parsed `String(dateObject).slice(0, 10)` — "Thu Oct 22" — which
+  // produced NaN and, worse, fell through every bucket into the LAST one, so the
+  // page confidently reported every invoice as over three months late.
+  const days = daysBetween(dueAt, now);   // days LATE: positive once the due date has passed
+  if (days === null) return { days: null, level: 'unknown', label: 'due date unreadable' };
+  if (days <= 0) return { days, level: 'current', label: days === 0 ? 'due today' : `due in ${-days} day${days === -1 ? '' : 's'}` };
+  // Past a month, the unit changes to months. "160 days late" is technically
+  // precise and impossible to size at a glance, and an age column where one row
+  // reads "2 months" and the next reads "160 days" makes a reader do arithmetic
+  // to compare them. The exact day count stays on the row for anyone who needs
+  // it — the label is for the person scanning.
+  if (days <= 30) return { days, level: 'late', label: `${days} day${days === 1 ? '' : 's'} late` };
+  const months = Math.floor(days / 30);
+  if (days <= 90) return { days, level: 'old', label: `${months} month${months === 1 ? '' : 's'} late` };
+  return { days, level: 'stale', label: days > 365 ? 'over a year late' : `${months} months late` };
+}
+
+/** The four aging buckets, and the sentence that says what each one means. */
+export const AGE_BUCKETS = [
+  { key: 'current', label: 'Not yet due', note: 'Within the terms. Nothing to do.' },
+  { key: 'late', label: 'Late', note: 'Past the due date. A reminder, and a check that the reference was submitted.' },
+  { key: 'old', label: 'Two to three months', note: 'Long enough that the transfer may have gone astray, or the store may have stopped trading.' },
+  { key: 'stale', label: 'Over three months', note: 'A decision rather than a reminder: waive it, void it, or stop the store with a rule cited.' },
+];
+
 export const RAILS = [
   { id: 'esewa', label: 'eSewa', env: 'PAY_ESEWA_ID', hint: 'Mobile wallet ID (98…) or the merchant code.' },
   { id: 'khalti', label: 'Khalti', env: 'PAY_KHALTI_ID', hint: 'Mobile wallet ID (98…) or the merchant code.' },

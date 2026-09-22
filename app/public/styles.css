@@ -737,6 +737,9 @@ details > summary:hover { color: var(--text-muted); }
 }
 .meter > span { display: block; height: 100%; background: var(--warning-text); }
 .meter-at > span { background: var(--danger-text); }
+/* Collected in full: the bar has nothing left to warn about, so it stops being
+   amber. A green tick-coloured bar on a settled month reads as done, which it is. */
+.meter-full > span { background: var(--success-text); }
 
 /* Segment links — the filters on a directory.
    Deliberately lighter than .console-nav: the console tabs move you between pages

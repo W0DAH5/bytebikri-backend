@@ -2206,6 +2206,8 @@ APP.get('/admin/payments', async (req, res, next) => {
       user: await withBadges(req.user), consent: req.consent, flash: flashFor(req.query),
       payments: await store.unmatchedPayments(),
       invoices: await store.openRentInvoices(),
+      aging: await store.rentAging(),
+      byMonth: await store.rentByMonth({ months: 12 }),
       payee: payeeName(),
     }));
   } catch (err) { return next(err); }
@@ -3479,6 +3481,54 @@ async function seed({ force = false } = {}) {
              unique_visitors = excluded.unique_visitors`,
       [alice.id, day, 22 + (day % 4), 12 + (day % 5)],
     );
+  }
+
+  // Rent invoices across their whole life cycle, including the states a database
+  // created five minutes ago cannot produce.
+  //
+  // This is the one place the demo writes dates directly rather than going through
+  // the real flow, and it is worth saying why: nothing in the platform can create
+  // an invoice that is four months late, because four months have not passed. A
+  // fixture that only contains "issued today" makes the aging view look empty and
+  // the collection view look flat — the two things the page exists to show.
+  //
+  // The amounts are real arithmetic from `annualRentNpr`, so the numbers on the
+  // page reconcile with the `basis` blob stored beside them.
+  {
+    const { annualRentNpr: rentFor } = await import('./src/billing.js');
+    const baseEstimate = { pageviews30d: 336, slots: 5, rent: 1 };
+    const amount = rentFor(baseEstimate) || 900;
+    const day = (offset) => {
+      const d = new Date(Date.now() + offset * 86400000);
+      return d.toISOString().slice(0, 10);
+    };
+    const rows = [
+      // period end, amount multiple, status, due in N days, paid days after due
+      { periodEnd: day(-400), status: 'paid', due: -370, paid: -380, ref: 'DEMO-ESW-2001', method: 'esewa', who: 'Alice Sharma' },
+      { periodEnd: day(-130), status: 'paid', due: -100, paid: -95, ref: 'DEMO-KH-2002', method: 'khalti', who: 'Alice Sharma' },
+      // Submitted and waiting for a person: the state the payments queue exists for.
+      { periodEnd: day(-45), status: 'submitted', due: -15, submittedDays: -2, ref: 'DEMO-IME-2003', method: 'imepay', who: 'Alice Sharma' },
+      // Issued, still inside the terms.
+      { periodEnd: day(-20), status: 'issued', due: 10 },
+      // Late, and old enough to be a decision rather than a reminder.
+      { periodEnd: day(-95), status: 'issued', due: -65 },
+      { periodEnd: day(-190), status: 'issued', due: -160 },
+    ];
+    for (const [i, row] of rows.entries()) {
+      const periodStart = new Date(new Date(row.periodEnd).getTime() - 364 * 86400000).toISOString().slice(0, 10);
+      await query(
+        `insert into rent_invoices
+           (channel_id, period_start, period_end, amount_npr, basis, status, due_at,
+            method, txn_reference, payer_name, submitted_at, paid_at, created_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         on conflict (channel_id, period_start) do nothing`,
+        [bob.id, periodStart, row.periodEnd, amount,
+          JSON.stringify({ pageviews30d: 336, rentSlots: 1, totalSlots: 5, assumedRpmUsd: 0.2, usdToNpr: 133, note: 'demo fixture' }),
+          row.status, day(row.due), row.method || null, row.ref || null, row.who || null,
+          row.submittedDays ? day(row.submittedDays) : null,
+          row.paid ? day(row.paid) : null, day(row.due - 30 + i)],
+      );
+    }
   }
 
   // A storefront with one of its own slots filled, so the two kinds of space are

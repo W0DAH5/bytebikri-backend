@@ -22,7 +22,8 @@ import { calibrationRowState } from './earnings.js';
 // Dependency-free, so a view can call it directly: `planUsage` is the one
 // definition of "how full is this plan", used by the dashboard, the operator's
 // plans page and the message at the upload wall.
-import { planUsage } from './billing.js';
+import { planUsage, rentAge, AGE_BUCKETS, RENT_TERMS } from './billing.js';
+import { isoDay } from './dates.js';
 // The audit vocabulary and the two renderers that make a row readable: who did it
 // (a person, the platform, or a visitor) and what it was about.
 import { AUDIT_FAMILIES, actorOf, subjectOf } from './audit.js';
@@ -49,12 +50,11 @@ const npr = (n) => `NPR ${Number(n).toLocaleString('en-IN')}`;
  * once. ISO is also the unambiguous form: `01/08` is two different days depending
  * on which side of the world you read it from, and this platform bills on dates.
  */
-export const isoDay = (value) => {
-  if (!value) return '';
-  if (typeof value === 'string') return value.slice(0, 10);
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? String(value) : d.toISOString().slice(0, 10);
-};
+// Re-exported from `dates.js`, where it lives with the reasoning: four pages
+// rendered "Sat Aug 01" because a `date` column is a `Date` object and
+// `String(value).slice(0, 10)` looks like formatting. One definition now, shared
+// with the billing arithmetic that had the same bug in a different disguise.
+export { isoDay };
 
 /**
  * `plural(1, 'view')` → "1 view"; `plural(3, 'view')` → "3 views".
@@ -2984,14 +2984,25 @@ export function billing({
   <div class="panel-head"><h2>What you have paid bytebikri</h2></div>
   <div class="panel-body panel-body-flush">
     <table class="table">
-      <thead><tr><th>What</th><th>Period</th><th class="num">Amount</th><th>Status</th></tr></thead>
+      <thead><tr><th>What</th><th>Period</th><th>Due</th><th class="num">Amount</th><th>Status</th></tr></thead>
       <tbody>
-        ${invoices.map((i) => `<tr>
+        ${invoices.map((i) => {
+    // The seller is the person who OWES this money, so the due date belongs on
+    // their page first. It was on the operator's aging view and nowhere here,
+    // which is a strange way round: the operator's next action depends on the
+    // date, and the seller's ability to avoid being late depends on it too.
+    const age = rentAge(i.due_at);
+    const settled = i.status === 'paid' || i.status === 'waived' || i.status === 'void';
+    return `<tr>
           <td>Rent</td>
-          <td>${day(i.period_start)} → ${day(i.period_end)}</td>
+          <td class="nowrap">${day(i.period_start)} → ${day(i.period_end)}</td>
+          <td class="nowrap">${i.due_at ? esc(isoDay(i.due_at)) : '<span class="fine">—</span>'}${
+    settled || !i.due_at ? '' : `<div class="fine">${
+      age.level === 'current' ? esc(age.label) : `<strong>${esc(age.label)}</strong>`}</div>`}</td>
           <td class="num">${npr(i.amount_npr)}</td>
           <td>${pill(i.status, i.status === 'paid' ? 'success' : i.status === 'submitted' ? 'info' : 'warning')}</td>
-        </tr>`).join('')}
+        </tr>`;
+  }).join('')}
         ${payments.map((p) => `<tr>
           <td>Plan · ${esc(p.plan_code)}</td>
           <td>${day(p.created_at)}</td>
@@ -4716,7 +4727,23 @@ export function adminAudit({
 }
 
 
-export function operatorBilling({ user, consent = null, flash = null, payments = [], invoices = [], payee = null, console = false }) {
+/** The bucket an invoice falls into, from the one shared definition. */
+const ageOf = (invoice) => rentAge(invoice.due_at);
+
+export function operatorBilling({
+  user, consent = null, flash = null, payments = [], invoices = [], payee = null, console = false,
+  // Rent owed with its age, and the same money month by month. Both come from
+  // queries that share one definition of "still owed" — the first version of
+  // `platformMoney` filtered on two statuses the schema forbids and silently
+  // dropped every invoice a payer had already claimed to have paid.
+  aging = null, byMonth = [],
+}) {
+  // `aging` defaults to the queue itself. The two are the same rows — aging just
+  // carries the due date and the days late — so a caller that passes only
+  // `invoices` (every existing test, and any older route) still gets the table
+  // rather than an empty page. An invoice with no due date renders as "no due
+  // date" instead of being quietly treated as on time.
+  const aged = aging ?? invoices;
   const payRows = payments.map((p) => `
     <tr>
       <td>
@@ -4776,16 +4803,97 @@ ${flashNote(flash)}
 </section>
 
 <section class="section">
-  <div class="section-head"><h2>Rent outstanding</h2><p>${plural(invoices.length, 'invoice')}</p></div>
+  <div class="section-head">
+    <h2>Rent owed, by age</h2>
+    <p>${invoices.length
+    ? 'Sorted by how late it is, not by how big. What the next action is depends on age.'
+    : 'Nothing outstanding. Rent invoices are only issued where a page is long enough to spare a slot.'}</p>
+  </div>
+
   ${invoices.length ? `
-    <div class="panel"><div class="panel-body panel-body-flush">
-      <table class="table">
-        <thead><tr><th>Store</th><th>Period</th><th>Reference</th><th class="num">Amount</th><th>State</th><th></th></tr></thead>
-        <tbody>${rentRows}</tbody>
-      </table>
-    </div></div>`
-    : '<div class="empty">Nothing outstanding. Rent invoices are only issued where a page is long enough to spare a slot.</div>'}
-</section>`;
+  <div class="kpi-row" style="margin-bottom:var(--space-5)">
+    ${AGE_BUCKETS.map((b) => {
+    const rowsIn = aged.filter((a) => ageOf(a).level === b.key);
+    const sum = rowsIn.reduce((t, r) => t + Number(r.amount_npr || 0), 0);
+    const tone = b.key === 'stale' ? ' kpi-bad' : b.key === 'old' ? ' kpi-warn' : '';
+    return `<div class="kpi${rowsIn.length ? tone : ''}">
+      <div class="kpi-value">NPR ${sum.toLocaleString('en-IN')}</div>
+      <div class="kpi-label">${esc(b.label)}</div>
+      <div class="kpi-note">${rowsIn.length ? plural(rowsIn.length, 'invoice') : b.note}</div>
+    </div>`;
+  }).join('')}
+  </div>
+
+  <div class="panel"><div class="panel-body panel-body-flush">
+    <table class="table">
+      <thead><tr><th style="min-width:170px">Store</th><th>Period</th><th>Due</th><th>Age</th><th>Reference</th><th class="num">Amount</th><th>State</th><th></th></tr></thead>
+      <tbody>${aged.map((a) => {
+    const age = ageOf(a);
+    return `<tr>
+        <td>
+          <strong>${esc(a.channel_name)}</strong>
+          <div class="fine">/s/${esc(a.channel_slug)}${a.owner_email ? ` · ${esc(a.owner_email)}` : ''}</div>
+        </td>
+        <td class="fine nowrap">${esc(isoDay(a.period_start))} → ${esc(isoDay(a.period_end))}</td>
+        <td class="fine nowrap">${esc(isoDay(a.due_at) || '—')}</td>
+        <td>${age.level === 'current' || age.level === 'unknown'
+      ? `<span class="fine">${esc(age.label)}</span>`
+      : pill(age.label, age.level === 'stale' ? 'danger' : 'warning')}</td>
+        <td class="mono fine">${esc(a.txn_reference || '—')}</td>
+        <td class="num">${npr(a.amount_npr)}</td>
+        <td>${pill(a.status, a.status === 'submitted' ? 'info' : 'warning')}</td>
+        <td>
+          <form class="inline-form" method="post" action="/admin/payments/rent/${esc(a.id)}">
+            <button class="btn btn-sm btn-primary" type="submit">Mark paid</button>
+          </form>
+        </td>
+      </tr>`;
+  }).join('')}
+      </tbody>
+    </table>
+  </div></div>
+  ${aged.some((a) => ageOf(a).level === 'unknown') ? `<p class="fine" style="margin-top:var(--space-4)">
+    ${plural(aged.filter((a) => ageOf(a).level === 'unknown').length, 'invoice')} could not be aged — no due date on
+    the row. They are in the list below and in no bucket above, because putting them in one would invent an age.
+  </p>` : ''}
+  <p class="fine" style="margin-top:var(--space-4)">
+    Terms: ${esc(RENT_TERMS.sentence)} ${esc(RENT_TERMS.why)}
+    Invoices issued before due dates existed are measured from the day they were issued — the terms are being
+    stated now, and nothing already sent is made late retroactively.
+  </p>`
+    : '<div class="empty">Nothing outstanding. Rent invoices are only issued where a page is long enough to spare a slot, and the demo store has one waiting for a match.</div>'}
+</section>
+
+${byMonth.length ? `<section class="section">
+  <div class="section-head">
+    <h2>Rent, month by month</h2>
+    <p>Grouped by the period each invoice covers, not by when it was paid — March's rent is March's, whether it arrived in March or June.</p>
+  </div>
+  <div class="panel"><div class="panel-body panel-body-flush">
+    <table class="table">
+      <thead><tr><th>Month</th><th class="num">Billed</th><th class="num">Collected</th><th class="num">Late now</th><th>Invoices</th></tr></thead>
+      <tbody>${byMonth.map((m) => {
+    const billed = Number(m.billed_npr || 0);
+    const collected = Number(m.collected_npr || 0);
+    const pct = billed ? Math.round((collected / billed) * 100) : 0;
+    return `<tr>
+        <td class="mono">${esc(m.month)}</td>
+        <td class="num">${npr(billed)}</td>
+        <td class="num">${npr(collected)}${billed
+    ? `<div class="meter${pct >= 100 ? ' meter-full' : ' meter-near'}" role="img" aria-label="${esc(`${pct}% collected`)}"><span style="width:${Math.min(pct, 100)}%"></span></div>`
+    : ''}</td>
+        <td class="num">${Number(m.late_invoices) ? `${num(m.late_invoices)}<div class="fine">still owed</div>` : '—'}</td>
+        <td class="fine">${num(m.paid_invoices)} of ${num(m.invoices)} paid${Number(m.waived_npr) ? ` · ${npr(m.waived_npr)} waived` : ''}</td>
+      </tr>`;
+  }).join('')}
+      </tbody>
+    </table>
+  </div></div>
+  <p class="fine" style="margin-top:var(--space-4)">
+    There is no revenue projection on this page. What was invoiced and what arrived are both facts; a
+    forecast built from a plan mix is a number that cannot be reconciled with the bank.
+  </p>
+</section>` : ''}`;
 
   // Rendered inside the console shell now, so the operator keeps one frame of
   // reference: the same navigation, the same badge counts, the same title style.

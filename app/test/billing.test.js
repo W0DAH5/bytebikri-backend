@@ -26,7 +26,7 @@ process.env.DATABASE_URL ||= 'postgres://postgres:postgres@127.0.0.1:55432/byteb
 
 const { store, PLANS, nextPlan } = await import('../src/store.js');
 const { close, query, scalar } = await import('../src/db.js');
-const { annualRentNpr, rentPeriod, upgradeExplanation, planBenefits, planDrift, NOT_CHARGED } = await import('../src/billing.js');
+const { annualRentNpr, rentPeriod, upgradeExplanation, planBenefits, planDrift, RENT_TERMS, NOT_CHARGED } = await import('../src/billing.js');
 
 after(async () => { await close(); });
 
@@ -531,4 +531,168 @@ test('the plans table and the running app cannot drift apart unnoticed', async (
   assert.match(wrong.join(' '), /NPR 1.*NPR 999/);
   assert.match(wrong.join(' '), /max_assets.*5.*200/);
   assert.match(planDrift([], PLANS).join(' '), /not in the table/, 'a missing tier is reported too');
+});
+
+// ---------------------------------------------------------------------------
+// Rent: terms, age, and one definition of "still owed"
+// ---------------------------------------------------------------------------
+
+test('rent has stated terms, and an invoice is age-measured from its own due date', async () => {
+  const { rentAge, RENT_TERMS, AGE_BUCKETS } = await import('../src/billing.js');
+  const today = new Date('2026-09-22T00:00:00Z');
+  const at = (due) => rentAge(due, today);
+
+  assert.ok(RENT_TERMS.dueDays > 0);
+  assert.match(RENT_TERMS.sentence, new RegExp(String(RENT_TERMS.dueDays)), 'the sentence states the terms');
+  assert.ok(RENT_TERMS.why.length > 20, 'and says why they are what they are');
+
+  assert.equal(at('2026-10-20').level, 'current');
+  assert.match(at('2026-10-20').label, /due in 28 days/);
+  assert.equal(at('2026-09-22').label, 'due today');
+  assert.equal(at('2026-09-21').label, '1 day late', 'the first day late is singular');
+  assert.equal(at('2026-09-21').level, 'late');
+  assert.equal(at('2026-08-01').level, 'old', 'a month late is past a reminder');
+  assert.equal(at('2026-08-01').label, '1 month late', 'and reads in months, singular where it should be');
+  assert.equal(at('2026-07-01').level, 'old');
+  assert.equal(at('2026-07-01').label, '2 months late');
+  assert.equal(at('2026-05-01').level, 'stale', 'past three months is a decision, not a reminder');
+  // One unit per column: "2 months" beside "160 days" makes a reader do arithmetic
+  // to compare two rows.
+  assert.equal(at('2026-05-01').label, '4 months late');
+  assert.equal(at('2025-01-01').label, 'over a year late');
+  assert.equal(at(null).level, 'unknown', 'an invoice with no due date is unknown, never "on time"');
+  assert.equal(at('not a date').level, 'unknown', 'and neither is an unreadable one');
+
+  // The bug that made the rendered page say "NAN DAYS LATE" on every row and put
+  // every invoice in the worst bucket: pg hands a `date` column over as a JS Date,
+  // and `String(date).slice(0, 10)` is "Thu Oct 22", not "2026-10-22". These
+  // assertions use Date OBJECTS for that reason — a string input would pass while
+  // the real thing failed.
+  const asDate = (iso) => new Date(`${iso}T00:00:00Z`);
+  assert.equal(rentAge(asDate('2026-09-21'), today).label, '1 day late', 'a Date object ages correctly');
+  assert.equal(rentAge(asDate('2026-07-01'), today).level, 'old');
+  assert.equal(rentAge(asDate('2026-10-20'), today).label, 'due in 28 days');
+  assert.ok(!/NaN/.test(rentAge(asDate('2026-01-01'), today).label), 'and never prints NaN');
+
+  // Every level the buckets offer must be a level rentAge can produce, or a
+  // bucket silently totals zero forever.
+  const produced = new Set([at('2026-10-20'), at('2026-09-21'), at('2026-07-01'), at('2026-05-01')]
+    .map((x) => x.level));
+  for (const b of AGE_BUCKETS) {
+    if (b.key === 'unknown') continue;
+    assert.ok(produced.has(b.key), `the "${b.key}" bucket is reachable`);
+  }
+});
+
+test('an invoice is stamped with the terms as they were, not as they are now', async () => {
+  const { channel, estimate } = await fixture();
+  const invoice = await store.ensureRentInvoice({ channel, estimate });
+  assert.ok(invoice, 'an invoice was issued');
+  assert.ok(invoice.due_at, 'and it carries a due date');
+  // pg returns a `date` column as a JS Date, so `String(value).slice(0, 10)` is
+  // "Thu Oct 2" — NaN — not "2026-10-22". The same mistake in a view is what made
+  // four pages render "Sat Aug 01"; here it just makes the assertion fail loudly,
+  // which is the good version of that bug.
+  const iso = (value) => (value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10));
+  const due = new Date(`${iso(invoice.due_at)}T00:00:00Z`);
+  const issued = new Date(`${iso(invoice.created_at)}T00:00:00Z`);
+  assert.ok(!Number.isNaN(due.getTime()), 'the due date parses');
+  const days = Math.round((due - issued) / 86400000);
+  assert.equal(days, RENT_TERMS.dueDays, 'due exactly the stated number of days after issue, not on read');
+});
+
+test('"still owed" is one set of statuses, not three scattered lists', async () => {
+  const { OPEN_RENT_STATUSES } = await import('../src/store.js');
+  // The bug this locks down: `platformMoney` filtered on ('issued','unpaid',
+  // 'overdue') — two of which the CHECK constraint forbids — so every invoice a
+  // payer had already claimed to have paid fell out of "invoiced, not collected"
+  // while the operator's queue still showed it. Two surfaces, two answers.
+  assert.deepEqual([...OPEN_RENT_STATUSES].sort(), ['issued', 'submitted']);
+
+  const { query } = await import('../src/db.js');
+  const allowed = await query(
+    `select pg_get_constraintdef(oid) as def from pg_constraint
+      where conrelid = 'rent_invoices'::regclass and contype = 'c' and pg_get_constraintdef(oid) like '%status%'`,
+  );
+  const def = allowed.rows.map((r) => r.def).join(' ');
+  for (const status of OPEN_RENT_STATUSES) {
+    assert.ok(def.includes(`'${status}'`), `"${status}" is a status the schema allows`);
+  }
+  for (const phantom of ['unpaid', 'overdue']) {
+    assert.ok(!def.includes(`'${phantom}'`), `"${phantom}" is not a status — a filter naming it can never match`);
+    assert.ok(!OPEN_RENT_STATUSES.includes(phantom), 'and it is not in the shared set');
+  }
+});
+
+test('the aging list is ordered by lateness, and counts what the queue counts', async () => {
+  const { channel } = await fixture();
+  const today = new Date();
+  const day = (n) => new Date(today.getTime() + n * 86400000).toISOString().slice(0, 10);
+  // One row per PERIOD: (channel_id, period_start) is unique, so a constant
+  // period_start would make the second insert a duplicate-key error rather than a
+  // test — which is exactly what the first version of this fixture did.
+  const mk = (id, due, status, amount) => query(
+    `insert into rent_invoices (channel_id, period_start, period_end, amount_npr, basis, status, due_at)
+     values ($1, $2, $3, $4, '{}'::jsonb, $5, $6)`,
+    [channel.id, day(-3000 - Number(id) * 400), day(-1 - Number(id)), amount, status, due],
+  );
+  await mk('1', day(-90), 'issued', 3000);
+  await mk('2', day(5), 'issued', 9000);
+  await mk('3', day(-5), 'submitted', 1500);
+  await mk('4', day(-10), 'paid', 7000);       // collected: never in the aging list
+  await mk('5', day(-10), 'waived', 500);      // forgiven: never in the aging list
+
+  const rows = await store.rentAging();
+  const mine = rows.filter((r) => r.channel_id === channel.id);
+  assert.equal(mine.length, 3, 'open invoices only — a paid or waived invoice is not owed');
+  assert.deepEqual(mine.map((r) => Number(r.amount_npr)), [3000, 1500, 9000],
+    'oldest due date first: the next action depends on age, not on size');
+  assert.ok(mine.every((r) => r.days_late !== null), 'each row carries how late it is');
+
+  const months = await store.rentByMonth({ months: 24 });
+  const mineMonths = months.filter((m) => Number(m.invoices) >= 3);
+  assert.ok(mineMonths.length >= 1, 'and the monthly view sees this channel\'s invoices');
+});
+
+test('the seller who owes rent is told the due date and how late it is', async () => {
+  const { billing: sellerBilling } = await import('../src/views.js');
+  const channel = {
+    id: '00000000-0000-0000-0000-000000000009', slug: 'shop', name: 'Shop', tagline: '',
+    plan_code: 'free', subscription_status: null, subscription_end: null, created_at: new Date(),
+  };
+  const today = new Date();
+  const day = (n) => new Date(today.getTime() + n * 86400000).toISOString().slice(0, 10);
+  const html = sellerBilling({
+    user: { id: 'u', email: 'seller@example.com', display_name: 'Seller' },
+    channel, plan: PLANS.free, estimate: { estNpr: 0, rent: 0, total: 3 },
+    invoices: [
+      { id: 'i1', status: 'issued', amount_npr: 900, period_start: day(-400), period_end: day(-20), due_at: day(10) },
+      { id: 'i2', status: 'issued', amount_npr: 900, period_start: day(-760), period_end: day(-380), due_at: day(-65) },
+      { id: 'i3', status: 'paid', amount_npr: 900, period_start: day(-1100), period_end: day(-740), due_at: day(-700), paid_at: day(-705) },
+    ],
+    payments: [], rails: [], payee: 'ByteBikri Pvt Ltd',
+  });
+
+  // Every row carries a due date. The count is taken from the fixture's own
+  // dates rather than a hardcoded year: the fixture is relative to today, so it
+  // crosses a year boundary depending on when it runs.
+  const dueDates = [day(10), day(-65), day(-700)];
+  for (const d of dueDates) {
+    assert.ok(html.includes(d), `the due date ${d} is on the seller's page`);
+  }
+  assert.match(html, /due in 10 days/, 'an invoice inside the terms says how long is left');
+  assert.match(html, /<strong>2 months late<\/strong>/, 'a late one states the age in bold');
+  assert.ok(!/NaN/.test(html), 'and nothing on the page is NaN');
+  // The paid row must not be told it is late: settled invoices are history. The
+  // row is isolated by its own <tr> boundaries — slicing a fixed number of
+  // characters around the word 'paid' reached into the late row above it and
+  // failed an assertion about correct behaviour.
+  const rows = html.slice(html.indexOf('<tbody>'), html.indexOf('</tbody>')).split('<tr>');
+  const paidRow = rows.find((r) => /pill-success">paid/.test(r));
+  const lateRow = rows.find((r) => /2 months late/.test(r));
+  assert.ok(paidRow, 'the paid invoice is in the history');
+  assert.ok(lateRow, 'and the late one is too');
+  assert.ok(!/late/.test(paidRow), 'a paid invoice is not described as late');
+  assert.ok(!/late/.test(paidRow.replace(/pill[^"]*"[^>]*>[^<]*<\/span>/g, '')),
+    'nor anywhere else in that row');
 });

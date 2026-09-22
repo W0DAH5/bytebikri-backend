@@ -15,7 +15,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { one, many, scalar, query, withTransaction, isUniqueViolation } from './db.js';
 
-import { rentPeriod, annualRentNpr, rentWorking } from './billing.js';
+import { rentPeriod, annualRentNpr, rentWorking, RENT_TERMS } from './billing.js';
+
+/**
+ * The statuses that mean "invoiced and not yet collected".
+ *
+ * Exported and used by every money query, because the alternative — each query
+ * spelling out its own list — is how `platformMoney` came to filter on 'unpaid'
+ * and 'overdue', two statuses the CHECK constraint has never allowed. It matched
+ * one real state and dropped every invoice a payer had claimed to have paid.
+ */
+export const OPEN_RENT_STATUSES = ['issued', 'submitted'];
 // The assumed rate lives in policy, exactly once, and this file reads it rather
 // than repeating it: the rent estimate, the seller's page and the operator's
 // calibration page must all be arithmetic on the SAME assumption, or comparing
@@ -1741,13 +1751,22 @@ export const store = {
          coalesce((select sum(amount_npr) from rent_invoices
                     where status = 'paid'
                       and paid_at >= date_trunc('month', now())), 0)::int as rent_this_month,
+         coalesce((select sum(amount_npr) from rent_invoices
+                    where status = any($1) and due_at < current_date), 0)::int as rent_late_npr,
+         (select count(*)::int from rent_invoices
+           where status = any($1) and due_at < current_date) as rent_late_count,
+         (select count(*)::int from rent_invoices where status = any($1)) as rent_open_count,
          (select count(distinct channel_id) from subscriptions
            where status in ('active','grace') and plan_code <> 'free')::int as paying_stores,
          (select count(*) from channels where moderation_state <> 'removed')::int as stores,
          (select count(*) from subscriptions where status = 'active' and plan_code <> 'free')::int as active_subs`,
+      [OPEN_RENT_STATUSES],
     ).then((r) => ({
       matchedThisMonthNpr: Number(r?.matched_this_month || 0),
       rentThisMonthNpr: Number(r?.rent_this_month || 0),
+      rentLateNpr: Number(r?.rent_late_npr || 0),
+      rentLateCount: Number(r?.rent_late_count || 0),
+      rentOpenCount: Number(r?.rent_open_count || 0),
       payingStores: Number(r?.paying_stores || 0),
       stores: Number(r?.stores || 0),
       activeSubs: Number(r?.active_subs || 0),
@@ -2063,12 +2082,17 @@ export const store = {
     // dashboard view. Writing an audit row unconditionally would fill the log
     // with "invoiced" lines for an invoice that was issued once, months ago —
     // the exact noise that makes an audit log unreadable.
+    // The due date is stamped from the terms AS THEY ARE TODAY. An invoice that
+    // already exists keeps the date it was sent with, which is why this is a
+    // column and not `created_at + dueDays` computed at read time.
+    const dueAt = new Date(now.getTime() + RENT_TERMS.dueDays * 86400000).toISOString().slice(0, 10);
     const inserted = await query(
-      `insert into rent_invoices (channel_id, period_start, period_end, amount_npr, basis)
-       values ($1, $2, $3, $4, $5)
+      `insert into rent_invoices (channel_id, period_start, period_end, amount_npr, basis, due_at)
+       values ($1, $2, $3, $4, $5, $6)
        on conflict (channel_id, period_start) do nothing
        returning id`,
-      [channel.id, period.start, period.end, amountNpr, JSON.stringify(rentWorking(estimate, amountNpr))],
+      [channel.id, period.start, period.end, amountNpr,
+        JSON.stringify(rentWorking(estimate, amountNpr)), dueAt],
     );
     const invoice = await one(
       'select * from rent_invoices where channel_id = $1 and period_start = $2',
@@ -2102,6 +2126,61 @@ export const store = {
         order by r.submitted_at nulls last, r.created_at
         limit $1`,
       [limit],
+    );
+  },
+
+  /**
+   * Rent owed, with how late it is — the operator's actual weekly question.
+   *
+   * Ordered by lateness rather than by amount: the operator's next action depends
+   * on age, not on size, and a NPR 300 invoice four months old is a decision while
+   * a NPR 3,000 one due next week is not.
+   *
+   * Returns rows AND the bucket totals, because the view needs both and computing
+   * the buckets in the view would mean a second definition of "late".
+   */
+  rentAging() {
+    return many(
+      `select r.id, r.channel_id, r.period_start, r.period_end, r.amount_npr, r.status,
+              r.due_at, r.created_at, r.submitted_at, r.txn_reference, r.payer_name,
+              c.slug as channel_slug, c.name as channel_name,
+              u.email as owner_email,
+              (current_date - r.due_at)::int as days_late
+         from rent_invoices r
+         join channels c on c.id = r.channel_id
+         left join profiles u on u.id = c.owner_id
+        where r.status = any($1)
+        order by r.due_at asc nulls last, r.amount_npr desc
+        limit 200`,
+      [OPEN_RENT_STATUSES],
+    );
+  },
+
+  /**
+   * Rent across time: what each month was billed, and what actually arrived.
+   *
+   * Grouped by the invoice's own PERIOD, not by when it was paid: March's rent is
+   * March's, whether it arrived in March or June. A collection chart grouped by
+   * payment date answers "when did cash arrive" — a useful question, and not the
+   * one this exists for, which is whether each month's rent is settling.
+   *
+   * `billed` is what was invoiced for that period and `collected` is the part of
+   * it that is paid, so the difference is a number the operator can act on rather
+   * than a churn figure nobody can reconcile with the bank.
+   */
+  rentByMonth({ months = 12 } = {}) {
+    return many(
+      `select to_char(date_trunc('month', r.period_end), 'YYYY-MM') as month,
+              sum(r.amount_npr)::int as billed_npr,
+              coalesce(sum(r.amount_npr) filter (where r.status = 'paid'), 0)::int as collected_npr,
+              coalesce(sum(r.amount_npr) filter (where r.status = 'waived'), 0)::int as waived_npr,
+              count(*)::int as invoices,
+              count(*) filter (where r.status = 'paid')::int as paid_invoices,
+              count(*) filter (where r.status = any($1) and r.due_at < current_date)::int as late_invoices
+         from rent_invoices r
+        where r.period_end > (date_trunc('month', current_date) - ($2 || ' months')::interval)
+        group by 1 order by 1 desc`,
+      [OPEN_RENT_STATUSES, String(Math.max(Number(months) - 1, 0))],
     );
   },
 
