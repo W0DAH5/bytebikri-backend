@@ -22,6 +22,7 @@
  *     password", which is a user-enumeration oracle.
  */
 import crypto from 'node:crypto';
+import { MIN_PASSWORD_LENGTH } from './security.js';
 import { one, query, scalar, withTransaction } from './db.js';
 
 // scrypt cost. N=2^15 with r=8,p=1 is ~100ms on a modern core and ~32MB, which
@@ -38,8 +39,11 @@ const b64 = (buf) => Buffer.from(buf).toString('base64url');
 
 /** Derive, then encode the parameters alongside the hash so they can change. */
 export function hashPassword(password) {
-  if (typeof password !== 'string' || password.length < 8) {
-    throw Object.assign(new Error('password must be at least 8 characters'), { status: 400 });
+  if (typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH) {
+    // The number comes from security.js so the reset form, the sign-up form and
+    // this check cannot disagree. A form that offers a length the server refuses
+    // is a bug report waiting to be written.
+    throw Object.assign(new Error(`password must be at least ${MIN_PASSWORD_LENGTH} characters`), { status: 400 });
   }
   const salt = crypto.randomBytes(16);
   const { N, r, p, keylen } = SCRYPT;

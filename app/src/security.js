@@ -154,6 +154,31 @@ export function rateLimit({
 }
 
 // ---------------------------------------------------------------------------
+// Account credentials — the rules, with no dependencies
+// ---------------------------------------------------------------------------
+// These live here, in a module that touches no database, because the sign-up form
+// and the reset form both need to state the same minimum as the server enforces.
+// Putting them in `recovery.js` next to the reset logic was the obvious choice and
+// the wrong one: `recovery.js` queries, so `views.js` importing it made rendering
+// a page require a database connection — four test files failed on the import
+// alone, which is a good sign the boundary was in the wrong place.
+
+/**
+ * The shortest password the product accepts.
+ *
+ * Eight, because that is what sign-up has always promised and what `hashPassword`
+ * refuses below. A reset form demanding ten while the sign-up form accepts eight
+ * is not a stricter policy, it is two policies — and a person who chose eight
+ * characters last year would be told their own password is not good enough while
+ * recovering the account. `auth.js` imports this constant rather than repeating
+ * the number, so the two cannot drift.
+ */
+export const MIN_PASSWORD_LENGTH = 8;
+
+/** How long a reset link is valid. Stated on the page, in the email, and here. */
+export const RESET_TTL_MINUTES = 60;
+
+// ---------------------------------------------------------------------------
 // Cookies
 // ---------------------------------------------------------------------------
 

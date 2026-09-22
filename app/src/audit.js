@@ -46,8 +46,8 @@ export const AUDIT_FAMILIES = [
   {
     key: 'people',
     label: 'Accounts',
-    note: 'Sign-ups, consent decisions and payout details declared. The record of who agreed to what, and when.',
-    prefixes: ['auth.signup', 'consent.', 'payout_account.'],
+    note: 'Sign-ups, consent decisions, payout details declared, and passwords recovered. The record of who agreed to what, and when — and the first place to look when somebody says their account moved without them.',
+    prefixes: ['auth.signup', 'auth.password_reset', 'consent.', 'payout_account.'],
     decisions: true,
   },
   {

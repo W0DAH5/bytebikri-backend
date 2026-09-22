@@ -116,6 +116,28 @@ export function checkConfig(env = process.env) {
       errors.push({ name: 'AD_POSTBACK_SECRET', why: 'still the development default',
         detail: 'It signs the sandbox network. The sandbox is disabled in production, but rotate it anyway.' });
     }
+
+    // Email, checked as a whole. The rule is not "EMAIL_DRIVER must be set" but
+    // "a message must be able to reach a person": a console driver in production
+    // prints reset links to a log and delivers nothing, and no driver at all means
+    // every forgotten password is an account nobody can get back into. Both are
+    // fatal here rather than discovered the first time somebody is locked out,
+    // which is the worst possible moment — nobody can report it, because the
+    // person who would report it cannot sign in.
+    const mail = emailDriver(env);
+    if (!mail.ok) {
+      errors.push({ name: 'EMAIL_DRIVER', why: mail.driver === 'none' ? 'missing' : `${mail.driver} cannot send`,
+        detail: `${mail.why}. Set EMAIL_DRIVER to resend with RESEND_API_KEY, or smtp with SMTP_URL.` });
+    }
+    if (!env.EMAIL_FROM) {
+      warnings.push({ name: 'EMAIL_FROM', why: 'missing',
+        detail: 'Reset links will be sent from a default address rather than your own, which lands in spam more often.' });
+    }
+  } else if (!env.EMAIL_DRIVER) {
+    // Development stays quiet on purpose: the console driver prints links to the
+    // log, which is the shortest path from "I forgot the demo password" to being
+    // back in. A warning here would train contributors to ignore warnings.
+    warnings.push({ name: 'EMAIL_DRIVER', why: 'not set — printing messages to the log instead of sending them' });
   }
 
   return { ok: errors.length === 0, errors, warnings, production: prod };
@@ -133,6 +155,48 @@ export function formatConfigReport({ errors, warnings }) {
     for (const w of warnings) lines.push(`    ${w.name} — ${w.why}`);
   }
   return lines.join('\n');
+}
+
+/**
+ * Which driver, and whether that is acceptable.
+ *
+ * Returns `{ driver, ok, why }`. `ok: false` in production means the process
+ * should refuse to start — asserted in `checkConfig` — rather than discovering it
+ * the first time somebody forgets a password, which is the worst possible moment
+ * to learn that mail does not work.
+ */
+export const EMAIL_DRIVERS = ['console', 'resend', 'smtp'];
+
+export function emailDriver(env = process.env) {
+  const configured = String(env.EMAIL_DRIVER || '').trim().toLowerCase();
+  if (configured) {
+    // A typo in a driver name must be a configuration error, not a runtime
+    // surprise: `EMAIL_DRIVER=resnd` would otherwise pass every check, start the
+    // server, and fail inside a fire-and-forget send where nobody is looking.
+    if (!EMAIL_DRIVERS.includes(configured)) {
+      return { driver: configured, ok: false, why: `"${configured}" is not a driver — known drivers are ${EMAIL_DRIVERS.join(', ')}` };
+    }
+    if (configured === 'console' && env.NODE_ENV === 'production') {
+      return { driver: 'console', ok: false, why: 'EMAIL_DRIVER=console in production would print reset links to a log and deliver nothing' };
+    }
+    if (configured === 'resend' && !env.RESEND_API_KEY) {
+      return { driver: 'resend', ok: false, why: 'RESEND_API_KEY is not set' };
+    }
+    if (configured === 'smtp' && !env.SMTP_URL) {
+      return { driver: 'smtp', ok: false, why: 'SMTP_URL is not set' };
+    }
+    return { driver: configured, ok: true, why: null };
+  }
+  return env.NODE_ENV === 'production'
+    ? { driver: 'none', ok: false, why: 'no EMAIL_DRIVER is set, so a password reset link could never be delivered' }
+    : { driver: 'console', ok: true, why: null };
+}
+
+/** The address messages come from. Plain, and required in production. */
+export function emailFrom(env = process.env) {
+  // Reads the *passed* env, not this process's NODE_ENV: otherwise checkConfig(someEnv)
+  // and the running server could disagree about whether a from-address exists.
+  return env.EMAIL_FROM || (env.NODE_ENV === 'production' ? null : 'ByteBikri <no-reply@bytebikri.local>');
 }
 
 /**

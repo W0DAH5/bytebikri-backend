@@ -21,6 +21,11 @@ const GOOD = {
   ACCESS_TOKEN_SECRET: 'b'.repeat(48),
   AD_POSTBACK_SECRET: 'c'.repeat(48),
   OPERATOR_EMAIL: 'hello@bytebikri.example',
+  // Mail is part of a complete configuration now: the platform sends password
+  // reset links, and without a driver a forgotten password is a lost account.
+  EMAIL_DRIVER: 'resend',
+  RESEND_API_KEY: 're_test_key',
+  EMAIL_FROM: 'ByteBikri <hello@bytebikri.example>',
 };
 
 test('a complete production configuration passes', () => {
@@ -34,7 +39,10 @@ test('each missing secret is fatal in production, and all are reported at once',
   // deploy should see the whole list in one pass.
   const r = checkConfig({ ...GOOD, SESSION_SECRET: undefined, ACCESS_TOKEN_SECRET: undefined });
   assert.equal(r.ok, false);
-  assert.deepEqual(r.errors.map((e) => e.name).sort(), ['ACCESS_TOKEN_SECRET', 'SESSION_SECRET']);
+  assert.deepEqual(
+    r.errors.filter((e) => /SECRET$/.test(e.name)).map((e) => e.name).sort(),
+    ['ACCESS_TOKEN_SECRET', 'SESSION_SECRET'],
+  );
 });
 
 test('the development defaults are refused in production', () => {
@@ -54,6 +62,71 @@ test('a short secret is refused, because a short secret is a guessable one', () 
   const r = checkConfig({ ...GOOD, SESSION_SECRET: 'too-short' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.name === 'SESSION_SECRET' && /too short/.test(e.why)));
+});
+
+test('production refuses to start without a way to deliver mail', () => {
+  // The failure this prevents is specific and nasty: everything looks healthy,
+  // and the first sign of trouble is a user who cannot get into their account and
+  // cannot tell anyone, because telling anyone requires being signed in.
+  const r = checkConfig({ ...GOOD, EMAIL_DRIVER: undefined });
+  assert.equal(r.ok, false);
+  const err = r.errors.find((e) => e.name === 'EMAIL_DRIVER');
+  assert.ok(err, 'a missing mail driver was accepted in production');
+  assert.match(err.detail, /reset|recover/i);
+});
+
+test('the console driver is refused in production, because it sends nothing', () => {
+  // It prints. In development that is the feature — it is how a contributor
+  // recovers a demo password without an account at a mail provider. In production
+  // it would put working reset links in a log file and deliver none of them.
+  const r = checkConfig({ ...GOOD, EMAIL_DRIVER: 'console' });
+  assert.equal(r.ok, false);
+  assert.match(r.errors.find((e) => e.name === 'EMAIL_DRIVER').why, /cannot send/);
+  // Same setting in development is correct, not tolerated.
+  assert.equal(checkConfig({ NODE_ENV: 'development', EMAIL_DRIVER: 'console' }).errors.length, 0);
+});
+
+test('a driver named without its credential is fatal, not silently ignored', () => {
+  // Naming a driver and forgetting its key is the likeliest mistake in a
+  // hand-written deploy config, and the resulting behaviour is the worst kind:
+  // a server that starts, accepts every reset request, and fails inside a
+  // fire-and-forget send where nobody is looking.
+  for (const [env, missing] of [
+    // Cleared explicitly: GOOD carries a Resend key, and spreading it over a
+    // deliberately-broken case would test nothing.
+    [{ EMAIL_DRIVER: 'resend', RESEND_API_KEY: undefined }, 'RESEND_API_KEY'],
+    [{ EMAIL_DRIVER: 'smtp', SMTP_URL: undefined }, 'SMTP_URL'],
+  ]) {
+    const r = checkConfig({ ...GOOD, ...env });
+    assert.equal(r.ok, false, `${env.EMAIL_DRIVER} without a credential was accepted`);
+    const err = r.errors.find((e) => e.name === 'EMAIL_DRIVER');
+    // The operator has to be told WHICH variable is missing, in the report they
+    // are reading at 2am — "mail cannot send" alone sends them to the source.
+    assert.match(err.detail, new RegExp(missing));
+    assert.match(err.detail, /EMAIL_DRIVER/);
+  }
+  // And with the credential, it passes.
+  assert.equal(checkConfig({ ...GOOD, EMAIL_DRIVER: 'smtp', SMTP_URL: 'smtps://user:pass@smtp.example:465' }).ok, true);
+});
+
+test('a misspelled driver is refused, not discovered at send time', () => {
+  // EMAIL_DRIVER=resnd would otherwise pass every check, start the server, accept
+  // every reset request, and fail inside a fire-and-forget send where nobody is
+  // looking — the worst shape a configuration mistake can take.
+  const r = checkConfig({ ...GOOD, EMAIL_DRIVER: 'resnd' });
+  assert.equal(r.ok, false);
+  const err = r.errors.find((e) => e.name === 'EMAIL_DRIVER');
+  assert.match(err.detail, /not a driver/);
+  // The message names the alternatives, so the fix does not need the source code.
+  assert.match(err.detail, /resend/);
+});
+
+test('development prints to the log and says so, without shouting', () => {
+  const dev = checkConfig({ NODE_ENV: 'development' });
+  const warn = dev.warnings.find((w) => w.name === 'EMAIL_DRIVER');
+  assert.ok(warn, 'a developer should be told that mail is going to the log, not to an inbox');
+  assert.match(warn.why, /printing/);
+  assert.equal(dev.errors.some((e) => e.name === 'EMAIL_DRIVER'), false);
 });
 
 test('production requires an https public origin', () => {

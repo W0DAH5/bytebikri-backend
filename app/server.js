@@ -74,6 +74,10 @@ import { REVEAL_BOOTSTRAP } from './src/views.js';
 const REVEAL_HASH = `sha256-${crypto.createHash('sha256').update(REVEAL_BOOTSTRAP, 'utf8').digest('base64')}`;
 import * as auth from './src/auth.js';
 import { originCheck, rateLimit, cookieParser, setSessionCookie, clearSessionCookie } from './src/security.js';
+import * as recovery from './src/recovery.js';
+// Named separately so the page code reads 'the person's recovery history' rather
+// than 'the recovery module', which are two different things at the call site.
+const recoveryOf = recovery.personRecovery;
 import {
   consentState, recordConsent, PURPOSES, newVisitorId, CONSENT_COOKIE, POLICY_VERSION,
 } from './src/consent.js';
@@ -434,6 +438,101 @@ APP.get('/marketplace', async (req, res, next) => {
     res.send(views.marketplace({
       channels, user: req.user, consent: req.consent, q, results, explore,
     }));
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// Getting back into an account
+// ---------------------------------------------------------------------------
+// Four routes, and the shape of two of them is the security property: the POST
+// answers identically whether or not the address has an account, and the GET on a
+// dead link renders one page for four different reasons. See src/recovery.js.
+
+// A reset request sends mail to an address somebody else typed in, so it is rate
+// limited like sign-in: without a limit it is a way to have the platform send
+// unwanted messages from its own domain, which is how a sending reputation dies.
+const limitForgot = rateLimit({
+  windowMs: 60 * 60_000, max: 8, name: 'password reset requests',
+  render: (info) => views.tooMany({ ...info, consent: null }),
+});
+
+APP.get('/forgot', (req, res) => {
+  res.send(views.forgotPassword({ user: req.user, consent: req.consent }));
+});
+
+APP.post('/forgot', limitForgot, async (req, res, next) => {
+  try {
+    const email = String(req.body.email || '').trim().slice(0, 200);
+    await recovery.requestReset({
+      email,
+      ip: req.ip,
+      userAgent: req.get('user-agent'),
+      baseUrl: publicBase(req),
+    });
+    // Deliberately NOT branching on the result. The page renders the same for a
+    // registered address, an unregistered one, and a typo. The only visible
+    // difference is whether a message arrives, which is the point.
+    res.send(views.forgotPassword({ user: req.user, consent: req.consent, sent: true, email }));
+  } catch (err) { next(err); }
+});
+
+APP.get('/reset/:token', async (req, res, next) => {
+  try {
+    const check = await recovery.inspectReset(req.params.token);
+    if (!check.valid) {
+      // Nothing about WHY is passed on: one page, one sentence, one action.
+      //
+      // And no consent banner, which is the second half of the same idea. The
+      // banner posts the current URL back to itself as `next` so a person stays
+      // where they are — which on this route would echo the dead token into the
+      // page's markup. A dead end sets no cookies, loads nothing third-party and
+      // shows no ads, so it has nothing to ask permission for; rendering it
+      // without the banner is both quieter and token-free.
+      return res.status(410).send(views.resetPassword({ user: req.user, consent: null }));
+    }
+    // A valid link is not a session. The page renders signed-out on purpose: the
+    // token authorises one action, not a visit to somebody's dashboard.
+    res.send(views.resetPassword({ user: null, consent: req.consent, token: req.params.token }));
+  } catch (err) { next(err); }
+});
+
+APP.post('/reset/:token', async (req, res, next) => {
+  try {
+    const password = String(req.body.password || '');
+    const again = String(req.body.password2 || '');
+    if (password !== again) {
+      return res.send(views.resetPassword({
+        user: null, consent: req.consent, token: req.params.token,
+        error: 'Those two do not match. Nothing was changed — type it once more.',
+      }));
+    }
+    const done = await recovery.consumeReset({ token: req.params.token, password });
+    if (!done.ok) {
+      // Short password keeps the form with a reason; anything else is a dead link
+      // and gets the same page as any other dead link.
+      if (done.reason === 'short') {
+        return res.send(views.resetPassword({
+          user: null, consent: req.consent, token: req.params.token,
+          error: `A password needs at least ${recovery.MIN_PASSWORD_LENGTH} characters. Length beats symbols.`,
+        }));
+      }
+      return res.status(410).send(views.resetPassword({ consent: req.consent }));
+    }
+
+    // Signed straight in: the person just proved control of the address and chose
+    // the password, and bouncing them to a login form to retype it is theatre.
+    await store.audit('auth.password_reset', { self: true }, { actorId: done.userId });
+    const { token, ttl } = await auth.createSession({
+      userId: done.userId,
+      // Not remembered: a recovery is often done on a borrowed device, and the
+      // safe reading of "the person is not sure whose computer this is" is a
+      // session that ends when the browser does.
+      remember: false,
+      userAgent: req.get('user-agent'),
+      ip: req.ip,
+    });
+    setSessionCookie(res, token, ttl);
+    res.redirect('/?reset=1');
   } catch (err) { next(err); }
 });
 
@@ -2639,7 +2738,7 @@ async function withBadges(user) {
 APP.get('/admin', async (req, res, next) => {
   try {
     if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
-    const [counts, money, reach, calibrationRows] = await Promise.all([
+    const [counts, money, reach, calibrationRows, mailHealth] = await Promise.all([
       consoleCounts(),
       store.platformMoney(),
       scalar(
@@ -2653,6 +2752,7 @@ APP.get('/admin', async (req, res, next) => {
          ) as r`,
       ),
       store.statementCalibration(),
+      recovery.resetActivity({ days: 30 }),
     ]);
     // The rate every rent figure on the platform is priced from, checked against
     // the statements creators have recorded. It belongs on this page because it is
@@ -2670,9 +2770,7 @@ APP.get('/admin', async (req, res, next) => {
         ? (contradicted ? calibration.detail : 'A statement is on file and nothing in it can be measured yet.')
         : `${calibration.headline}.${contradicted ? '' : ' Nothing to correct.'}`;
 
-    res.send(views.adminOverview({
-      user: await withBadges(req.user), consent: req.consent, flash: flashFor(req.query),
-      kpis: [
+    const kpiRows = [
         { label: 'Matched this month', value: `NPR ${Number(money.matched_this_month || money.matchedThisMonthNpr || 0).toLocaleString('en-IN')}`, context: `${counts.payments + counts.invoices} transfer${counts.payments + counts.invoices === 1 ? '' : 's'} to match`, tone: (money.matched_this_month || money.matchedThisMonthNpr) ? 'good' : '', href: '/admin/payments' },
         { label: 'Reports waiting', value: String(counts.reports), context: counts.reports ? `across ${counts.reportedFiles} file${counts.reportedFiles === 1 ? '' : 's'}` : 'nothing reported', tone: counts.reports >= AUTO_HIDE_AFTER ? 'bad' : counts.reports ? 'warn' : '', href: '/admin/reports' },
         { label: 'Stores not public', value: String(counts.moderation), context: counts.moderation ? 'restricted, suspended or removed' : 'every store is public', tone: counts.moderation ? 'warn' : '', href: '/admin/moderation' },
@@ -2687,8 +2785,8 @@ APP.get('/admin', async (req, res, next) => {
           href: '/admin/earnings',
         },
         { label: 'Views · 30d', value: Number(reach.views || 0).toLocaleString('en-IN'), context: `${Number(reach.unlocks || 0).toLocaleString('en-IN')} unlocks · ${Number(reach.events || 0).toLocaleString('en-IN')} ad views` },
-      ],
-      queues: [
+    ];
+    const queueRows = [
         { title: 'Transfers to match', count: counts.payments + counts.invoices, note: 'A person matches each one against the statement by hand.', href: '/admin/payments' },
         { title: 'Files reported', count: counts.reports, note: `${AUTO_HIDE_AFTER} distinct reporters hide a file automatically. Below that, it waits.`, href: '/admin/reports' },
         { title: 'Stores needing a decision', count: counts.moderation, note: 'Restricted, suspended or removed.', href: '/admin/moderation' },
@@ -2700,7 +2798,23 @@ APP.get('/admin', async (req, res, next) => {
           href: '/admin/earnings',
         },
         { title: 'Connections needing a look', count: counts.silentConnections, note: 'Never called us back, or calling with a secret that does not match.', href: '/admin/connections' },
-      ],
+        // Recovery links that never left. This one row appears only when there is
+        // something to act on: a queue that reads "0" every day is how an operator
+        // learns to skim the list that also contains the one that matters. The
+        // count comes from the mail log, not from a flag — "we wrote it and the
+        // provider refused it" is a fact with a timestamp.
+        ...(mailHealth.failed_deliveries ? [{
+          title: 'Recovery links that did not send',
+          count: mailHealth.failed_deliveries,
+          note: `${mailHealth.requested} requested in the last 30 days. A person waiting for one of these is locked out and thinks we are broken.`,
+          href: '/admin/audit?family=people',
+        }] : []),
+    ];
+
+    res.send(views.adminOverview({
+      user: await withBadges(req.user), consent: req.consent, flash: flashFor(req.query),
+      kpis: kpiRows,
+      queues: queueRows,
       platform: [
         ['Charges', '<strong>Two</strong> — a plan upgrade and annual rent'],
         ['Share of ad earnings', '<strong>0%</strong> — the network pays the creator directly'],
@@ -3198,9 +3312,13 @@ APP.get('/admin/users/:userId', async (req, res, next) => {
     // store that never existed would answer with the generic page rather than the
     // store-shaped one. The parameter name is the contract.
     if (!detail) return res.status(404).send(views.notFound({ user: req.user, consent: req.consent, requestedKind: 'page' }));
+    // Read alongside the rest: "I never got the reset link" is the support question
+    // this page exists to answer, so the answer is on the page rather than in a
+    // database client somebody has to open.
+    const [rules, recovery] = await Promise.all([store.policyRules(), recoveryOf(detail.person.id)]);
     res.send(views.adminUser({
       user: req.user, consent: req.consent, flash: flashFor(req.query),
-      detail, rules: await store.policyRules(), personActions: PERSON_ACTIONS, labels: ACTION_LABELS,
+      detail, rules, personActions: PERSON_ACTIONS, labels: ACTION_LABELS, recovery,
     }));
   } catch (err) { next(err); }
 });

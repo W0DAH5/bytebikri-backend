@@ -198,8 +198,15 @@ Stated plainly so nobody assumes otherwise:
   them, and a store can connect one, but nothing renders a creative yet. Slots
   only appear once a store actually has a working connection, so an unconfigured
   storefront shows no empty boxes.
-- **No email.** `EMAIL_DRIVER=console` means password resets and receipts are
-  printed, not sent. Nothing in the product depends on it yet.
+- **No email sender yet, and this one now matters.** Password reset is built and
+  tested end to end: a person can ask for a link, open it, choose a new password,
+  and the old sessions end. `EMAIL_DRIVER=console` prints that link to the server
+  log instead of sending it, which is right for a development machine and useless
+  in production — so the server **refuses to start** with no driver, and refuses
+  `console`, rather than looking healthy while every forgotten password becomes a
+  lost account. Set `EMAIL_DRIVER=resend` with `RESEND_API_KEY`, or `smtp` with
+  `SMTP_URL`, plus an `EMAIL_FROM` on a domain you control. Receipts are still
+  printed, not sent.
 - **No payment collection.** Store upgrades and annual rent exist in the data
   model with a manual-verification path; no processor is wired up, because a
   Nepal entity cannot use the obvious ones.

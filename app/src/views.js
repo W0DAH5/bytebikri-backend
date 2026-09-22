@@ -22,6 +22,9 @@ import {
 // The calibration judgement lives in the domain file next to gapVerdict, so the
 // operator's page and the seller's page can never disagree about what a gap means.
 import { calibrationRowState } from './earnings.js';
+// From `security.js`, which imports nothing: a view module must render without a
+// database, and importing the reset logic here made four test files need one.
+import { MIN_PASSWORD_LENGTH } from './security.js';
 // Dependency-free, so a view can call it directly: `planUsage` is the one
 // definition of "how full is this plan", used by the dashboard, the operator's
 // plans page and the message at the upload wall.
@@ -1126,6 +1129,144 @@ export function serverError({ user = null, consent = null, requestId = null }) {
   });
 }
 
+/**
+ * Forgot password: the request.
+ *
+ * One field, one button, and a sentence that does not accuse anybody. The
+ * response to this form is identical whether or not the address has an account —
+ * the page after it says so in words, because a form that says "check your inbox"
+ * for one address and "no such account" for another is a free way to find out
+ * which of your colleague's addresses are registered here.
+ */
+export function forgotPassword({ user = null, consent = null, sent = false, email = '', consentNote = null }) {
+  return layout({
+    title: 'Reset your password', user, consent,
+    body: `
+<div class="section auth-card" style="margin-top:var(--space-12)">
+  <h1 style="font-size:var(--text-2xl)">${sent ? 'Check your email' : 'Reset your password'}</h1>
+
+  ${sent ? `
+  <div class="note note-info" style="margin-top:var(--space-5)">
+    If <strong>${esc(email)}</strong> has an account here, a link is on its way. It is good for one use
+    and expires in an hour.
+  </div>
+  <p class="small" style="margin-top:var(--space-5)">
+    This page says the same thing whether or not that address is registered, and that is deliberate:
+    a form that answers "no such account" is a way to test which email addresses belong to people here.
+    If nothing arrives, the address may have a typo, the message may be in spam, or there may be no
+    account — and the fix for all three is the same, which is to try again.
+  </p>
+  <p class="small">
+    Nothing has changed about your password yet. The link only opens a form; the password changes when
+    you choose a new one.
+  </p>
+  <p class="auth-switch" style="margin-top:var(--space-6)">
+    <a class="btn btn-sm" href="/forgot">Try a different address</a>
+    <a class="btn btn-sm" href="/login" style="margin-left:var(--space-2)">Back to sign in</a>
+  </p>`
+    : `
+  <p class="small" style="margin-top:var(--space-3)">
+    Enter the address you signed up with and we will send a link that lets you choose a new password.
+  </p>
+
+  <form method="post" action="/forgot" class="card card-pad-lg" style="margin-top:var(--space-5)">
+    <div class="field">
+      <label for="email">Email</label>
+      <input class="input" id="email" name="email" type="email" required autocomplete="email"
+             value="${esc(email)}" placeholder="you@example.com">
+    </div>
+    <button class="btn btn-primary btn-lg" style="width:100%;margin-top:var(--space-2)" type="submit">
+      Send the link
+    </button>
+  </form>
+
+  <p class="small" style="margin-top:var(--space-5)">
+    The link works once and expires in an hour. Opening it signs you out on your other devices, because
+    a reset is what you do when you think somebody else has your account.
+  </p>
+  ${consentNote || ''}
+  <p class="auth-switch" style="margin-top:var(--space-6)"><a href="/login">Back to sign in</a></p>`}
+</div>`,
+  });
+}
+
+/**
+ * The reset form — and the page a dead link gets.
+ *
+ * The dead-link page is rendered with `consent: null` — no cookie banner. That is
+ * deliberate and it is the second half of "one page for four states": the banner
+ * posts the current URL back to itself as `next`, which on this route would write
+ * the token into the markup of a page whose whole job is to say the token is
+ * worthless. (A LIVE link keeps the banner, because there the person answering it
+ * needs to land back on the form they are looking at rather than somewhere else.)
+ *
+ * Expired, already used, never existed, and tampered with all render THIS page,
+ * byte for byte, with the same sentence. Telling the four apart helps exactly one
+ * party, and it is not the account holder: somebody holding a stolen link learns
+ * whether it is worth another guess, and somebody holding a discarded one learns
+ * which addresses are registered here. The person who needs the page cannot act
+ * on the difference — in every case the answer is a new link — so the page does
+ * not offer one, and there is no parameter that could be passed to make it.
+ */
+export function resetPassword({ user = null, consent = null, token = '', error = null }) {
+  if (!token) {
+    return layout({
+      title: 'Reset link', user, consent,
+      body: `
+<div class="section auth-card" style="margin-top:var(--space-12)">
+  <h1 style="font-size:var(--text-2xl)">That link cannot be used</h1>
+  <div class="note note-warning" style="margin-top:var(--space-5)">
+    <strong>That link cannot be used.</strong>
+    It may have expired, it may have been used already, it may have been replaced by a newer one, or
+    it may never have worked. Links last an hour and work once, and asking for a new one cancels the
+    old one — so those four cases look the same here on purpose, because the answer to all four is
+    the same.
+  </div>
+  <p class="small" style="margin-top:var(--space-5)">
+    Nothing has gone wrong with your account. Your current password still works, and a new link takes
+    a moment to request.
+  </p>
+  <p class="auth-switch" style="margin-top:var(--space-6)">
+    <a class="btn btn-primary" href="/forgot">Send a new link</a>
+    <a class="btn btn-sm" href="/login" style="margin-left:var(--space-2)">Back to sign in</a>
+  </p>
+</div>`,
+    });
+  }
+
+  return layout({
+    title: 'Choose a new password', user, consent,
+    body: `
+<div class="section auth-card" style="margin-top:var(--space-12)">
+  <h1 style="font-size:var(--text-2xl)">Choose a new password</h1>
+  <p class="small" style="margin-top:var(--space-3)">
+    You are signed out everywhere else the moment you save this.
+  </p>
+
+  ${error ? `<div class="note note-danger" style="margin-top:var(--space-5)" role="alert">${esc(error)}</div>` : ''}
+
+  <form method="post" action="/reset/${esc(token)}" class="card card-pad-lg" style="margin-top:var(--space-5)">
+    <div class="field">
+      <label for="password">New password</label>
+      <input class="input" id="password" name="password" type="password" required
+             autocomplete="new-password" minlength="${MIN_PASSWORD_LENGTH}"
+             placeholder="At least ${MIN_PASSWORD_LENGTH} characters">
+      <span class="hint">${MIN_PASSWORD_LENGTH} characters minimum. Length matters more than symbols.</span>
+    </div>
+    <div class="field">
+      <label for="password2">Again</label>
+      <input class="input" id="password2" name="password2" type="password" required
+             autocomplete="new-password" minlength="${MIN_PASSWORD_LENGTH}">
+      <span class="hint">Typed twice so a keyboard slip cannot lock you out of an account you just recovered.</span>
+    </div>
+    <button class="btn btn-primary btn-lg" style="width:100%;margin-top:var(--space-2)" type="submit">
+      Save and sign in
+    </button>
+  </form>
+</div>`,
+  });
+}
+
 export function login({ user, error, next = '', email = '', mode = 'login', consent = null }) {
   const isSignup = mode === 'signup';
   const action = isSignup ? '/signup' : '/login';
@@ -1153,9 +1294,9 @@ export function login({ user, error, next = '', email = '', mode = 'login', cons
       <label for="password">Password</label>
       <input class="input" id="password" name="password" type="password" required
              autocomplete="${isSignup ? 'new-password' : 'current-password'}"
-             minlength="${isSignup ? 8 : 1}"
-             placeholder="${isSignup ? 'At least 8 characters' : ''}">
-      ${isSignup ? '<span class="hint">Eight characters minimum. Length matters more than symbols.</span>' : ''}
+             minlength="${isSignup ? MIN_PASSWORD_LENGTH : 1}"
+             placeholder="${isSignup ? `At least ${MIN_PASSWORD_LENGTH} characters` : ''}">
+      ${isSignup ? `<span class="hint">${MIN_PASSWORD_LENGTH} characters minimum. Length matters more than symbols.</span>` : ''}
     </div>
     ${isSignup ? '' : `
     <label class="check">
@@ -1182,6 +1323,7 @@ export function login({ user, error, next = '', email = '', mode = 'login', cons
       ? 'Already have an account? <a href="/login">Sign in</a>'
       : 'No account yet? <a href="/signup">Open a store</a>'}
   </p>
+  ${isSignup ? '' : '<p class="auth-switch" style="margin-top:var(--space-2)"><a href="/forgot">Forgot your password?</a></p>'}
 </div>`,
   });
 }
@@ -1507,9 +1649,57 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
  * read one at a time. It is also where the decision gets made, which is why the
  * suspension form lives here rather than on the row.
  */
+/**
+ * "I never got the reset link" — the answer, on the page support already has open.
+ *
+ * The three states are deliberately not merged into one line, because they call
+ * for three different replies to the person:
+ *
+ *   • a link was requested and the message went out → it is in spam, or the
+ *     address is wrong; ask them to try again;
+ *   • a link was requested and delivery FAILED → our problem, and the error text
+ *     is the first thing a developer needs;
+ *   • the development driver printed it instead of sending it → expected on this
+ *     machine, and the link's true home is the server log.
+ *
+ * And one state that is not an error at all but is worth stating: a completed
+ * reset signs the account out everywhere, so a person who just recovered their
+ * password is *supposed* to see zero live sessions.
+ */
+function recoveryNote(r, person) {
+  if (!r) return '';
+  const when = r.last_requested ? relTime(r.last_requested) : null;
+
+  if (r.failed_deliveries) {
+    return `<div class="note note-danger" style="margin-top:var(--space-5)">
+      <strong>${num(r.failed_deliveries)} reset ${r.failed_deliveries === 1 ? 'link' : 'links'} to this address did not send.</strong>
+      The message was written and the provider refused it, so the person is waiting for something that is not
+      coming — and they will assume the platform is broken, which today it is. The reason is recorded against
+      the message, on the mail log, and the fix is in the mail settings rather than in this account.
+      ${when ? `The most recent attempt was ${esc(when)}.` : ''}
+    </div>`;
+  }
+
+  if (!r.requested) {
+    return `<p class="fine" style="margin-top:var(--space-4)">
+      No reset link has ever been requested for this address. If somebody says they cannot get in, this is
+      normally a forgotten password rather than a lost one, and asking them to use “Forgot your password?”
+      is the whole answer.
+    </p>`;
+  }
+
+  const done = r.completed
+    ? `Recovered ${r.completed === 1 ? 'once' : `${num(r.completed)} times`}${r.last_delivered ? `, the last time ${esc(relTime(r.last_delivered))}` : ''}.`
+    : 'Never completed — links were asked for and none was used.';
+  return `<p class="fine" style="margin-top:var(--space-4)">
+    <strong>${num(r.requested)} reset ${r.requested === 1 ? 'link' : 'links'} requested</strong>${when ? `, most recently ${esc(when)}` : ''}.
+    ${esc(done)} Asking for a second link cancels the first, so only the newest one is ever live.
+  </p>`;
+}
+
 export function adminUser({
   user, consent = null, flash = null, detail = null, rules = [],
-  personActions = [], labels = {},
+  personActions = [], labels = {}, recovery = null,
 }) {
   if (!detail) {
     return adminShell({
@@ -1601,7 +1791,11 @@ ${detail.stores.length ? `<section class="section">
     : '<span class="fine">Not given yet. This is the field an invoice uses, and it stays private from buyers and sellers.</span>'}</dd>
         <dt>Phone</dt><dd>${p.phone_on_file ? 'On file, private' : '<span class="fine">not given</span>'}</dd>
         <dt>Locale</dt><dd>${esc(p.locale || 'ne')}</dd>
+        <dt>Live sessions</dt><dd>${num(detail.sessions.live)}${detail.sessions.live
+    ? ` <span class="fine">· a reset ends all of them at once</span>`
+    : ' <span class="fine">· nobody is signed in as this account</span>'}</dd>
       </dl>
+      ${recoveryNote(recovery, p)}
       <p class="fine" style="margin-top:var(--space-4)">
         Their legal name and phone are stored, and are not rendered here even for an operator: this page
         is about what to do, and the fields that identify a person to the tax office live on the invoice
