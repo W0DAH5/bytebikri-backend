@@ -71,12 +71,29 @@ export async function send({ to, subject, text, kind, userId = null, env = proce
     // whoever just clicked "forgot password" can copy the link out of the log
     // without an account at a mail provider. config.js refuses this driver in
     // production, so this branch is only reachable in development and test.
-    console.log('\n── email (console driver, not delivered) ─────────────────────────');
-    console.log(`   to      ${to}`);
-    console.log(`   subject ${subject}`);
-    console.log(String(text).split('\n').map((l) => `   │ ${l}`).join('\n'));
-    console.log('─────────────────────────────────────────────────────────────────\n');
-    return { ok: true, driver, id, delivered: false, why: 'console driver: written and printed, not delivered' };
+    //
+    // Not, however, under the test runner. A test child writes its results to the
+    // same stdout the runner frames its own messages on, and a suite that prints
+    // a message body per send produced this every few runs: the runner failed an
+    // entire FILE with "Unable to deserialize cloned data due to invalid or
+    // unsupported version", intermittently and with no failing assertion to point
+    // at. The message is still written and still recorded — the row, the id and
+    // the return value are untouched, so nothing a test asserts on moves. Only the
+    // echo of a mail body nobody is reading goes away.
+    const printing = !process.env.NODE_TEST_CONTEXT;
+    if (printing) {
+      console.log('\n── email (console driver, not delivered) ─────────────────────────');
+      console.log(`   to      ${to}`);
+      console.log(`   subject ${subject}`);
+      console.log(String(text).split('\n').map((l) => `   │ ${l}`).join('\n'));
+      console.log('─────────────────────────────────────────────────────────────────\n');
+    }
+    return {
+      ok: true, driver, id, delivered: false,
+      why: printing
+        ? 'console driver: written and printed, not delivered'
+        : 'console driver: written to the log, not delivered',
+    };
   }
   if (!from) return record('EMAIL_FROM is not set, so there is no address to send from');
 

@@ -1022,7 +1022,13 @@ APP.get('/api/stores/:slug', async (req, res, next) => {
         resolved, rule: ruleFor(rules, channelBlock.rule_code), store: channel.name, country,
       });
       return res.status(blockStatus(resolved) ?? 451).json({
-        ok: false, error: 'country', country, ...sentence,
+        ok: false,
+        error: 'country',
+        country,
+        // The same field every other refusal carries, so a client has one name
+        // to read whether the store, the file, or the unlock was refused.
+        unavailableFor: 'country',
+        ...sentence,
       });
     }
 
@@ -1059,7 +1065,13 @@ APP.get('/api/stores/:slug', async (req, res, next) => {
           // `unlockable` is what the app must check before offering the ad flow;
           // `unlocked` is what the account already holds. A client that tried to
           // unlock a refused file would be refused one call later anyway.
+          //
+          // `unavailableFor` says WHICH decision refused it — `country` or `file`
+          // — because the two need different copy and one status code cannot
+          // carry both: a creator withholding their own file and an operator
+          // removing one are both 403. Null means nothing stands in the way.
           unlockable: a.availability.unlockable,
+          unavailableFor: a.availability.unlockable ? null : a.availability.reason,
           unlocked: a.unlock_mode === 'open' || unlockedIds.has(a.id),
           adsRequired: (await store.unlockPolicy(a.id))?.ads_required ?? 1,
         };
@@ -1243,6 +1255,11 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
       reviewError: REVIEW_ERRORS[String(req.query.error)] || null,
       policy: await store.unlockPolicy(asset.id),
       refusal, ownerNotice,
+      // A file the viewer can open because an operator allowed it back into a
+      // country whose store-wide rule would otherwise refuse them.
+      carveOut: views.carriedByCarveOut({
+        resolved, country, rule: ruleFor(await store.policyRules(), resolved.ruleCode), store: channel.name,
+      }),
       // On a file page the whole point of the space is to pay for the unlock, so
       // the platform slot is always here — the creator's own message appears
       // only if they wrote one.
@@ -1873,7 +1890,11 @@ async function resolveContentRequest(req, res, { event }) {
       assetId: a, fileId: f, userId: u, country: refusal.country,
     }, { actorId: u, subjectType: 'asset', subjectId: a });
     res.status(refusal.status).json({
-      ok: false, error: refusal.sentence.headline, why: refusal.sentence.why, country: refusal.country,
+      ok: false,
+      error: refusal.sentence.headline,
+      why: refusal.sentence.why,
+      country: refusal.country,
+      unavailableFor: refusal.availability.reason,
     });
     return null;
   }
@@ -1954,7 +1975,11 @@ APP.get('/api/content/:assetId', async (req, res, next) => {
         assetId: asset.id, country: refusal.country,
       }, { actorId: req.user.id, subjectType: 'asset', subjectId: asset.id });
       return res.status(refusal.status).json({
-        ok: false, error: refusal.sentence.headline, why: refusal.sentence.why, country: refusal.country,
+        ok: false,
+        error: refusal.sentence.headline,
+        why: refusal.sentence.why,
+        country: refusal.country,
+        unavailableFor: refusal.availability.reason,
       });
     }
 

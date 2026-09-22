@@ -605,12 +605,12 @@ export function storefront({ channel, assets, slots, user, estimate, pageviews, 
     // gets the reason. The badge is the one place a card can lie, and "Ad-gated"
     // on a file that refuses every unlock is the lie this round removed.
     const badge = a.availability && !a.availability.unlockable
-      ? pill(a.availability.reason === 'country' ? 'Not here' : 'Not unlockable', 'warning')
+      ? pill(a.availability.state === 'blocked' ? 'Not here' : 'Listed, no unlock', 'warning')
       : open
         ? pill('Free', 'success')
         : unlocked ? pill('Unlocked', 'success') : pill('Ad-gated', 'locked');
     const foot = a.availability && !a.availability.unlockable
-      ? (a.availability.reason === 'country' ? 'Not unlockable in your country' : 'Listed, not unlockable')
+      ? (a.availability.state === 'blocked' ? 'Not available in your country' : 'Listed, but not unlockable here')
       : open ? 'No ad needed' : `${a.ads_required} ad${a.ads_required === 1 ? '' : 's'} to unlock`;
     return `<a class="asset" href="/s/${esc(channel.slug)}/a/${esc(a.slug)}">
   <div style="position:relative">
@@ -892,6 +892,10 @@ export function assetPage({
   // The owner always sees the page; the sentence is the difference between
   // "somebody decided something about my file" and a support ticket.
   ownerNotice = null,
+  // Set when the viewer is inside a blocked country and this file is open to
+  // them only because an operator allowed it. Silence here reads as a broken
+  // link one click away: the store link refuses, and nothing says why.
+  carveOut = null,
 }) {
   const open = asset.unlock_mode === 'open';
   const needsAd = !open && !unlocked;
@@ -1003,6 +1007,9 @@ export function assetPage({
     ${ownerNotice ? `<div class="note note-warning" style="margin-top:var(--space-5)" role="status">
       <strong>Not everyone sees this file.</strong> ${esc(ownerNotice)}
     </div>` : ''}
+    ${carveOut ? `<div class="note" style="margin-top:var(--space-5)" role="status">
+      <strong>This store is withheld where you are. This file is not.</strong> ${esc(carveOut)}
+    </div>` : ''}
     ${markNote}
 
     ${placed.head}
@@ -1065,6 +1072,26 @@ ${reportBlock({ channel, asset, user, alreadyReported, reported })}
   });
 }
 
+/**
+ * A file that is open to this viewer only because an operator allowed it back.
+ *
+ * The store as a whole is withheld where they are and this one file is not —
+ * because an operator read it and decided the rule did not fit it. Without a
+ * sentence the visitor gets a normal-looking page, follows the store's name, and
+ * lands on a refusal that reads as the site breaking. One line makes it the
+ * decision it is: the rule is about the store, this file was exempted from it,
+ * and an exemption is a person's call rather than an accident.
+ */
+export function carriedByCarveOut({ resolved, country = null, rule = null, store = null }) {
+  if (!resolved?.carveOut || !country) return null;
+  const title = rule?.title ? ` under “${rule.title}”` : '';
+  return `${store || 'This store'} is not available in ${countryIn(country)}${title}. `
+    + 'An operator allowed this one file back, so it opens for you — one file against a store-wide rule.';
+}
+
+/**
+ * What this viewer is refused, and why — a country rule, or the file's own
+ * state.
 /**
  * The page a visitor gets when a country rule applies to them.
  *
@@ -4507,6 +4534,9 @@ ${notice ? `
   </div>
 
   ${countryRules.length ? `<div class="table-scroll"><table class="table">
+    <!-- The creator's own rules. A platform rule is not a row here: it is the
+         notice below, because the two ask for different things (clear mine, or
+         read theirs and appeal) and a shared table invites the wrong click. -->
     <thead><tr><th>Country</th><th>What happens there</th><th>Set by</th><th>When</th><th></th></tr></thead>
     <tbody>${countryRules.map((r) => `<tr>
       <td><strong>${esc(countryName(r.country_code))}</strong></td>
@@ -4514,7 +4544,8 @@ ${notice ? `
     ? 'Not shown at all — the page answers 403 to a visitor there'
     : r.state === 'restricted'
       ? 'Listed, but nobody there can unlock it'
-      : 'Available — this overrides a store-wide decision'}</td>
+      : 'Available — this overrides a store-wide decision'}
+        ${r.reason ? `<span class="fine" style="display:block;margin-top:var(--space-2)">Your note: ${esc(r.reason)}</span>` : ''}</td>
       <td>${r.source === 'creator' ? 'You' : 'The platform'}</td>
       <td class="fine">${esc(relTime(r.updated_at))}</td>
       <td>${r.source === 'creator' ? `<form method="post" action="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}/country">

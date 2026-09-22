@@ -60,6 +60,9 @@ export async function startUnlock({ assetId, userId, providerId, personalised = 
       ok: false,
       country,
       reason: availability.reason,
+      // The same word under the name every other refusal uses, so a client has
+      // one field to read instead of a different one per endpoint.
+      unavailableFor: availability.reason,
       error: availability.reason === 'country'
         ? 'this file is not available in your country'
         : 'this file cannot be unlocked',

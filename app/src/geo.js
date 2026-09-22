@@ -102,6 +102,11 @@ export function resolveCountry({ assetRule = null, channelBlock = null } = {}) {
       setBy: assetRule.set_by ? String(assetRule.set_by) : null,
       decidedAt: assetRule.updated_at ?? assetRule.created_at ?? null,
       inherited: false,
+      // The file was allowed back into a country whose STORE is withheld. That
+      // is a carve-out, and it is the one state here that looks like no decision
+      // was made at all — so it has to be nameable, or the page cannot tell the
+      // visitor that the store around this file is closed to them.
+      carveOut: state === 'allowed' && Boolean(channelBlock),
     };
   }
   if (channelBlock) {
@@ -115,9 +120,13 @@ export function resolveCountry({ assetRule = null, channelBlock = null } = {}) {
       // A block that comes from the store rather than the file: the storefront
       // is what a visitor can actually change, so the copy points there.
       inherited: true,
+      carveOut: false,
     };
   }
-  return { state: null, source: null, ruleCode: null, note: null, setBy: null, decidedAt: null, inherited: false };
+  return {
+    state: null, source: null, ruleCode: null, note: null, setBy: null,
+    decidedAt: null, inherited: false, carveOut: false,
+  };
 }
 
 export function isBlocked(resolved) {
@@ -262,11 +271,16 @@ export const CREATOR_COUNTRY_STATES = Object.freeze(['blocked', 'restricted']);
  */
 export function availabilityFor({ assetState = 'approved', resolved = null } = {}) {
   const state = normaliseAssetState(assetState);
-  if (!isAssetPublic(state)) return { visible: false, unlockable: false, reason: 'file' };
-  if (isBlocked(resolved)) return { visible: false, unlockable: false, reason: 'country' };
-  if (!isAssetUnlockable(state)) return { visible: true, unlockable: false, reason: 'file' };
-  if (isRestricted(resolved)) return { visible: true, unlockable: false, reason: 'country' };
-  return { visible: true, unlockable: true, reason: null };
+  // `state` comes back with `reason` because the two say different things and the
+  // copy needs both: `reason: 'country'` is where the refusal comes from, and
+  // `state: 'restricted'` is what it is. A card that showed "Not here" for a
+  // restricted file overstates the decision — the file IS listed there, and what
+  // is refused is the unlock.
+  if (!isAssetPublic(state)) return { visible: false, unlockable: false, reason: 'file', state: 'removed' };
+  if (isBlocked(resolved)) return { visible: false, unlockable: false, reason: 'country', state: 'blocked' };
+  if (!isAssetUnlockable(state)) return { visible: true, unlockable: false, reason: 'file', state: 'restricted' };
+  if (isRestricted(resolved)) return { visible: true, unlockable: false, reason: 'country', state: 'restricted' };
+  return { visible: true, unlockable: true, reason: null, state: null };
 }
 
 /**

@@ -121,3 +121,42 @@ test('the app protects its windows with FLAG_SECURE and says what that does not 
   assert.ok(!/screenshots? (?:are )?(?:blocked|prevented) (?:on|for) (?:the )?web/i.test(all));
   assert.match(all, /cannot be prevented|screen recording/, 'the honest note about recording is gone');
 });
+
+test('the app can be told "not here", and which decision said so', () => {
+  // The server has always sent the country decision — the app just could not
+  // read it. A file can be listed and still be unlocked by nobody in your
+  // country, and the screen drew an unlock button anyway; the person tapped it,
+  // watched the ad, and got a failure. Two fields close it: whether an unlock is
+  // possible for this viewer, and which of the two decisions (a country rule, or
+  // the file's own state) is refusing.
+  const service = files.find((f) => f.endsWith('ApiService.kt'));
+  assert.ok(service, 'ApiService.kt is gone; this test no longer tests anything');
+  const kt = readFileSync(service, 'utf8');
+
+  assert.match(kt, /val\s+unlockable\s*:\s*Boolean/, 'the client does not read `unlockable`');
+  assert.match(kt, /val\s+unavailableFor\s*:\s*String\?/, 'the client does not read `unavailableFor`');
+  // A typed refusal, so a screen can render a decision instead of "try again".
+  assert.match(kt, /class\s+NotAvailableHere/, 'there is no typed country/file refusal');
+  assert.match(kt, /451/, 'the client does not treat 451 as an answer');
+  // The client has to see the refusal BODY to know which decision said no: 403
+  // covers both a creator withholding their file and an operator removing it.
+  assert.match(kt, /val\s+body\s*:\s*String/, 'the refusal body is thrown away again');
+  assert.match(kt, /field\("unavailableFor"\)/, 'the client guesses the reason from the status code');
+
+  // Both halves of the wire. The server must send what the client parses, or
+  // this test would pin one side of a contract nobody completes.
+  assert.match(server, /unlockable: a\.availability\.unlockable/, 'the server stopped sending `unlockable`');
+  assert.match(server, /unavailableFor: a\.availability\.unlockable \? null : a\.availability\.reason/,
+    'the list stopped saying which decision refuses');
+  // The store itself can be withheld — the whole screen, not one file — and that
+  // refusal speaks the same vocabulary.
+  assert.match(server, /unavailableFor: 'country',/, 'a refused store stopped naming the refusal');
+  assert.match(kt, /suspend fun store\(slug: String\)[\s\S]{0,900}NotAvailableHere/,
+    'the store screen cannot tell a country refusal from a failure');
+  // Every refusal path, not just the friendliest one: a token minted in one
+  // country is checked again at the bytes, and that refusal has to explain
+  // itself the same way.
+  const refusalBodies = [...server.matchAll(/unavailableFor: refusal\.availability\.reason/g)];
+  assert.equal(refusalBodies.length, 2,
+    `expected the detail and the byte routes to name the refusal, found ${refusalBodies.length}`);
+});

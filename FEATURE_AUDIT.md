@@ -331,7 +331,7 @@ after the moderation round; 280 after the console round; 293 after reports).
 |---|---|
 | `test/media.test.js` (12) | kind detection with MIME fallback; the label carries no identity and survives a quote; derivative keys cannot escape their directory; the overlay SVG cannot be made to emit markup; the full Range matrix and exact byte slices; the LRU's bound; and a real ImageMagick run asserting sRGB, dimensions, a visible mark, and a loud failure on a corrupt file |
 | `test/ui.test.js` (+4) | the player is not a download with a label on it; the page never claims the web can stop a screenshot; every selector the client queries exists in a view; **every class the views emit has a CSS rule** |
-| `test/android-contract.test.js` (3) | every endpoint the app calls exists server-side; the parked endpoints stay deleted; `FLAG_SECURE` is set, `FLAG_PRESENTATION` is not, and the app does not kill its own process |
+| `test/android-contract.test.js` (4) | every endpoint the app calls exists server-side; the parked endpoints stay deleted; `FLAG_SECURE` is set, `FLAG_PRESENTATION` is not, and the app does not kill its own process; **a refusal is legible to the client** — the server sends `unlockable`, `unavailableFor` and a typed 451/403 wherever it refuses, and the client parses exactly those fields (both halves, because a contract tested on one side is a contract nobody completed) |
 | `test/billing.test.js` (23) | the two charges and nothing else; rent = monthly estimate × 12 with a zero floor; request-then-pay keeps the paid plan and the renewal date; a payment without an open request is refused; reject leaves the plan alone; matching twice is a no-op; grace is calculated, not stored; **and a write round-trip through every generated `SET` clause** |
 | `test/ui.test.js` (+9) | the billing page states both charges and refuses a third; an unconfigured payment rail says so and names its env var; a pending upgrade never claims the plan changed; no rent invoice explains WHICH reason applies; settings cannot promise a free store the Explore listing; reviews appear only for a buyer with an unlock; the asset page is one form; the operator queue shows what was asked for; search replaces the directory |
 | `test/earnings.test.js` (15) | an open period is shown but never compared; the estimate and the statement are never blended; rent is annualised against annualised statements; a blank payout label is not a label; **and `payout_accounts` is asserted to hold no column that could move money** |
@@ -1102,7 +1102,7 @@ rule + index + record together, and one thing the suite could not see before:
 source**, because a form that posted to `/admin/moderation/country` while the
 handler listened on `/admin/moderation/blocks` answered "Channel not found" and
 nothing said so. Reverting that action makes the test fail; that is how it was
-verified. Full suite: **445/445**.
+verified. Full suite: **447/447**, four runs in a row.
 
 Verified live, as a visitor in each country: `?country=IN` on a withheld store →
 **451**; `?country=US` → **200**; the same store's file in Nepal →
@@ -1110,3 +1110,66 @@ Verified live, as a visitor in each country: `?country=IN` on a withheld store �
 **403**; a removed file → **404** for a stranger, **200** for its owner, absent
 from the storefront; the withhold form (via its own button) → `?saved_country=1`
 → the store is out of Explore for that country and the owner is told why.
+
+### The second pass: what a person sees, and what a client is told
+
+Four things were wrong or missing once the feature was looked at on a screen
+rather than in a diff. Each is small, and each was a place where a correct
+decision reached the wrong sentence.
+
+**A restriction is not a block, and the card said it was.** `availabilityFor`
+answered `reason` (`'file' | 'country'`) and the storefront badge mapped
+`country` to **"Not here"** — so a file that is *listed* and refuses the unlock
+announced itself as absent. `reason` says where the refusal comes from and
+`state` says what it is, and the two are different questions; `availabilityFor`
+now returns both, the badge reads `state === 'blocked' ? 'Not here' : 'Listed, no
+unlock'`, and `test/geo.test.js` pins the full shape including the new field.
+
+**A carve-out is invisible, and that reads as a broken link.** When an operator
+allows one file back into a country whose store is withheld, the file opens
+normally — and the store's name, one click away, refuses. The visitor has no way
+to tell a decision from a bug. `resolveCountry` now sets `carveOut` (an `allowed`
+file rule *with* a store block behind it — `allowed` on its own is not a
+carve-out), and the file page says it in one sentence: *"This store is withheld
+where you are. This file is not."* Verified live: store **451**, that file
+**200**, a sibling file **451**, and the sentence rendered — checked at 900 px and
+390 px, because the last layout bug in this repository was found in a screenshot
+and not in the CSS.
+
+**No refusal could say which decision refused it.** A creator withholding their
+own file and an operator removing one are both **403**; a file-level rule and a
+store-wide rule are both **451**. So every refusal now carries
+`unavailableFor` (`'country' | 'file'`) — on the storefront payload (alongside
+`unlockable`), on the asset detail, on the byte routes, on the unlock start, and
+on the store-level refusal itself. The Android client reads that field instead of
+guessing from the status code, and both 451 and 403 arrive as a typed
+`NotAvailableHere` rather than as "the server said 451": a decision the platform
+took on purpose is not a failure, and presenting it as one teaches people the
+product is unreliable. `test/android-contract.test.js` checks both halves of the
+wire — the server sends the fields, the client parses them — because a contract
+tested on one side only is a contract nobody completed.
+
+**The creator's own note was stored and never shown.** A creator writes
+"Licence covers Nepal only" when they withhold a file; the sentence went into
+`asset_country_rules.reason` and stayed there. Their own panel listed the country,
+the state, and who set it, so the one thing they had written down about their own
+decision was the one thing their page did not show — and that sentence is also
+what an operator reads when they open the file, which makes it the whole of the
+appeal in one line. It now renders under the state, labelled as theirs:
+*"Your note: Licence covers Nepal only."* A platform's rule is deliberately not a
+row in that table: it is the notice below, because the two rows ask for different
+things (clear mine, or read theirs and appeal) and a shared table invites the
+wrong click.
+
+### One more thing the suite was hiding
+
+`npm test` failed a whole **file** with *"Unable to deserialize cloned data due
+to invalid or unsupported version"* in roughly one run in two, on a different
+file each time, with no failing assertion to point at. It was not the code under
+test: a test child writes to the same stdout the runner frames its own messages
+on, and the console mail driver printed every message body a test triggered. The
+driver no longer prints when `NODE_TEST_CONTEXT` is set — the message is still
+written and still recorded, so nothing a test asserts on moved — and the suite
+then ran **446/446** four times in a row where it had failed in half the attempts
+before. This is written down because the failure looked like flakiness in the
+product for two days, and it was flakiness in the harness.

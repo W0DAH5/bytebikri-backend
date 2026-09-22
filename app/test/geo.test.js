@@ -147,22 +147,23 @@ test('the status code follows the source: 451 for a rule, 403 for a choice', () 
 test('availability combines the file state and the country rule, and removed wins', () => {
   const none = geo.resolveCountry({});
   assert.deepEqual(geo.availabilityFor({ assetState: 'approved', resolved: none }),
-    { visible: true, unlockable: true, reason: null });
+    { visible: true, unlockable: true, reason: null, state: null });
 
   const blocked = geo.resolveCountry({ assetRule: { state: 'blocked', source: 'operator' } });
   assert.deepEqual(geo.availabilityFor({ assetState: 'approved', resolved: blocked }),
-    { visible: false, unlockable: false, reason: 'country' });
+    { visible: false, unlockable: false, reason: 'country', state: 'blocked' });
 
   const restricted = geo.resolveCountry({ assetRule: { state: 'restricted', source: 'creator' } });
   assert.deepEqual(geo.availabilityFor({ assetState: 'approved', resolved: restricted }),
-    { visible: true, unlockable: false, reason: 'country' });
+    { visible: true, unlockable: false, reason: 'country', state: 'restricted' },
+    'a country restriction is not a block: the listing stays, and the copy has to say so');
 
   assert.deepEqual(geo.availabilityFor({ assetState: 'restricted', resolved: none }),
-    { visible: true, unlockable: false, reason: 'file' });
+    { visible: true, unlockable: false, reason: 'file', state: 'restricted' });
 
   const allowed = geo.resolveCountry({ assetRule: { state: 'allowed', source: 'operator' } });
   assert.deepEqual(geo.availabilityFor({ assetState: 'removed', resolved: allowed }),
-    { visible: false, unlockable: false, reason: 'file' },
+    { visible: false, unlockable: false, reason: 'file', state: 'removed' },
     'an operator who removed a file did not mean "except where a country rule allows it"');
 });
 
@@ -390,6 +391,13 @@ test('clearing a country rule stands the index down, and a store block is what r
   });
   assert.equal(carved.state, 'allowed');
   assert.equal(geo.availabilityFor({ assetState: 'approved', resolved: carved }).unlockable, true);
+  // The carve-out has to be distinguishable from "no rule at all", because that
+  // is exactly what it is not: a store-wide decision is still standing, and the
+  // page says so. Without the flag the visitor sees an ordinary file page, and
+  // the store link one click away looks broken.
+  assert.equal(carved.carveOut, true, 'the file was allowed back into a blocked country');
+  assert.equal(inherited.carveOut, false, 'a store block is not a carve-out');
+  assert.equal(geo.resolveCountry({}).carveOut, false, 'no rule is not a carve-out');
 
   // Clearing the file rule leaves the store block in force for it again.
   await store.clearAssetCountryRule({ assetId: asset.id, countryCode: 'IN', actorId: user.id });

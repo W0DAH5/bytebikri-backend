@@ -30,15 +30,24 @@ alter table asset_country_rules
 create index if not exists idx_country_rules_country on asset_country_rules(country_code, state);
 create index if not exists idx_geo_blocks_country   on content_geo_blocks(country_code, subject_type);
 
+-- Each description states the LAW and nothing about our response to it.
+--
+-- The response is the operator's decision and the page renders it separately
+-- ("under the platform rule ..."). A description that also described the response
+-- is wrong the moment the same rule is applied as a restriction instead of a
+-- block — the visitor then reads "a file of that kind is listed but cannot be
+-- unlocked" underneath a sentence saying the file is not shown at all. Seen on a
+-- phone, not in a diff: the assertion is made about the law, so the law is all it
+-- says.
 insert into policy_rules (code, title, description, scope, country_code, default_state, severity)
 values
   ('gambling-in', 'Gambling promotion in India',
-   'India restricts the promotion of betting and gambling services. A file that promotes them is not shown to visitors in India.',
+   'India restricts the promotion of betting and gambling services.',
    'country', 'IN', 'blocked', 3),
   ('adult-in', 'Adult content in India',
-   'India restricts the distribution of sexually explicit material. A file of that kind is not shown to visitors in India.',
+   'India restricts the distribution of sexually explicit material.',
    'country', 'IN', 'blocked', 3),
   ('adult-np', 'Adult content in Nepal',
-   'Nepal restricts the publication of sexually explicit material. A file of that kind is listed but cannot be unlocked in Nepal.',
+   'Nepal restricts the publication of sexually explicit material.',
    'country', 'NP', 'restricted', 2)
 on conflict (code) do nothing;

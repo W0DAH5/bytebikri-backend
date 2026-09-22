@@ -442,3 +442,47 @@ test('search results replace the directory rather than sitting above it', () => 
   const plain = marketplace({ channels: [], user: null, q: '', results: null });
   assert.ok(/Listed stores/.test(plain));
 });
+
+test('the creator sees the note they wrote, and who set a rule they did not', () => {
+  /**
+   * The column was empty and the sentence was nowhere else.
+   *
+   * A creator withholds a file from a country and writes why — "Licence covers
+   * Nepal only" — and the note went into `asset_country_rules.reason` and
+   * stopped there. The panel listed the country, the state, and who set it, so
+   * the one thing the creator had written down about their own decision was the
+   * one thing their own page did not show. It is also the sentence an operator
+   * reads when they open the file, which makes it the whole of the appeal in one
+   * line: a reason nobody can reread is a reason nobody can stand behind.
+   */
+  const html = assetManage({
+    channel: CHANNEL, user: null,
+    asset: {
+      id: '55555555-5555-4555-8555-555555555555', slug: 'kit', title: 'Kit',
+      description: 'd', unlock_mode: 'ad_gated', status: 'live',
+    },
+    files: [{ filename: 'kit.zip', mime_type: 'application/zip', size_bytes: 1024 }],
+    policy: { ads_required: 1, ad_min_seconds: 15, unlock_hours: 24 },
+    stats: { count: 0, average: 0 }, unlocks: 0,
+    countryRules: [{
+      country_code: 'IN', state: 'blocked', source: 'creator',
+      reason: 'Licence covers Nepal only.', updated_at: new Date().toISOString(),
+    }],
+    platformRules: [{
+      country_code: 'NP', state: 'restricted', source: 'operator',
+      reason: 'Position of a platform rule.', rule_title: 'Adult content in Nepal',
+      updated_at: new Date().toISOString(),
+    }],
+  });
+
+  assert.match(html, /Your note: Licence covers Nepal only\./,
+    "the creator's own note is missing from the creator's own page");
+  // A platform's rule is a different thing on this page, and it already carries
+  // its own attribution: the rule's title, then the operator's sentence. What
+  // must not happen is the operator's words arriving as the CREATOR's note —
+  // that would put a sentence they did not write under their name.
+  assert.match(html, /Adult content in Nepal[^<]*— Position of a platform rule\./,
+    "the platform's rule and its reason are no longer shown together");
+  assert.ok(!/Your note: Position of a platform rule/.test(html),
+    "the platform's sentence is shown as the creator's own note");
+});

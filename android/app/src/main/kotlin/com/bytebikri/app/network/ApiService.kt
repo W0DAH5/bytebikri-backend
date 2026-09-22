@@ -81,7 +81,7 @@ class ApiService(val baseUrl: String) {
     private suspend fun get(path: String): JSONObject = withContext(Dispatchers.IO) {
         client.newCall(Request.Builder().url(url(path)).get().build()).execute().use { res ->
             val text = res.body?.string().orEmpty()
-            if (!res.isSuccessful) throw ApiException(res.code, errorFrom(text, res.code))
+            if (!res.isSuccessful) throw ApiException(res.code, errorFrom(text, res.code), text)
             JSONObject(text)
         }
     }
@@ -93,7 +93,7 @@ class ApiService(val baseUrl: String) {
             .build()
         client.newCall(request).execute().use { res ->
             val text = res.body?.string().orEmpty()
-            if (!res.isSuccessful) throw ApiException(res.code, errorFrom(text, res.code))
+            if (!res.isSuccessful) throw ApiException(res.code, errorFrom(text, res.code), text)
             JSONObject(text)
         }
     }
@@ -135,7 +135,20 @@ class ApiService(val baseUrl: String) {
 
     /** A storefront. Public: the first screen must render before anyone signs in. */
     suspend fun store(slug: String): Store = withContext(Dispatchers.IO) {
-        val json = get("/api/stores/$slug")
+        // A store withheld where this viewer is comes back as 451 with a
+        // sentence, not as a bug. Without this the whole screen fails with
+        // "the server said 451" — the least useful thing to tell somebody about
+        // a decision the platform took on purpose and can explain.
+        val json = runCatching { get("/api/stores/$slug") }
+            .getOrElse { err ->
+                val refusal = err as? ApiException
+                if (refusal?.code != 451 && refusal?.code != 403) throw err
+                throw NotAvailableHere(
+                    reason = refusal.field("unavailableFor") ?: "country",
+                    message = refusal.message.takeIf { it.isNotBlank() }
+                        ?: "This store is not available where you are.",
+                )
+            }
         val store = json.getJSONObject("store")
         val assets = json.optJSONArray("assets") ?: JSONArray()
         Store(
@@ -155,7 +168,25 @@ class ApiService(val baseUrl: String) {
      * the server.
      */
     suspend fun asset(assetId: String): AssetDetail = withContext(Dispatchers.IO) {
-        val json = get("/api/content/$assetId")
+        val json = runCatching { get("/api/content/$assetId") }
+            .getOrElse { err ->
+                // A country refusal is an ANSWER, not a failure. It arrives as
+                // 451 (a rule) or 403 (the creator's own licence) with the reason
+                // in the body, and the screen has to say which — otherwise the app
+                // shows "something went wrong" for a decision the platform made on
+                // purpose and can explain.
+                val refusal = err as? ApiException
+                // 451 is a rule and 403 is somebody's decision. Both are answers,
+                // and anything else really is a failure.
+                if (refusal?.code != 451 && refusal?.code != 403) throw err
+                val reason = refusal.field("unavailableFor")
+                    ?: if (refusal.code == 403) "file" else "country"
+                throw NotAvailableHere(
+                    reason = reason,
+                    message = refusal.message.takeIf { it.isNotBlank() }
+                        ?: "This is not available where you are.",
+                )
+            }
         val asset = json.getJSONObject("asset")
         val files = json.optJSONArray("files") ?: JSONArray()
         val viewer = json.getJSONObject("viewer")
@@ -190,7 +221,19 @@ class ApiService(val baseUrl: String) {
      * network it names has no account behind it.
      */
     suspend fun startUnlock(assetId: String): UnlockStart = withContext(Dispatchers.IO) {
-        val json = postJson("/api/unlock/start", JSONObject().put("assetId", assetId))
+        val json = runCatching { postJson("/api/unlock/start", JSONObject().put("assetId", assetId)) }
+            .getOrElse { err ->
+                // The server refuses BEFORE it asks the network for a view, and
+                // that ordering is the point: nobody watches an ad that cannot earn
+                // them anything. The app mirrors it rather than discovering it.
+                val refusal = err as? ApiException
+                if (refusal?.code != 451 && refusal?.code != 403) throw err
+                throw NotAvailableHere(
+                    reason = refusal.field("unavailableFor")
+                        ?: if (refusal.code == 403) "file" else "country",
+                    message = "This cannot be unlocked where you are.",
+                )
+            }
         val cfg = json.optJSONObject("adConfig") ?: JSONObject()
         UnlockStart(
             viewId = json.optString("viewId"),
@@ -225,7 +268,28 @@ class ApiService(val baseUrl: String) {
 
 // ── transport types ────────────────────────────────────────────────────────
 
-class ApiException(val code: Int, override val message: String) : Exception(message)
+class ApiException(
+    val code: Int,
+    override val message: String,
+    /** The refusal body, kept because the status code alone cannot say which
+     *  decision refused: a creator's own withholding and an operator's removal
+     *  are both 403. */
+    val body: String = "",
+) : Exception(message) {
+    /** A field from that body, or null when it is absent or blank. */
+    fun field(name: String): String? = runCatching { JSONObject(body).optString(name) }
+        .getOrNull()
+        ?.takeIf { it.isNotBlank() && it != "null" }
+}
+
+/**
+ * A country rule, or the file's own state, says no.
+ *
+ * Distinct from `ApiException` on purpose: one is "the request did not work" and
+ * this is "the answer is no, and here is which decision said it". A screen that
+ * treats them the same teaches people that the platform is unreliable.
+ */
+class NotAvailableHere(val reason: String, override val message: String) : Exception(message)
 
 data class Store(
     val slug: String,
@@ -244,6 +308,18 @@ data class StoreAsset(
     val fileCount: Int,
     val unlocked: Boolean,
     val adsRequired: Int,
+    /**
+     * Whether THIS viewer can unlock it, and which decision says no.
+     *
+     * The server has always known: a file can be listed and still be withheld
+     * from the country the request came from, or stopped by an operator. What it
+     * could not do was TELL the app, so the client drew an unlock button for a
+     * file whose unlock would be refused — and the person who tapped it, after
+     * watching a fifteen-second ad, got an error. `null` means nothing stands in
+     * the way; `"country"` and `"file"` are the two refusals.
+     */
+    val unlockable: Boolean = true,
+    val unavailableFor: String? = null,
 )
 
 data class AssetDetail(
@@ -294,6 +370,8 @@ private fun JSONObject.toAsset() = StoreAsset(
     fileCount = optInt("fileCount", 1),
     unlocked = optBoolean("unlocked", false),
     adsRequired = optInt("adsRequired", 1),
+    unlockable = optBoolean("unlockable", true),
+    unavailableFor = optString("unavailableFor").takeIf { it.isNotBlank() && it != "null" },
 )
 
 private fun JSONObject.toFile() = AssetFile(
