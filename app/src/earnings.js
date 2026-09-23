@@ -482,6 +482,26 @@ export const MONEY_MAP = {
     cut: 'An upgrade and annual rent',
     detail: 'A plan upgrade and annual rent for the platform ad slot. Neither is a share of what you earn, and neither is charged on a sale or on the dues your members pay you.',
   },
+  /*
+   * The fourth leg, added with ByteBikri Plus: a PERSON pays the platform for how
+   * their own name looks. It is on a seller's money map on purpose, and the reason is
+   * the heading above it — a page that says where the money goes cannot name three
+   * flows and leave out the fourth, least of all the one that is ours.
+   *
+   * The two answers that matter to the reader are the negative ones: nothing of
+   * THEIRS is involved, and nothing about this charge can move a file, an ad or a
+   * creator's earnings. `held` is phrased from the seller's side ("nothing of yours")
+   * rather than as a claim about where our own revenue sits, because the second
+   * reading of a row named "Held by bytebikri" is the one that would be wrong here.
+   */
+  toPlatformFromPeople: {
+    label: 'What people pay bytebikri',
+    payer: 'A person',
+    account: 'bytebikri',
+    held: 'Nothing of yours',
+    cut: 'One price, no share',
+    detail: 'NPR 149 a month, for a palette and an effect beside their own name. It opens no file, removes no ad, shortens no wait, and takes nothing from what you earn or from what your members pay you.',
+  },
 };
 
 /** The four things a creator must do at the network, in the order that matters. */

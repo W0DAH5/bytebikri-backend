@@ -446,11 +446,15 @@ test('the asset page is one form, so one save cannot undo another', () => {
   const forms = html.match(/<form[\s\S]*?<\/form>/g) || [];
   const edits = forms.filter((f) => /name="title"/.test(f));
   assert.equal(edits.length, 1, 'the file’s own fields are in exactly one form');
-  assert.ok(/name="adsRequired"/.test(edits[0]), 'and that form carries the unlock terms too');
+  // The ask is no longer two number fields (see src/adscale.js) — it is a choice and
+  // a private value, and both must be inside the SAME form as the title, or a save
+  // would post one of them stale.
+  assert.ok(/name="adAsk"/.test(edits[0]), 'and that form carries the unlock terms too');
+  assert.ok(/name="valueNpr"/.test(edits[0]), 'including what the file is worth, which the ask is derived from');
   assert.ok(!/type="hidden"/.test(edits[0]), 'nothing is mirrored into a hidden field to go stale');
   const other = forms.filter((f) => f !== edits[0]);
   assert.ok(other.length, 'the country form is on the page');
-  assert.ok(other.every((f) => !/name="title"|name="description"|name="adsRequired"/.test(f)),
+  assert.ok(other.every((f) => !/name="title"|name="description"|name="adAsk"|name="valueNpr"/.test(f)),
     'no other form carries a copy of the edit fields, so none of them can save a stale one');
   assert.ok(/cannot be swapped for another one here/.test(html),
     'the page refuses a silent file swap, and says why');

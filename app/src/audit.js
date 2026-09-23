@@ -82,6 +82,18 @@ export const AUDIT_FAMILIES = [
     decisions: false,
   },
   {
+    key: 'plus',
+    label: 'Plus',
+    // The platform's own charge to a person, and its own family for the same reason
+    // Members has one: the two store charges (a plan, rent) and this one share a
+    // ledger but not a consequence. A matched plan turns capabilities on for a shop;
+    // a matched Plus claim turns a look on for a person and opens nothing. Filing
+    // them together would make the audit page imply the platform sells access.
+    note: 'ByteBikri Plus: a claim submitted, a look chosen or changed, an arrangement stopped, and the operator\'s match or refusal. Cosmetics only — no row in this family grants access to a file, removes an ad, or shortens a wait.',
+    prefixes: ['plus.'],
+    decisions: true,
+  },
+  {
     key: 'stores',
     label: 'Stores & files',
     note: 'Sellers publishing, editing and connecting networks. High volume, low drama — and the only place a dispute about "when did that change" gets settled.',

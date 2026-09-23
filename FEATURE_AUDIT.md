@@ -2715,6 +2715,41 @@ Memberships turned out to be a lie-detector for sentences written when nothing h
   "around the content, never inside it" a description rather than a slogan.
 - Screenshots of all three surfaces: `/home/user/revenue-architecture.png`.
 
+### What the browser found that nothing else could
+
+The pass was not a formality. Five defects came out of looking at live pages, and every one of them
+would have passed the whole suite:
+
+1. **The asset page threw `policy is not defined`** — a variable that existed only inside one argument
+   list in a route composition, so every file page on the platform was a 500. The route was untested and
+   the view tests drove the view directly. A single page fetch found it in a second.
+2. **`resolveSession` did not carry the arrangement.** `plusWear()` refuses to dress anybody it cannot
+   prove, and `req.user` had no subscription columns — so the header chip and the arrangement panel both
+   said "nothing is being worn" to a person wearing a halo at that moment. The join moved into `plus.js`
+   and is now imported by `store.js`, `auth.js` and the roster queries: one copy, one answer.
+3. **Every file's ask was five seconds.** The platform's floor is 15 (a rewarded view shorter than that
+   is not a thing a network serves), and 0034's clamp only pulled *downward* — so the rows the old form
+   had defaulted to five seconds kept an ask the pipeline could never satisfy. The migration now raises
+   the floor as well, with the reasoning in the comment: no row gains a second ad, and `ad_band_npr` is
+   deliberately NOT filled in, because those asks were typed by hand before the ladder existed and a
+   calibration claim the row cannot support is worse than a null.
+4. **The withheld rung's only route forward was a lie.** Its button said "Open it by joining Alice's
+   Studio" — but membership opens the store's *member* files, not this ad-gated one, and in a store with
+   no tiers the anchor pointed at nothing at all. The view now renders the offer only when the store has
+   memberships (`hasMembers`, computed server-side), says what membership does *not* do, and in a store
+   without them says the honest thing instead: waiting is the way back here.
+5. **`askReason` lowercased a currency code** ("under npr 200") and a file with no value was described as
+   "valued at free". And with the two levels resolving to the same number, the panel drew a two-option
+   radio group where both options did the same thing; it now draws one, with a line saying why there is
+   nothing to choose yet.
+
+Also caught in the pass: `PLUS_NOT`'s third line rendered literal backticks around `ranking.js`, and the
+"Stop at the end of this month" button stopped the arrangement *that day*. The first is now a sentence;
+the second is now labelled "Stop it early", with a line saying the paid month does not come back — and
+pointing at the cheaper route (choose the plain effect) for anybody who only wanted to be quiet for a
+while. `/plus/join` also now enforces the same confirmed-address boundary the store money routes do,
+rather than relying on the view to have said so.
+
 ### Still open, recorded rather than half-built
 
 - **A seller-paid ad-free experience for their members** (the fee the platform would charge to drop
@@ -2726,3 +2761,157 @@ Memberships turned out to be a lie-detector for sentences written when nothing h
 - **Which region's viewers actually monetise the rented slot at all** — Nepal's display fill is real
   but thinly measured, and the estimate is currently honest about being an estimate rather than
   about its own error bar.
+
+## §32 — The ad economy, the person's premium, and what happens when the ad never arrives
+
+The brief for this round, in its own words: *"premium means more features included… for a customer too
+if they want sleek designs and animations to be a premium member pay us… and if the store owner pays
+and unlocks features channel inside channel or premium content separately for certain users we get ad
+space there too… required ads to watch or length should vary per the cost of the asset… and only 1 or 2
+space inside the store for ad spaces… before applying it all do a sentiment analysis… also take
+measures against ad blocker and Brave browser from requesting user to turn off to if not turned off the
+no content shown… research it all and expand my concept then apply."*
+
+The sentiment analysis is `AD_ECONOMY.md` (sources, findings, and the decision each one forced). This
+section is what was built, and the four things that had been sitting in this audit as open questions
+that this round actually closed.
+
+### The third charge, and it is cosmetics
+
+`/plus` — **ByteBikri Plus**, NPR 149 a month, paid to bytebikri by a *person* for how their own name
+looks: one palette (eight, contrast-checked), one effect (plain, a static gradient edge, or a slow
+halo), worn wherever this platform shows their name to somebody else — a store's roster, the seller's
+member queue, a review, the account chip. Migration `0033_buyer_plus.sql`; three tables that mirror the
+store side deliberately (`customer_plans` / `customer_subscriptions` / `customer_plan_payments`), and
+the same manual rail: a claim is a reference, an operator matches it against the platform's own
+statement, and only then does a month start.
+
+Two flags are the whole design, and both are asserted false in `test/plus.test.js`:
+`opens_content: false`, `removes_ads: false`. **A cosmetic that could open a file would be a hole in
+every creator's paywall at once**, and an ad-free promise would be selling the creator's ad revenue —
+which leg 1 pays network-to-store, and which bytebikri never receives. The words "no ads" appear
+nowhere; the page carries a full "what this is not" list instead, because the complaint that damages a
+cosmetics tier is never the price, it is "I thought it also…".
+
+The entitlement needs no job. `PLUS_JOIN` in `store.js` is a lateral join on
+`status = 'active' and period_end > now()`, so a profile row read at any moment carries the truth about
+the look; `plusWear()` re-checks and refuses anything it cannot prove. A palette is a preference and is
+never deleted — it simply stops being worn.
+
+### Density: one or two positions, not three to eight
+
+Migration `0034_ad_economy.sql` re-points `plans.capabilities.slot_count` from 3/5/8 to **1/2/2**, and
+`allocateSlots()` was restructured with it: the platform's position is now the **next rank down** rather
+than one converted from the store's own. That conversion was the bug waiting to happen — at a cap of
+one it would have handed us a Free store's only position, at rank 1, which is the single rule this
+policy has never broken. `maxTotalSlots = 3` now bounds the sum, `minTenantSlotsBeforeTax` falls from 3
+(which the cap had made unreachable, silently killing the rent leg) to 1 with its promise restated as
+"a page with no position of its own is never taxed", and ranks 4–5 of `SLOT_DEFS` are kept but marked
+inactive because sellers' `slot_creatives` rows still name them — the slots page lists those retired
+messages rather than letting them vanish.
+
+Density stopped being the upsell. The paid plans buy capability: a second position, a higher ask
+ceiling, members, a theme, a badge. The price did not move.
+
+### The ask is derived, not typed
+
+Two number boxes ("Ads to unlock" 1–5, "Minimum ad length" 5–120 s) meant the party with the least
+information was pricing a stranger's attention, per file, with no feedback — and the ceiling allowed
+ten minutes of one person's life. `app/src/adscale.js` replaces both: a **value ladder** (free → 1×15 s;
+under 200 → 1×20; under 600 → 1×30; under 1,500 → 2×30; under 4,000 → 2×45; under 10,000 → 3×45; 10,000+
+→ 3×60) capped by the store's plan (Free 1×30, Store 2×45, Pro 3×60) inside an **absolute** platform
+ceiling that no plan and no price moves.
+
+- The seller now chooses a *level* — "the standard rate for this value" or "the minimum" — and posts no
+  numbers. `setUnlockPolicy` derives the ask; a hand-crafted POST cannot inflate it (asserted).
+- The value is `assets.declared_value_npr`, a new column, and deliberately **not** a revival of
+  `price_npr`: migration 0004 dropped that column with the argument that "a price column with no payment
+  path behind it is an invitation", and that argument still holds. The hint on the field says so: private,
+  never shown to a visitor, not a price.
+- A saved ask does not move on its own. `ad_band_npr` records the value it was calibrated from, and the
+  seller's page shows the drift to re-save.
+- The buyer sees the ask in words, as time: "2 ads of 30 seconds", with the platform's ceiling printed
+  under the unlock card — `No file here asks for more than 3 ads, more than 60 seconds each, or more
+  than 3 minutes in total.`
+
+### The ladder, when the ad never arrives
+
+`app/src/blocked.js` + `ad_block_signals` (migration 0034) + `POST /api/unlock/blocked`. Four rungs
+driven by a **count of views that never confirmed** in a six-hour window: silence (0), an explanation
+(1), the trade stated plainly with the membership route named (3), and — at 6 — **the unlock stops being
+offered**: the button disappears, and the note says the file is still listed, its description and preview
+stay readable, any file already open on the store still opens, and the pause resets on its own.
+
+The membership route is named at rung 3, where it is true of *this* file's situation only in the sense
+that joining a store opens that store's **member** files — so the withheld rung, which is where an offer
+reads most like a way out, prints it only when the store actually sells memberships (`blockRung.hasMembers`),
+with the honest qualifier under it: *"It does not open an ad-gated file sooner."* A store that sells none
+gets a sentence instead — *"this store sells no memberships, and the pause lifts by itself"* — and no
+anchor, because a button that lands on nothing is a worse lie than a missing one. Both shapes are pinned
+in `test/blocked.test.js` (#90 renders the rung twice); the first cut offered the membership button
+unconditionally, and the page said so before the code did.
+
+Three refusals hold it up, each with a source in `AD_ECONOMY.md`: **no browser checks** (79 % of
+ad-blocking is undetectable, reader mode defeats every detection, and a wall around a guess lands on the
+people who were compromising — NYU measured 13.6 % *more* intrusive ads on allowlists), **no accusation**
+(the subject of every sentence is the missing view), and **no mark on the account** (a count that ages
+out, nothing to clear). Closing an ad yourself is recorded as `declined` and climbs nothing.
+The seller sees the count and nothing else: *"N unlock attempts in the last 6 hours produced no confirmed
+view — a blocker, a dropped connection, or a network that did not call back. The platform does not guess
+which, and it does not penalise the person."*
+
+### Where the third charge is stated
+
+- The seller's earnings page — "Where the money goes" — gained a fourth panel. The map was three legs
+  (the network's money, the store's dues to bytebikri, the store's members paying the store) and a map
+  that leaves out the platform's own revenue stops being a map of where money goes: the fourth names the
+  third charge in the seller's own reading, next to the dues leg, so nobody learns it from a support
+  thread. It opens no file, removes no ad, shortens no wait, and touches nothing the store earns.
+- `platformMoney()` counts it (`plusThisMonthNpr`, `plusActive`, `plusPending`); the operator's
+  `/admin/payments` has its own section and its own match/reject route; the audit log has its own family
+  (`plus.`) with `decisions: true`, so "who turned this on" is answerable.
+- `REVENUE_ARCHITECTURE.md` now states five legs and three platform revenues; the density revision and
+  the two new refusals are recorded there rather than here.
+
+### What was run
+
+- `npm test` — **595 / 595 / 0** (up from 555). New: `test/adscale.test.js` (11), `test/plus.test.js`
+  (13), `test/blocked.test.js` (10), `test/slots.test.js` (6). Rewritten rather than deleted:
+  `billing.test.js`'s clamp test now proves a posted number cannot move the ask, and `members.test.js`
+  checks the seller's panel arithmetic against the new cap.
+- Browser pass (`ci/eyes/`): seven pages at 1440×1000, no console errors, no horizontal overflow, no 500s.
+  Measured: **`/s/alice` carries two positions** (the store's at y=607, the platform's last at y=4,311 of
+  a 4,696px document) and the slots dashboard shows the empty second position as the seller's. It found a
+  real bug the suite could not: the asset route threw `policy is not defined` for every file page
+  (a variable that only existed inline in an argument list), fixed and re-measured.
+- The three claims that only a browser could settle, each shot and read rather than asserted in a test:
+  the ask panel has **two states** and both were photographed — one option with its reason on a file with
+  no value, two once the value separates them ("2 ads of 45 seconds" standard, "1 ad of 15 seconds"
+  minimum, and the drift line *"Saved when this file was worth NPR 0 — saving now recalibrates it."*);
+  the plus look is **gated by the arrangement, not by the column** (a palette written straight into
+  `profiles.nameplate` renders as nothing — a plain avatar in the header chip and a plain name on a
+  review, while an active month wears the same row in teal with a halo); and the withheld rung of the
+  ladder reads as the no-memberships shape on this store, because this store sells none.
+- Screenshots: `/home/user/round32/` — the plus page (pending and active), the ask panel in both states,
+  the storefront with its positions, the ladder's first rung and its last, the look worn and not worn,
+  the slots dashboard with the cap and the blocked count, and the operator queue with the third charge.
+- `ci/demo-state.mjs` (§4c) puts the person's premium into its **two states** the way it puts the store's
+  two states there: one account wearing a look with a month running, one whose claim is waiting on the
+  operator with the look stored and unworn. It also clears the signals on the ad-gated file and lays down
+  a fixed count, so the seller's dashboard screenshot is the same page tomorrow. Both halves are
+  idempotent — a second run prints the same four lines — and the script throws rather than reporting a
+  claim it did not get: an earlier version printed "running" over a cancelled row, because the *third*
+  state of a subscription is "the reference was already used", which is neither of the two it knew about.
+
+### Still open, recorded rather than half-built
+
+- **Flat vs scaled pricing for the person's premium.** Flat (NPR 149/month) shipped: there is nothing to
+  meter, and metering a cosmetic is the per-item pricing the research refuses. If a store-scale feature
+  ever joins it, the question returns.
+- **A paying viewer's page and the platform's own row.** Unanswered and unchanged: the row still renders
+  for everyone, because the rent leg is priced on the page rather than on the viewer — and because the
+  answer interacts with a seller's rent, it is the user's call, not this round's.
+- **A real ad-network integration.** Everything here is verified against the sandbox network; the
+  postback path has never carried a signed request from a live provider (credential-gated, and recorded
+  as such since §23).
+- **`remove_footer`** is still a capability rendered nowhere (carried from §31).

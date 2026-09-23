@@ -379,19 +379,27 @@ test('the roster stacks on a phone instead of sliding off the side of it', async
 test('the seller is told where the platform earns, and it is genuinely two things', async () => {
   const { owner, channel, member } = await fixture();
   try {
-    const rows = revenueRows({ planName: 'Store', planPrice: 'NPR 999 a year', slotCount: 5 });
+    const rows = revenueRows({ planName: 'Store', planPrice: 'NPR 999 a year', slotCount: 2 });
     const text = rows.map((r) => r.text).join(' ');
 
     // The model, in one place, checked against the policy it claims to follow.
     assert.match(text, /Dues are 100% yours/);
     assert.match(text, /NPR 999 a year/, 'the plan is named with its price');
     assert.match(text, /annual rent/, 'and the rent, which is the other half of the model');
-    assert.match(text, /Four|4 of the 5/, 'the slot split is arithmetic, not a slogan');
+    assert.match(text, /You keep 2 positions of the 3/, 'the slot split is arithmetic, not a slogan');
     assert.match(text, /never the first/);
+    // The density cap, stated to the seller whose page it applies to. This panel is
+    // the one place a store is told how many boxes can appear, so the number in it
+    // has to match the allocator: slots + the platform's one.
+    assert.match(text, /Three boxes is the most any page in this product holds/);
+    // And the third charge, named on the seller's own page: a person can pay the
+    // platform for a look, and it must say in the same breath that it opens nothing.
+    assert.ok(rows.some((r) => /ByteBikri\u2019s other line/.test(r.term)), 'the platform\'s other income is a row, not a footnote');
+    assert.match(text, /opens no file, removes no ad/);
 
-    // A store too short to spare a slot is told that, rather than shown a split of
+    // A store with no position of its own is told that, rather than shown a split of
     // positions that are never taken from it.
-    const short = revenueRows({ planName: 'Free', planPrice: 'free, permanently', slotCount: 2 });
+    const short = revenueRows({ planName: 'Free', planPrice: 'free, permanently', slotCount: 0 });
     assert.match(short[2].text, /no rent to price/);
     assert.doesNotMatch(short.map((r) => r.text).join(' '), /You keep 1 of the 2/);
 

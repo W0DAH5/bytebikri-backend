@@ -221,8 +221,9 @@ Stated plainly so nobody assumes otherwise:
   `RESEND_API_KEY`, or `smtp` with `SMTP_URL`, plus an `EMAIL_FROM` on a domain you
   control. Receipts are still
   printed, not sent.
-- **No payment collection.** Store upgrades and annual rent exist in the data
-  model with a manual-verification path; no processor is wired up, because a
-  Nepal entity cannot use the obvious ones.
+- **No payment collection.** Store upgrades, annual rent, and the person's
+  ByteBikri Plus month all exist in the data model with the same manual-verification
+  path; no processor is wired up, because a Nepal entity cannot use the obvious
+  ones.
 - **No legal review.** The notices describe what the software does, accurately.
   Whether they satisfy a particular jurisdiction is a question for a lawyer.

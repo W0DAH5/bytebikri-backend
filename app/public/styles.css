@@ -2618,3 +2618,103 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   border-color: color-mix(in srgb, var(--plate-a, var(--indigo-600)) 45%, var(--border-subtle));
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--plate-a, var(--indigo-600)) 22%, transparent);
 }
+
+/* ── the ask: what an unlock costs, shown as time rather than as a number ────
+   Two number boxes used to live here. What replaces them is a picture of the
+   thing being asked for — one bar per ad, each as wide as its length — so a
+   seller choosing between "1 × 30 s" and "2 × 30 s" is looking at the difference
+   in somebody's evening rather than at two integers. The meter is also the
+   accessible label: the role="img" aria-label spells it out. */
+.ask-panel {
+  margin-top: var(--space-5);
+  padding: var(--space-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+}
+.ask-choices { display: grid; gap: var(--space-3); margin-top: var(--space-3); }
+.ask-choices .choice { align-items: center; }
+.ask-choices .choice > span:nth-of-type(1) { flex: 1 1 auto; }
+.ask-meter { display: flex; gap: 6px; align-items: stretch; flex: 0 0 auto; }
+.ask-bar {
+  display: flex; flex-direction: column; justify-content: space-between; align-items: center;
+  min-inline-size: 42px;
+  block-size: 38px;
+  padding: 3px 6px;
+  border-radius: 7px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+  font-size: var(--text-2xs);
+  line-height: 1.1;
+  color: var(--text-muted);
+}
+.ask-bar-sec { font-weight: 700; color: var(--text-primary); }
+.ask-bar-n { opacity: 0.7; }
+.ask-meter-now .ask-bar {
+  border-color: transparent;
+  background-image: linear-gradient(140deg, var(--indigo-600), var(--indigo-700));
+}
+.ask-meter-now .ask-bar, .ask-meter-now .ask-bar-sec { color: #fff; }
+.ask-meter-now .ask-bar-n { color: rgba(255, 255, 255, 0.75); }
+.ask-drift { color: var(--warning-text); }
+
+/* ── ByteBikri Plus: a person's own look ─────────────────────────────────────
+   The same plate vocabulary the memberships shipped (a palette, a ring, a slow
+   halo), pointed at a different payer. Every effect is static until the system
+   says motion is welcome: `prefers-reduced-motion: no-preference` is the only
+   place an animation is declared, and the reduced-motion rule below is not the
+   only protection — the halo's default state is a steady glow. */
+.plus-hero-grid {
+  display: grid; gap: var(--space-6);
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  align-items: start;
+}
+@media (max-width: 860px) { .plus-hero-grid { grid-template-columns: 1fr; } }
+.plus-hero h1 { font-size: var(--text-2xl); margin: var(--space-4) 0 var(--space-2); }
+.plus-preview {
+  display: flex; align-items: center; gap: var(--space-4);
+  margin-top: var(--space-5); padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+}
+.plus-preview-avatar {
+  inline-size: 2.75rem; block-size: 2.75rem; flex: 0 0 auto;
+  display: grid; place-items: center; border-radius: 50%;
+  color: #fff; font-weight: 700;
+  background-image: linear-gradient(140deg, var(--plate-a, var(--indigo-600)), var(--plate-b, var(--indigo-700)));
+}
+.plus-swatches { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-top: var(--space-3); }
+.plus-swatch-label { position: relative; cursor: pointer; }
+.plus-swatch-label input { position: absolute; opacity: 0; inline-size: 100%; block-size: 100%; inset: 0; margin: 0; }
+.plus-swatch {
+  display: block; inline-size: 30px; block-size: 30px; border-radius: 50%;
+  background-image: linear-gradient(140deg, var(--plate-a, var(--indigo-600)), var(--plate-b, var(--indigo-700)));
+  box-shadow: 0 0 0 2px var(--surface-base), 0 0 0 3px var(--border-subtle);
+}
+.plus-swatch-label.is-on .plus-swatch,
+.plus-swatch-label input:checked + .plus-swatch {
+  box-shadow: 0 0 0 2px var(--surface-base), 0 0 0 3px var(--plate-ink, var(--indigo-400));
+}
+.plus-swatch-label:focus-within .plus-swatch { outline: 2px solid var(--border-focus); outline-offset: 3px; }
+.plus-swatches-demo { display: flex; gap: var(--space-2); }
+.plus-effects { display: grid; gap: var(--space-3); margin-top: var(--space-3); }
+.plus-effect-choice { align-items: center; }
+.plus-effect-demo { flex: 0 0 auto; font-size: var(--text-lg); }
+.plus-name--edge { border-block-end: 2px solid var(--plate-a, var(--indigo-600)); padding-block-end: 1px; }
+.plus-avatar { box-shadow: 0 0 0 2px color-mix(in srgb, var(--plate-a, var(--indigo-600)) 45%, transparent); }
+.who-link { display: flex; align-items: center; gap: var(--space-2); text-decoration: none; }
+.who-link:hover .who-name { text-decoration: underline; }
+.plus-not { margin: 0; padding-inline-start: var(--space-5); display: grid; gap: var(--space-3); }
+.plus-not li { font-size: var(--text-sm); line-height: var(--leading-normal); }
+.price-line { font-size: var(--text-xl); font-weight: 700; }
+@media (prefers-reduced-motion: no-preference) {
+  /* The halo already animates through `.member-name--aurora`; nothing extra is
+     declared here. This block exists so the intent is visible where the cosmetics
+     are defined: motion is opted into, never assumed. */
+}
+
+/* The label over a group of controls (a radiogroup of palettes, the ask picker).
+   Not a <label>, because the control it names is a set rather than one input —
+   `aria-labelledby` does the association. */
+.field-label { display: block; font-size: var(--text-sm); font-weight: 600; color: var(--text-primary); }
+.plus-look { display: grid; gap: var(--space-5); }

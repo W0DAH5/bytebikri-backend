@@ -73,6 +73,11 @@ import {
 // Storefront themes: curated palettes, and the plan capability that has been in
 // the plans table since migration 0001 without a single reader until now.
 import { THEMES, THEME_KEYS, THEME_NOTE, THEME_FREE_LINE, NO_THEME, canTheme, themeDraft, themeStyle } from './src/themes.js';
+// The person's own premium, and the ladder for a rewarded ad that never arrives.
+// Both pure modules, so the route layer decides nothing they have not already
+// written down in one place.
+import { plusState, plusWear, PLATE_KEYS, EFFECT_KEYS, PLUS_NAME } from './src/plus.js';
+import { SIGNALS, BLOCKING_SIGNALS, signalFrom, rungFor, SIGNAL_WINDOW_HOURS } from './src/blocked.js';
 import { SANDBOX_PROVIDER_IDS } from './src/providers/index.js';
 import { selectableProviders, providerById, payoutVerdict, loadRegistry } from './src/registry.js';
 import {
@@ -993,6 +998,113 @@ const limitForgot = rateLimit({
   render: (info) => views.tooMany({ ...info, consent: null }),
 });
 
+// ---------------------------------------------------------------------------
+// ByteBikri Plus — the person's own premium, and the only thing sold to a person
+// ---------------------------------------------------------------------------
+//
+// Four routes, none of them able to grant anything. `POST /plus/join` writes a
+// CLAIM; only `POST /admin/payments/plus/:id`, driven by an operator who has the
+// platform's statement in front of them, starts a period. That split is the same
+// one the store plans use, and it exists for the same reason: on a manual rail,
+// the person who receives the money is the only one who can honestly confirm it.
+
+/** One place that decides what the page should say the arrangement IS. */
+async function plusContext(req) {
+  // `req.user` already carries the arrangement (the session join in src/auth.js), but
+  // this is the page that acts on it, so it re-reads the row rather than trusting a
+  // value that arrived with the request — the same reason a route re-checks a plan
+  // instead of believing the page that sent the form.
+  const me = req.user ? await store.userById(req.user.id) : null;
+  const subscription = me ? await store.customerSubscription(me.id) : null;
+  const plan = await store.customerPlan('plus');
+  return {
+    plan,
+    subscription,
+    state: plusState({ status: subscription?.status, period_end: subscription?.period_end }),
+    look: { nameplate: me?.nameplate ?? null, effect: me?.plus_effect ?? null },
+    wear: plusWear(me),
+    rails: railDetails(),
+    railsReady: railsReady(),
+  };
+}
+
+APP.get('/plus', async (req, res, next) => {
+  try {
+    res.send(views.plusPage({
+      user: req.user, consent: req.consent, flash: flashFor(req.query), current: 'plus',
+      ...(await plusContext(req)),
+    }));
+  } catch (err) { next(err); }
+});
+
+APP.post('/plus/join', limitUnlock, async (req, res, next) => {
+  try {
+    if (!req.user) return res.redirect('/login?next=%2Fplus');
+    // Money in is the one thing an unconfirmed address holds back, and it is held
+    // back here as well as in the view: the page can be stale, this is the boundary.
+    // Same rule as a store plan payment, for the same reason — a claim bytebikri
+    // cannot put a name or a receipt to is a claim it cannot verify against its own
+    // statement. Nothing about the look changes if this is hit; nothing was sent.
+    if (!req.user.email_verified_at) return res.redirect('/plus?error=plus-verify');
+    const result = await store.claimPlus({
+      profileId: req.user.id,
+      planCode: 'plus',
+      amountNpr: (await store.customerPlan('plus'))?.price_npr ?? 0,
+      txnReference: req.body.txnReference,
+      method: PAY_METHODS.includes(req.body.method) ? req.body.method : 'other',
+      payerName: req.body.payerName,
+    });
+    if (!result.ok) {
+      const code = { reference: 'plus-reference', 'duplicate-reference': 'plus-duplicate' }[result.code] || 'plus-reference';
+      return res.redirect(`/plus?error=${code}`);
+    }
+    await store.audit('plus.claimed', { profileId: req.user.id, paymentId: result.payment.id });
+    return res.redirect('/plus?saved=plus-claimed');
+  } catch (err) { return next(err); }
+});
+
+APP.post('/plus/look', limitUnlock, async (req, res, next) => {
+  try {
+    if (!req.user) return res.redirect('/login?next=%2Fplus');
+    // An allowlist, not a free-text colour. Every palette here is contrast-checked
+    // against both themes, and a member typing #ff00ff is how a readable product
+    // becomes an unreadable one.
+    const plate = PLATE_KEYS.includes(String(req.body.nameplate)) ? String(req.body.nameplate) : null;
+    const effect = EFFECT_KEYS.includes(String(req.body.effect)) ? String(req.body.effect) : null;
+    if (!plate || !effect) return res.redirect('/plus?error=plus-look-bad');
+    await store.setPlusLook({ profileId: req.user.id, nameplate: plate, effect });
+    await store.audit('plus.look_set', { profileId: req.user.id, plate, effect });
+    return res.redirect('/plus?saved=plus-look');
+  } catch (err) { return next(err); }
+});
+
+APP.post('/plus/cancel', limitUnlock, async (req, res, next) => {
+  try {
+    if (!req.user) return res.redirect('/login?next=%2Fplus');
+    const stopped = await store.cancelPlus(req.user.id);
+    if (!stopped) return res.redirect('/plus?error=plus-none');
+    await store.audit('plus.stopped', { profileId: req.user.id });
+    return res.redirect('/plus?saved=plus-stopped');
+  } catch (err) { return next(err); }
+});
+
+APP.post('/admin/payments/plus/:id', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).send('Not found');
+    if (req.body.action === 'reject') {
+      await store.rejectCustomerPlanPayment({
+        paymentId: req.params.id, actorId: req.user.id,
+        reason: String(req.body.reason || '').trim().slice(0, 300),
+      });
+      await store.audit('plus.payment_rejected', { paymentId: req.params.id });
+    } else {
+      const matched = await store.matchCustomerPlanPayment({ paymentId: req.params.id, actorId: req.user.id });
+      await store.audit('plus.payment_matched', { paymentId: req.params.id, ok: Boolean(matched) });
+    }
+    return res.redirect('/admin/payments');
+  } catch (err) { return next(err); }
+});
+
 APP.get('/forgot', (req, res) => {
   res.send(views.forgotPassword({ user: req.user, consent: req.consent }));
 });
@@ -1525,6 +1637,7 @@ APP.get('/api/stores/:slug', async (req, res, next) => {
           unavailableFor: a.availability.unlockable ? null : a.availability.reason,
           unlocked: a.unlock_mode === 'open' || unlockedIds.has(a.id),
           adsRequired: (await store.unlockPolicy(a.id))?.ads_required ?? 1,
+          adMinSeconds: (await store.unlockPolicy(a.id))?.ad_min_seconds ?? 15,
         };
       })),
     });
@@ -1705,6 +1818,12 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
     const reviewStats = await store.reviewStatsOfAsset(asset.id);
     const myReview = unlock ? reviews.find((r) => r.unlock_id === unlock.id) ?? null : null;
 
+    // Read once, because two things below need it: the panel's copy and the ask it
+    // prints. Reading it inline in both places is how the second one ends up naming a
+    // variable that does not exist — which this route did for exactly one browser
+    // pass, and which no module-level test could see.
+    const unlockPolicy = await store.unlockPolicy(asset.id);
+
     res.send(views.assetPage({
       channel, asset, files, unlocked, user: req.user, consent: req.consent,
       accessUntil: unlock?.expires_at ?? null,
@@ -1716,7 +1835,7 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
       canReview: Boolean(unlock) && !myReview,
       myReview,
       reviewError: REVIEW_ERRORS[String(req.query.error)] || null,
-      policy: await store.unlockPolicy(asset.id),
+      policy: unlockPolicy,
       // Which tier the viewer holds, and what the file needs — the two facts the
       // refusal sentence is built from.
       memberCover,
@@ -1733,6 +1852,28 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
       // On a file page the whole point of the space is to pay for the unlock, so
       // the platform slot is always here — the creator's own message appears
       // only if they wrote one.
+      // Where this person is on the blocker ladder, decided HERE from a count of
+      // recorded signals — so the withheld state renders on the server and does not
+      // depend on the client believing anything, or on JavaScript running at all.
+      blockRung: await (async () => {
+        if (!req.user || asset.unlock_mode !== 'ad_gated') return null;
+        const attempts = await store.blockSignalCount({
+          assetId: asset.id, userId: req.user.id, hours: SIGNAL_WINDOW_HOURS,
+        });
+        // Whether this store sells memberships at all. The withheld rung's only route
+        // forward used to be a button to `#members` — which is a dead anchor in a store
+        // with no tiers, so the button waits for the fact rather than assuming it.
+        const hasMembers = (await store.membershipTiers(channel.id)).length > 0;
+        return { ...rungFor(attempts), attempts, hasMembers };
+      })(),
+      // The ask as the pipeline will enforce it — the stored pair, not a recomputed
+      // one. If a file asks for 2 × 30 s, the page says 2 × 30 s, whatever the value
+      // ladder would derive today; the seller's page is where a drift is explained.
+      ask: {
+        ads: Number(unlockPolicy?.ads_required) || 1,
+        seconds: Number(unlockPolicy?.ad_min_seconds) || 15,
+        level: unlockPolicy?.ask_level === 'light' ? 'light' : 'standard',
+      },
       slots: (await slotsFor(channel, { viewer: req.user, surface: 'asset' }))
         .filter((s) => s.creative && s.surface !== 'app_native'),
     }));
@@ -1898,9 +2039,24 @@ APP.get('/dashboard/:slug/slots', async (req, res, next) => {
   try {
     const channel = await requireOwnChannel(req, res);
     if (!channel) return;
+    // Creatives written for positions that no longer exist. Read here rather than
+    // in the view, and listed rather than silently dropped: migration 0034 cut the
+    // page from eight positions to three, and the words a seller wrote for ranks 4
+    // and 5 are still in the table.
+    const creatives = await store.creativesForChannel(channel.id);
+    const live = new Set((await buildSlots(channel)).map((s) => s.slotKey));
+    const retiredSlots = SLOT_DEFS
+      .filter((d) => !live.has(d.key))
+      .map((d) => ({ ...d, creative: creatives.find((c) => c.slot_key === d.key) }))
+      .filter((d) => d.creative && (d.creative.headline || d.creative.body))
+      .map((d) => ({ label: d.label, headline: d.creative.headline || d.creative.body }));
+
     res.send(views.slotsPage({
       channel, user: req.user, consent: req.consent,
       slots: await slotsFor(channel, { viewer: req.user, surface: 'dashboard' }),
+      blockedCount: await store.blockSignalCountOfChannel(channel.id, { hours: SIGNAL_WINDOW_HOURS }),
+      blockedHours: SIGNAL_WINDOW_HOURS,
+      retiredSlots,
       flash: flashFor(req.query),
     }));
   } catch (err) { next(err); }
@@ -2104,6 +2260,45 @@ APP.post('/api/unlock/start', limitUnlock, async (req, res, next) => {
       country: viewerCountry(req),
     }));
   } catch (err) { next(err); }
+});
+
+/**
+ * A rewarded view that did not arrive.
+ *
+ * The client knows two things the server cannot: that the ad script never started,
+ * and that it gave up waiting. It sends ONE of those as a signal; the server
+ * decides what it means. Nothing here is trusted for access — a signal can only
+ * ever REDUCE what is offered, never grant an unlock, so a forged one is a person
+ * hurting only their own session.
+ */
+APP.post('/api/unlock/blocked', limitUnlock, async (req, res, next) => {
+  try {
+    if (!req.user) return res.status(401).json({ ok: false, error: 'sign in' });
+    const asset = await store.assetById(req.body.assetId);
+    if (!asset) return res.status(404).json({ ok: false, error: 'no such file' });
+    const signal = signalFrom(req.body.signal);
+    const view = req.body.viewId ? await store.pendingView(String(req.body.viewId)) : null;
+    // A view that actually completed is not a blocked attempt, whatever the client
+    // says: the postback is the authority on whether the ad was watched.
+    if (view?.completed) return res.json({ ok: true, ignored: 'the view completed' });
+
+    await store.recordBlockSignal({
+      assetId: asset.id,
+      channelId: asset.channel_id,
+      userId: req.user.id,
+      pendingViewId: view?.id ?? null,
+      signal,
+    });
+    const attempts = await store.blockSignalCount({
+      assetId: asset.id, userId: req.user.id, hours: SIGNAL_WINDOW_HOURS,
+    });
+    const rung = rungFor(attempts);
+    return res.json({
+      ok: true,
+      attempts,
+      rung: { key: rung.key, headline: rung.headline, body: rung.body, offersUnlock: rung.offersUnlock },
+    });
+  } catch (err) { return next(err); }
 });
 
 APP.get('/api/unlock/status', async (req, res, next) => {
@@ -2778,6 +2973,13 @@ const SUCCESS_FLASH = {
   'tier-saved': (v) => `Tier ${String(v || '')} saved. What a member pays, and what they get, is now what the storefront shows.`,
   'tier-removed': () => 'Tier removed. Nobody was holding it, so nothing changed for anybody but the panel.',
   'note-saved': () => 'Saved. This is what a visitor is told about paying you — keep it to something you would be happy to see written down.',
+  // ByteBikri Plus. Three outcomes, and each one says which of them happened —
+  // a claim is not a purchase, and the page must not let those be confused.
+  'plus-claimed': () => 'Sent. An operator checks that reference against the platform\'s own statement — nothing is worn until it is matched, and if it never is, nothing about your account changes.',
+  'plus-look': () => 'Saved. Your name wears this wherever the platform shows it to somebody else, for as long as the arrangement is running.',
+  'plus-stopped': () => 'Stopped early. Your look stays saved and nothing was deleted — but the month was already paid, and stopping does not return it. If you only wanted to look plain for a while, saving the plain effect does that without giving up the month.',
+  'plus-matched': () => 'Matched against the statement. That person\'s month has started and their look is on.',
+  'plus-rejected': () => 'Marked as not found. Their arrangement did not start, and any look they had stopped being worn.',
   theme: (v) => (v === 'plain'
     ? 'Back to the default look. Nothing else about your store changed.'
     : `Saved — ${String(v || 'that')} is on your storefront now. It paints the band behind your name and nothing else, and it is checked for readability in both light and dark before it can be offered.`),
@@ -2794,6 +2996,12 @@ const ERROR_FLASH = {
   'member-active': 'Your membership is already confirmed, so there is nothing to re-send. Pay the creator again when the period you have paid for runs out and the panel will take a new reference.',
   'member-none': 'There is no membership here to change. Nothing was sent.',
   'member-missing': 'That claim is not waiting any more — either it was already decided or the person left. Reload the page to see what is there now.',
+  'plus-verify': 'Confirm the email address on this account first. A payment needs a receipt, an invoice and a dispute notice to be sendable, and none of those can go to an address that has not answered — nothing was sent.',
+  'plus-reference': 'A reference of at least four characters is what an operator matches against the statement. Without one there is nothing to look up, so nothing was sent.',
+  'plus-duplicate': 'That transaction reference has already been used here — for this or for another payment. Nothing was written down twice; if the first one was rejected, submit the new reference from the new receipt.',
+  'plus-missing': 'That claim is not waiting any more — either it was already decided or it was withdrawn. Reload the page to see what is there now.',
+  'plus-look-bad': 'Pick one of the eight palettes and one of the three effects. Nothing was changed.',
+  'plus-none': 'There is no arrangement on this account to change. Nothing was sent.',
   'member-owner-only': 'Only the store owner can confirm dues. The platform never receives this money, so nobody here can check it.',
   'tier-name': 'A tier needs a name of at least two characters — it appears next to a member\'s name.',
   'tier-dues': 'Dues have to be a whole number of rupees between 0 and 100,000.',
@@ -3518,6 +3726,11 @@ APP.get('/admin/payments', async (req, res, next) => {
       console: true,
       user: await withBadges(req.user), consent: req.consent, flash: flashFor(req.query),
       payments: await store.unmatchedPayments(),
+      // The third charge, in the same queue as the other two. Kept as its own list
+      // rather than merged into the store payments: the consequence of a match is
+      // different (a look turns on, nothing opens), and an operator deciding about a
+      // person's rupees should be able to see which product they bought.
+      plusPayments: await store.customerPlanPayments({ limit: 50 }),
       invoices: await store.openRentInvoices(),
       aging: await store.rentAging(),
       byMonth: await store.rentByMonth({ months: 12 }),
@@ -3983,6 +4196,7 @@ APP.get('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
       // at all, and which tiers exist to put a file behind.
       membershipsOn,
       tiers: membershipsOn ? await store.membershipTiers(channel.id) : [],
+      planCode: store.effectivePlanCode(channel),
       files: await store.filesOf(asset.id),
       policy: await store.unlockPolicy(asset.id),
       stats: await store.reviewStatsOfAsset(asset.id),
@@ -4024,10 +4238,15 @@ APP.post('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
       unlock_mode: req.body.unlockMode === 'open' ? 'open' : wantsMembers ? 'members' : 'ad_gated',
       member_tier: memberTier,
       status: req.body.status === 'paused' ? 'paused' : 'live',
+      // Saved BEFORE the policy below, and the order is the whole point: the ask is
+      // derived from this value, so setting the policy first would calibrate the
+      // ask against the price the seller just replaced.
+      declared_value_npr: req.body.valueNpr,
     });
     await store.setUnlockPolicy(asset.id, {
-      ads_required: req.body.adsRequired,
-      ad_min_seconds: req.body.adMinSeconds,
+      // Only the CHOICE travels. The numbers are derived in setUnlockPolicy, so a
+      // hand-crafted post cannot ask for ten minutes of somebody's evening.
+      ask_level: req.body.adAsk,
       unlock_hours: req.body.unlockHours,
       // The same value that was just written to the asset, so the two rows that
       // carry this one decision cannot drift apart.

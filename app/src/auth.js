@@ -24,6 +24,7 @@
 import crypto from 'node:crypto';
 import { MIN_PASSWORD_LENGTH } from './security.js';
 import { one, query, scalar, withTransaction } from './db.js';
+import { PLUS_SUBSCRIPTION_JOIN } from './plus.js';
 
 // scrypt cost. N=2^15 with r=8,p=1 is ~100ms on a modern core and ~32MB, which
 // is the point: it is meant to be expensive.
@@ -132,9 +133,15 @@ export async function createSession({ userId, remember = true, userAgent, ip }) 
 export async function resolveSession(token) {
   if (!token || typeof token !== 'string' || token.length < 20) return null;
   const row = await one(
-    `select s.id as session_id, s.user_id, s.expires_at, p.*
+    // `p.*` plus the arrangement, because a page must not have to ask a second
+    // question to know whether the look this person chose is being worn. The chip in
+    // the header reads it, and so does the page that sells it.
+    `select s.id as session_id, s.user_id, s.expires_at, p.*,
+            pl.plus_status, pl.plus_period_end,
+            (pl.plus_status is not null) as plus_active
        from sessions s
        join profiles p on p.id = s.user_id
+       ${PLUS_SUBSCRIPTION_JOIN}
       where s.token_hash = $1
         and s.revoked_at is null
         and s.expires_at > now()

@@ -11,18 +11,29 @@
  *
  * Fairness rules, each of which is a promise to the channel:
  *   1. The platform never takes rank 1.
- *   2. A short page is never taxed (needs >= 3 slots before a rent slot applies).
+ *   2. A page with no position at all is never taxed.
  *   3. One rent slot per page, never more.
  *   4. Empty slots reserve their height. They are never collapsed, because
  *      reflowing a page damages Core Web Vitals and therefore every channel's
  *      ad rates.
+ *
+ * DENSITY, as of migration 0034: the store's own positions are `slot_count` and
+ * that number is 1 (Free) or 2 (Store, Pro). The platform's own position is a
+ * SEPARATE position, taken from the rank immediately after the store's last one —
+ * never one of the store's, and never rank 1. So the longest page in the product
+ * carries three boxes: two the store owns and one ours. The old model converted
+ * the store's lowest-ranked position into ours, which stopped being workable the
+ * moment the cap came down to one: a Free store would have had its only position
+ * taken, at rank 1, which is the one rule this file has never broken.
  */
 
 export const POLICY = {
   platformSlotsPerPage: 1,
   platformTakesRank: 'last',
-  minTenantSlotsBeforeTax: 3,
-  maxTotalSlots: 8,
+  minTenantSlotsBeforeTax: 1,
+  // The platform's row is counted on top of the store's, so the total on a page
+  // is slot_count + platformSlotsPerPage and this is the outer bound of that sum.
+  maxTotalSlots: 3,
   releasedBy: 'ad_free', // capability flag; all plans default false for now
 
   /**
@@ -47,24 +58,30 @@ export const POLICY = {
  * @returns {Array<object>} one entry per slot, in rank order
  */
 export function allocateSlots({ slotDefs, capabilities, connections, surfaces = ['web'] }) {
-  const maxSlots = Number(capabilities.slot_count) || 3
-  const eligible = slotDefs
+  const maxSlots = Math.max(0, Math.min(Number(capabilities.slot_count) || 0, POLICY.maxTotalSlots))
+  const pool = slotDefs
     .filter((s) => s.active !== false)
     .filter((s) => (s.surfaces ?? []).some((x) => surfaces.includes(x)))
     .sort((a, b) => a.rank - b.rank)
-    .slice(0, Math.min(maxSlots, POLICY.maxTotalSlots))
 
-  // Rule: a page too short to spare a slot is never taxed.
+  // The store's positions, then OURS — the next rank down, which is the least
+  // valuable position on the page that is not already the store's.
+  const own = pool.slice(0, maxSlots)
+  const rentDef = pool[own.length] ?? null
+
+  // Rule: a page with no position at all is never taxed, and a position at rank 1
+  // is never taken from the store.
   const rentSlotApplies =
-    eligible.length >= POLICY.minTenantSlotsBeforeTax &&
+    own.length >= POLICY.minTenantSlotsBeforeTax &&
+    Boolean(rentDef) &&
+    rentDef.rank > 1 &&
     capabilities[POLICY.releasedBy] !== true
 
-  // Rule: rank 1 is never taken. The rent slot is the lowest-value position.
-  const rentSlotKey = rentSlotApplies ? eligible[eligible.length - 1].key : null
+  const rentSlotKey = rentSlotApplies ? rentDef.key : null
 
   const activeConnections = (connections ?? []).filter((c) => c.status === 'active')
 
-  return eligible.map((slot) => {
+  return (rentSlotApplies ? [...own, rentDef] : own).map((slot) => {
     const isRent = slot.key === rentSlotKey
     // Which surface THIS instance is rendered on, from the surfaces the caller
     // asked for — not from the definition. A def that supports both (rank 1,

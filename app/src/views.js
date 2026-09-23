@@ -60,6 +60,22 @@ import {
   CONFIRM_LINE, LAPSE_LINE, accentOf, plateStyle, tierByNo, duesLine, methodLabel,
   membershipState, daysLeft, defaultTierName,
 } from './memberships.js';
+// The ask ladder. Pure, like `memberships.js`: the numbers a seller's picker shows,
+// the numbers the buyer's panel prints and the numbers the tests assert all come
+// from this one table, so a page cannot promise a friendlier ask than the pipeline
+// enforces.
+import {
+  ASK_LEVELS, ASK_PROMISE, ASK_INPUT_LINE, resolveAsk, askLabel, askReason, bandFor,
+} from './adscale.js';
+// The person's own premium: what a name may wear, and the gate that decides whether
+// it is worn at all (`plusWear()` — active only, decided in SQL).
+import {
+  PLUS_NAME, PLUS_NOT, PLUS_SEPARATION_LINE, EFFECTS, EFFECT_KEYS, effectOf,
+  plateOf, PLATE_KEYS, plusState, plusWear, plusDaysLeft, plusMoneyLine,
+} from './plus.js';
+// The blocker ladder. One module, so the sentence the visitor reads and the
+// sentence the seller's dashboard prints cannot disagree about what was done.
+import { rungFor, NEVER_DO, blockedSellerNote } from './blocked.js';
 
 const FAMILY_LABELS = Object.fromEntries(AUDIT_FAMILIES.map((f) => [f.key, f.label]));
 
@@ -254,7 +270,7 @@ function addressNotice(user) {
     <span>
       <strong>Confirm your email address.</strong>
       Until the address on this account answers, we cannot send you a receipt, an invoice or a
-      dispute notice — and a plan payment needs all three. <span class="mono">${esc(user.email)}</span>
+      dispute notice — and a payment needs all three. <span class="mono">${esc(user.email)}</span>
       is on the account, unconfirmed.
     </span>
     <a class="btn btn-sm" href="/verify">Confirm it</a>
@@ -326,10 +342,16 @@ export function layout({
   const navLink = (href, label, key) =>
     `<a href="${esc(href)}"${current === key ? ' aria-current="page"' : ''}>${esc(label)}</a>`;
 
+  const accountName = (user?.display_name || user?.email || '').split('@')[0];
+  const accountWear = plusWear(user);
   const account = user
     ? `<span class="who">
-         ${avatar(user.display_name || user.email)}
-         <span class="muted" style="font-size:var(--text-xs)">${esc((user.display_name || user.email).split('@')[0])}</span>
+         <a class="who-link" href="/plus" title="${accountWear ? 'Your look, and where it comes from' : 'ByteBikri Plus — your name, the way you want it'}">
+           ${accountWear
+    ? `<span class="avatar plus-avatar" style="${plateStyleAttr(accountWear.plate)}" aria-hidden="true">${esc(initials(user.display_name || user.email))}</span>`
+    : avatar(user.display_name || user.email)}
+           <span class="muted" style="font-size:var(--text-xs)">${nameTag(accountName, user, { base: 'who-name' })}</span>
+         </a>
        </span>
        <form method="post" action="/logout" style="display:contents">
          <button class="btn btn-sm btn-ghost" type="submit">Sign out</button>
@@ -356,6 +378,7 @@ export function layout({
     <nav class="nav" aria-label="Main">
       ${navLink('/marketplace', 'Explore', 'marketplace')}
       ${user ? navLink('/library', 'Library', 'library') : ''}
+      ${user ? navLink('/plus', 'Plus', 'plus') : ''}
       ${activeChannel ? navLink(`/dashboard/${esc(activeChannel.slug)}`, 'Dashboard', 'dashboard') : ''}
       ${user?.role === 'admin' ? navLink('/admin', 'Console', 'admin') : ''}
     </nav>
@@ -736,7 +759,7 @@ function plateStyleAttr(accentKey) {
  * a roster of twelve uploaded avatars is twelve more things to moderate and the
  * plate is about the name anyway.
  */
-function memberPlate({ name, accent = 'indigo', tier = null, style = 'solid', joined = null, me = false }) {
+function memberPlate({ name, accent = 'indigo', tier = null, style = 'solid', joined = null, me = false, plusRow = null }) {
   const label = String(name || 'Member');
   const initial = label.trim().slice(0, 1).toUpperCase() || 'M';
   // The top tier's row is marked so it can carry the glow and the edge; the entry
@@ -748,12 +771,48 @@ function memberPlate({ name, accent = 'indigo', tier = null, style = 'solid', jo
   <span class="member-avatar${top ? ' member-avatar--shine' : ''}"
         style="${plateStyleAttr(accent)}" aria-hidden="true">${esc(initial)}</span>
   <span class="member-body">
-    <span class="member-name${top ? ' member-name--aurora' : ''}" style="${plateStyleAttr(accent)}">${esc(label)}</span>
+    ${plusWear(plusRow)
+    ? `<span class="${plusNameClasses(plusWear(plusRow))}" style="${plateStyleAttr(plusWear(plusRow).plate)}">${esc(label)}</span>`
+    : `<span class="member-name${top ? ' member-name--aurora' : ''}" style="${plateStyleAttr(accent)}">${esc(label)}</span>`}
     ${tier ? `<span class="member-tier${style === 'gradient' ? ' member-tier--shine' : ''}"
         style="${plateStyleAttr(accent)}">${esc(tier)}</span>` : ''}
   </span>
   ${joined ? `<span class="member-since fine">${esc(joined)}</span>` : ''}
 </li>`;
+}
+
+/**
+ * A person's name, in their own chosen look — if they have one and it is current.
+ *
+ * Used everywhere a name is rendered to somebody else: a roster, a review, the
+ * account chip, the buyer's own preview. The dressing is decided by `plusWear()`,
+ * which refuses any row the database has not marked active, so the same call is
+ * safe on a storefront a stranger is reading and on a page about the wearer.
+ *
+ * The look is ALWAYS in the wearer's own palette. A person's choice of colour is
+ * not consent for anything else to change — no layout, no size, no position, and
+ * no motion that the stylesheet has not already put under a reduced-motion guard.
+ */
+function plusNameClasses(wear, base = 'member-name') {
+  if (!wear) return base;
+  const cls = [base];
+  if (wear.effect === 'halo') cls.push('member-name--aurora');
+  if (wear.effect === 'edge') cls.push('plus-name--edge');
+  return cls.join(' ');
+}
+
+export function nameTag(name, row = null, { base = 'member-name' } = {}) {
+  const label = String(name ?? '');
+  if (!label) return '';
+  const wear = plusWear(row);
+  if (!wear) return `<span class="${base}">${esc(label)}</span>`;
+  return `<span class="${plusNameClasses(wear, base)}" style="${plateStyleAttr(wear.plate)}">${esc(label)}</span>`;
+}
+
+/** The ring on an avatar, in the same palette, for the row that has room for one. */
+function plusAvatarClass(row = null, base = '') {
+  const wear = plusWear(row);
+  return wear ? `${base} plus-avatar`.trim() : base;
 }
 
 /** Everyone who chose to be named. No count — the plates are the proof. */
@@ -763,6 +822,10 @@ function memberRoster(roster = []) {
     ${roster.map((m) => memberPlate({
     name: m.display_name, accent: m.accent, tier: m.tier_name,
     style: plateStyle(m.tier_no), joined: `since ${longDay(m.joined_at)}`,
+    // Their own look, if they have one and it is current. Two payments to two
+    // different parties can be on one plate; neither can impersonate the other,
+    // because a store's tier is the badge and a person's palette is the name.
+    plusRow: m,
   })).join('')}
   </ul>`;
 }
@@ -1503,7 +1566,12 @@ function reviewSection({ channel, asset, reviews = [], reviewStats = {}, canRevi
         <li class="review">
           <div class="review-head">
             <span class="stars" aria-label="${r.rating} out of 5">${'★'.repeat(r.rating)}${'☆'.repeat(5 - r.rating)}</span>
-            <span class="review-who">${esc(r.buyer_name || 'A buyer')}</span>
+            <span class="review-who">${r.buyer_name
+    // Their own look, if it is current — the same call the roster uses, so a name
+    // looks the same everywhere it appears. A reviewer who is not named falls back
+    // to "A buyer", which is a real state and not a placeholder.
+    ? nameTag(r.buyer_name, { plus_active: r.plus_status !== null && r.plus_status !== undefined, nameplate: r.plus_plate, plus_effect: r.plus_effect })
+    : 'A buyer'}</span>
             <span class="spacer"></span>
             <span class="fine">${relTime(r.created_at)}</span>
           </div>
@@ -1616,6 +1684,14 @@ function reportBlock({ channel, asset, user, alreadyReported = false, reported =
 
 export function assetPage({
   channel, asset, files, unlocked, user, policy, slots, previewFile = null,
+  // The stored ask, so the panel can say "2 ads of 30 seconds" rather than a bare
+  // count. Decided on the server; the view only prints it.
+  ask = null,
+  // Where this viewer is on the blocker ladder, decided by the server from a count
+  // of recorded signals. `offersUnlock: false` is the harsh end, and it is the only
+  // rung that changes what is on the page — everything else is an explanation
+  // beside the same button.
+  blockRung = null,
   markUri = '', markLabel = '', accessUntil = null, consent = null,
   reviews = [], reviewStats = {}, canReview = false, myReview = null, reviewError = null,
   reported = null, alreadyReported = false, reportError = null,
@@ -1723,6 +1799,42 @@ export function assetPage({
     <p class="fine" style="margin-top:var(--space-3);text-align:center">${esc(MONEY_LINE)}</p>
   </div>`;
 
+  /*
+   * THE HARSH END OF THE LADDER, and how gentle it actually is.
+   *
+   * The platform has always withheld a file when no verified view arrived — that is
+   * the pipeline working, not a punishment. What changes at this rung is that the
+   * page stops offering the button and explains itself instead of offering an action
+   * that has failed six times in a few hours.
+   *
+   * The listing, the description, the preview and every `open` file stay. A store's
+   * membership route stays. Nothing is deleted, nothing is flagged on the account,
+   * and the count ages out on its own. `NEVER_DO` in `src/blocked.js` is the list of
+   * things that were considered and refused — a full-page interstitial above all.
+   */
+  const withheld = Boolean(blockRung && !blockRung.offersUnlock && needsAd && !membersOnly);
+  // The rung's own copy (src/blocked.js) is the explanation. What is decided HERE is
+  // the way out, and only the offer the store can actually honour: membership opens
+  // the store's MEMBER files, not this one, so the button says what it is and the
+  // sentence under it says what membership is — and neither is shown in a store that
+  // sells no memberships at all, where the anchor would land on nothing.
+  const withheldBlock = `
+    <div class="note note-warning" role="status">
+      <strong>${esc(blockRung?.headline || 'Not being offered for a while')}</strong>
+      <p class="small" style="margin:var(--space-2) 0 0">${esc(blockRung?.body || '')}</p>
+    </div>
+    ${blockRung?.hasMembers ? `
+    <a class="btn btn-lg btn-block" href="/s/${esc(channel.slug)}#members" style="margin-top:var(--space-4)">
+      See what membership is
+    </a>
+    <p class="fine" style="margin-top:var(--space-3);text-align:center">
+      Membership opens a store's member files with no ad at all, and the dues go straight to the creator —
+      bytebikri never receives them. It does not open an ad-gated file sooner.
+    </p>` : `
+    <p class="fine" style="margin-top:var(--space-4);text-align:center">
+      Waiting is the way back here: this store sells no memberships, and the pause lifts by itself.
+    </p>`}`;
+
   const actionBlock = refusalBlock || (open
     ? `<div class="note note-success">Free — no ad needed.</div>${filesPanel}`
     : unlocked
@@ -1732,8 +1844,18 @@ export function assetPage({
     : accessExpiry(open ? null : accessUntil)}</div>${filesPanel}`
       : membersOnly
         ? `${memberGate}${filesPanel}`
-        : `<button class="btn btn-primary btn-lg btn-block" id="unlock-btn"
-                 data-asset="${esc(asset.id)}">
+        : withheld
+          // No `filesPanel` here on purpose: an ad-gated file that is still locked
+          // never rendered its manifest, and the withheld rung must take away the
+          // button rather than change anything else about the page. The manifest
+          // arrives with the unlock, exactly as it does one rung earlier.
+          ? withheldBlock
+          : `${blockRung && blockRung.key !== 'quiet' ? `<div class="note note-warning" role="status">
+               <strong>${esc(blockRung.headline)}</strong>
+               <p class="small" style="margin:var(--space-2) 0 0">${esc(blockRung.body)}</p>
+             </div>` : ''}
+         <button class="btn btn-primary btn-lg btn-block" id="unlock-btn"
+                 data-asset="${esc(asset.id)}" data-signal-url="/api/unlock/blocked">
            Watch ${plural(policy?.ads_required || 1, 'ad')} to unlock
          </button>
          <p class="fine" style="margin-top:var(--space-3);text-align:center">
@@ -1813,6 +1935,7 @@ export function assetPage({
     <p class="fine" style="margin-top:var(--space-4)">
       ${user ? '' : `<a href="/login?next=${encodeURIComponent(`/s/${channel.slug}/a/${asset.slug}`)}">Sign in</a> first — unlocks are tied to your account.`}
     </p>
+    ${needsAd ? `<p class="fine" style="margin-top:var(--space-3)">${esc(ASK_PROMISE)}</p>` : ''}
   </aside>
 </div>
 
@@ -1822,15 +1945,18 @@ ${reportBlock({ channel, asset, user, alreadyReported, reported })}
 <div class="modal" id="ad-modal" hidden role="dialog" aria-modal="true" aria-labelledby="ad-title">
   <div class="modal-card">
     <div class="row">
-      <span class="pill pill-locked">Rewarded ad</span>
+      <span class="pill pill-locked">Rewarded ad${ask && ask.ads > 1 ? ` · 1 of ${ask.ads}` : ''}</span>
       <span class="spacer"></span>
       <button class="btn btn-sm btn-ghost" id="ad-close" type="button" aria-label="Close">✕</button>
     </div>
     <h2 id="ad-title" style="margin-top:var(--space-4);font-size:var(--text-lg)">Your ad is playing</h2>
+    ${ask ? `<p class="small" style="margin-top:var(--space-2)">
+      ${esc(askLabel(ask))}${ask.ads > 1 ? ` — the second one is asked for only if the first is credited` : ''}.
+    </p>` : ''}
     <p class="fine" id="ad-provider" style="margin-top:var(--space-1)"></p>
     <div class="ad-frame" style="margin-top:var(--space-5)">
       <div style="text-align:center">
-        <div class="ad-count" id="ad-count">15</div>
+        <div class="ad-count" id="ad-count">${Number(ask?.seconds) || 15}</div>
         <div class="fine" style="margin-top:var(--space-2)">seconds remaining</div>
       </div>
       <div class="ad-progress" id="ad-progress"></div>
@@ -4135,7 +4261,8 @@ ${conn ? `
     <dl class="kv">
       <dt>Current</dt><dd>${esc(plan.name)} · ${npr(plan.priceNpr)}/year</dd>
       <dt>Files</dt><dd>${esc(planState.sentence)}${meter}</dd>
-      <dt>Slots</dt><dd>${plan.capabilities.slot_count}</dd>
+      <dt>Positions</dt><dd>${plan.capabilities.slot_count} on each page${
+        plan.capabilities.slot_count === 1 ? ' — plus bytebikri\'s one at the end' : ''}</dd>
       <dt>Earnings</dt><dd><a href="/dashboard/${esc(channel.slug)}/earnings">Who pays you, and how much →</a></dd>
       <dt>Billing</dt><dd><a href="/dashboard/${esc(channel.slug)}/billing">Plans, rent and payments →</a></dd>
       <dt>Store settings</dt><dd><a href="/dashboard/${esc(channel.slug)}/settings">Name, banner, listing →</a></dd>
@@ -4595,7 +4722,17 @@ ${unusableBase ? `
  * The preview is the real renderer. A preview that is a drawing of the thing
  * rather than the thing is a preview that lies eventually.
  */
-export function slotsPage({ channel, slots = [], user, consent = null, flash = null }) {
+export function slotsPage({
+  channel, slots = [], user, consent = null, flash = null,
+  // Attempts that produced no verified view, in the window. A count, because that
+  // is the only honest thing the platform knows: it cannot tell a blocker from a
+  // dropped connection, and `src/blocked.js` is where that refusal is written down.
+  blockedCount = 0, blockedHours = 6,
+  // Creatives written for positions that no longer exist (ranks 4 and 5 were cut in
+  // migration 0034). Listed rather than hidden: a seller's words disappearing with
+  // no explanation is the kind of silence this product is built against.
+  retiredSlots = [],
+}) {
   const own = slots.filter((s) => s.owner === 'channel');
   const rented = slots.filter((s) => s.owner === 'platform');
 
@@ -4702,9 +4839,42 @@ ${flash ? `<div class="note note-${flash.kind}" role="status">${esc(flash.messag
     <p>The space you are paid for. You can see what is in it; you cannot put anything in it.</p>
   </div>
   ${rented.length ? rented.map(card).join('') : `<div class="note"><p class="small">None of your pages
-    has a rent slot right now. A rent slot appears only when a page has at least three slots to
-    allocate, so a short page is never taxed for space it does not have.</p></div>`}
+    has a rent position right now. One is placed only when a page has at least one position of yours
+    to sit beneath, so a page is never taxed for space it does not have.</p></div>`}
 </section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Unlocks that did not confirm</h2>
+    <p>A count, and the only thing the platform honestly knows about them.</p>
+  </div>
+  <div class="panel"><div class="panel-body">
+    <p class="small" data-blocked-count="${num(blockedCount)}">${esc(blockedSellerNote(blockedCount, blockedHours))}</p>
+    <p class="fine" style="margin-top:var(--space-3)">
+      There is no browser check and no user-agent sniffing anywhere in this product. Brave cannot be
+      detected reliably, reader mode cannot be detected at all, and a wall around a guess lands hardest
+      on visitors who were not blocking anything. So the ladder escalates on evidence the platform
+      actually has — a signed postback that never arrived — and its harsh end is that one file's unlock
+      stops being offered to that person for a few hours. Their account is not touched, the file stays
+      listed, and a membership opens everything with no ad at all.
+    </p>
+  </div></div>
+</section>
+
+${retiredSlots.length ? `
+<section class="section">
+  <div class="section-head">
+    <h2>Positions that were retired</h2>
+    <p>You wrote something for space that no longer exists.</p>
+  </div>
+  <div class="panel"><div class="panel-body">
+    <p class="small">These are not shown to anybody any more, and nothing was deleted:</p>
+    <ul class="list-steps" style="margin-top:var(--space-3)">
+      ${retiredSlots.map((r) => `<li><strong>${esc(r.label)}</strong> — “${esc(r.headline)}”. Move the words to
+        one of your two live positions above and clear this one.</li>`).join('')}
+    </ul>
+  </div></div>
+</section>` : ''}
 
 <div class="note note-warning">
   <strong>What this page does not do.</strong>
@@ -5639,7 +5809,13 @@ ${flashNote(flash)}
     // page a seller opens on a phone — they are checking who paid while standing in
     // a queue — and five columns never fitted in 350 pixels.
     return `<tr>
-      <td data-label="Member">${memberPlate({ name: m.display_name, accent: m.accent, tier: m.tier_name, style: plateStyle(m.tier_no) })}</td>
+      <td data-label="Member">${memberPlate({
+        name: m.display_name, accent: m.accent, tier: m.tier_name, style: plateStyle(m.tier_no),
+        // The member's own look rides on the plate here too. The seller's queue is
+        // where names are read most carefully, so a name has to look the same on it
+        // as it does on the storefront.
+        plusRow: m,
+      })}</td>
       <td data-label="Joined">${m.joined_at ? longDay(m.joined_at) : '—'}</td>
       <td data-label="State"><span class="pill${state === 'active' ? ' pill-success' : state === 'pending' ? '' : ' pill-warning'}">${esc(label)}</span>
         ${state === 'active' && left !== null ? `<span class="fine">${plural(left, 'day')} left</span>` : ''}</td>
@@ -5738,6 +5914,247 @@ ${flashNote(flash)}
 // One asset, from the seller's side
 // ---------------------------------------------------------------------------
 
+
+// ---------------------------------------------------------------------------
+// ByteBikri Plus — the person's own premium
+// ---------------------------------------------------------------------------
+
+/**
+ * The page where a member buys a look from the platform.
+ *
+ * Three sections, in the order the researched record says to put them:
+ *
+ *   1. THE LOOK, LIVE. A preview of the reader's own name in each palette and
+ *      effect, drawn with the same CSS the roster and the reviews use. A cosmetic
+ *      sold with a screenshot is a cosmetic nobody trusts; this one is the
+ *      member's own name, in their own browser, before they pay anything.
+ *   2. THE ARRANGEMENT, on the manual rail: the accounts, the reference, and what
+ *      an operator does with it. Same shape as the store's plan purchase, because
+ *      there is no card processor for this business in Nepal and a fake checkout
+ *      would be a lie about where the money is.
+ *   3. WHAT IT IS NOT, last and in full — the paragraph that prevents the one
+ *      complaint that actually damages a cosmetics tier ("I thought it also...").
+ *
+ * The page never says "no ads". Youtube Premium is defending two class actions
+ * over those two words; the sentences here say what the money buys and then say,
+ * in the negative, what it does not.
+ */
+export function plusPage({
+  user, consent = null, flash = null, current = 'plus',
+  plan = null, subscription = null, state = 'none',
+  rails = [], railsReady = false, look = { nameplate: null, effect: null },
+  previewWear = null, wear = null, periods = [1, 3, 12],
+}) {
+  const price = Number(plan?.price_npr) || 0;
+  const name = user?.display_name || (user?.email || 'You').split('@')[0];
+  const active = state === 'active';
+  const pending = state === 'pending';
+  const days = active ? plusDaysLeft({ period_end: subscription?.period_end }) : null;
+  const chosenPlate = look.nameplate || 'indigo';
+  const chosenEffect = effectOf(look.effect).key;
+
+  // The live preview: the reader's own name, in the palette and effect selected
+  // right now — or, if they have never chosen, in the default with nothing on it.
+  const previewRow = {
+    plus_active: true,
+    nameplate: chosenPlate,
+    plus_effect: chosenEffect,
+  };
+  const preview = `<div class="plus-preview">
+    <span class="plus-preview-avatar" style="${plateStyleAttr(chosenPlate)}" aria-hidden="true">${esc((name || 'Y').slice(0, 1).toUpperCase())}</span>
+    <div>
+      ${nameTag(name, previewRow)}
+      <div class="fine" style="margin-top:var(--space-2)">${esc(EFFECTS[chosenEffect].label)} in ${esc(plateOf(chosenPlate).label)}${active ? '' : ' — this is a preview, not something you are wearing yet'}</div>
+    </div>
+  </div>`;
+
+  const plateSwatches = PLATE_KEYS.map((key) => {
+    const p = plateOf(key);
+    return `<span class="plus-swatch" style="${plateStyleAttr(key)}" title="${esc(p.label)}"></span>`;
+  }).join('');
+
+  const lookForm = `
+    <form method="post" action="/plus/look" class="plus-look">
+      <div class="field">
+        <span class="field-label" id="plus-plate-label">Your palette</span>
+        <div class="plus-swatches" role="radiogroup" aria-labelledby="plus-plate-label">
+          ${PLATE_KEYS.map((key) => `
+            <label class="plus-swatch-label${chosenPlate === key ? ' is-on' : ''}" style="${plateStyleAttr(key)}">
+              <input type="radio" name="nameplate" value="${esc(key)}" ${chosenPlate === key ? 'checked' : ''}>
+              <span class="plus-swatch" aria-hidden="true"></span>
+              <span class="sr-only">${esc(plateOf(key).label)}</span>
+            </label>`).join('')}
+        </div>
+        <span class="hint">Eight checked palettes. Every one is contrast-checked against both the light and the dark theme.</span>
+      </div>
+      <div class="field">
+        <span class="field-label" id="plus-effect-label">Your effect</span>
+        <div class="plus-effects" role="radiogroup" aria-labelledby="plus-effect-label">
+          ${EFFECT_KEYS.map((key) => {
+    const e = EFFECTS[key];
+    return `
+            <label class="choice plus-effect-choice">
+              <input type="radio" name="effect" value="${esc(key)}" ${chosenEffect === key ? 'checked' : ''}>
+              <span>
+                <strong>${esc(e.label)}</strong>
+                <span class="fine">${esc(e.hint)}</span>
+              </span>
+              <span class="plus-effect-demo">${nameTag('Aa', { plus_active: true, nameplate: chosenPlate, plus_effect: key })}</span>
+            </label>`;
+  }).join('')}
+        </div>
+      </div>
+      <button class="btn btn-primary" type="submit">Save the look</button>
+      <p class="fine">Your look is saved whether or not an arrangement is running — the palette is yours, and only the wearing of it depends on the month.</p>
+    </form>`;
+
+  const railList = rails.filter((r) => r.id !== 'other');
+  const payTo = railList.map((r) => `
+    <div class="rail${r.ready ? '' : ' rail-off'}">
+      <div class="rail-name">${esc(r.label)}</div>
+      ${r.ready
+    ? `<div class="rail-value mono">${esc(r.handle)}</div>`
+    : `<div class="rail-value muted">not configured</div>
+         <div class="fine">Set <span class="mono">${esc(r.env)}</span> on the server to show this.</div>`}
+    </div>`).join('');
+
+  const payForm = `
+    <form method="post" action="/plus/join" class="pay-form">
+      <div class="row" style="gap:var(--space-4);align-items:flex-start">
+        <div class="field" style="flex:1 1 160px">
+          <label for="plus-method">Paid with</label>
+          <select class="input" id="plus-method" name="method">
+            ${railList.map((r) => `<option value="${esc(r.id)}">${esc(r.label)}</option>`).join('')}
+            <option value="other">Something else</option>
+          </select>
+        </div>
+        <div class="field" style="flex:2 1 220px">
+          <label for="plus-ref">Transaction reference</label>
+          <input class="input" id="plus-ref" name="txnReference" required minlength="4" maxlength="80"
+                 autocomplete="off" placeholder="e.g. 8FJ2K19QW">
+          <span class="hint">From the wallet receipt. An operator checks it against the platform's own
+          statement, and that is what starts your month.</span>
+        </div>
+      </div>
+      <div class="row" style="gap:var(--space-4);align-items:flex-start">
+        <div class="field" style="flex:1 1 200px">
+          <label for="plus-payer">Name on the transfer <span class="muted">(optional)</span></label>
+          <input class="input" id="plus-payer" name="payerName" maxlength="80">
+        </div>
+        <div class="field" style="flex:0 0 auto;align-self:flex-end">
+          <button class="btn btn-primary" type="submit">I have sent ${npr(price)}</button>
+        </div>
+      </div>
+    </form>`;
+
+  const arrangement = active ? `
+    <div class="panel"><div class="panel-head"><h2>Your arrangement</h2></div>
+      <div class="panel-body">
+        <dl class="kv">
+          <dt>Plan</dt><dd>${esc(subscription?.plan_name || PLUS_NAME)}</dd>
+          <dt>Price</dt><dd>${npr(price)} a month</dd>
+          <dt>Runs until</dt><dd>${esc(longDay(subscription?.period_end))}${days !== null ? ` · ${plural(days, 'day')} left` : ''}</dd>
+          <dt>Worn now</dt><dd>${wear ? `${esc(EFFECTS[wear.effect].label)} in ${esc(plateOf(wear.plate).label)}` : 'nothing yet — pick a look above'}</dd>
+        </dl>
+        <p class="fine" style="margin-top:var(--space-4)">
+          Paid to bytebikri on the manual rail. There is no card on file and nothing renews by itself:
+          when the month ends the arrangement ends, your look stays saved, and nothing is deleted.
+        </p>
+        <form method="post" action="/plus/cancel" style="margin-top:var(--space-4)">
+          <button class="btn btn-sm" type="submit">Stop it early</button>
+          <p class="fine" style="margin-top:var(--space-2)">
+            Stops the look now and ends the arrangement. The month was paid on a manual rail and stopping
+            early does not return it — so if you only want to be plain for a while, choose
+            <strong>Plain</strong> above: it costs nothing and keeps the month.
+          </p>
+        </form>
+      </div>
+    </div>` : pending ? `
+    <div class="panel"><div class="panel-head"><h2>Waiting on your reference</h2></div>
+      <div class="panel-body">
+        <p class="small">You submitted a reference for ${npr(price)}. An operator has not matched it against the
+        platform's statement yet, so no month has started and nothing is being worn — the look is what the money
+        buys, so it arrives when the money is confirmed rather than when it is claimed.</p>
+        <p class="fine" style="margin-top:var(--space-3)">Nothing is lost if the reference was wrong: submit another
+        one below, or stop the request entirely. A rejected reference changes nothing about your account.</p>
+        <form method="post" action="/plus/cancel" style="margin-top:var(--space-4)">
+          <button class="btn btn-sm" type="submit">Withdraw the request</button>
+        </form>
+      </div>
+    </div>` : `
+    <div class="panel"><div class="panel-head"><h2>${state === 'lapsed' ? 'Your month ended' : 'Start an arrangement'}</h2></div>
+      <div class="panel-body">
+        <p class="small">${state === 'lapsed'
+    ? 'Your look is still saved and nothing was deleted — the month simply ended. Start another whenever you want it back on.'
+    : 'One plan, everything included, no second charge for anything — ever. The reasons are on the page below.'}</p>
+        <p class="price-line" style="margin:var(--space-4) 0">${npr(price)} <span class="fine">a month</span></p>
+        ${payTo ? `<div class="rail-grid">${payTo}</div>` : ''}
+        ${railsReady ? payForm : `<div class="note note-warning" role="status" style="margin-top:var(--space-4)">
+          <strong>No payment rail is configured on this server.</strong> Set one of the
+          <span class="mono">PAY_*</span> variables to show the accounts here. Rather than printing a
+          placeholder account number, the page shows nothing to pay into.
+        </div>`}
+      </div>
+    </div>`;
+
+  return layout({
+    title: PLUS_NAME,
+    user, consent, current, showAddressNotice: false,
+    body: `
+${flashNote(flash)}
+<section class="section plus-hero">
+  <div class="plus-hero-grid">
+    <div>
+      <span class="pill pill-accent">${esc(PLUS_NAME)}</span>
+      <h1>Your name, the way you want it.</h1>
+      <p class="lede">A palette, an edge, a slow halo — worn beside your name on rosters and reviews, everywhere
+      this platform shows you to somebody else. This is bytebikri's own product, bought from us, and it is the
+      only thing we sell to a person.</p>
+      ${preview}
+      <div class="row" style="margin-top:var(--space-5)">
+        ${active
+    ? '<a class="btn btn-primary" href="#arrangement">Your arrangement →</a>'
+    : `<a class="btn btn-primary" href="#arrangement">Start for ${npr(price)} a month</a>`}
+        <a class="btn" href="#not">What it is not →</a>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-body">
+        <div class="plus-swatches-demo">${plateSwatches}</div>
+        <p class="small" style="margin-top:var(--space-5)">${esc(PLUS_SEPARATION_LINE)}</p>
+        <p class="fine" style="margin-top:var(--space-3)">${esc(plusMoneyLine(price, 1))}</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="look">
+  <div class="section-head"><h2>Choose the look</h2>
+    <p class="fine">Everything below is included in the one price. Cosmetics sold one at a time is the
+    complaint the research is full of; sold as one thing, it is a look.</p>
+  </div>
+  <div class="panel"><div class="panel-body">${lookForm}</div></div>
+</section>
+
+<section class="section" id="arrangement">
+  <div class="section-head"><h2>The arrangement</h2></div>
+  ${arrangement}
+</section>
+
+<section class="section" id="not">
+  <div class="section-head"><h2>What this is not</h2>
+    <p class="fine">Written before the price, and printed after it, because the only complaint that damages
+    a cosmetics tier is the one about what somebody assumed it included.</p>
+  </div>
+  <div class="panel"><div class="panel-body">
+    <ul class="plus-not">
+      ${PLUS_NOT.map((line) => `<li>${esc(line)}</li>`).join('')}
+    </ul>
+  </div></div>
+</section>`,
+  });
+}
+
 export function assetManage({
   channel, asset, user, consent = null, flash = null, files = [],
   policy = {}, stats = {}, unlocks = 0,
@@ -5745,6 +6162,10 @@ export function assetManage({
   // "Members only" option is not offered on a plan that cannot use it: a setting
   // that silently does nothing is the worst kind of control.
   membershipsOn = false, tiers = [],
+  // The store's plan code, because the ask a file may make is capped by the plan
+  // (adscale.js ASK_CEILING). Passed in rather than looked up: a view renders
+  // synchronously and asks the database nothing.
+  planCode = 'free',
   // Availability: the countries this creator chose, and the countries the
   // platform did. Two lists rather than one, because they are two different
   // standing — a creator can undo theirs and cannot undo ours.
@@ -5768,6 +6189,81 @@ export function assetManage({
     ? hidingNotice({ reasons: caseFile?.reasons || [], reporters: caseFile?.reporters || 0, appeal: openAppeal })
     : null;
   const appealAllowed = canAppeal({ asset, openAppeal });
+
+  /*
+   * THE ASK.
+   *
+   * Two number boxes stood here — "Ads to unlock" and "Minimum ad length" — and
+   * they asked a seller with no advertising data to price a stranger's attention
+   * from memory. What stands here instead is one honest input ("what is this file
+   * worth?", private, no checkout behind it) and a choice between the rate for
+   * that value and the platform minimum. Both numbers on screen are computed by
+   * `adscale.js`, which is the same module the unlock pipeline and the buyer's
+   * panel read.
+   */
+  const storedLevel = String(policy.ask_level) === 'light' ? 'light' : 'standard';
+  const value = Math.max(0, Number(asset.declared_value_npr) || 0);
+  const storedAsk = { ads: Number(policy.ads_required) || 1, seconds: Number(policy.ad_min_seconds) || 15, level: storedLevel };
+  const asks = Object.fromEntries(ASK_LEVELS.map((l) => [l.key, resolveAsk({ valueNpr: value, planCode, level: l.key })]));
+  // Drift: the ask was calibrated when the file was worth something else. Said
+  // plainly and never auto-corrected — an ask that moved on its own under a
+  // visitor's feet would be worse than one that is briefly behind.
+  const bandWas = policy.ad_band_npr === null || policy.ad_band_npr === undefined ? null : Number(policy.ad_band_npr);
+  const drifted = bandWas !== null && bandWas !== value;
+  // On a file with no value, the band rate and the floor are the same number, and a
+  // radio group whose two options do the same thing reads as a broken control. One
+  // option, and a line saying why there is nothing to choose.
+  const sameRate = asks.standard.ads === asks.light.ads && asks.standard.seconds === asks.light.seconds;
+  const shownLevels = sameRate ? ASK_LEVELS.filter((l) => l.key === 'standard') : ASK_LEVELS;
+  const checkedLevel = sameRate ? 'standard' : storedLevel;
+
+  const askMeter = (ask, tone = '') => `
+    <span class="ask-meter${tone ? ` ask-meter-${tone}` : ''}" role="img"
+          aria-label="${esc(askLabel(ask))}, ${ask.ads * ask.seconds} seconds in total">
+      ${Array.from({ length: ask.ads }, (_, i) => `
+        <span class="ask-bar" style="--ask-sec:${ask.seconds}">
+          <span class="ask-bar-sec">${ask.seconds}s</span>
+          <span class="ask-bar-n">${i + 1}</span>
+        </span>`).join('')}
+    </span>`;
+
+  const askPanel = `
+      <div class="ask-panel">
+        <div class="field">
+          <label for="a-value">What this file is worth</label>
+          <input class="input" id="a-value" name="valueNpr" type="number" min="0" max="1000000" step="50"
+                 value="${value}">
+          <span class="hint">Private, and not a price: nothing on ByteBikri has a checkout. It is what the ask
+          below is calibrated from, and no visitor is shown it.</span>
+        </div>
+        <div class="field">
+          <span class="field-label" id="a-ask-label">What unlocking asks for</span>
+          <div class="ask-choices" role="radiogroup" aria-labelledby="a-ask-label">
+            ${shownLevels.map((l) => {
+              const ask = asks[l.key];
+              return `
+              <label class="choice">
+                <input type="radio" name="adAsk" value="${l.key}" ${checkedLevel === l.key ? 'checked' : ''}>
+                <span>
+                  <strong>${esc(l.label)} — ${esc(askLabel(ask))}</strong>
+                  <span class="fine">${esc(l.hint)}</span>
+                  ${drifted && checkedLevel === l.key
+                    ? `<span class="fine ask-drift">Saved when this file was worth NPR ${Number(bandWas).toLocaleString('en-IN')} —
+                       saving now recalibrates it.</span>` : ''}
+                </span>
+                ${askMeter(ask, checkedLevel === l.key ? 'now' : '')}
+              </label>`;
+            }).join('')}
+          </div>
+          ${sameRate ? `<span class="hint">The floor and the band rate are the same number here —
+            ${esc(askLabel(asks.standard))} — so there is nothing to choose yet. Give the file a value above
+            and the two separate, with the band rate asking more.</span>` : ''}
+        </div>
+        <p class="small"><strong>Now:</strong> ${esc(askLabel(storedAsk))} of a visitor's time
+        (${storedAsk.ads * storedAsk.seconds} seconds in total). ${esc(askReason({ valueNpr: value, planCode, level: storedLevel }))}</p>
+        <p class="fine">${esc(ASK_INPUT_LINE)}</p>
+        <p class="fine"><strong>The platform's ceiling, on every plan:</strong> ${esc(ASK_PROMISE)}</p>
+      </div>`;
 
   /**
    * One form, one Save.
@@ -5937,20 +6433,8 @@ ${notice ? `
           <span class="hint">Pausing hides it without deleting anything.</span>`}
         </div>
       </div>
-      <div class="field">
-        <label for="a-ads">Ads to unlock</label>
-        <input class="input" id="a-ads" name="adsRequired" type="number" min="1" max="5" step="1"
-               value="${Number(policy.ads_required) || 1}">
-        <span class="hint">More than one ad per file is allowed and generally earns less per person
-        than a single longer view.</span>
-      </div>
+      ${askPanel}
       <div class="row" style="gap:var(--space-4);align-items:flex-start">
-        <div class="field" style="flex:1 1 140px">
-          <label for="a-seconds">Minimum ad length</label>
-          <input class="input" id="a-seconds" name="adMinSeconds" type="number" min="5" max="120" step="5"
-                 value="${Number(policy.ad_min_seconds) || 15}">
-          <span class="hint">Seconds. The network sets the real length; this is the floor you ask for.</span>
-        </div>
         <div class="field" style="flex:1 1 140px">
           <label for="a-hours">Access lasts</label>
           <input class="input" id="a-hours" name="unlockHours" type="number" min="1" max="720" step="1"
@@ -7756,6 +8240,11 @@ export function operatorBilling({
   // `platformMoney` filtered on two statuses the schema forbids and silently
   // dropped every invoice a payer had already claimed to have paid.
   aging = null, byMonth = [],
+  // ByteBikri Plus claims, waiting for a person to find the transfer on the
+  // platform's own statement. Separate from the store queue because the consequence
+  // of a match is different: a store's plan turns capabilities on, a person's turns
+  // a look on and opens nothing at all.
+  plusPayments = [],
 }) {
   // `aging` defaults to the queue itself. The two are the same rows — aging just
   // carries the due date and the days late — so a caller that passes only
@@ -7775,6 +8264,24 @@ export function operatorBilling({
       <td class="fine" data-label="When">${relTime(p.created_at)}</td>
       <td data-label="Actions">
         <form class="inline-form" method="post" action="/admin/payments/plan/${esc(p.id)}">
+          <button class="btn btn-sm btn-primary" name="action" value="match" type="submit">Match</button>
+          <button class="btn btn-sm btn-danger" name="action" value="reject" type="submit">Reject</button>
+        </form>
+      </td>
+    </tr>`).join('');
+
+  const plusRows = plusPayments.filter((p) => p.status === 'submitted').map((p) => `
+    <tr>
+      <td>
+        <strong>${esc(p.display_name || p.email)}</strong>
+        <div class="fine">${esc(p.email)} · ${esc(p.plan_code)}</div>
+      </td>
+      <td class="mono" data-label="Reference">${esc(p.txn_reference)}</td>
+      <td data-label="Method">${esc(p.method)}${p.payer_name ? `<div class="fine">${esc(p.payer_name)}</div>` : ''}</td>
+      <td class="num" data-label="Amount">${npr(p.amount_npr)}</td>
+      <td class="fine" data-label="When">${relTime(p.created_at)}</td>
+      <td data-label="Actions">
+        <form class="inline-form" method="post" action="/admin/payments/plus/${esc(p.id)}">
           <button class="btn btn-sm btn-primary" name="action" value="match" type="submit">Match</button>
           <button class="btn btn-sm btn-danger" name="action" value="reject" type="submit">Reject</button>
         </form>
@@ -7821,6 +8328,25 @@ ${flashNote(flash)}
       </table>
     </div></div>`
     : '<div class="empty">Nothing waiting. Upgrades only appear here once a seller has submitted a reference.</div>'}
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Plus claims</h2>
+    <p>${plusPayments.filter((p) => p.status === 'submitted').length} waiting · a match turns a look on and opens nothing</p>
+  </div>
+  ${plusPayments.filter((p) => p.status === 'submitted').length ? `
+    <div class="panel"><div class="panel-body panel-body-flush">
+      <table class="table table-stacked">
+        <thead><tr><th>Person</th><th>Reference</th><th>Method</th><th class="num">Amount</th><th>When</th><th></th></tr></thead>
+        <tbody>${plusRows}</tbody>
+      </table>
+    </div></div>` : '<div class="empty">Nothing waiting. A claim appears here the moment somebody submits a reference.</div>'}
+  <p class="fine" style="margin-top:var(--space-4)">
+    Read the reference against the platform's own statement, the same way as a store plan. Nothing about
+    this charge opens a file, removes an ad, or entitles anybody to a creator's work — if a claim ever
+    looked like it would, that would be a bug rather than a feature.
+  </p>
 </section>
 
 <section class="section">
@@ -8123,6 +8649,28 @@ ${flashNote(flash)}
         the money goes cannot leave out the flow that does not touch it. Your
         <a href="/dashboard/${esc(channel.slug)}/members">members page</a> is where the roster and the
         dues-in-flight live.
+      </p>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:var(--space-6)">
+    <div class="panel-head">
+      <h2>${esc(moneyMap.toPlatformFromPeople.label)}</h2>
+      <span class="spacer"></span>
+      ${pill(moneyMap.toPlatformFromPeople.cut, 'accent')}
+    </div>
+    <div class="panel-body">
+      <p class="small">${esc(moneyMap.toPlatformFromPeople.detail)}</p>
+      <dl class="kv" style="margin-top:var(--space-4)">
+        <dt>Paid by</dt><dd>${esc(moneyMap.toPlatformFromPeople.payer)}</dd>
+        <dt>Into</dt><dd>${esc(moneyMap.toPlatformFromPeople.account)}</dd>
+        <dt>Held by bytebikri</dt><dd><strong>${esc(moneyMap.toPlatformFromPeople.held)}</strong></dd>
+      </dl>
+      <p class="fine">
+        The one leg on this page that is ours rather than yours, named here for the same reason the dues
+        leg is: a seller reading a money panel should learn where else the platform earns from the panel
+        itself, not from a support thread. One price, everything included, and
+        <a href="/plus">the whole product is a page</a>.
       </p>
     </div>
   </div>

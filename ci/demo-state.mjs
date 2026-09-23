@@ -34,7 +34,7 @@
  *   cd app && node ../ci/demo-state.mjs
  */
 process.env.DATABASE_URL ||= 'postgres://postgres:postgres@127.0.0.1:55432/bytebikri';
-const { many, one, close } = await import('../app/src/db.js');
+const { many, one, query, scalar, close } = await import('../app/src/db.js');
 const { store, storage } = await import('../app/src/store.js');
 const { createHash } = await import('node:crypto');
 const fs = await import('node:fs/promises');
@@ -527,7 +527,136 @@ if (memberStore) {
   }
 }
 
-// ── 5. The identity document, held the way a real one is ─────────────────────
+// ── 4c. ByteBikri Plus (§32): the person's own premium, in both its states ───
+//
+// The same shape as the memberships block above, and for the same reason: the
+// operator queue only means something when there is a claim in it, and the look
+// only means something when somebody is actually wearing one. So one person has an
+// arrangement that is RUNNING (matched against the platform's own statement, wearing
+// a palette and an effect wherever the platform shows their name to somebody else),
+// and one has a claim WAITING — the queue, with the reference the operator needs.
+//
+// `cancelPlus` on everybody else is the restore: a subscription that a previous
+// session left active stops being worn, because the entitlement is the join and a
+// cancelled row is not an active one. Cosmetic choices are left alone — a palette is
+// a preference, and the demo should not spend a person's look to tidy a database.
+//
+// Alice: PLUS-RUNNING-4517, confirmed. Carol: PLUS-WAITING-8823, submitted, so
+// /admin/payments has something in its Plus section on a fresh clone.
+{
+  const alicePerson = await one(`select owner_id from channels where slug = 'alice'`);
+  const carolPerson = await one(`select id from profiles where email = 'carol@bytebikri.local'`);
+  const operator = await one(`select id from profiles where role = 'admin' order by created_at limit 1`);
+  const plan = await store.customerPlan('plus');
+
+  if (plan && alicePerson?.owner_id) {
+    const keep = new Set([alicePerson.owner_id, carolPerson?.id].filter(Boolean));
+    // Only rows that are actually being WORN right now: a subscription that is already
+    // cancelled is not "stopped" by stopping it again, and reporting it as such made
+    // the second run of this script print a reset that had not happened.
+    const wrong = await many(
+      `select profile_id from customer_subscriptions
+        where status in ('active','pending_payment')
+          and not (profile_id = any($1::uuid[]))`,
+      [[...keep]],
+    );
+    for (const row of wrong) await store.cancelPlus(row.profile_id);
+    if (wrong.length) say('plus', `reset — stopped ${wrong.length} arrangement(s) a preview left running`);
+
+    // The two references belong to THIS script, so a second run clears its own first
+    // run's rows before re-claiming. Without this the unique index on the reference
+    // does exactly what it is for — refuses the duplicate — and the seeder would leave
+    // the demo with a cancelled arrangement while printing that it was running. (It
+    // did, for one run. The line below is why it cannot again.)
+    const MINE = ['PLUS-RUNNING-4517', 'PLUS-WAITING-8823'];
+    await query(`delete from customer_plan_payments where txn_reference = any($1::text[])`, [MINE]);
+
+    // Any other claim still waiting in the queue was left there by somebody clicking
+    // through the preview, and a queue with three claims in it demonstrates the same
+    // thing as a queue with one — worse, in fact, because the operator's page is meant
+    // to show a person what THEIR action does. Decided, not deleted: a rejection is a
+    // real outcome with a reason on it, and it is what an operator would have pressed.
+    const strays = await many(
+      `select id from customer_plan_payments where status = 'submitted' and txn_reference <> all($1::text[])`,
+      [MINE],
+    );
+    for (const row of strays) {
+      if (operator?.id) {
+        await store.rejectCustomerPlanPayment({
+          paymentId: row.id, actorId: operator.id,
+          reason: 'Demo reset: not one of the seeded claims.',
+        });
+      }
+    }
+    if (strays.length) say('plus queue', `reset — decided ${strays.length} claim(s) a preview left waiting`);
+
+    // Alice's arrangement: a real claim, and a real match by the operator account —
+    // the same two steps a person and an operator actually take.
+    await store.cancelPlus(alicePerson.owner_id);
+    const claim = await store.claimPlus({
+      profileId: alicePerson.owner_id, planCode: 'plus', amountNpr: plan.price_npr,
+      txnReference: MINE[0], method: 'esewa', payerName: 'Alice',
+    });
+    if (!claim.ok) throw new Error(`demo-state: Alice's Plus claim was refused (${claim.code})`);
+    if (operator?.id) await store.matchCustomerPlanPayment({ paymentId: claim.payment.id, actorId: operator.id });
+    // A look she chose: a palette from the eight the product has and the one effect
+    // that moves, so the preview exercises both halves of the product on a roster and
+    // on a review. (The
+    // first cut of this line used a name that is not a key at all; `plusWear()` fell
+    // back to the default silently and the page said "Halo in Indigo" over a look the
+    // seeder believed it had set. The store method takes what it is given — the route
+    // is what validates — so a seeder has to name a real one.)
+    await store.setPlusLook({ profileId: alicePerson.owner_id, nameplate: 'teal', effect: 'halo' });
+    // Reported from the row, not from the intention: a seeder that says "running" over
+    // a cancelled subscription is worse than one that says nothing.
+    const running = await store.customerSubscription(alicePerson.owner_id);
+    say('alice plus', running?.status === 'active'
+      ? `running to ${String(running.period_end).slice(0, 10)} — teal, halo`
+      : `NOT RUNNING (${running?.status}) — the operator account is missing?`);
+
+    if (carolPerson?.id) {
+      await store.cancelPlus(carolPerson.id);
+      const waiting = await store.claimPlus({
+        profileId: carolPerson.id, planCode: 'plus', amountNpr: plan.price_npr,
+        txnReference: MINE[1], method: 'khalti', payerName: 'Carol',
+      });
+      if (!waiting.ok) throw new Error(`demo-state: Carol's Plus claim was refused (${waiting.code})`);
+      await store.setPlusLook({ profileId: carolPerson.id, nameplate: 'rose', effect: 'edge' });
+      const held = await store.customerSubscription(carolPerson.id);
+      say('carol plus', held?.status === 'pending_payment'
+        ? 'claim PLUS-WAITING-8823 waiting in the operator queue'
+        : `NOT WAITING (${held?.status})`);
+    }
+  }
+}
+
+// ── 4d. When an ad does not arrive (§32): the count a seller can see ─────────
+//
+// The ladder's whole premise is that the platform counts attempts it could not
+// confirm and says only that. The preview should show the middle rung, where the
+// explanation is on the page and the unlock is STILL OFFERED — the state a person
+// whose connection dropped meets, and the one that makes "we do not guess why" a
+// claim about the product rather than about the copy. Three attempts is the rung
+// (`rungFor(3)`), and the rows are Bob's so that signing in as him shows it live.
+{
+  const kit = await one(`select a.id, a.channel_id from assets a where a.slug = 'devanagari-poster-kit'`);
+  const bobPerson = await one(`select id from profiles where email = 'bob@bytebikri.local'`);
+  if (kit && bobPerson?.id) {
+    // The count is what the seller's page prints, so the seed owns all of it: rows
+    // from an earlier visit would otherwise pile on top of these three.
+    const cleared = await query('delete from ad_block_signals where asset_id = $1', [kit.id]);
+    for (let i = 0; i < 3; i++) {
+      await store.recordBlockSignal({
+        assetId: kit.id, channelId: kit.channel_id, userId: bobPerson.id, signal: 'no_postback',
+      });
+    }
+    const count = await store.blockSignalCount({ assetId: kit.id, userId: bobPerson.id });
+    say('ad signals', `${count} unconfirmed attempt(s) on devanagari-poster-kit`
+      + (cleared.rowCount ? ` (cleared ${cleared.rowCount} older)` : ''));
+  }
+}
+
+
 // Nima is the store waiting on a check by design (§26), so she is also the store
 // that has handed a document over: it makes the two halves of the promise visible
 // in the preview at once — her settings page says a copy is with us and what will
@@ -628,7 +757,18 @@ console.log('  identity:',
       : c.document_destroyed_at ? ' · the copy handed over was destroyed' : '';
     return `${c.name} ${c.status}${c.method && c.status !== 'pending' ? ` (${c.method})` : ''}${when}${doc}${l && l.level !== 'current' && !c.notice_sent_at && l.level !== 'lapsed' ? ' (nobody told yet)' : ''}`;
   }).join(', ') || 'none');
+// `claimed_at`, not `created_at`: the table records when a claim was made and when a
+// period started, and has no row-creation timestamp of its own.
+const plusNow = await many(`select p.display_name, cs.status, cs.period_end
+                               from customer_subscriptions cs join profiles p on p.id = cs.profile_id
+                              order by cs.claimed_at`);
+const plusQueue = await scalar(`select count(*)::int from customer_plan_payments where status = 'submitted'`);
+console.log('  plus:',
+  plusNow.filter((r) => r.status !== 'cancelled')
+    .map((r) => `${r.display_name} ${r.status === 'active' ? `wearing a look to ${String(r.period_end).slice(0, 10)}` : r.status}`)
+    .join(', ') || 'nothing running',
+  `· ${plusQueue} claim(s) waiting on the operator`);
 console.log('\n  open the preview at /  ·  the creator’s view at /dashboard/alice'
-  + '  ·  the queue at /admin\n');
+  + '  ·  the queue at /admin  ·  the person’s premium at /plus\n');
 
 await close();

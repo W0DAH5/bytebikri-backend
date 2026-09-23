@@ -203,6 +203,20 @@ test('the money map states both directions, and the payer on each leg', () => {
   }
   assert.match(dues.detail, /ESewa|eSewa|Khalti|bank/,
     'the detail names rails a Nepali member can actually use');
+  // The fourth leg: a person pays the platform. On a SELLER's money map, and the two
+  // answers that matter are the negative ones — none of their money is in it, and it
+  // cannot move a file, an ad or a creator's earnings.
+  const people = MONEY_MAP.toPlatformFromPeople;
+  assert.equal(people.account, 'bytebikri', 'this one is ours, and the map says so');
+  assert.match(people.cut, /no share/i);
+  assert.match(people.detail, /opens no file/i);
+  assert.match(people.detail, /removes no ad/i);
+  assert.match(people.detail, /takes nothing from what you earn/i,
+    'the sentence a seller actually needs: our other line does not touch theirs');
+  for (const phrase of [people.payer, people.account, people.held, people.cut]) {
+    assert.ok(phrase.length <= 24, `a money-map answer is a phrase: "${phrase}"`);
+  }
+
   // The one thing that must never appear: bytebikri holding or forwarding it.
   // "cannot see the balance" is allowed and deliberate — naming the balance is
   // the point. Claiming one is not.

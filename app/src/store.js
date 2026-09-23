@@ -14,6 +14,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { one, many, scalar, query, withTransaction, isUniqueViolation } from './db.js';
+// What an active arrangement means, as SQL — see src/plus.js.
+import { PLUS_SUBSCRIPTION_JOIN, PLATE_KEYS as PLUS_PLATE_KEYS, EFFECT_KEYS as PLUS_EFFECT_KEYS } from './plus.js';
 
 import { rentPeriod, annualRentNpr, rentWorking, RENT_TERMS } from './billing.js';
 
@@ -37,6 +39,10 @@ import { SEARCHABLE_ASSET_STATES } from './moderation.js';
 // rule lives in `kyc.js` because the seller's page prints the number: a promise
 // about a week that is written twice is a promise that drifts.
 import { HOLD_DAYS } from './kyc.js';
+import { resolveAsk } from './adscale.js';
+// The signal vocabulary, so a recorded kind is one the ladder understands. Pure
+// module: no database, no clock of its own, imports nothing.
+import { SIGNALS } from './blocked.js';
 // Storefront themes: the curated palettes and the plan capability that gates them.
 // Imported for the same reason `HOLD_DAYS` is — the seller's settings page prints
 // the rule, so the rule lives once.
@@ -119,9 +125,16 @@ export const PLANS = {
   free: {
     code: 'free', name: 'Free', priceNpr: 0, periodMonths: 12,
     capabilities: {
-      max_assets: 20, slot_count: 3, can_theme: false, custom_sections: 0,
+      // Positions on a page is 1 for a free store and 2 for a paid one; the
+      // platform's single row is not counted here. Density used to be the upsell
+      // (3 / 5 / 8) and stopped being one in migration 0034.
+      max_assets: 20, slot_count: 1, can_theme: false, custom_sections: 0,
       remove_footer: false, marketplace_listed: false, analytics_level: 'basic',
       verified_badge: false, featured_eligible: false, ad_free: false,
+      // How much of the platform-wide ask promise this plan may use. The absolute
+      // ceiling (3 ads, 60 s, 3 minutes total) is in adscale.js and no plan moves
+      // it; these two keys only decide how far up the value ladder a store may go.
+      ad_ask_max_ads: 1, ad_ask_max_seconds: 30,
       // Members are the paid relationship: a free store is watched (follows are
       // free forever), a paying store is belonged to. Same reasoning as the
       // marketplace line above — being found stays free, the relationship is
@@ -132,20 +145,22 @@ export const PLANS = {
   store: {
     code: 'store', name: 'Store', priceNpr: 999, periodMonths: 12,
     capabilities: {
-      max_assets: 200, slot_count: 5, can_theme: true, custom_sections: 3,
+      max_assets: 200, slot_count: 2, can_theme: true, custom_sections: 3,
       // Explore listing, which is what the first paid tier buys. Featured
       // placement stays Pro-only — capacity and placement are the upsell, not
       // being found at all. See migration 0014.
       remove_footer: true, marketplace_listed: true, analytics_level: 'sources',
       verified_badge: true, featured_eligible: false, ad_free: false, memberships: true,
+      ad_ask_max_ads: 2, ad_ask_max_seconds: 45,
     },
   },
   pro: {
     code: 'pro', name: 'Pro', priceNpr: 2499, periodMonths: 12,
     capabilities: {
-      max_assets: -1, slot_count: 8, can_theme: true, custom_sections: -1,
+      max_assets: -1, slot_count: 2, can_theme: true, custom_sections: -1,
       remove_footer: true, marketplace_listed: true, analytics_level: 'full',
       verified_badge: true, featured_eligible: true, ad_free: false, memberships: true,
+      ad_ask_max_ads: 3, ad_ask_max_seconds: 60,
     },
   },
 };
@@ -166,12 +181,28 @@ export function nextPlan(code) {
     .sort((a, b) => a.priceNpr - b.priceNpr)[0] ?? null;
 }
 
+/**
+ * The positions that exist, in rank order. THREE, and that is the whole point.
+ *
+ * There were five, and Pro's plan could fill all of them while a free store got
+ * three — the upsell was density, which is the worst thing to sell on a page whose
+ * visitor is the product. As of migration 0034 a page carries at most three boxes:
+ * the store's one or two (ranks 1 and 2) and the platform's single one, which is
+ * taken from the rank immediately after the store's last.
+ *
+ * Rank 3 stays active because on a paid plan it is OURS — the last position on the
+ * page, never the first, which is the consideration the rent buys. Ranks 4 and 5
+ * are kept in this list, marked inactive, rather than deleted: their names are in
+ * `slot_creatives` rows that sellers wrote, and a definition that vanishes makes
+ * those rows unexplainable. `active: false` means allocateSlots cannot place them
+ * and the dashboards do not offer them; the history stays readable.
+ */
 export const SLOT_DEFS = [
   { key: 'top_leaderboard', label: 'Top of store', rank: 1, formats: ['display'], max_height_px: 250, surfaces: ['web', 'app'], active: true },
   { key: 'in_content_1', label: 'In content (first)', rank: 2, formats: ['display', 'native'], max_height_px: 280, surfaces: ['web'], active: true },
   { key: 'sidebar_sticky', label: 'Sidebar', rank: 3, formats: ['display'], max_height_px: 600, surfaces: ['web'], active: true },
-  { key: 'in_content_2', label: 'In content (second)', rank: 4, formats: ['display', 'native'], max_height_px: 280, surfaces: ['web'], active: true },
-  { key: 'footer_native', label: 'Footer', rank: 5, formats: ['native', 'display'], max_height_px: 250, surfaces: ['web', 'app'], active: true },
+  { key: 'in_content_2', label: 'In content (second)', rank: 4, formats: ['display', 'native'], max_height_px: 280, surfaces: ['web'], active: false },
+  { key: 'footer_native', label: 'Footer', rank: 5, formats: ['native', 'display'], max_height_px: 250, surfaces: ['web', 'app'], active: false },
 ];
 
 // ---------------------------------------------------------------------------
@@ -184,6 +215,20 @@ const pgNum = (v) => (v === null || v === undefined ? v : Number(v));
 // attacker-controlled input, and letting the driver throw turns a 404 into a 500
 // — which a webhook sender reads as "retry me".
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The own-look join, written once and used by every query that renders a person's
+ * name to somebody else.
+ *
+ * It answers one question — is this person's ByteBikri Plus arrangement active
+ * right now — and it answers it in SQL, from the row that already holds the
+ * period end. Nothing is denormalised, nothing has to be swept, and a page that
+ * forgets to check cannot exist: if the join is not there, `plus_active` is
+ * undefined, and `plusWear()` refuses to dress anybody it cannot prove.
+ */
+// The subscription join lives with the module that owns its meaning, so the
+// session resolver and this file cannot drift about what "active" means.
+const PLUS_JOIN = PLUS_SUBSCRIPTION_JOIN;
 
 // ===========================================================================
 // Store
@@ -210,8 +255,26 @@ export const store = {
   async userByEmail(email) {
     return one('select * from profiles where email = $1', [String(email).trim().toLowerCase()]);
   },
+  /**
+   * A person, with whether their own look is currently worn.
+   *
+   * The lateral join is the whole entitlement check, done in the database rather
+   * than remembered in a session: `plus_status` is null unless there is an ACTIVE
+   * subscription whose period has not ended, so a profile row read at any moment
+   * carries the truth about the look. Nothing has to expire a session, and a page
+   * cannot show a lapsed member's palette by forgetting to ask.
+   */
   async userById(userId) {
-    return one('select * from profiles where id = $1', [userId]);
+    return one(
+      `select p.*,
+              pl.plus_status,
+              pl.plus_period_end,
+              (pl.plus_status is not null) as plus_active
+         from profiles p
+         ${PLUS_JOIN}
+        where p.id = $1`,
+      [userId],
+    );
   },
   /** Resolve-or-create. There is no signup flow yet, so first sight IS signup. */
   async userByEmailOrCreate(email) {
@@ -2701,11 +2764,17 @@ export const store = {
   publicRoster(channelId, { limit = 12 } = {}) {
     return many(
       `select m.profile_id, m.tier_no, m.joined_at, p.display_name,
-              coalesce(t.name, 'Member') as tier_name, coalesce(t.accent, 'indigo') as accent
+              coalesce(t.name, 'Member') as tier_name, coalesce(t.accent, 'indigo') as accent,
+              -- Their own look, worn only while their own plan is active. Two
+              -- things are being rendered on one plate (a store's tier and the
+              -- person's own palette) and they come from two different payments to
+              -- two different parties — which is exactly why they are two columns.
+              p.nameplate as plus_plate, p.plus_effect as plus_effect, pl.plus_status, pl.plus_period_end
          from memberships m
          join profiles p on p.id = m.profile_id
          left join membership_tiers t
            on t.channel_id = m.channel_id and t.tier_no = m.tier_no
+         ${PLUS_JOIN}
         where m.channel_id = $1 and m.status = 'active' and m.publicly_listed
         order by m.joined_at desc
         limit $2`,
@@ -3181,7 +3250,14 @@ export const store = {
          (select count(distinct channel_id) from subscriptions
            where status in ('active','grace') and plan_code <> 'free')::int as paying_stores,
          (select count(*) from channels where moderation_state <> 'removed')::int as stores,
-         (select count(*) from subscriptions where status = 'active' and plan_code <> 'free')::int as active_subs`,
+         (select count(*) from subscriptions where status = 'active' and plan_code <> 'free')::int as active_subs,
+         -- The third charge. Read here rather than derived on the page, so the
+         -- console's total is the same arithmetic the payments queue shows.
+         coalesce((select sum(amount_npr) from customer_plan_payments
+                    where status = 'matched'
+                      and matched_at >= date_trunc('month', now())), 0)::int as plus_this_month,
+         (select count(*)::int from customer_subscriptions where status = 'active') as plus_active,
+         (select count(*)::int from customer_subscriptions where status = 'pending_payment') as plus_pending`,
       [OPEN_RENT_STATUSES],
     ).then((r) => ({
       matchedThisMonthNpr: Number(r?.matched_this_month || 0),
@@ -3192,7 +3268,255 @@ export const store = {
       payingStores: Number(r?.paying_stores || 0),
       stores: Number(r?.stores || 0),
       activeSubs: Number(r?.active_subs || 0),
+      plusThisMonthNpr: Number(r?.plus_this_month || 0),
+      plusActive: Number(r?.plus_active || 0),
+      plusPending: Number(r?.plus_pending || 0),
     }));
+  },
+
+  // ---- when an ad does not arrive ------------------------------------------
+  //
+  // One row per failed attempt, and a count read back. Deliberately no browser
+  // fingerprint and no user agent: `src/blocked.js` explains why the ladder is
+  // built on "the view did not confirm" rather than on "this looks like Brave".
+
+  recordBlockSignal({ assetId = null, channelId = null, userId = null, pendingViewId = null, signal = 'unknown' }) {
+    const kind = SIGNALS.includes(String(signal)) ? String(signal) : 'unknown';
+    return one(
+      `insert into ad_block_signals (asset_id, channel_id, user_id, pending_view_id, signal)
+       values ($1, $2, $3, $4, $5)
+       returning id, signal, created_at`,
+      [assetId, channelId, userId, pendingViewId, kind],
+    );
+  },
+
+  /**
+   * How many blocking attempts this person has made on this file inside the window.
+   *
+   * `declined` is excluded in SQL rather than at the call site, so the ladder cannot
+   * be climbed by somebody who merely changed their mind about watching an ad.
+   */
+  blockSignalCount({ assetId, userId, hours = 6 }) {
+    return scalar(
+      `select count(*)::int from ad_block_signals
+        where asset_id = $1 and user_id = $2
+          and signal <> 'declined'
+          and created_at > now() - ($3 || ' hours')::interval`,
+      [assetId, userId, String(hours)],
+    ).then((n) => Number(n) || 0);
+  },
+
+  /** The same fact for the seller's dashboard: a count, per store, per window. */
+  blockSignalCountOfChannel(channelId, { hours = 6 } = {}) {
+    return scalar(
+      `select count(*)::int from ad_block_signals
+        where channel_id = $1
+          and signal <> 'declined'
+          and created_at > now() - ($2 || ' hours')::interval`,
+      [channelId, String(hours)],
+    ).then((n) => Number(n) || 0);
+  },
+
+  // ---- ByteBikri Plus: what a PERSON buys from the platform -----------------
+  //
+  // Deliberately the same shape as the store side (a plan row, a subscription, a
+  // payment claim an operator matches against the statement), because the manual
+  // rail is the only rail this business has and a second, differently-shaped
+  // payment flow is a second thing to get wrong. What is different is the
+  // consequence: a match here dresses a name. It opens nothing.
+
+  customerPlans() {
+    return many('select * from customer_plans where active order by price_npr');
+  },
+
+  customerPlan(code = 'plus') {
+    return one('select * from customer_plans where code = $1', [code]);
+  },
+
+  /** A person's arrangement, with the plan's price for display. */
+  customerSubscription(profileId) {
+    return one(
+      `select cs.*, cp.name as plan_name, cp.price_npr, cp.period_months, cp.capabilities
+         from customer_subscriptions cs
+         join customer_plans cp on cp.code = cs.plan_code
+        where cs.profile_id = $1`,
+      [profileId],
+    );
+  },
+
+  customerPlanPayments({ limit = 100 } = {}) {
+    return many(
+      `select pp.*, p.display_name, p.email, cs.plan_code
+         from customer_plan_payments pp
+         join profiles p on p.id = pp.customer_subscription_id
+         join customer_subscriptions cs on cs.profile_id = pp.customer_subscription_id
+        order by pp.created_at desc limit $1`,
+      [limit],
+    );
+  },
+
+  /**
+   * A person says they have sent the money.
+   *
+   * Records the claim and NOTHING else: no look is worn and no period starts until
+   * an operator has seen the transfer on the platform's own statement. A unique
+   * index on `txn_reference` across the whole table is what stops the same eSewa
+   * code being submitted twice for two periods — the second attempt fails at the
+   * index rather than being noticed later by a human.
+   */
+  claimPlus({ profileId, planCode = 'plus', amountNpr, txnReference, method = 'esewa', payerName = null }) {
+    if (String(txnReference || '').trim().length < 4) return { ok: false, code: 'reference' };
+    return withTransaction(async (c) => {
+      const plan = (await c.query(
+        'select * from customer_plans where code = $1 and active',
+        [planCode],
+      )).rows[0];
+      if (!plan) return { ok: false, code: 'no-plan' };
+
+      await c.query(
+        `insert into customer_subscriptions (profile_id, plan_code, status, claimed_at, updated_at)
+         values ($1, $2, 'pending_payment', now(), now())
+         on conflict (profile_id) do update
+           set plan_code = excluded.plan_code,
+               status = 'pending_payment',
+               claimed_at = now(),
+               updated_at = now()`,
+        [profileId, plan.code],
+      );
+      const payment = (await c.query(
+        `insert into customer_plan_payments
+           (customer_subscription_id, amount_npr, txn_reference, method, payer_name)
+         values ($1, $2, $3, $4, $5)
+         returning *`,
+        [profileId, Number(amountNpr) || plan.price_npr, String(txnReference).trim().slice(0, 80),
+          method, payerName ? String(payerName).trim().slice(0, 80) : null],
+      )).rows[0];
+      return { ok: true, payment, plan };
+    }).catch((err) => {
+      if (isUniqueViolation(err)) return { ok: false, code: 'duplicate-reference' };
+      throw err;
+    });
+  },
+
+  /**
+   * An operator found the money. The arrangement starts NOW, not at the date of the
+   * transfer: the period is what the person gets for it, and back-dating a period
+   * would quietly shorten what they paid for.
+   */
+  matchCustomerPlanPayment({ paymentId, actorId }) {
+    return withTransaction(async (c) => {
+      const found = await c.query(
+        `select pp.*, cs.plan_code, cs.status as sub_status
+           from customer_plan_payments pp
+           join customer_subscriptions cs on cs.profile_id = pp.customer_subscription_id
+          where pp.id = $1 and pp.status = 'submitted'
+          for update of pp`,
+        [paymentId],
+      );
+      const payment = found.rows[0];
+      if (!payment) return null;
+      const plan = (await c.query('select * from customer_plans where code = $1', [payment.plan_code])).rows[0];
+      const months = Number(plan?.period_months) || 1;
+      await c.query(
+        `update customer_subscriptions
+            set status = 'active',
+                period_start = now(),
+                period_end = now() + ($2 || ' months')::interval,
+                cancelled_at = null,
+                updated_at = now()
+          where profile_id = $1`,
+        [payment.customer_subscription_id, String(months)],
+      );
+      await c.query(
+        `update customer_plan_payments
+            set status = 'matched', matched_by = $2, matched_at = now()
+          where id = $1`,
+        [paymentId, actorId || null],
+      );
+      return { ...payment, months };
+    });
+  },
+
+  /**
+   * The money did not arrive, or arrived wrong. The arrangement goes back to
+   * nothing and any look stops being worn — not deleted, because the palette is a
+   * preference and it is not the person's fault that a reference was mistyped.
+   */
+  rejectCustomerPlanPayment({ paymentId, actorId, reason = null }) {
+    return withTransaction(async (c) => {
+      const found = await c.query(
+        'select * from customer_plan_payments where id = $1 and status = $2',
+        [paymentId, 'submitted'],
+      );
+      const payment = found.rows[0];
+      if (!payment) return null;
+      await c.query(
+        `update customer_plan_payments
+            set status = 'rejected', matched_by = $2, matched_at = now(), reject_reason = $3
+          where id = $1`,
+        [paymentId, actorId || null, reason ? String(reason).trim().slice(0, 300) : null],
+      );
+      await c.query(
+        `update customer_subscriptions
+            set status = case when period_end is not null and period_end > now() then 'active' else 'cancelled' end,
+                updated_at = now()
+          where profile_id = $1 and status = 'pending_payment'`,
+        [payment.customer_subscription_id],
+      );
+      return payment;
+    });
+  },
+
+  /** Stopping is immediate and keeps the record. No refund path exists — there is
+   *  no processor to reverse, and promising one in copy would be a lie. */
+  cancelPlus(profileId) {
+    return one(
+      `update customer_subscriptions
+          set status = 'cancelled', cancelled_at = now(), updated_at = now()
+        where profile_id = $1 and status in ('active','pending_payment')
+        returning *`,
+      [profileId],
+    );
+  },
+
+  /**
+   * Choose a look. Separate from the money on purpose: the choice can be made and
+   * changed before, during or after an arrangement, and it is stored whether or not
+   * anything is worn today.
+   */
+  setPlusLook({ profileId, nameplate = null, effect = null }) {
+    // The keys are checked HERE as well as at the route, because the route is not the
+    // only caller: a seeder, a script or a future admin tool reaches this method
+    // directly, and an unrecognised palette used to be stored happily and then render
+    // as the default — a look that is wrong and looks fine. An unknown value is stored
+    // as "nothing chosen", which is a state the product already has.
+    const plate = PLUS_PLATE_KEYS.includes(nameplate) ? nameplate : null;
+    const tone = PLUS_EFFECT_KEYS.includes(effect) ? effect : null;
+    return one(
+      `update profiles
+          set nameplate = $2::text,
+              plus_effect = $3::text,
+              plus_set_at = now()
+        where id = $1
+        returning id, nameplate, plus_effect, plus_set_at`,
+      [profileId, plate, tone],
+    );
+  },
+
+  /**
+   * Who in a set of people is dressed, in one query, for pages that render names
+   * from a list. Same join as `userById`, done once.
+   */
+  plusWornBy(profileIds = []) {
+    if (!profileIds.length) return [];
+    return many(
+      `select p.id, p.nameplate, p.plus_effect, cs.status as plus_status, cs.period_end as plus_period_end
+         from profiles p
+         join customer_subscriptions cs
+           on cs.profile_id = p.id and cs.status = 'active' and cs.period_end > now()
+        where p.id = any($1::uuid[])`,
+      [profileIds],
+    );
   },
 
   // ---- channel settings ---------------------------------------------------
@@ -3548,6 +3872,15 @@ export const store = {
       title: (v) => String(v).trim().slice(0, 200),
       description: (v) => String(v).trim().slice(0, 2000),
       unlock_mode: (v) => (v === 'open' ? 'open' : 'ad_gated'),
+      // What the file is worth. Not a price: nothing on this platform has a
+      // checkout (see `NOT_CHARGED`), this column is never rendered to a visitor,
+      // and migration 0004 removed the column that WAS a price. It is the input the
+      // unlock ask is calibrated from, and the only form that writes it says so.
+      declared_value_npr: (v) => {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return 0;
+        return Math.min(1_000_000, Math.max(0, Math.round(n)));
+      },
       cover_url: (v) => (v === null ? null : String(v)),
       // Only live <-> paused. 'removed' is the moderation decision and
       // 'draft'/'pending_review' belong to the publish flow; a settings form
@@ -3590,19 +3923,31 @@ export const store = {
   },
 
   /**
-   * Unlock policy, clamped to what the route is willing to promise.
+   * Unlock policy: the ask is DERIVED here, and a seller cannot overrule the model
+   * by posting a number.
    *
-   * The clamp is here rather than in the form because the form is a
-   * suggestion: a seller can post `adMinSeconds: 0`, and a zero-second ad is a
-   * view a network will not credit, so the creator would be handing files over
-   * for nothing and blaming us for the revenue.
+   * The two boxes this replaces took `adsRequired` and `adMinSeconds` straight from
+   * a form and clamped them to 1–5 and 5–120. The clamp existed because the form is
+   * only a suggestion — but a range is not a policy, and the thing being clamped
+   * was somebody else's attention. Now the caller may only say WHICH ask it wants:
+   * `ask_level` of 'standard' (the rate for the file's declared value) or 'light'
+   * (the platform floor). The numbers come from `adscale.js`, the plan's ceiling is
+   * applied there, and the absolute promise is applied on top of that.
+   *
+   * `ad_band_npr` records the value the ask was calibrated from, so a later price
+   * change is a visible, explainable drift rather than the number moving by itself.
    */
-  async setUnlockPolicy(assetId, { ads_required, ad_min_seconds, unlock_hours, mode } = {}) {
+  async setUnlockPolicy(assetId, { ask_level, unlock_hours, mode } = {}) {
     const int = (v, lo, hi, fallback) => {
       const n = Number(v);
       if (!Number.isFinite(n)) return fallback;
       return Math.min(hi, Math.max(lo, Math.round(n)));
     };
+    const asset = await this.assetById(assetId);
+    const channel = asset ? await this.channelById(asset.channel_id) : null;
+    const planCode = channel ? this.effectivePlanCode(channel) : 'free';
+    const level = String(ask_level) === 'light' ? 'light' : 'standard';
+    const ask = resolveAsk({ valueNpr: asset?.declared_value_npr ?? 0, planCode, level });
     // The mode travels with the rest of the policy, because a file whose
     // `assets.unlock_mode` says "members" while its policy row still says
     // "ad_gated" is two rows disagreeing about one decision. The assets column
@@ -3610,14 +3955,21 @@ export const store = {
     const wanted = ['open', 'ad_gated', 'paid', 'members'].includes(String(mode)) ? String(mode) : null;
     return one(
       `update asset_unlock_policy
-          set ads_required = $2, ad_min_seconds = $3, unlock_hours = $4,
-              mode = coalesce($5, mode), updated_at = now()
+          set ads_required   = $2,
+              ad_min_seconds = $3,
+              ask_level      = $4,
+              ad_band_npr    = $5,
+              unlock_hours   = $6,
+              mode           = coalesce($7, mode),
+              updated_at     = now()
         where asset_id = $1
         returning *`,
       [
         assetId,
-        int(ads_required, 1, 5, 1),
-        int(ad_min_seconds, 5, 120, 15),
+        ask.ads,
+        ask.seconds,
+        ask.level,
+        Number(asset?.declared_value_npr) || 0,
         int(unlock_hours, 1, 720, 24),
         wanted,
       ],
@@ -3959,8 +4311,10 @@ export const store = {
 
   reviewsOfAsset(assetId, { limit = 20 } = {}) {
     return many(
-      `select r.*, p.display_name as buyer_name
+      `select r.*, p.display_name as buyer_name,
+              p.nameplate as plus_plate, p.plus_effect as plus_effect, pl.plus_status, pl.plus_period_end
          from reviews r join profiles p on p.id = r.buyer_id
+         ${PLUS_JOIN}
         where r.asset_id = $1 and r.moderation_state = 'published' and r.body is not null
         order by r.created_at desc limit $2`,
       [assetId, limit],

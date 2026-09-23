@@ -274,15 +274,30 @@ export function revenueRows({ planName = 'Free', planPrice = 'free', slotCount =
     },
     {
       term: 'Where the ad positions are',
+      // The cap is 1 or 2 positions that the STORE owns, plus at most one of ours —
+      // never rank 1, never more than one, and a page with no position of its own is
+      // never taxed. The arithmetic is done here rather than typed, so this panel
+      // cannot promise a page shape the allocator does not produce.
       text: takesSlot
-        ? `You keep ${slots - POLICY.platformSlotsPerPage} of the ${slots} positions a page can carry; the platform takes `
-          + `the last one, never the first, and never more than one. ${ADS_AROUND_LINE}`
-        : `Your plan carries ${slots} positions and a page needs ${POLICY.minTenantSlotsBeforeTax} before the platform will `
-          + `take one, so none is placed on your pages and there is no rent to price. ${ADS_AROUND_LINE}`,
+        ? `You keep ${slots === 1 ? '1 position' : `${slots} positions`} of the ${slots + POLICY.platformSlotsPerPage} a page carries; the platform `
+          + `takes ${POLICY.platformSlotsPerPage}, in the last position, never the first. Three boxes is the most any page in `
+          + `this product holds. ${ADS_AROUND_LINE}`
+        : `Your plan allocates no position of its own, so the platform places none either and there is no rent to price. `
+          + `${ADS_AROUND_LINE}`,
     },
     {
       term: 'What your members see',
       text: MEMBER_AD_LINE,
+    },
+    {
+      // The third charge, stated to the seller who is not paying it. A seller reading
+      // a money panel is entitled to know where else the platform earns — and to be
+      // told, in the same breath, that a buyer's payment to us opens nothing on their
+      // page. That is the question this row exists to answer before it is asked.
+      term: 'ByteBikri\u2019s other line',
+      text: 'A person can pay bytebikri for how their own name looks — a palette and an effect, one price, '
+        + 'nothing sold separately. It opens no file, removes no ad, and shortens no wait, so it never touches '
+        + 'what you earn or what your members paid you for.',
     },
   ];
 }

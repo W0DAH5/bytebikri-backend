@@ -300,17 +300,29 @@ test('updateChannel writes every column the settings form offers', async () => {
   assert.equal(updated.sells_physical, false);
 });
 
-test('setUnlockPolicy clamps to something a network will actually credit', async () => {
+test('setUnlockPolicy derives the ask, and a posted number cannot move it', async () => {
   const { asset } = await fixture();
-  const set = await store.setUnlockPolicy(asset.id, { ads_required: 0, ad_min_seconds: 1, unlock_hours: 0 });
-  assert.equal(set.ads_required, 1, 'a zero-ad unlock hands the file over for nothing');
-  assert.equal(set.ad_min_seconds, 5, 'below the network floor a view is not credited');
+
+  // The floors still hold: a zero-ad unlock would hand the file over for nothing, and
+  // a view under fifteen seconds is not credited by a network.
+  const set = await store.setUnlockPolicy(asset.id, { ad_min_seconds: 1, ads_required: 0, unlock_hours: 0 });
+  assert.ok(set.ads_required >= 1, 'a zero-ad unlock hands the file over for nothing');
+  assert.ok(set.ad_min_seconds >= 15, 'below the network floor a view is not credited');
   assert.equal(set.unlock_hours, 1);
 
-  const huge = await store.setUnlockPolicy(asset.id, { ads_required: 99, ad_min_seconds: 999, unlock_hours: 99999 });
-  assert.equal(huge.ads_required, 5);
-  assert.equal(huge.ad_min_seconds, 120);
+  // And the numbers a caller posts are now IGNORED — the ask comes from the file's
+  // declared value, its store's plan and the level alone. This is the change that
+  // made the two number boxes on the seller's page unnecessary.
+  const huge = await store.setUnlockPolicy(asset.id, {
+    ads_required: 99, ad_min_seconds: 999, unlock_hours: 99999, ask_level: 'standard',
+  });
+  assert.ok(huge.ads_required <= 3, `an ask of ${huge.ads_required} ads is past the platform ceiling`);
+  assert.ok(huge.ad_min_seconds <= 60, `an ask of ${huge.ad_min_seconds}s is past the platform ceiling`);
   assert.equal(huge.unlock_hours, 720);
+  assert.equal(huge.ask_level, 'standard');
+  // The value the ask was calibrated from is recorded, so a later change is visible
+  // as a drift rather than the number moving on its own.
+  assert.equal(Number(huge.ad_band_npr), 0, 'a file nobody has priced sits in the free band');
 });
 
 // ---------------------------------------------------------------------------

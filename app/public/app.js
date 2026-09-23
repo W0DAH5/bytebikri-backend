@@ -50,7 +50,42 @@
       if (modal) modal.hidden = true;
     };
 
-    const fail = (message) => {
+    /*
+     * A FAILED ATTEMPT IS REPORTED, NOT GUESSED AT.
+     *
+     * The client tells the server which of two things happened — the ad script never
+     * started, or it started and no postback arrived — and the server decides what
+     * that means. The response carries the rung of the ladder (src/blocked.js), which
+     * is what gets rendered: one explanation at the first failure, a plain statement
+     * of the trade at the third, and at the sixth the unlock stops being offered at
+     * all. The client never decides any of that, and it never accuses anybody: the
+     * sentences it prints are the server's.
+     */
+    const reportBlocked = async (signal, viewId = null) => {
+      try {
+        const r = await api(unlockBtn.dataset.signalUrl || '/api/unlock/blocked', {
+          method: 'POST',
+          body: JSON.stringify({ assetId: unlockBtn.dataset.asset, viewId, signal }),
+        });
+        if (!r.ok || !r.rung) return null;
+        // The harsh rung is applied by RELOADING: the server renders the withheld
+        // state, and nothing the browser says can produce it. A client that could
+        // hide its own unlock button would be a client that could show it again.
+        if (!r.rung.offersUnlock) {
+          location.reload();
+          return r.rung;
+        }
+        if (r.rung.body && note) {
+          note.textContent = `${r.rung.headline} — ${r.rung.body}`;
+          note.style.color = 'var(--warning-text)';
+        }
+        return r.rung;
+      } catch {
+        return null;
+      }
+    };
+
+    const fail = (message, signal = null, viewId = null) => {
       clearInterval(ticker);
       if (note) {
         note.textContent = message;
@@ -58,7 +93,10 @@
       }
       setStatus(message, 'danger');
       unlockBtn.disabled = false;
-      setTimeout(close, 2600);
+      // Reported first, closed after: the reload above needs the modal out of the way
+      // and the report needs a live handler.
+      if (signal) reportBlocked(signal, viewId).then(() => setTimeout(close, 2600));
+      else setTimeout(close, 2600);
     };
 
     const finish = async (viewId, assetId) => {
@@ -85,7 +123,8 @@
         if (Date.now() - started < 90_000) {
           poll = setTimeout(check, 1500);
         } else {
-          fail('The network has not confirmed yet. This can take a moment — reload to check.');
+          fail('The network has not confirmed yet. This can take a moment — reload to check.',
+            'no_postback', viewId);
         }
       };
       check();
@@ -157,8 +196,10 @@
       unlockBtn.disabled = true;
       setStatus('Starting…');
       runAd(unlockBtn.dataset.asset).catch(() => {
-        setStatus('Something went wrong starting the ad.', 'danger');
-        unlockBtn.disabled = false;
+        // The one case the browser can recognise for itself: the request for the ad
+        // never completed. Reported as `script_blocked`, which is a description of
+        // what happened rather than a claim about anybody's software.
+        fail('The ad could not be started from this browser.', 'script_blocked');
       });
     });
 
@@ -166,6 +207,9 @@
       close();
       unlockBtn.disabled = false;
       setStatus('Closed before the ad finished. Nothing was unlocked.');
+      // Recorded as `declined`, which is deliberately NOT a blocker signal: choosing
+      // not to watch something is not evasion, and the ladder must not climb for it.
+      if (unlockBtn.dataset.signalUrl) reportBlocked('declined');
     });
   }
 
