@@ -441,7 +441,14 @@ export const MONEY_MAP = {
   toCreator: {
     label: 'Your ad earnings',
     payer: 'The ad network',
-    account: 'Your own account, at the network',
+    // Short on purpose. This string is rendered in a four-column map on the
+    // landing hero AND in the earnings page's definition list, and the long form
+    // ("…, at the network") made one box in the map two lines tall while its three
+    // neighbours were one — four equal boxes that read as four unequal ones. The
+    // rows around it already say who pays ("Paid by: The ad network") and that we
+    // hold nothing, so the phrase was repeating its neighbours as well as breaking
+    // the shape.
+    account: 'Your own account',
     held: 'Nothing, ever',
     cut: '0% to bytebikri',
     detail: 'The advertiser pays the network. The network pays your account. bytebikri is not a party to either leg and cannot see the balance.',

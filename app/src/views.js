@@ -96,7 +96,10 @@ const filesN = (n) => `${Number(n) || 0} file${Number(n) === 1 ? '' : 's'}`;
 const num = (n) => Number(n).toLocaleString('en-IN');
 
 const relTime = (d) => {
-  if (!d) return '—';
+  // Not a dash. `relTime(null)` appears in "last file", "last verified", "sent" and
+  // "decided" columns, and a dash in each of them reads as a rendering fault rather
+  // than as a fact. "never" is the fact.
+  if (!d) return 'never';
   const s = Math.floor((Date.now() - new Date(d).getTime()) / 1000);
   if (s < 60) return 'just now';
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
@@ -2158,9 +2161,9 @@ export function adminModeration({
    * answer for. The breakdown appears only when both exist, because on an
    * ordinary day there is nothing to break down.
    */
-  const count = (n, noun) => (n ? `${n} ${noun}${n === 1 ? '' : 's'}` : '—');
+  const count = (n, noun) => (n ? `${n} ${noun}${n === 1 ? '' : 's'}` : 'none');
   const split = (byOperator, byCreator, noun) => {
-    if (!byOperator && !byCreator) return '—';
+    if (!byOperator && !byCreator) return 'no decision yet';
     if (!byCreator) return count(byOperator, noun);
     if (!byOperator) return `${count(byCreator, noun)} <span class="fine">by the creator</span>`;
     return `${byOperator + byCreator} ${noun}s <span class="fine">${byOperator} platform · ${byCreator} creator</span>`;
@@ -3055,6 +3058,7 @@ function proof(value, label, literal = null) {
   </div>`;
 }
 
+
 // ---------------------------------------------------------------------------
 // Dashboard
 // ---------------------------------------------------------------------------
@@ -3579,7 +3583,7 @@ ${(() => {
         <td data-label="Ad views · 30d">${series.length
     ? `<div class="row" style="gap:var(--space-3);align-items:center">${sparkline({ points: series, max: sharedMax })}
          <span class="fine">${monthTotal ? `${num(monthTotal)} this month` : 'none yet'}</span></div>`
-    : `<span class="fine">${monthTotal ? `${num(monthTotal)} this month` : '—'}</span>`}</td>
+    : `<span class="fine">${monthTotal ? `${num(monthTotal)} this month` : 'none this month'}</span>`}</td>
         <td class="num" data-label="Actions"><a class="btn btn-sm" href="/dashboard/${esc(channel.slug)}/assets/${esc(a.id)}">Edit</a></td>
       </tr>`;
     }).join('');
@@ -4028,7 +4032,7 @@ export function networksPage({
       <thead><tr><th>Parameter</th><th>Their macro</th><th>What it carries</th></tr></thead>
       <tbody>${onboarding.postback.params.map((p) => `<tr>
         <td class="mono">${esc(p.ours)}</td>
-        <td class="mono">${esc(p.theirs || p.value || '—')}</td>
+        <td class="mono">${esc(p.theirs || p.value || 'not recorded')}</td>
         <td class="small">${esc(p.note || '')}</td>
       </tr>`).join('')}</tbody>
     </table>
@@ -4116,7 +4120,7 @@ export function networksPage({
       ${provider.enabled ? '' : '<div class="fine">not enabled on this deployment</div>'}
     </td>
     <td data-label="Nepal payout">${pill(verdict?.level || 'unknown', verdict?.level === 'ok' ? 'success' : verdict?.level === 'caution' ? 'warning' : '')}</td>
-    <td class="num" data-label="Minimum">${verdict?.thresholdLabel ? esc(verdict.thresholdLabel) : '—'}</td>
+    <td class="num" data-label="Minimum">${verdict?.thresholdLabel ? esc(verdict.thresholdLabel) : '<span class="fine">no floor</span>'}</td>
     <td class="small" data-label="What you should know">${esc(note || provider._note || '')}</td>
     <td class="num" data-label="Action">${ok
     ? `<form method="post" action="/dashboard/${esc(channel.slug)}/networks">
@@ -4372,7 +4376,7 @@ function storeSectionNav(channel, current) {
  * and a page that said 22 Sept in one row and 23 Sept in the next would be
  * describing one minute two ways.
  */
-const day = (d) => (d ? longDay(d) : '—');
+const day = (d) => (d ? longDay(d) : 'not set');
 
 function pageHead(channel, current, title, lede) {
   return `${storeSectionNav(channel, current)}
@@ -4439,7 +4443,7 @@ export function billing({
     <div class="rail${r.ready ? '' : ' rail-off'}">
       <div class="rail-name">${esc(r.label)}</div>
       ${r.ready
-      ? `<div class="rail-value mono">${esc(r.handle || (r.id === 'other' ? 'Ask an operator' : '—'))}</div>`
+      ? `<div class="rail-value mono">${esc(r.handle || (r.id === 'other' ? 'Ask an operator' : 'not on file'))}</div>`
       : `<div class="rail-value muted">not configured</div>
          <div class="fine">Set <span class="mono">${esc(r.env)}</span> on the server to show this.</div>`}
     </div>`).join('');
@@ -5027,7 +5031,7 @@ ${flashNote(flash)}
 
 <div class="section">
   <div class="stat-row">
-    <div class="stat"><div class="stat-value">${stats.count ? Number(stats.average).toFixed(1) : '—'}</div>
+    <div class="stat"><div class="stat-value">${stats.count ? Number(stats.average).toFixed(1) : 'none yet'}</div>
       <div class="stat-label">Average</div></div>
     <div class="stat"><div class="stat-value">${num(stats.count || 0)}</div><div class="stat-label">Reviews</div></div>
   </div>
@@ -5653,7 +5657,7 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
         <dt>Callbacks</dt><dd>${r.callbacks_window
     ? `${plural(r.callbacks_window, 'callback')} in ${num(days)} days${r.postbacks_total !== r.callbacks_window ? ` · ${num(r.postbacks_total)} ever` : ''}`
     : (r.postbacks_total ? `none in ${num(days)} days · last ${esc(relTime(r.last_verified_at))}` : 'never')}</dd>
-        <dt>Last verified</dt><dd>${r.last_verified_at ? esc(relTime(r.last_verified_at)) : '—'}</dd>
+        <dt>Last verified</dt><dd>${r.last_verified_at ? esc(relTime(r.last_verified_at)) : 'never'}</dd>
         <dt>Refused</dt><dd>${r.rejections_total
     // The verdict above and this line have to agree. The first version counted
     // only signature failures here while the verdict counted every refusal, so a
@@ -5864,7 +5868,7 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
           <td class="num" data-label="Views · 30d">${num(r.views_30d)}</td>
           <td class="num" data-label="Unlocks">${num(r.unlocks)}${r.unlocks ? '' : '<div class="fine">none yet</div>'}</td>
           <td class="num" data-label="Ad views">${num(r.ad_views_30d)}</td>
-          <td class="fine" data-label="Last file">${r.last_file_at ? esc(relTime(r.last_file_at)) : '—'}</td>
+          <td class="fine" data-label="Last file">${r.last_file_at ? esc(relTime(r.last_file_at)) : 'never'}</td>
         </tr>`).join('')}
       </tbody>
     </table>
@@ -6058,7 +6062,7 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
           <td class="num" data-label="Unlocks">${num(f.unlocks)}</td>
           <td class="num" data-label="Ad views">${num(f.ad_views)}</td>
           <td class="num" data-label="Reports">${f.open_reports ? `<strong>${num(f.open_reports)}</strong>` : num(f.reports_total)}</td>
-          <td class="num" data-label="Rating">${Number(f.reviews) ? `${Number(f.rating).toFixed(1)}<div class="fine">${plural(f.reviews, 'review')}</div>` : '—'}</td>
+          <td class="num" data-label="Rating">${Number(f.reviews) ? `${Number(f.rating).toFixed(1)}<div class="fine">${plural(f.reviews, 'review')}</div>` : '<span class="fine">no reviews</span>'}</td>
         </tr>`).join('')}
       </tbody>
     </table>
@@ -6178,7 +6182,7 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
         <td class="fine" data-label="When">${esc(relTime(v.decided_at || v.created_at))}</td>
         <td data-label="Outcome">${pill(STATE_WORDING[stateOf(v)], stateOf(v) === 'verified' ? 'success' : stateOf(v) === 'pending' ? '' : 'warning')}</td>
         <td class="fine" data-label="What was seen">${esc(methodOf(v.method)?.title || v.method)}</td>
-        <td class="fine" data-label="By">${esc(v.decided_by_name || v.decided_by_email || '—')}</td>
+        <td class="fine" data-label="By">${esc(v.decided_by_name || v.decided_by_email || 'account deleted')}</td>
         <td class="fine" data-label="Note">${esc(v.notes || '')}</td>
       </tr>`).join('')}</tbody>
     </table></div>
@@ -6329,7 +6333,7 @@ ${drift.length ? `<section class="section">
       <div class="kpi-note">A reference was submitted; nobody has matched it against the statement yet.</div>
     </div>
     <div class="kpi${near.some((n) => Number(n.pct_full) >= 100) ? ' kpi-bad' : near.length ? ' kpi-warn' : ''}">
-      <div class="kpi-value">${near.length ? `${Math.max(...near.map((n) => Number(n.pct_full) || 0))}%` : '—'}</div>
+      <div class="kpi-value">${near.length ? `${Math.max(...near.map((n) => Number(n.pct_full) || 0))}%` : 'none'}</div>
       <div class="kpi-label">Fullest store</div>
       <div class="kpi-note">${near.length
     ? `${esc(near[0].name)} at ${num(near[0].files)} of ${num(near[0].cap)} files.`
@@ -6579,7 +6583,8 @@ ${open.length ? `<section class="section">
         <td class="num" data-label="Views in window">${num(r.views)}${Number(r.views) === 0 ? '<div class="fine">none recorded</div>' : ''}</td>
         <td class="num" data-label="Reported">$${Number(r.reported_usd).toFixed(2)}</td>
         <td class="num" data-label="Our estimate">$${Number(r.estimate_usd).toFixed(4)}</td>
-        <td class="num" data-label="Implied rate">${r.implied_rpm_usd === null ? '—' : `$${Number(r.implied_rpm_usd).toFixed(2)}`}</td>
+        <td class="num" data-label="Implied rate">${r.implied_rpm_usd === null
+      ? '<span class="fine">needs a statement</span>' : `$${Number(r.implied_rpm_usd).toFixed(2)}`}</td>
         <td data-label="Gap">${gapCell(r)}</td>
       </tr>`).join('')}
       </tbody>
@@ -6938,7 +6943,7 @@ export function adminAudit({
     : 'One row each, kept, and kept out of the way.'}</div>
     </div>
     <div class="kpi">
-      <div class="kpi-value">${counts.delivery?.n ? num(counts.delivery.n) : '—'}</div>
+      <div class="kpi-value">${counts.delivery?.n ? num(counts.delivery.n) : 'none'}</div>
       <div class="kpi-label">Callbacks and jobs</div>
       <div class="kpi-note">The platform talking to itself. An empty tab here is the good news.</div>
     </div>
@@ -7081,7 +7086,7 @@ export function operatorBilling({
         <div class="fine">/s/${esc(i.channel_slug)}</div>
       </td>
       <td>${day(i.period_start)} → ${day(i.period_end)}</td>
-      <td class="mono">${esc(i.txn_reference || '—')}</td>
+      <td class="mono">${esc(i.txn_reference || 'none given')}</td>
       <td class="num">${npr(i.amount_npr)}</td>
       <td>${pill(i.status, i.status === 'submitted' ? 'info' : 'warning')}</td>
       <td>
@@ -7151,11 +7156,11 @@ ${flashNote(flash)}
           <div class="fine">/s/${esc(a.channel_slug)}${a.owner_email ? ` · ${esc(a.owner_email)}` : ''}</div>
         </td>
         <td class="fine nowrap" data-label="Period">${esc(isoDay(a.period_start))} → ${esc(isoDay(a.period_end))}</td>
-        <td class="fine nowrap" data-label="Due">${esc(isoDay(a.due_at) || '—')}</td>
+        <td class="fine nowrap" data-label="Due">${esc(isoDay(a.due_at) || 'not dated')}</td>
         <td data-label="Age">${age.level === 'current' || age.level === 'unknown'
       ? `<span class="fine">${esc(age.label)}</span>`
       : pill(age.label, age.level === 'stale' ? 'danger' : 'warning')}</td>
-        <td class="mono fine" data-label="Reference">${esc(a.txn_reference || '—')}</td>
+        <td class="mono fine" data-label="Reference">${esc(a.txn_reference || 'none given')}</td>
         <td class="num" data-label="Amount">${npr(a.amount_npr)}</td>
         <td data-label="State">${pill(a.status, a.status === 'submitted' ? 'info' : 'warning')}</td>
         <td data-label="Actions">
@@ -7200,7 +7205,7 @@ ${byMonth.length ? `<section class="section">
         <td class="num" data-label="Collected">${npr(collected)}${billed
     ? `<div class="meter${pct >= 100 ? ' meter-full' : ' meter-near'}" role="img" aria-label="${esc(`${pct}% collected`)}"><span style="width:${Math.min(pct, 100)}%"></span></div>`
     : ''}</td>
-        <td class="num" data-label="Late now">${Number(m.late_invoices) ? `${num(m.late_invoices)}<div class="fine">still owed</div>` : '—'}</td>
+        <td class="num" data-label="Late now">${Number(m.late_invoices) ? `${num(m.late_invoices)}<div class="fine">still owed</div>` : '<span class="fine">nothing late</span>'}</td>
         <td class="fine" data-label="Invoices">${num(m.paid_invoices)} of ${num(m.invoices)} paid${Number(m.waived_npr) ? ` · ${npr(m.waived_npr)} waived` : ''}</td>
       </tr>`;
   }).join('')}
@@ -7270,7 +7275,7 @@ export function earnings({
       <td class="num" data-label="Views">${num(l.views)}</td>
       <td class="num" data-label="Our estimate">$${l.estimateUsd.toFixed(2)}
         ${l.postbackUsd > 0 ? `<div class="fine">$${l.postbackUsd.toFixed(2)} in postbacks</div>` : ''}</td>
-      <td class="num" data-label="Statement">${l.reported === null ? '—' : `$${l.reported.toFixed(2)}`}</td>
+      <td class="num" data-label="Statement">${l.reported === null ? '<span class="fine">not reported</span>' : `$${l.reported.toFixed(2)}`}</td>
       <td data-label="Verdict">${gapPill}</td>
       <td data-label="Your account there">${account
         ? `<div class="small">${esc(account.account_label)}</div>
@@ -7368,7 +7373,7 @@ ${flashNote(flash)}
         </dl>
         <div class="amount-line">
           <span>What the network reported, ${plural(days, 'day')}</span>
-          <strong>${summary.reportedTotal === null ? '—' : `$${summary.reportedTotal.toFixed(2)}`}</strong>
+          <strong>${summary.reportedTotal === null ? '<span class="fine">nothing reported</span>' : `$${summary.reportedTotal.toFixed(2)}`}</strong>
         </div>
         <p class="fine">${esc(summary.headline.headline)}. ${esc(summary.headline.detail)}</p>
       </div>
@@ -7391,7 +7396,7 @@ ${flashNote(flash)}
         </dl>
         ${summary.rent ? `<div class="amount-line">
           <span>Rent as a share of reported earnings</span>
-          <strong>${summary.rent.pct === null ? '—' : `${summary.rent.pct}%`}</strong>
+          <strong>${summary.rent.pct === null ? '<span class="fine">no traffic yet</span>' : `${summary.rent.pct}%`}</strong>
         </div>
         <p class="fine">${esc(summary.rent.sentence)}</p>` : ''}
       </div>

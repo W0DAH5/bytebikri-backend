@@ -241,18 +241,43 @@
    */
   const counters = document.querySelectorAll('[data-count]');
   if (counters.length && !calm) {
-    const DURATION = 700;
+    /**
+     * How long a figure takes to arrive, and why it is not the CSS token.
+     *
+     * Every counting library that has settled on a number has settled on about
+     * two seconds (CountUp.js and the copy-paste counters all default to it), and
+     * the guidance for stat reveals says two to four. This ran at 700ms, which is
+     * inside the CSS transition band (Material's own bands top out at 500ms) and
+     * is exactly wrong for a counter: a transition is over as soon as it is
+     * noticed, while a counter is a READOUT, and the thing that makes it worth
+     * animating is that the eye can follow the last digits settling. At 700ms with
+     * a cubic curve, 90% of the number is on screen after 200ms — which is why low
+     * figures flicker rather than count.
+     *
+     * So: 1.2s, and an exponent of 4 instead of 3, which both lengthens the visible
+     * settle and makes the end slower than the start. Not 2s: this figure is above
+     * the fold on the landing page, and holding a real number off the screen for two
+     * seconds to decorate it is a worse trade than a slightly quick settle.
+     *
+     * TWO FIGURES ARE NOT ANIMATED AT ALL. Counting 0→1→2→3 is not a count, it is a
+     * stutter: below three digits there is nothing to perceive except a flicker, and
+     * the honest version of "3 stores" is the word appearing. The markup already
+     * holds the real number, so skipping the animation costs nothing.
+     */
+    const DURATION = 1200;
+    const MIN_TO_ANIMATE = 25;
     const run = (el) => {
       const target = Number(el.dataset.count) || 0;
-      if (!target) return;
+      if (!target || target < MIN_TO_ANIMATE) return;
       const started = performance.now();
       const step = (now) => {
         const t = Math.min(1, (now - started) / DURATION);
-        // Same deceleration as the CSS tokens: fast out of the gate, settling.
-        const eased = 1 - (1 - t) ** 3;
-        el.textContent = String(Math.round(target * eased));
+        const eased = 1 - (1 - t) ** 4;
+        // Formatted while it runs, so the thousands separator appears in the same
+        // frame as the digit that earns it rather than popping in at the end.
+        el.textContent = Math.round(target * eased).toLocaleString('en-IN');
         if (t < 1) requestAnimationFrame(step);
-        else el.textContent = String(target);
+        else el.textContent = target.toLocaleString('en-IN');
       };
       requestAnimationFrame(step);
     };

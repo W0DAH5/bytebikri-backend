@@ -41,11 +41,18 @@ const root = path.resolve(here, '..');
 const css = await fs.readFile(path.join(root, 'public/styles.css'), 'utf8');
 const client = await fs.readFile(path.join(root, 'public/app.js'), 'utf8');
 const views = await fs.readFile(path.join(root, 'src/views.js'), 'utf8');
+// The money map's own strings are imported further down, where the hero test needs
+// them; the shape test above reads the same object rather than a copy of it.
 
 /** Comments discuss curves and durations; they must not satisfy or trip tests. */
 const withoutComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '');
 
 const CSS = withoutComments(css);
+
+// The money map's own strings, read from the module the pages render from rather than
+// from a copy in this file: a test holding its own copy of a sentence goes green while
+// the page says something else.
+const { MONEY_MAP } = await import('../src/earnings.js');
 
 // ---------------------------------------------------------------------------
 // Tokens
@@ -154,11 +161,47 @@ test('the client only decorates what the server already rendered', () => {
   // The counter reads its value from the DOM and writes back the same number:
   // the markup is the truth, the animation is an enhancement.
   assert.ok(/\[data-count\]/.test(client));
-  assert.ok(/el\.textContent = String\(target\)/.test(client), 'a counter must land exactly on the rendered value');
+  assert.ok(/el\.textContent = target\.toLocaleString\('en-IN'\)/.test(client),
+    'a counter must land exactly on the rendered value, formatted the way `num()` formats it');
   assert.ok(/prefers-reduced-motion: reduce/.test(client), 'the client asks the same question the CSS asks');
   const quiet = client.slice(client.indexOf('── the page itself'));
   assert.ok(!/innerHTML\s*=/.test(quiet), 'presentation code writes text, never markup');
   assert.ok(/IntersectionObserver/.test(client), 'counting waits until the figure is on screen');
+});
+
+test('the money map is four equal boxes whose answers sit on one line', () => {
+  // This is the bug §the-round-that-fixed-it was opened for. The four legs measured
+  // the same height all along (`74px` each, checked in a browser), and the page still
+  // looked wrong, because one answer was a phrase twice as long as the others and the
+  // answers were TOP-aligned: the short ones kept their whitespace underneath, so
+  // three boxes read as a size smaller than the fourth. Two rules fix it and both are
+  // asserted here, because text and alignment drift separately:
+  //
+  //   * every answer is a phrase, not a sentence — the value is rendered in a
+  //     168px column beside three other columns;
+  //   * the answers are pushed to the bottom of their boxes, so a wrap in one of
+  //     them still leaves all four answers on the same line.
+  const values = [MONEY_MAP.toCreator.payer, MONEY_MAP.toCreator.account, MONEY_MAP.toCreator.held, MONEY_MAP.toCreator.cut];
+  for (const v of values) {
+    assert.ok(v.length <= 24, `a money-map answer is a phrase: "${v}" is ${v.length} characters`);
+  }
+  const leg = /\.money-leg \{([\s\S]*?)\n\}/.exec(CSS)?.[1] || '';
+  const dd = /\.money-leg dd \{([\s\S]*?)\n\}/.exec(CSS)?.[1] || '';
+  assert.match(leg, /display:\s*flex/, 'a leg is a column so the answer can be pushed down');
+  assert.match(dd, /margin:\s*auto 0 0/, 'and the answer is pinned to the bottom of it');
+});
+
+test('the proof strip spreads across the page at a size a figure deserves', () => {
+  // The other half of the same complaint: four small figures packed at the left edge
+  // of a wide page read as a caption. A grid gives them equal columns, and the value
+  // is set at `2xl` rather than `xl`.
+  const strip = /\.proof-strip \{([\s\S]*?)\n\}/.exec(CSS)?.[1] || '';
+  assert.match(strip, /display:\s*grid/, 'the strip spreads rather than packs');
+  assert.match(strip, /grid-template-columns:\s*repeat\(auto-fit/, 'with equal columns');
+  const value = /\.proof-value \{([\s\S]*?)\n\}/.exec(CSS)?.[1] || '';
+  assert.match(value, /font-size:\s*var\(--text-2xl\)/, 'and the figure is one step larger than a subtitle');
+  // Counting stops being a count below ten: "3" is a stutter, not a figure arriving.
+  assert.match(client, /MIN_TO_ANIMATE/, 'there is a floor under which no counter runs');
 });
 
 // ---------------------------------------------------------------------------
@@ -195,7 +238,8 @@ test('hover moves things with transform and opacity only', () => {
 
 const viewsModule = await import('../src/views.js');
 const { landing, dashboard, storefront } = viewsModule;
-const { MONEY_MAP } = await import('../src/earnings.js');
+// `MONEY_MAP` is imported at the top of this file: the shape test above needs it, and
+// one object read once is the point.
 
 const STATS = { channels: 2, assets: 4, unlocks: 1, views: 9 };
 // Just the hero, not the whole document: the header carries its own call to

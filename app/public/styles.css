@@ -1187,38 +1187,64 @@ a.kpi:hover { border-color: var(--border-strong); text-decoration: none; box-sha
    is. The legs also refuse to be squeezed — `min-width: 0` plus a breaking rule
    on the definition keeps "Your own account, at the network" inside its box
    instead of pushing the row wider than the page. */
-.money-map { display: grid; gap: var(--space-4); grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); }
-.money-leg { min-width: 0; }
-.money-leg dd { overflow-wrap: break-word; }
+.money-map { display: grid; gap: var(--space-3); grid-template-columns: repeat(auto-fit, minmax(min(100%, 168px), 1fr)); }
+/* Every leg is a column with the answer pushed to the BOTTOM, and the row is
+   stretched by the grid, so the four answers sit on one line whichever of them
+   wraps. Before this the answers were top-aligned: one leg whose value ran to two
+   lines left its three neighbours with 25px of empty space under a one-line answer,
+   which reads as boxes of different shapes even when every box measures the same
+   height. Measured, not guessed — the probe in ci/eyes reads the four box heights
+   and the four answer heights at six widths. */
 .money-leg {
+  min-width: 0; display: flex; flex-direction: column;
   border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
-  padding: var(--space-4); background: var(--surface-base);
+  padding: var(--space-3) var(--space-4); background: var(--surface-base);
 }
 .money-leg dt {
   font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: 0.07em;
   color: var(--text-faint); font-weight: 620;
 }
-.money-leg dd { margin: var(--space-2) 0 0; font-size: var(--text-md); font-weight: 600; }
+.money-leg dd {
+  margin: auto 0 0; padding-top: var(--space-2);
+  font-size: var(--text-md); font-weight: 620; line-height: 1.25;
+  overflow-wrap: break-word;
+}
 /* The money map's positive figures. It used to say `--emerald-300`, a raw
    palette token: correct on the dark theme, 1.47:1 on the light one, because a
    primitive cannot know what it is sitting on. Semantic tokens exist for
    exactly this and the assertion below in test/design.test.js now enforces it. */
 .money-leg-primary dd { color: var(--success-text); }
 
-/* Proof strip: the numbers that already exist, on tabs. */
+/* Proof strip: the numbers that already exist, on tabs.
+   A GRID, not a wrapped flex row. Flex packed these four against the left edge with
+   a fixed gap, so the line of figures stopped short of the page and read as a
+   sentence rather than as a row of figures. Equal columns spread them, and the last
+   one ends where the content does. */
 .proof-strip {
-  display: flex; flex-wrap: wrap; gap: var(--space-6) var(--space-8);
+  display: grid; gap: var(--space-5) var(--space-6);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
   margin-top: var(--space-8); padding-top: var(--space-6);
   border-top: 1px solid var(--border-subtle);
 }
 .proof {
-  display: grid; gap: 2px;
+  display: flex; flex-direction: column; gap: var(--space-2);
+  /* The figures are the point, so they get the room: a 3-digit figure at `2xl` reads
+     as a fact rather than as a caption next to one. */
+  justify-content: flex-start;
 }
 .proof-value {
-  font-size: var(--text-xl); font-weight: 660; letter-spacing: var(--tracking-tight);
+  font-size: var(--text-2xl); font-weight: 680; letter-spacing: var(--tracking-tight);
   font-variant-numeric: tabular-nums; line-height: 1;
+  /* Reserved so the counter cannot nudge the label while it runs: tabular figures
+     fix the digit widths, and the line-height fixes the box. */
+  min-height: 1em;
 }
 .proof-label { font-size: var(--text-xs); color: var(--text-faint); }
+@media (max-width: 560px) {
+  /* Two by two, and the gap tightens so the pairs read as pairs. */
+  .proof-strip { gap: var(--space-4) var(--space-5); }
+  .proof-value { font-size: var(--text-xl); }
+}
 
 /* ── motion choreography ─────────────────────────────────────────────────── */
 /* Sections rise as they enter the viewport, driven by a scroll timeline rather
