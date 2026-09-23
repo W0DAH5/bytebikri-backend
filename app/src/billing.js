@@ -14,8 +14,11 @@ import { asDay, isoDay, daysBetween } from './dates.js';
  *   - no cut of what the seller earns. The ad networks pay the seller's own
  *     account directly; bytebikri is not in that path and 0% is not a rate, it
  *     is an absence of a mechanism.
- *   - no commission on a sale, because there is no sale. Content is unlocked
- *     with attention, not money.
+ *   - no commission on a sale or on a membership: the dues a member sends a
+ *     creator do not pass through here. The directory page used to say "there is
+ *     no sale" — true until memberships existed, and exactly the kind of sentence
+ *     that quietly becomes false. The claim that survives is the one that was
+ *     always the point: bytebikri has no path to take a cut, at any rate.
  *   - no listing fee, no take-rate, no per-download charge, no "platform fee".
  *
  * Two consequences worth stating because they shape the code:
@@ -365,7 +368,11 @@ export function planDrift(dbPlans = [], appPlans = {}) {
 /** The four things the seller is NOT being charged for. Stated, not implied. */
 export const NOT_CHARGED = [
   'Your ad earnings. The networks pay your own account directly — bytebikri takes 0% and never holds it.',
-  'Selling. There is no price on a file, no checkout and no commission, because no money changes hands for content.',
+  // This line used to end "because no money changes hands for content", which was true
+  // before memberships and is not any more: dues buy access to files. The claim that
+  // matters is unchanged and is now stated instead of implied — no commission, in
+  // either direction, because there is no path through bytebikri for one to travel.
+  'Selling. No price on a file, no checkout and no commission. Dues for a membership go straight to the creator, and bytebikri is not in that path — no percentage, and no mechanism to take one.',
   'Publishing. Free stores publish their own files at their own address, with no listing fee and no time limit.',
   'Downloads and unlocks. A thousand unlocks cost you the same as one.',
 ];

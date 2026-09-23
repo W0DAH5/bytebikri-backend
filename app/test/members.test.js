@@ -40,8 +40,8 @@ const { close, query } = await import('../src/db.js');
 const { store, PLANS } = await import('../src/store.js');
 const views = await import('../src/views.js');
 const {
-  membershipState, memberRefusal, tierDraft, duesLine, plateStyle, opensFor,
-  MONEY_LINE, LAPSE_LINE, FREE_PLAN_LINE, ACCENTS,
+  membershipState, memberRefusal, tierDraft, duesLine, plateStyle, opensFor, revenueRows,
+  MONEY_LINE, LAPSE_LINE, FREE_PLAN_LINE, MEMBER_AD_LINE, ADS_AROUND_LINE, ACCENTS,
 } = await import('../src/memberships.js');
 
 after(async () => { await close(); });
@@ -371,6 +371,86 @@ test('the roster stacks on a phone instead of sliding off the side of it', async
       assert.match(html, new RegExp(`data-label="${col}"`), `${col} stacks under a label`);
     }
     assert.ok(member.id, 'sanity');
+  } finally { await cleanup(channel, owner, member); }
+});
+
+// ── 4c. the revenue architecture, in the words a seller and a member read ───
+
+test('the seller is told where the platform earns, and it is genuinely two things', async () => {
+  const { owner, channel, member } = await fixture();
+  try {
+    const rows = revenueRows({ planName: 'Store', planPrice: 'NPR 999 a year', slotCount: 5 });
+    const text = rows.map((r) => r.text).join(' ');
+
+    // The model, in one place, checked against the policy it claims to follow.
+    assert.match(text, /Dues are 100% yours/);
+    assert.match(text, /NPR 999 a year/, 'the plan is named with its price');
+    assert.match(text, /annual rent/, 'and the rent, which is the other half of the model');
+    assert.match(text, /Four|4 of the 5/, 'the slot split is arithmetic, not a slogan');
+    assert.match(text, /never the first/);
+
+    // A store too short to spare a slot is told that, rather than shown a split of
+    // positions that are never taken from it.
+    const short = revenueRows({ planName: 'Free', planPrice: 'free, permanently', slotCount: 2 });
+    assert.match(short[2].text, /no rent to price/);
+    assert.doesNotMatch(short.map((r) => r.text).join(' '), /You keep 1 of the 2/);
+
+    // And the page shows it: the rows are rendered, not merely available.
+    const html = views.channelMembers({
+      channel, user: { id: owner.id, email: owner.email, display_name: owner.display_name },
+      tiers: await store.membershipTiers(channel.id), members: [], pending: [],
+      membershipsOn: true, plan: PLANS.store, files: [],
+    });
+    assert.match(html, /Where the money goes/, 'the panel is on the seller\'s own page');
+    assert.match(html, /Dues are 100% yours/);
+    assert.match(html, /href="\/dashboard\/[^"]+\/earnings"/, 'and the arithmetic it does not print is one link away');
+    assert.ok(member.id, 'sanity');
+  } finally { await cleanup(channel, owner, member); }
+});
+
+test('the member is told where the ads are before they are asked for money', async () => {
+  const { owner, channel, member } = await fixture();
+  try {
+    const tiers = await store.membershipTiers(channel.id);
+    const signedIn = views.storefront({
+      channel, assets: [], slots: [], user: { id: member.id, display_name: 'A Buyer' },
+      membershipsOn: true, membership: null, roster: [], tiers,
+    });
+    // The promise is made on the SELLING page, before anybody sends money: the file
+    // opens with no ad, and the page around it carries the store's positions and the
+    // one the platform rents. The researched record (September 2026) is the reason
+    // this sentence exists at all: YouTube Premium is defending two class actions
+    // over "ad-free" claims, and Disney+ had to rewrite its terms to allow ads on
+    // its ad-free tiers. A membership sells a promise about ads, so the promise is
+    // written down where it is being sold.
+    assert.match(signedIn, /Ad positions sit around a member/);
+    assert.match(signedIn, /never inside it/);
+    // And the ANONYMOUS one, which is the branch most people actually read: a
+    // visitor deciding whether to make an account is the person who most wants to
+    // know what happens with ads.
+    const anonymous = views.storefront({
+      channel, assets: [], slots: [], user: null, membershipsOn: true, membership: null,
+      roster: [], tiers,
+    });
+    assert.match(anonymous, /Ad positions sit around a member/);
+
+    // And it is repeated on the member's own card once the dues are confirmed, so
+    // the person who paid is not left to find it on a pricing page.
+    await store.joinMembership({ profileId: member.id, channelId: channel.id, tierNo: 1, claim: claim() });
+    await store.confirmMembership({
+      profileId: member.id, channelId: channel.id, ownerId: owner.id, actorId: owner.id,
+    });
+    const membership = await store.membershipFor(member.id, channel.id);
+    const live = views.storefront({
+      channel, assets: [], slots: [], user: { id: member.id, display_name: 'A Buyer' },
+      membershipsOn: true, membership, roster: [], tiers,
+    });
+    assert.match(live, /Nothing is placed between you and the file/);
+    assert.match(live, /none of them gates a download or interrupts one/);
+    // The sentence has to stay true of the product, not only of the copy: the
+    // platform's slot is the LAST position on a page, and it is the only one it takes.
+    assert.match(MEMBER_AD_LINE, /opens because your dues are current/);
+    assert.ok(owner.id && member.id, 'sanity');
   } finally { await cleanup(channel, owner, member); }
 });
 

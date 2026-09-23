@@ -24,6 +24,10 @@
  * 4.5:1 for its text tone on both themes and 4.5:1 for white ink on both
  * gradient stops. The numbers are the reason the list is short.
  */
+// The ad-slot policy, imported rather than restated. This module already refuses
+// to import the database; `slots.js` is pure policy, so the two files that decide
+// where an ad may sit are reading the same numbers instead of agreeing today.
+import { POLICY } from './slots.js';
 
 export const TIERS_MAX = 2;
 
@@ -200,6 +204,88 @@ export const CONFIRM_LINE =
 /** The honest rule for a lapsed member, in the words the page will use. */
 export const LAPSE_LINE =
   'Nothing is deleted when a period ends. The plate goes quiet and the members-only files close until dues are confirmed again.';
+
+/**
+ * WHERE THE ADS ARE, AND WHERE THEY ARE NOT.
+ *
+ * This is the membership's real promise, and the one the market punishes hardest
+ * when it is broken. Researched in September 2026, and the record is unambiguous:
+ *
+ *   * YouTube Premium is defending TWO class actions over its "ad-free" claim,
+ *     filed in California and British Columbia, on the argument that a sponsorship
+ *     a creator reads out is still an ad the subscriber paid to avoid.
+ *   * Disney+ rewrote its subscriber agreement to permit promotional content
+ *     "before/after playback" on EVERY tier including the ad-free ones, and
+ *     subscribers began closing accounts over the report of it before Disney
+ *     clarified that nothing had actually changed for them yet.
+ *   * Medium's whole pitch is a member-funded platform with "no ad strip", and
+ *     Substack's support pages say the same from the other side: the business model
+ *     is subscriptions, not advertisers, and paid posts carry none.
+ *
+ * The line every one of them draws, and the one this product draws: an ad may sit
+ * AROUND a member's content and never INSIDE what they paid to open. So the
+ * membership never gates a file behind an ad, and the ad positions that do exist
+ * on a member's page are the same positions that exist on every other page of the
+ * store: the shop's own, where the shop already had them, plus the single position
+ * the platform rents, which is always last. The member is told both facts in the
+ * same sentence, because a promise somebody has to discover for themselves is not
+ * a promise, it is a surprise.
+ */
+export const MEMBER_AD_LINE =
+  'Nothing is placed between you and the file: it opens because your dues are current, not because you watched '
+  + 'something first. The page around it carries the same ad positions as the rest of the store, the shop’s own '
+  + 'and the one bytebikri rents, and none of them gates a download or interrupts one.';
+
+/** The same arrangement, said to a seller, who is deciding whether to sell memberships. */
+export const ADS_AROUND_LINE =
+  'Ad positions sit around a member’s content and never inside it. That is deliberate: what a member paid for is '
+  + 'never interrupted, and the shop and the platform still earn from the page it sits on.';
+
+/**
+ * The seller's direction of the same money, in one line, because "0% commission"
+ * is only half a model. bytebikri charges a store in exactly two places, and a
+ * seller should never have to work out which they are.
+ */
+export const SELLER_DUES_LINE =
+  'Dues are 100% yours. bytebikri never receives them, which is not a 0% rate, it is the absence of a way to take one.';
+
+/**
+ * The whole arrangement as rows a page can print.
+ *
+ * Pure, and takes its numbers as arguments, so the seller's page and the test that
+ * checks it read the SAME sentences rather than two copies that agree today. The
+ * platform's slot and the threshold that decides whether one is taken at all come
+ * from `slots.js`, so if that policy changes this panel changes with it instead of
+ * going quietly out of date.
+ */
+export function revenueRows({ planName = 'Free', planPrice = 'free', slotCount = 0 } = {}) {
+  const slots = Number(slotCount) || 0;
+  const takesSlot = slots >= POLICY.minTenantSlotsBeforeTax;
+  return [
+    {
+      term: 'Dues you collect',
+      text: `All of it stays with you. ${SELLER_DUES_LINE}`,
+    },
+    {
+      term: 'What bytebikri charges you',
+      text: `Two things, and neither is a share of your dues: the ${planName} plan (${planPrice}) and the annual rent `
+        + `for the one ad position the platform takes on your pages. Rent is priced from the traffic your store `
+        + `actually got, so a quiet store is charged nothing at all.`,
+    },
+    {
+      term: 'Where the ad positions are',
+      text: takesSlot
+        ? `You keep ${slots - POLICY.platformSlotsPerPage} of the ${slots} positions a page can carry; the platform takes `
+          + `the last one, never the first, and never more than one. ${ADS_AROUND_LINE}`
+        : `Your plan carries ${slots} positions and a page needs ${POLICY.minTenantSlotsBeforeTax} before the platform will `
+          + `take one, so none is placed on your pages and there is no rent to price. ${ADS_AROUND_LINE}`,
+    },
+    {
+      term: 'What your members see',
+      text: MEMBER_AD_LINE,
+    },
+  ];
+}
 
 export function tierByNo(tiers = [], tierNo) {
   return tiers.find((t) => Number(t.tier_no) === Number(tierNo)) ?? null;

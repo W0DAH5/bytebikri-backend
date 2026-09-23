@@ -264,7 +264,8 @@ single-asset management, and search.
 | KYC verification flow | **built in §29** — the document is handed over, stripped of metadata before it is stored, destroyed the moment a decision is recorded, and after seven days either way |
 | A storefront theme (the plans' `can_theme`) | **built in §31** — six curated palettes, each proven at ≥5.5:1 for white at both ends of its gradient and at the middle, a live preview on the seller's own store name, motion that is opt-in per device, and the capability read from the plan rather than restated |
 | Per-store fonts, free-form colours, seller CSS | absent **on purpose**: each is a claim about readability that no test can keep, and each can be priced and proven on its own later |
-| A per-store footer removal (`remove_footer`) | **still open** — the fourth capability sitting in the same plans table with no reader. Not a colour, so it is not part of §31, and it should be built or removed from the plans rather than left as a bullet nobody prints |
+| A member-paid ad-free experience, charged to the seller | **still open** — the revenue-side sibling of the theme round. It cannot be sold by withholding ad money (the networks pay the store directly), so it needs a seller-side capability, a price, and a rule about the platform's rented slot. Researched, deliberately not half-built |
+| Per-store footer removal (`remove_footer`) | **still open** — the fourth capability sitting in the same plans table with no reader. Not a colour, so it is not part of §31, and it should be built or removed from the plans rather than left as a bullet nobody prints |
 | Paying a creator directly | **built in §30** — members: two tiers the store names, dues the member sends the creator and the creator alone confirms, a roster with plates, and files that open with no ad while the period runs |
 | Following a store | **built in §28** — a shelf at `/library`, a count of what appeared since you last looked, and no notification promised anywhere, because this product sends buyers none |
 | Offline viewing (Android) | absent **on purpose**: a disk cache of unlocked media is a leak with a progress bar |
@@ -2584,3 +2585,133 @@ Per-store fonts, free-form colours, seller-authored CSS, and a per-store footer 
 readability or about what the platform is that no test can keep, and each can be built, checked and
 sold on its own terms later. The audit's missing-surface table records them as open rather than
 solved.
+
+---
+
+## §31b — The revenue architecture of memberships, priced from the code that already priced it
+
+### The question this answers
+
+"Also another feature: members joinable which will also contain ad space for me and store seller as
+well… adds ad slots and payment coming benefits to us… how did u make the revenue arch for these
+features?" It deserves a precise answer, because the honest one is *not* a new revenue line. It is
+that memberships sell a relationship and a gated file, and **every rupiah of rent already existed
+before memberships did**.
+
+### The model, in the order money actually moves
+
+| Leg | Payer | Payee | bytebikri's position | Where it is in the code |
+|---|---|---|---|---|
+| Ad revenue, per ad | The ad network | The store's own account | **Not a party.** 0%, and not a rate — no path | `src/slots.js` (`payoutParty: 'channel'`), the earnings page's money map |
+| Membership dues | The member | The store owner, e.g. eSewa → eSewa | **Not a party.** Never receives, cannot confirm, cannot refund | `memberships.claim*` on the row; `confirmMembership` scoped to `channel.owner_id` in SQL |
+| Store upgrade | The seller | bytebikri | **Revenue 1** — NPR 999 / 2,499 a year, pro-rated | `plans.priceNpr`, `upgradeExplanation`, `recordPlanPayment` |
+| Annual rent | The seller | bytebikri | **Revenue 2** — one platform slot per page, priced from the store's own measured traffic, 12 × the monthly estimate, **zero below the 3-slot threshold** | `slots.js` `POLICY` + `billing.js` `annualRentNpr` |
+
+**Two charges. No third.** The membership adds nothing to that column: a store that sells memberships
+pays exactly what it paid before, and its dues do not appear in any bytebikri figure anywhere.
+
+### The ad-space half, and the correction that comes with it
+
+The user's instinct — "contain ad space for me and store seller as well" — is right about the
+mechanism and needed one correction, and the correction is the interesting part.
+
+**Mechanism, already built and unaffected by memberships:** every storefront and file page carries
+the shop's own positions (plan-dependent: 3 / 5 / 8) plus **one** platform position, allocated by
+`slots.js` under four stated fairness rules — the platform never takes rank 1, never more than one
+slot per page, never takes a slot from a page with fewer than three, and an empty slot keeps its
+height so nothing reflows on load. `payoutMonday`… rather, each slot carries `payout_party`:
+`'channel'` for the store's, `'platform'` for the rented one. Measured live on `/s/alice`: two slots
+on the page, the store's at y = 651 (rank 1, first thing under the header) and the platform's at
+y = 4,356 — last, below everything the store sells.
+
+**The correction:** a paying member does **not** get the page's ads removed. Adding that would mean
+either (a) the store loses ad revenue on exactly the pages its paying members read, or (b) the
+platform stops renting its slot there — and (b) is precisely the rent being priced on that traffic.
+It would make memberships cannibalise the platform's only traffic-linked revenue.
+
+What happens instead, and what is now written on three surfaces: **an ad may sit around a member's
+content and never inside it.** A members file opens because the dues are current, never because
+somebody watched something first. And that is not a compromise — it is where the market has landed,
+measured in September 2026:
+
+- **YouTube Premium is defending two class actions** (California; British Columbia, filed
+  2026-08-21) over its "ad-free" claim, on the argument that a creator's sponsored read is still an
+  ad the subscriber paid to avoid.
+- **Disney+ rewrote its subscriber agreement** so that all tiers — including the ad-free ones — "may
+  include promotional content, sponsorships, and advertisements before/after playback", and
+  subscribers started closing accounts over the *report* of it before Disney clarified nothing had
+  changed for them yet.
+- **Medium's entire pitch is "no ad strip"** on a member-funded platform, and **Substack's own
+  support pages** say the model is subscriptions rather than advertisers, with paid posts carrying
+  none of them.
+
+The line all four draw is *interruption vs placement*. bytebikri already draws it structurally: a
+member's file is opened by an `unlocks` row, not by an ad view.
+
+### Why the AdSense "premium ad-free tier" idea was rejected
+
+It is a real industry pattern and it does not survive contact with this product's own rule: **the ad
+networks pay the store's own account directly, so bytebikri cannot withhold an ad's revenue from
+anybody.** "Join a premium tier and we will suppress the seller's ad" is therefore not ours to sell
+— it would mean reaching into money we never touch. That option needs the seller's consent plus a
+platform-side setting, and it is recorded as open in the audit's missing-surface table rather than
+half-built.
+
+### What was written in code (not just decided)
+
+`src/memberships.js` now carries the arrangement as data, so a page cannot print a stale version:
+
+- `MEMBER_AD_LINE` — the promise to the member, on the member's own card and on the join panel
+  (both the signed-in and the anonymous branch, because a visitor deciding whether to make an account
+  is the person who most wants to know what the ads do).
+- `ADS_AROUND_LINE` — the same arrangement said to the seller.
+- `SELLER_DUES_LINE` — "Dues are 100% yours. bytebikri never receives them, which is not a 0% rate,
+  it is the absence of a way to take one."
+- `revenueRows({planName, planPrice, slotCount})` — pure, and it reads the platform's slot count and
+  the `minTenantSlotsBeforeTax` threshold **from `slots.js`**, so the panel and the allocation policy
+  cannot drift.
+
+**The seller's page gained a section, "Where the money goes"** — four rows: what they collect, what
+bytebikri charges them (two things, named with prices), where the ad positions are (arithmetic:
+"you keep 4 of the 5"), and what their members will see. The rent figure itself stays on the earnings
+page, one link away, because it is an estimate until an invoice exists.
+
+### Three claims that had quietly stopped being true
+
+Memberships turned out to be a lie-detector for sentences written when nothing here was sold:
+
+1. **The house creative in the platform's own ad slot** — printed on every storefront — said "No cut
+   of the store's sales — there are no sales." There are dues now. It reads: "No cut of what the
+   store earns — dues included."
+2. **`NOT_CHARGED`**, the billing page's list of what a seller is *not* charged for, said "no
+   commission, because no money changes hands for content." Money changes hands for content now —
+   member to creator. The surviving claim is the real one: no percentage and no mechanism.
+3. **`MONEY_MAP.toPlatform.detail`** said "neither is charged on a sale — there is no sale."
+   `test/earnings.test.js` asserted `/no sale/i` on it, which is a test holding a sentence in place
+   rather than a fact: it now asserts the claim that survives every model this product grows into —
+   the platform's two charges are never a share of what a store earns, and the line names dues.
+
+### What was run
+
+- `npm test` — **555 / 555 / 0**, including two new tests: the seller's rows are arithmetic read from
+  the slot policy (and a short page is told "no rent to price" instead of a split of positions never
+  taken from it), and the member's promise is present on the selling page **before** anybody sends
+  money, on the anonymous branch too, and on their own card afterwards.
+- `test/earnings.test.js` — the money-map assertion moved from a fact that expired to a claim that
+  cannot.
+- Browser-measured on `/s/alice`: the page carries exactly two ad positions — the store's at rank 1
+  under the header, the platform's as the last element in a 4,837px document — which is what makes
+  "around the content, never inside it" a description rather than a slogan.
+- Screenshots of all three surfaces: `/home/user/revenue-architecture.png`.
+
+### Still open, recorded rather than half-built
+
+- **A seller-paid ad-free experience for their members** (the fee the platform would charge to drop
+  its own rented slot and the store's positions on a member's pages). It needs a capability, a price
+  and a rule about the platform's rent; it cannot be done by withholding revenue bytebikri never
+  receives.
+- **A dues-based rent component** — whether a store with a large paying roster should pay more rent
+  than the flat traffic-priced one, which is the same open question as §30's roster pricing.
+- **Which region's viewers actually monetise the rented slot at all** — Nepal's display fill is real
+  but thinly measured, and the estimate is currently honest about being an estimate rather than
+  about its own error bar.

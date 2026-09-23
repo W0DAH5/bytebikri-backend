@@ -183,7 +183,13 @@ test('the money map states both directions, and the payer on each leg', () => {
   assert.equal(MONEY_MAP.toCreator.payer, 'The ad network');
   assert.match(MONEY_MAP.toCreator.account, /your own account/i);
   assert.match(MONEY_MAP.toCreator.detail, /not a party/i);
-  assert.match(MONEY_MAP.toPlatform.detail, /no sale/i);
+  // Was `/no sale/i`, which the detail line used to satisfy by saying there was no
+  // sale at all. There ARE payments now — members send dues to creators — so the
+  // assertion moves to the claim that has to survive every model this product
+  // grows into: the platform's charges are never a share of what a store earns.
+  assert.match(MONEY_MAP.toPlatform.detail, /neither is a share of what you earn/i);
+  assert.match(MONEY_MAP.toPlatform.detail, /dues/i,
+    'and the line names the money a member sends, rather than pretending it does not exist');
   // The one thing that must never appear: bytebikri holding or forwarding it.
   // "cannot see the balance" is allowed and deliberate — naming the balance is
   // the point. Claiming one is not.

@@ -36,7 +36,12 @@
 /** The house creative. What bytebikri runs in a rent slot when nothing else can. */
 export const HOUSE_CREATIVE = {
   headline: 'This space is rented from the store',
-  body: 'ByteBikri sells the least valuable slot on a storefront back to itself, and pays for the servers with it. No cut of the store\'s sales — there are no sales.',
+  // "No cut of the store's sales — there are no sales" was true while nothing here
+  // was sold. Members pay dues now, and a sentence printed in a footer on every
+  // storefront is the worst place in the product to leave one that has stopped
+  // being true — so it says what the arrangement actually is: whatever a store
+  // earns, in whatever form, bytebikri takes no part of it.
+  body: 'ByteBikri sells the least valuable slot on a storefront back to itself, and pays for the servers with it. No cut of what the store earns — dues included.',
   linkUrl: '/',
   linkLabel: 'What ByteBikri is',
 };

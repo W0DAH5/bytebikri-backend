@@ -459,7 +459,7 @@ export const MONEY_MAP = {
     account: 'bytebikri',
     held: 'Two charges only',
     cut: 'An upgrade and annual rent',
-    detail: 'A plan upgrade and annual rent for the platform ad slot. Neither is a share of what you earn, and neither is charged on a sale — there is no sale.',
+    detail: 'A plan upgrade and annual rent for the platform ad slot. Neither is a share of what you earn, and neither is charged on a sale or on the dues your members pay you.',
   },
 };
 

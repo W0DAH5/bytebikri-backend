@@ -52,6 +52,9 @@ import { ALLOWED_TYPES, MAX_BYTES, HOLD_DAYS, extFor } from './kyc.js';
 import {
   THEMES, THEME_KEYS, THEME_NOTE, THEME_FREE_LINE, NO_THEME, themeOf, themeStyle, motionNote,
 } from './themes.js';
+// The ad arrangement and the seller's revenue rows: the membership's promise to the
+// member and the seller's own two-line model, written once in memberships.js.
+import { MEMBER_AD_LINE, ADS_AROUND_LINE, SELLER_DUES_LINE, revenueRows } from './memberships.js';
 import {
   ACCENTS, ACCENT_KEYS, PERIODS, CLAIM_METHODS, PLATE_COPY, MONEY_LINE, FREE_PLAN_LINE,
   CONFIRM_LINE, LAPSE_LINE, accentOf, plateStyle, tierByNo, duesLine, methodLabel,
@@ -813,7 +816,7 @@ function myMembershipCard({ channel, membership, tiers, rosterSize = 0 }) {
       <span class="member-avatar${live && plate === 'gradient' ? ' member-avatar--shine' : ''}"
             aria-hidden="true">${esc(String(channel.name).slice(0, 1).toUpperCase())}</span>
       <div>
-        <strong>${live ? `You are a member — ${esc(tier?.name || 'Member')}` : 'Your period has ended.'}</strong>
+        <strong>${live ? `You are a member, ${esc(tier?.name || 'Member')}` : 'Your period has ended.'}</strong>
         <p class="small" style="margin:0">${live
     ? `Files behind this tier open for you with no ad${left !== null ? `, for ${plural(left, 'more day')}` : ''}.`
     : `${esc(LAPSE_LINE)}`}</p>
@@ -831,9 +834,10 @@ function myMembershipCard({ channel, membership, tiers, rosterSize = 0 }) {
       ${live ? '' : `<a class="btn btn-sm btn-primary" href="#join">Send this period's dues</a>`}
     </div>
     <p class="fine">${listed
-    ? 'You are named on this store’s member list. That is the perk — it is the only place a plate is visible — and hiding it changes nothing else.'
+    ? 'You are named on this store’s member list. That is the perk, and it is the only place a plate is visible. Hiding it changes nothing else.'
     : 'You are hidden from the member list. Your files stay open either way.'}
       ${rosterSize ? ` ${plural(rosterSize, 'person', 'people')} are named here.` : ''}</p>
+    <p class="fine">${esc(MEMBER_AD_LINE)}</p>
   </div>`;
 }
 
@@ -910,10 +914,14 @@ function joinPanel({ channel, user, tiers, membership, assets = [], flash = null
   // opposite of the researched rule that the teaser is never the thing you hide.
   // Only the form needs an account.
   if (!user) {
+    // The anonymous branch gets the same arrangement sentence as the signed-in one.
+    // It is the branch MOST people read: a visitor deciding whether to make an
+    // account is exactly the person who wants to know what the ads do.
     return `<div id="join" class="join-panel">
       <div class="section-head" style="margin-bottom:var(--space-4)">
         <h3>Join</h3>
         <p>Dues go to the creator, not to bytebikri. You send it, you paste the reference, they confirm it.</p>
+        <p class="fine">${esc(ADS_AROUND_LINE)}</p>
       </div>
       ${cards ? `<ul class="tier-grid">${cards}</ul>` : ''}
       ${paid}
@@ -938,6 +946,7 @@ function joinPanel({ channel, user, tiers, membership, assets = [], flash = null
     <div class="section-head" style="margin-bottom:var(--space-4)">
       <h3>Join</h3>
       <p>Dues go to the creator, not to bytebikri. You send it, you paste the reference, they confirm it.</p>
+      <p class="fine">${esc(ADS_AROUND_LINE)}</p>
     </div>
     ${cards ? `<ul class="tier-grid">${cards}</ul>` : ''}
     ${paid}
@@ -5672,6 +5681,30 @@ ${flashNote(flash)}
     </div>
     <button class="btn btn-primary btn-sm" type="submit">Save instruction</button>
   </form>
+</div>
+
+<div class="section">
+  <div class="section-head">
+    <h2>Where the money goes</h2>
+    <p>Both directions, on one screen. A seller should never have to work out where the platform takes its money,
+      and the answer is two lines long: your plan, and the rent on one ad position.</p>
+  </div>
+  <div class="panel">
+    <div class="panel-body">
+      <dl class="kv">
+        ${revenueRows({
+    planName: plan?.name || 'Free',
+    planPrice: plan?.priceNpr ? `${npr(plan.priceNpr)} a year` : 'free, permanently',
+    slotCount: plan?.capabilities?.slot_count ?? 0,
+  }).map((r) => `<dt>${esc(r.term)}</dt><dd>${esc(r.text)}</dd>`).join('')}
+      </dl>
+      <p class="fine" style="margin-top:var(--space-4)">
+        The rent figure itself is on the <a href="/dashboard/${esc(channel.slug)}/earnings">earnings page</a>, priced
+        from this store's own traffic, and it is an estimate until an invoice is issued. It is never a percentage of
+        anything you earn.
+      </p>
+    </div>
+  </div>
 </div>
 
 <div class="section">
