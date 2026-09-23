@@ -261,7 +261,8 @@ single-asset management, and search.
 |---|---|
 | Notifications | delegated in the model; nothing implemented |
 | Refund/dispute flow | decided: harsh measures; no mechanism |
-| KYC verification flow | schema exists, no upload, no review |
+| KYC verification flow | **built in §29** — the document is handed over, stripped of metadata before it is stored, destroyed the moment a decision is recorded, and after seven days either way |
+| Paying a creator directly | **built in §30** — members: two tiers the store names, dues the member sends the creator and the creator alone confirms, a roster with plates, and files that open with no ad while the period runs |
 | Following a store | **built in §28** — a shelf at `/library`, a count of what appeared since you last looked, and no notification promised anywhere, because this product sends buyers none |
 | Offline viewing (Android) | absent **on purpose**: a disk cache of unlocked media is a leak with a progress bar |
 | Comments, replies between buyers | reviews only; a comment thread is a moderation load nobody has agreed to carry |
@@ -2315,3 +2316,129 @@ What that settled, in decisions:
   no row written and no count moved.
 - Looked at, in the browser: the library at 1440px and at 390×844 (full page), the
   store header with the Following pill and its sentence at 390px.
+
+---
+
+## §30 — Members: paying the creator, and the platform staying out of it
+
+### The user's question, and the answer the product gives
+
+> *"paid feature — make channel members joinable. else no membership option (or is that too
+> harsh?)"*
+
+**Not too harsh, but the harshness was in the wrong place.** Watching a store is free for
+everyone forever (0029) and stays free — that is the thing a person does before they decide to
+pay anybody. What the Store plan buys is the *relationship*: up to two tiers, a roster with the
+person's own name on it, a plate next to that name on the storefront, and files that open for
+them with no ad. Same shape as the marketplace rule already in the plans table: being found is
+free, the relationship and the reach are what a plan is for.
+
+And the dues do not go through bytebikri at all. This is the structural version of the standing
+rule — *no money goes to a user through us* — applied to a flow that would normally be a
+platform's proudest feature:
+
+- the store publishes a payment instruction in its own words (eSewa id, bank line, "at the shop");
+- the member sends the money to the creator, then records the reference;
+- **the creator confirms it against their own statement**, and nobody else can: `confirmMembership`
+  is scoped to `channels.owner_id` in SQL, so an operator cannot confirm a membership even by
+  accident — the platform never saw the money, so there is nothing here to check it against.
+
+Consequences, stated on the page rather than discovered later: bytebikri takes no share, holds
+nothing, cannot confirm and cannot refund a dues payment. `MONEY_LINE` says exactly that, and it
+is asserted in tests and printed under every button that asks somebody for money.
+
+### What was decided, against what was researched
+
+| Decision | Source of the shape |
+| --- | --- |
+| Three tiers maximum → **two** | Patreon's own best-practice post and the 2026 tier guides converge on three at ~3x/10x, and all of them warn that the failing pattern is *more tiers than perks*. Two is a name tier and an elite tier — what a creator with fifty members can keep promises about. |
+| The plan pays for members, not the member | The researched membership products (Patreon, Fiverr, Discord boosts) all charge the member through the platform. That rail is exactly what this product refuses to be, so the platform charge moved to the seller's existing annual plan — a charge that already exists, on a product the seller already buys. **No third charge appears anywhere.** |
+| The top tier shines, the entry tier does not | Discord's *Enhanced Role Styles* and the admin guides on them: keep gradient and holographic effects to one or two roles, or nothing on the page stands out. Derived from `plateStyle(tier_no)` rather than offered as a setting, so a store cannot accidentally make everybody elite. |
+| A member's **name** is a solid colour, and the gradient goes on the 2px ring, the avatar and the tier chip | Gradient *text* is contrast-checked at its worst stop, not its average — the guidance is to decide the text colour first and put the gradient where its worst point can be proven. Eight palettes, each checked at 4.5:1:1 for ink on both themes and white-on-gradient at both stops, in `test/contrast.test.js`. |
+| The shimmer is declared inside `prefers-reduced-motion: no-preference` | The researched pattern is to build the static version first and *add* motion for people who have not asked for less, rather than adding it by default and taking it back. Asserted in `design.test.js`. |
+| A members-only file stays **listed**, locked, with its title and description | Every paywall study worth reading says the wall goes on the content, never on the teaser. A store whose members-only files vanish from its storefront has nothing to sell — so the card stays, wearing "Members" and the sentence naming the tier that opens it. |
+| A new period is **added** to the time left, never in place of it | Patreon documents the same rule for membership changes; paying early must not cost the days already paid for. `greatest(coalesce(period_end, now()), now()) + interval`. |
+| A lapsed membership closes files, deletes nothing | No `lapsed` status exists to be rewritten by a job nobody ran: `period_end < now()` *is* the end. The unlock row a membership wrote carries that date as its expiry, so `isUnlocked` — already the one rule at the content boundary — closes the file by itself. |
+
+### The three states a person can be in, and why each needed its own page
+
+1. **A stranger.** Sees the tiers, the perks, the creator's payment instruction and the plate
+   sample — the plate *shown*, not described, because a decoration is what is being sold. The
+   form needs an account; the shop window does not.
+2. **A claim waiting.** "Your claim is with the creator" — with the reference echoed back, the
+   date, and the sentence that says this is a wait and not a bug. The researched lesson from
+   the shelf round applies again: never imply a notification that does not exist.
+3. **Current, and lapsed.** Current says which tier and how many days; lapsed says the plate goes
+   quiet and the files close, and that nothing was deleted.
+
+Plus the seller's four: the queue (reference in mono, amount, method, date, then confirm/reject),
+the payment instruction, the two tier editors, and who is in.
+
+### What was built
+
+- **`db/migrations/0031_memberships.sql`** — `membership_tiers` (max two, `dues_npr`,
+  `period_months ∈ {1,3,12}`, a named palette), `channels.membership_note` (the public payment
+  instruction), `memberships` (one row per person per store, a claim plus the creator's
+  confirmation), `mode = 'members'` added to both copies of the access axis, and
+  `unlocks.method` widened with `'membership'`. Two constraints do real work: a confirmed row
+  must carry `confirmed_at` and `period_end` (they are written together or not at all), and a
+  pending row must carry a reference of at least four characters — a claim nobody could look up
+  is a claim that can never be cleared.
+- **`app/src/memberships.js`** — pure module, no database, no markup: the eight contrast-checked
+  palettes, tier validation, the period maths, `membershipState()` (the derived clock),
+  `opensFor()`, `memberRefusal()`, and the money sentences that must be true wherever dues are
+  mentioned.
+- **`app/src/store.js`** — tiers (save/remove, refused while held), the note, join (an upsert, so
+  a typo edits a claim instead of stacking a second one), confirm (owner-scoped in SQL, adds the
+  period), reject, leave (a delete, with the audit row kept), the seller's queue and roster, the
+  public roster, and `grantMembershipUnlock` — deliberately not `grantUnlock`, because that would
+  overwrite a permanent unlock with the membership's end date.
+- **`app/server.js`** — 8 routes; the storefront passes four membership reads; the asset page and
+  the content boundary both ask the same question (a membership is a third way in, and the first
+  fetch writes the row); the seller's asset form gained "Members only" and the tier it wants.
+- **`app/src/views.js`** — the roster, the member's own card, the join panel, the seller's page,
+  the gate on a members-only file, the "What you get" panel (which must not describe an ad for a
+  file no ad opens), and the tier select in `assetManage`.
+- **`app/public/styles.css`** — the plates, the roster grid, the tier cards, the join panel, the
+  queue, and the four plate custom properties defined at `:root` (a rule that reads an undefined
+  property is dropped silently — the one failure a stylesheet cannot report).
+
+### What went wrong, and what was found by looking
+
+1. **`membership_tiers` had no primary key.** The composite foreign key that makes "you cannot
+   delete a tier people are holding" true has to point at a unique constraint, and there wasn't
+   one. Silent in review, an error at migration time.
+2. **A claim with no reference was reaching the queue.** The store now refuses it, the route
+   refuses it, and the CHECK constraint refuses it — three times, because this field is the whole
+   manual rail.
+3. **The asset page told two outright lies on a members-only file**: the stage read "Unlocks
+   after the ad" and "What you get" said "1 rewarded ad". Both now say which lock it is. Found by
+   screenshotting the page, not by reading the template.
+4. **`membershipsOn` was read before it was destructured** in `assetManage` — three existing
+   tests caught it, which is the argument for the class/undefined-property tests in `ui.test.js`.
+5. **`#members` landed under the sticky header** on a wide screen: the scroll offset only existed
+   inside the phone media query, and the new file-page button jumps to that anchor. Now the offset
+   is written once, at the base, with the phone block keeping its larger value — and a browser
+   probe asserts the heading arrives *below* the header at 1440 and 390.
+6. **"1 person hold this tier."** Grammar, caught in the seller's screenshot. Fixed where it was
+   written.
+7. **`memberStore` had to be resolved locally in the seed.** The block was inserted above a
+   `const nimaStore` it read; that is a ReferenceError, not a subtle wrong answer.
+
+### What was run
+
+- `npm test` — **537 / 537 / 0**, including ten new tests in `test/members.test.js` (owner-only
+  confirmation, the refused claim, the derived lapse with no `lapsed` column, the period added to
+  time left, tier-scoped file access, the unlock that is extended and never shortened, the
+  storefront teaser, the Free-store upsell, the tier editor's refusals and the held tier's
+  immovability, the queue as a statement would show it, and leaving) plus a contrast test that
+  proves all eight palettes in both themes at both gradient stops and two design tests holding
+  "the shimmer is on the ring, not the name" and "the motion is opt-in".
+- `ci/eyes/sweep.mjs` — **64 clean, 0 with findings**.
+- `ci/eyes/columns.mjs` — **28 tables on 16 pages, 0 findings at 390px** (the new page adds a
+  table, and it scrolls).
+- Browser-measured: the anonymous panel (tiers shown, form gated), Bob's pending claim rendering
+  its own card, the day theme's ink (violet `#6d28d9` on white, 7.1:1), and the anchor landing
+  below the header at both widths.
+- Driven over HTTP: the storefront, the file page as a member (opens with "91 days left" and no
+  ad), the seller's queue with the seeded claim.

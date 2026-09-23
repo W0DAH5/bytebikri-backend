@@ -53,6 +53,9 @@ const CSS = withoutComments(css);
 // from a copy in this file: a test holding its own copy of a sentence goes green while
 // the page says something else.
 const { MONEY_MAP } = await import('../src/earnings.js');
+// The plate rules, imported as a namespace: only the two pure functions this
+// file asserts about are read from it, and they import nothing themselves.
+const memberships = await import('../src/memberships.js');
 
 // ---------------------------------------------------------------------------
 // Tokens
@@ -659,4 +662,37 @@ test('every URL the sitemap lists is a URL the app actually serves', () => {
   }
   // And the static list must not name a page whose route takes a parameter.
   assert.ok(!listed.some((l) => l.includes(':')), 'no route patterns in a sitemap');
+});
+
+// ── members: one thing shines, and the effect is never on the name ──────────
+
+/**
+ * The three design rules of a paid tier, held as assertions.
+ *
+ * Discord's role styles are the reference and the warning: gradient and
+ * holographic effects are deployed on ONE OR TWO roles, or nothing on the page
+ * stands out — and its own accessibility note points at reduced motion as the
+ * escape hatch. Both are structure here rather than taste, so both are testable.
+ */
+test('the shimmer is on the ring and the chip, never on the name', () => {
+  const css = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const nameRule = /\.member-name\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+  assert.ok(nameRule.includes('color:'), 'a name is a solid colour');
+  assert.ok(!/background-clip|linear-gradient/.test(nameRule),
+    'gradient text is checked at its worst stop, not its average — so the name does not wear one');
+  const avatar = /\.member-avatar\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+  assert.ok(avatar.includes('linear-gradient'), 'the ring and the avatar carry the gradient');
+  assert.ok(avatar.includes('--plate-a') && avatar.includes('--plate-b'),
+    'and the gradient stops come from the palette the store chose');
+});
+
+test('the motion a plate carries is opt-in, not taken back', () => {
+  const css = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  // Declared inside `no-preference`, which is the researched pattern: build the
+  // static version first and add movement for people who have not asked for less.
+  assert.ok(/@media \(prefers-reduced-motion: no-preference\)[\s\S]{0,600}?\.member-avatar--shine/.test(css),
+    'the plate sweep is declared inside prefers-reduced-motion: no-preference');
+  assert.ok(/@keyframes plate-sweep/.test(css));
+  assert.equal(memberships.plateStyle(2), 'gradient', 'the top tier is the shiny one');
+  assert.equal(memberships.plateStyle(1), 'solid', 'and the entry tier is not — one thing shines or nothing does');
 });

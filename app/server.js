@@ -63,6 +63,13 @@ import {
   railDetails, railsReady, payeeName, upgradeExplanation, planBenefits, planUsage, planDrift, NOT_CHARGED,
 } from './src/billing.js';
 import { earningsSummary, MONEY_MAP, payoutChecklist, periodStatus, calibrationVerdict, calibrationRowState as calibrationState } from './src/earnings.js';
+// Membership rules: the palettes, the tier validation, the lapse clock and the
+// one sentence about money that has to be true wherever dues are mentioned.
+import {
+  TIERS_MAX, PERIODS, CLAIM_METHODS, ACCENTS, ACCENT_KEYS, MONEY_LINE, FREE_PLAN_LINE,
+  PLATE_COPY, tierDraft, paymentNoteDraft, membershipState, membershipCurrent, memberBadge,
+  duesLine, tierByNo,
+} from './src/memberships.js';
 import { SANDBOX_PROVIDER_IDS } from './src/providers/index.js';
 import { selectableProviders, providerById, payoutVerdict, loadRegistry } from './src/registry.js';
 import {
@@ -730,6 +737,207 @@ APP.post('/s/:slug/unfollow', limitWatch, async (req, res, next) => {
 });
 
 // ---------------------------------------------------------------------------
+// Memberships — belonging to a store, and paying the creator for it
+// ---------------------------------------------------------------------------
+// Four seller routes and three buyer routes. The shape of every one of them
+// comes from a single fact: this platform never touches the dues. It cannot
+// check them, cannot confirm them, cannot hold or refund them. So the seller's
+// side is a QUEUE A HUMAN CLEARS against their own statement, and the buyer's
+// side is a CLAIM plus a wait — and the pages say exactly that rather than
+// dressing a manual rail up as an instant purchase.
+
+/**
+ * The join panel, as one redirect helper.
+ *
+ * `back` is always the storefront: the person came from there, the panel is
+ * there, and the answer ("you are in, waiting for the creator") belongs where
+ * they can see their own state.
+ */
+function memberBack(channel, extra = '') {
+  return `/s/${encodeURIComponent(channel.slug)}${extra}`;
+}
+
+APP.post('/s/:slug/join', limitWatch, async (req, res, next) => {
+  try {
+    const channel = await store.channelBySlug(req.params.slug);
+    if (!channel) return res.status(404).send(views.notFound({ user: req.user, requestedKind: 'store' }));
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+
+    // Two refusals before anything is written, and both are sentences a person
+    // is owed: you cannot join your own store (the dues would be a loop), and
+    // you cannot join a store whose plan does not include members.
+    if (channel.owner_id === req.user.id) return res.redirect(memberBack(channel, '?error=member-own'));
+    const plan = store.plan(channel);
+    if (plan.capabilities?.memberships !== true) return res.redirect(memberBack(channel, '?error=member-plan'));
+
+    const tiers = await store.membershipTiers(channel.id);
+    const wanted = Number(req.body?.tier) || 1;
+    const tier = tiers.find((t) => Number(t.tier_no) === wanted) ?? tiers[0] ?? null;
+    if (!tier) return res.redirect(memberBack(channel, '?error=member-no-tier'));
+
+    // A reference is the only thing that can be matched against a statement. The
+    // form asks for it at the door rather than two screens later, because a
+    // claim without one sits in the creator's queue until they give up on it.
+    const method = CLAIM_METHODS.includes(String(req.body?.method)) ? String(req.body.method) : 'other';
+    const reference = String(req.body?.reference || '').trim();
+    if (reference.length < 4) return res.redirect(memberBack(channel, '?error=member-reference'));
+
+    const row = await store.joinMembership({
+      profileId: req.user.id,
+      channelId: channel.id,
+      tierNo: tier.tier_no,
+      claim: {
+        amountNpr: Number(req.body?.amount) || null,
+        method,
+        txnReference: reference,
+        payerName: String(req.body?.payerName || '').trim().slice(0, 120) || req.user.display_name,
+        payerNumber: String(req.body?.payerNumber || '').trim().slice(0, 40) || null,
+      },
+    });
+    if (!row) return res.redirect(memberBack(channel, '?error=member-active'));
+    await store.audit('member.claimed', {
+      channelId: channel.id, tierNo: tier.tier_no, amountNpr: row.amount_npr,
+      txnReference: row.txn_reference, method: row.method,
+    }, { actorId: req.user.id, subjectType: 'channel', subjectId: channel.id });
+    return res.redirect(memberBack(channel, '?joined=1#members'));
+  } catch (err) { return next(err); }
+});
+
+APP.post('/s/:slug/leave', limitWatch, async (req, res, next) => {
+  try {
+    const channel = await store.channelBySlug(req.params.slug);
+    if (!channel) return res.status(404).send(views.notFound({ user: req.user, requestedKind: 'store' }));
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    const left = await store.leaveMembership(req.user.id, channel.id);
+    return res.redirect(memberBack(channel, left ? '?left=1#members' : '?error=member-none'));
+  } catch (err) { return next(err); }
+});
+
+/** Being named on the storefront is the perk, and it is the member's call. */
+APP.post('/s/:slug/members/listing', limitWatch, async (req, res, next) => {
+  try {
+    const channel = await store.channelBySlug(req.params.slug);
+    if (!channel) return res.status(404).send(views.notFound({ user: req.user, requestedKind: 'store' }));
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    const listed = await store.setMemberListed({
+      profileId: req.user.id, channelId: channel.id, listed: req.body?.listed === 'yes',
+    });
+    return res.redirect(memberBack(channel, listed ? '?listed=1#members' : '?error=member-none'));
+  } catch (err) { return next(err); }
+});
+
+// ── the seller's side ──────────────────────────────────────────────────────
+
+APP.get('/dashboard/:slug/members', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    const plan = store.plan(channel);
+    res.send(views.channelMembers({
+      channel, user: req.user, consent: req.consent, flash: flashFor(req.query),
+      tiers: await store.membershipTiers(channel.id),
+      members: await store.membersOfChannel(channel.id),
+      pending: await store.pendingMemberships(channel.id),
+      membershipsOn: plan.capabilities?.memberships === true,
+      plan,
+    }));
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Save a tier.
+ *
+ * The capability is refused HERE as well as on the page, because a Free store
+ * that posts this form is either a stale tab or somebody poking at the API, and
+ * both deserve a sentence rather than a row in a table it cannot use.
+ */
+APP.post('/dashboard/:slug/members/tier/:tierNo', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    if (refuseWrite(req, res, channel)) return undefined;
+    const back = `/dashboard/${encodeURIComponent(channel.slug)}/members`;
+    if (store.plan(channel).capabilities?.memberships !== true) return res.redirect(`${back}?error=member-plan`);
+    const tierNo = Number(req.params.tierNo);
+    if (![1, 2].includes(tierNo)) return res.redirect(`${back}?error=tier-missing`);
+
+    const draft = tierDraft(req.body);
+    if (!draft.ok) return res.redirect(`${back}?error=${draft.error}`);
+    await store.saveMembershipTier({ channelId: channel.id, tierNo, value: draft.value, actorId: req.user.id });
+    return res.redirect(`${back}?tier-saved=${tierNo}`);
+  } catch (err) { return next(err); }
+});
+
+APP.post('/dashboard/:slug/members/tier/:tierNo/remove', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    if (refuseWrite(req, res, channel)) return undefined;
+    const back = `/dashboard/${encodeURIComponent(channel.slug)}/members`;
+    const result = await store.deleteMembershipTier({
+      channelId: channel.id, tierNo: Number(req.params.tierNo), actorId: req.user.id,
+    });
+    return res.redirect(`${back}?${result.ok ? 'tier-removed=1' : `error=${result.reason}`}`);
+  } catch (err) { return next(err); }
+});
+
+APP.post('/dashboard/:slug/members/note', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    if (refuseWrite(req, res, channel)) return undefined;
+    const back = `/dashboard/${encodeURIComponent(channel.slug)}/members`;
+    if (store.plan(channel).capabilities?.memberships !== true) return res.redirect(`${back}?error=member-plan`);
+    await store.setMembershipNote({
+      channelId: channel.id, note: paymentNoteDraft(req.body?.note), actorId: req.user.id,
+    });
+    return res.redirect(`${back}?note-saved=1`);
+  } catch (err) { return next(err); }
+});
+
+/**
+ * The creator says the money arrived.
+ *
+ * `ownerChannel` has already established that this person owns the store, and
+ * `confirmMembership` checks the same thing again in SQL — an operator cannot
+ * reach this state by any route, which is the whole design: the platform never
+ * sees these dues, so nobody here can honestly confirm one.
+ */
+APP.post('/dashboard/:slug/members/:profileId/confirm', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    if (refuseWrite(req, res, channel)) return undefined;
+    const back = `/dashboard/${encodeURIComponent(channel.slug)}/members`;
+    // An operator can open this page (they are trusted with moderation) and
+    // cannot clear this queue. That is not a permission the console is missing:
+    // the money never reached the platform, so there is nothing here for an
+    // operator to check it against.
+    if (channel.owner_id !== req.user.id) return res.redirect(`${back}?error=member-owner-only`);
+    const row = await store.confirmMembership({
+      profileId: req.params.profileId, channelId: channel.id,
+      ownerId: req.user.id, actorId: req.user.id,
+    });
+    return res.redirect(`${back}?${row ? 'member-confirmed=1' : 'error=member-missing'}`);
+  } catch (err) { return next(err); }
+});
+
+APP.post('/dashboard/:slug/members/:profileId/reject', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    if (refuseWrite(req, res, channel)) return undefined;
+    const back = `/dashboard/${encodeURIComponent(channel.slug)}/members`;
+    if (channel.owner_id !== req.user.id) return res.redirect(`${back}?error=member-owner-only`);
+    const row = await store.rejectMembership({
+      profileId: req.params.profileId, channelId: channel.id, ownerId: req.user.id,
+      reason: req.body?.reason, actorId: req.user.id,
+    });
+    return res.redirect(`${back}?${row ? 'member-rejected=1' : 'error=member-missing'}`);
+  } catch (err) { return next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // Getting back into an account
 // ---------------------------------------------------------------------------
 // Four routes, and the shape of two of them is the security property: the POST
@@ -1138,12 +1346,34 @@ APP.get('/s/:slug', async (req, res, next) => {
         )).map((r) => r.asset_id))
       : new Set();
 
+    // Membership, in four reads: what this store offers, what the viewer holds,
+    // who is named on it, and whether the plan even includes the feature. All
+    // four are skipped for the many stores that do not use it — the tiers query
+    // returns nothing and the panel is not drawn.
+    const tiers = await store.membershipTiers(channel.id);
+    const membership = req.user ? await store.membershipFor(req.user.id, channel.id) : null;
+    const membershipsOn = store.plan(channel).capabilities?.memberships === true;
+    // A current membership opens the files behind its tier with no ad, so they
+    // join the same set the ad-unlocked files live in: one set, one meaning —
+    // "you can open this right now" — rather than two flags the view would have
+    // to combine and could get wrong.
+    if (tiers.length && membershipCurrent(membership)) {
+      for (const row of await store.memberOpenAssetIds(channel.id, membership.tier_no)) {
+        unlockedIds.add(row.id);
+      }
+    }
+
     res.send(views.storefront({
       channel, assets, slots, user: req.user, estimate, pageviews, unlockedIds,
       consent: req.consent,
       // Whether this person already follows this store — the button is the state,
       // so it has to be known before the page is drawn.
       watching: Boolean(await store.followState(req.user?.id, channel.id)),
+      // The join panel's whole state: the tiers, the viewer's own row, the named
+      // members, and whether the feature is even on for this store.
+      tiers, membership, membershipsOn,
+      roster: tiers.length ? await store.publicRoster(channel.id) : [],
+      memberFlash: flashFor(req.query),
       // The badge, from the same one row the seller's panel reads. A visitor sees
       // "identity checked" and the sentence says what was checked and when.
       verification: await store.verificationFor(channel.id),
@@ -1359,7 +1589,14 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
 
     await store.bumpPageView(channel.id);
 
-    const unlocked = (asset.unlock_mode === 'open' || holdsUnlock) && availability.unlockable;
+    // A membership is a third way in, and it is asked about the same way the
+    // other two are: as a fact, before anything is minted. `memberCover` is the
+    // row itself, so the page can say which tier opened it and how long is left.
+    const memberCover = req.user
+      ? await store.memberCoversAsset({ profileId: req.user.id, channelId: channel.id, asset })
+      : null;
+    const unlocked = (asset.unlock_mode === 'open' || holdsUnlock || Boolean(memberCover))
+      && availability.unlockable;
 
     // Content URLs are minted per request, per user, and expire. They are only
     // produced when an unlock actually exists — never baked into the HTML.
@@ -1433,6 +1670,13 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
       myReview,
       reviewError: REVIEW_ERRORS[String(req.query.error)] || null,
       policy: await store.unlockPolicy(asset.id),
+      // Which tier the viewer holds, and what the file needs — the two facts the
+      // refusal sentence is built from.
+      memberCover,
+      memberTiers: asset.unlock_mode === 'members' ? await store.membershipTiers(channel.id) : [],
+      memberTierName: asset.unlock_mode === 'members'
+        ? (await store.membershipTiers(channel.id)).find((t) => Number(t.tier_no) === (Number(asset.member_tier) || 1))?.name ?? null
+        : null,
       refusal, ownerNotice,
       // A file the viewer can open because an operator allowed it back into a
       // country whose store-wide rule would otherwise refuse them.
@@ -2056,6 +2300,29 @@ async function resolveContentRequest(req, res, { event }) {
     await store.audit('content.free_grant', { assetId: a, userId: u },
       { actorId: u, subjectType: 'asset', subjectId: a });
   }
+  /**
+   * A member's first fetch of a members-only file writes the unlock, exactly the
+   * way a free file does above — same one-rule boundary, a row that exists or a
+   * refusal. The row carries the MEMBERSHIP's period end as its expiry, so the
+   * file closes when the dues period does and no job has to remember anything.
+   *
+   * The membership is re-checked here rather than trusted from the page: a token
+   * minted while the dues were current must stop working the moment they are not,
+   * which is this line and the `isUnlocked` below it.
+   */
+  if (asset.unlock_mode === 'members' && asset.status === 'live' && !await store.isUnlocked(a, u)) {
+    const membership = await store.memberCoversAsset({
+      profileId: u, channelId: asset.channel_id, asset,
+    });
+    if (membership) {
+      await store.grantMembershipUnlock({
+        assetId: a, channelId: asset.channel_id, userId: u, expiresAt: membership.period_end,
+      });
+      await store.audit('content.membership_grant', {
+        assetId: a, userId: u, tierNo: membership.tier_no, periodEnd: membership.period_end,
+      }, { actorId: u, subjectType: 'asset', subjectId: a });
+    }
+  }
   if (a !== req.params.assetId || f !== req.params.fileId) {
     res.status(403).json({ ok: false, error: 'token does not match this file' });
     return null;
@@ -2453,9 +2720,36 @@ const SUCCESS_FLASH = {
   noticed: () => 'Sent. The seller has the date, what happens on it, and that nothing else changes.',
   'noticed-logged': () => 'Written to the mail log — no provider is configured, so it was not delivered. The seller can see the same date on their own settings page.',
   rejected: () => 'Recorded as refused. The seller is told, with your note, and can ask again with the same or a different document.',
+  // Memberships. Every one of these says what happens NEXT, because the whole
+  // rail is manual: a claim waits for a person, and a confirmation is that person
+  // saying they saw the money. "Done" would be a lie in three of the six.
+  joined: () => `Asked. The creator checks their own statement for your reference and confirms it — the platform never sees these dues, so it cannot confirm them for you. ${LAPSE_LINE}`,
+  left: () => 'You left. Nothing was deleted — your opens stay open until their own windows run out.',
+  listed: () => 'You are on the list.',
+  'member-confirmed': () => 'Confirmed. Their plate is on the storefront now, and the files behind that tier open for them without an ad.',
+  'member-rejected': () => 'Marked as not found, and the reason went with it. They can send the reference again.',
+  'tier-saved': (v) => `Tier ${String(v || '')} saved. What a member pays, and what they get, is now what the storefront shows.`,
+  'tier-removed': () => 'Tier removed. Nobody was holding it, so nothing changed for anybody but the panel.',
+  'note-saved': () => 'Saved. This is what a visitor is told about paying you — keep it to something you would be happy to see written down.',
 };
 
 const ERROR_FLASH = {
+  // Membership refusals. Each names the rule, because a person who has just
+  // filled in a payment form and been bounced deserves to know which part of it
+  // was wrong — and two of these are about who they are, not what they typed.
+  'member-own': 'This is your own store, so there are no dues to pay — you are already the one who would confirm them.',
+  'member-plan': FREE_PLAN_LINE,
+  'member-no-tier': 'This store has not opened a tier yet. Nothing was sent, and nothing was written down.',
+  'member-reference': 'A reference of at least four characters is what the creator matches against their statement. Without one there is nothing to look up, so nothing was sent.',
+  'member-active': 'Your membership is already confirmed, so there is nothing to re-send. Pay the creator again when the period you have paid for runs out and the panel will take a new reference.',
+  'member-none': 'There is no membership here to change. Nothing was sent.',
+  'member-missing': 'That claim is not waiting any more — either it was already decided or the person left. Reload the page to see what is there now.',
+  'member-owner-only': 'Only the store owner can confirm dues. The platform never receives this money, so nobody here can check it.',
+  'tier-name': 'A tier needs a name of at least two characters — it appears next to a member\'s name.',
+  'tier-dues': 'Dues have to be a whole number of rupees between 0 and 100,000.',
+  'tier-period': 'Pick a period: monthly, every three months, or yearly.',
+  'tier-held': 'Somebody holds that tier, so it stays. You can rename it and change what it costs — what you cannot do is delete the thing people paid for.',
+  'tier-missing': 'There is nothing at that tier number. Tiers are 1 and 2.',
   'bulk-action': 'That is not something this list can do. Nothing was changed.',
   'bulk-empty':
     'Nothing arrived to change — this list did not send a single file with that press. '
@@ -3622,8 +3916,13 @@ APP.get('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
     // The two lists on the availability panel, split by who decided: a creator
     // can clear their own rule and cannot clear the platform's.
     const allCountryRules = await store.assetCountryRules(asset.id);
+    const membershipsOn = store.plan(channel).capabilities?.memberships === true;
     res.send(views.assetManage({
       channel, asset, user: req.user, consent: req.consent, flash: flashFor(req.query),
+      // The two facts the access control needs: whether the plan includes members
+      // at all, and which tiers exist to put a file behind.
+      membershipsOn,
+      tiers: membershipsOn ? await store.membershipTiers(channel.id) : [],
       files: await store.filesOf(asset.id),
       policy: await store.unlockPolicy(asset.id),
       stats: await store.reviewStatsOfAsset(asset.id),
@@ -3654,16 +3953,25 @@ APP.post('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
     const title = String(req.body.title || '').trim().slice(0, 200);
     if (!title) return res.redirect(`${back}?error=title`);
 
+    // Three ways in for a file, and the tier only exists in the third: a file
+    // cannot be ad-gated and secretly tiered, which the database also refuses.
+    const wantsMembers = req.body.unlockMode === 'members'
+      && store.plan(channel).capabilities?.memberships === true;
+    const memberTier = wantsMembers ? (Number(req.body.memberTier) === 2 ? 2 : 1) : 0;
     await store.updateAsset(asset.id, {
       title,
       description: String(req.body.description || '').trim().slice(0, 2000),
-      unlock_mode: req.body.unlockMode === 'open' ? 'open' : 'ad_gated',
+      unlock_mode: req.body.unlockMode === 'open' ? 'open' : wantsMembers ? 'members' : 'ad_gated',
+      member_tier: memberTier,
       status: req.body.status === 'paused' ? 'paused' : 'live',
     });
     await store.setUnlockPolicy(asset.id, {
       ads_required: req.body.adsRequired,
       ad_min_seconds: req.body.adMinSeconds,
       unlock_hours: req.body.unlockHours,
+      // The same value that was just written to the asset, so the two rows that
+      // carry this one decision cannot drift apart.
+      mode: req.body.unlockMode === 'open' ? 'open' : wantsMembers ? 'members' : 'ad_gated',
     });
     await store.audit('asset.updated', { assetId: asset.id, channelId: channel.id });
     return res.redirect(`${back}?saved=1`);

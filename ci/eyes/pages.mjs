@@ -36,7 +36,11 @@ export const PAGES = {
   // inside its notice window AND she is waiting on the next one, which is the only page
   // in the product that has to say two contradictory-looking things at once. A state
   // that is seeded on purpose needs to be the state that is checked on purpose.
-  nima: ['/library', '/dashboard/nima-crafts', '/dashboard/nima-crafts/settings', '/dashboard/nima-crafts/billing'],
+  // `/members` is on nima's list because hers is the store the demo gives two
+  // tiers and a named member: it is the page where a price is set by a person, so
+  // it is the page where a form, a table and a queue have to survive a phone.
+  nima: ['/library', '/dashboard/nima-crafts', '/dashboard/nima-crafts/settings',
+    '/dashboard/nima-crafts/billing', '/dashboard/nima-crafts/members'],
   bob: ['/library', '/dashboard/bob'],
 };
 

@@ -65,6 +65,15 @@
 
 /* ── primitives: space, type, radius, elevation, motion ──────────────────── */
 :root {
+  /* Membership plates. Defined here as the default palette, because every plate
+     rule reads these four and a rule that reads an undefined property is dropped
+     silently by the browser — the one failure mode a stylesheet cannot report.
+     Each plate overrides them inline with its own palette. */
+  --plate-a: var(--indigo-600);
+  --plate-b: var(--indigo-700);
+  --plate-ink: var(--indigo-400);
+  --plate-ink-light: var(--indigo-700);
+
   /* 4px base. Small steps stay fine-grained for component internals; the jump
      from 24 to 32 to 48 is for layout, where fine-grained steps are noise. */
   --space-1: 0.25rem;   --space-2: 0.5rem;    --space-3: 0.75rem;
@@ -349,6 +358,11 @@ hr { border: 0; border-top: 1px solid var(--border-subtle); margin: var(--space-
   border-bottom: 1px solid var(--border-subtle);
 }
 .header .wrap { display: flex; align-items: center; gap: var(--space-5); height: 100%; }
+/* Anchors land BELOW the sticky header, not under it. Written once here rather
+   than per section: the phone block below has its own larger value, and this is
+   the one that was missing — `#members` is jumped to from a file page, and on a
+   wide screen the heading arrived hidden behind the header blur. */
+[id] { scroll-margin-top: calc(var(--header-actual, var(--header-h)) + var(--space-4)); }
 /* At the top of the page the header is part of the page: no rule, no shadow.
    Once it is floating over content it needs both, or the text underneath reads
    through it. The class is set by one rAF-throttled scroll listener. */
@@ -2225,3 +2239,209 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   border-top: 1px solid var(--border-subtle);
 }
 .watch-form .fine { margin: 0; }
+
+/* ── Members ─────────────────────────────────────────────────────────────────
+   The paid tier, as a visual language. Three rules decided this block, and each
+   one is a piece of research rather than a preference:
+
+   1. THE EFFECT IS ON THE RING AND THE CHIP, NOT THE NAME. Gradient text fails a
+      contrast check at small sizes — the worst stop is what counts, not the
+      average — and a name on a roster is 15px. So a name is a solid accent colour
+      that clears 4.5:1 on both themes (the eight palettes are checked in
+      memberships.js), and the shimmer lives on a 32px ring and a badge, where the
+      worst-stop contrast is white-on-a-dark-stop and can be proven once.
+   2. ONE THING SHINES. The top tier wears the gradient and the sweep; the entry
+      tier is a solid colour. That is Discord's own published advice for role
+      styles — keep holographic effects to one or two roles or nothing stands out —
+      and it is derived from the tier number, so a store cannot accidentally make
+      every member look elite.
+   3. MOTION IS OPT-IN. The sweep is declared inside `prefers-reduced-motion:
+      no-preference`, which is the researched pattern: build the static version
+      first and add animation for the people who have not asked for less. The
+      stylesheet also has a blanket reduce rule, so the visual is safe twice over.
+
+   Nothing here changes a layout decision: the roster is a grid, the plates are
+   rows in it, and a member with no tier still sits on one line. */
+
+.member-avatar {
+  inline-size: 2rem; block-size: 2rem; flex: 0 0 auto;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  font-size: var(--text-sm); font-weight: 700; line-height: 1;
+  color: #fff;
+  background-image: linear-gradient(140deg, var(--plate-a, var(--indigo-600)), var(--plate-b, var(--indigo-700)));
+  background-size: 100% 100%;
+}
+.member-avatar--shine {
+  background-size: 220% 220%;
+  background-position: 0% 50%;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--plate-a, var(--indigo-600)) 35%, transparent);
+}
+.member-name { color: var(--plate-ink, var(--text-primary)); font-weight: 600; }
+@media (prefers-color-scheme: light) {
+  .member-name { color: var(--plate-ink-light, var(--text-primary)); }
+}
+.member-tier {
+  font-size: var(--text-2xs); font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 2px 8px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--plate-ink, var(--indigo-400)) 45%, transparent);
+  color: var(--plate-ink, var(--indigo-400));
+}
+@media (prefers-color-scheme: light) {
+  .member-tier { border-color: color-mix(in srgb, var(--plate-ink-light, var(--indigo-700)) 40%, transparent);
+    color: var(--plate-ink-light, var(--indigo-700)); }
+}
+/* The badge that carries the gradient: dark stops, white ink, both stops checked
+   against white at 4.5:1 or better. */
+.member-tier--shine {
+  color: #fff; border-color: transparent;
+  background-image: linear-gradient(120deg, var(--plate-a, var(--indigo-600)), var(--plate-b, var(--indigo-700)));
+  background-size: 200% 100%;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .member-avatar--shine { animation: plate-drift 9s var(--ease-standard, ease-in-out) infinite alternate; }
+  .member-tier--shine { animation: plate-sweep 7s linear infinite; }
+}
+@keyframes plate-sweep {
+  from { background-position: 0% 50%; }
+  to { background-position: -200% 50%; }
+}
+@keyframes plate-drift {
+  from { background-position: 0% 50%; }
+  to { background-position: 100% 50%; }
+}
+
+/* The roster. A grid, so twelve members make a block rather than a ragged line —
+   and `auto-fill` with a 190px floor so a phone gets one column without a
+   breakpoint doing it. */
+.member-roster {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; gap: var(--space-3);
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 190px), 1fr));
+}
+.member {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  min-width: 0;
+}
+.member-body { display: grid; gap: 0.15rem; min-width: 0; }
+.member .member-name { overflow-wrap: anywhere; }
+.member-since { margin-left: auto; white-space: nowrap; }
+.member--me { border-color: color-mix(in srgb, var(--plate-a, var(--indigo-600)) 45%, var(--border-subtle)); }
+
+/* Where a member stands, in a panel of their own colour. The tint is 8% of the
+   palette's first stop — enough to feel like a room, not enough to compete with
+   the text on top of it. */
+.member-self {
+  display: grid; gap: var(--space-4);
+  margin-top: var(--space-5);
+  padding: var(--space-5);
+  border: 1px solid color-mix(in srgb, var(--plate-a, var(--indigo-600)) 40%, var(--border-subtle));
+  border-radius: var(--radius-xl);
+  background-image: linear-gradient(180deg,
+    color-mix(in srgb, var(--plate-a, var(--indigo-600)) 9%, transparent), transparent 70%);
+}
+.member-self-head { display: flex; align-items: center; gap: var(--space-4); }
+.member-self-head > div { min-width: 0; }
+.member-self p { margin: var(--space-1) 0 0; }
+.member-countdown {
+  margin-left: auto; white-space: nowrap;
+  font-size: var(--text-sm); font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--plate-ink, var(--indigo-400));
+}
+@media (prefers-color-scheme: light) {
+  .member-countdown { color: var(--plate-ink-light, var(--indigo-700)); }
+}
+.member-self .row { gap: var(--space-3); }
+
+/* Joining. The panel is separated from the store by a rule rather than a box, so
+   it reads as part of the page and not as a checkout bolted on. */
+.join-panel {
+  margin-top: var(--space-8);
+  padding-top: var(--space-6);
+  border-top: 1px solid var(--border-subtle);
+}
+.tier-grid {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; gap: var(--space-4);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+}
+.tier-card {
+  display: grid; gap: var(--space-3); align-content: start;
+  padding: var(--space-5);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+}
+/* The top tier gets a 2px gradient edge and nothing else: the card that costs
+   more should be legible before it is decorative. */
+.tier-card--elite {
+  border-color: color-mix(in srgb, var(--plate-a, var(--indigo-600)) 45%, var(--border-subtle));
+  box-shadow: inset 0 2px 0 0 var(--plate-a, var(--indigo-600));
+}
+.tier-head { display: flex; align-items: center; gap: var(--space-3); }
+.tier-head strong { display: block; font-size: var(--text-md); }
+.tier-dues { margin: 0; font-size: var(--text-sm); font-weight: 600; font-variant-numeric: tabular-nums; }
+.tier-perk { margin: 0; }
+/* The plate, shown rather than described: a buyer is being sold a decoration, and
+   a sentence about a decoration is worth less than seeing it. The sample is the
+   member's own name colour on the member's own name — `You` in the accent — with
+   the same ring and chip they will actually get. */
+.plate-sample {
+  display: flex; align-items: center; gap: var(--space-3);
+  margin-top: var(--space-1);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+.plate-sample .member-name { font-size: var(--text-base); }
+.join-form { display: grid; gap: var(--space-4); margin-top: var(--space-5); }
+.join-form .row { align-items: flex-start; }
+
+/* The gate on a members-only file. It is a card, not a button: the action is a
+   trip to the join panel, and there is no charge on this page. */
+.member-gate {
+  display: grid; gap: var(--space-4);
+  padding: var(--space-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  background: var(--surface-raised);
+}
+.member-gate p { margin: 0; }
+
+/* The seller's side: one editor per tier, and a queue whose rows are read against
+   a bank statement, so the reference is mono and the numbers are tabular. */
+.tier-editor {
+  display: grid; gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding: var(--space-5);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+}
+.tier-editor .field { margin: 0; }
+.queue { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-4); }
+.queue-row {
+  display: grid; gap: var(--space-3);
+  padding: var(--space-5);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+}
+.queue-line { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.queue-row .kv { margin: 0; font-variant-numeric: tabular-nums; }
+.queue-row .mono { overflow-wrap: anywhere; }
+.queue-row .row { flex-wrap: wrap; align-items: flex-end; }
+.queue-row form { margin: 0; }
+
+@media (max-width: 560px) {
+  .member-self-head { flex-wrap: wrap; }
+  .member-countdown { margin-left: 0; }
+  .member-since { display: none; }
+  .join-panel, .member-gate { padding-top: var(--space-5); }
+  .queue-row, .tier-editor { padding: var(--space-4); }
+}

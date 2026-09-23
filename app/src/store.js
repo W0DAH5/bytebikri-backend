@@ -118,6 +118,11 @@ export const PLANS = {
       max_assets: 20, slot_count: 3, can_theme: false, custom_sections: 0,
       remove_footer: false, marketplace_listed: false, analytics_level: 'basic',
       verified_badge: false, featured_eligible: false, ad_free: false,
+      // Members are the paid relationship: a free store is watched (follows are
+      // free forever), a paying store is belonged to. Same reasoning as the
+      // marketplace line above — being found stays free, the relationship is
+      // what the plan buys.
+      memberships: false,
     },
   },
   store: {
@@ -128,7 +133,7 @@ export const PLANS = {
       // placement stays Pro-only — capacity and placement are the upsell, not
       // being found at all. See migration 0014.
       remove_footer: true, marketplace_listed: true, analytics_level: 'sources',
-      verified_badge: true, featured_eligible: false, ad_free: false,
+      verified_badge: true, featured_eligible: false, ad_free: false, memberships: true,
     },
   },
   pro: {
@@ -136,7 +141,7 @@ export const PLANS = {
     capabilities: {
       max_assets: -1, slot_count: 8, can_theme: true, custom_sections: -1,
       remove_footer: true, marketplace_listed: true, analytics_level: 'full',
-      verified_badge: true, featured_eligible: true, ad_free: false,
+      verified_badge: true, featured_eligible: true, ad_free: false, memberships: true,
     },
   },
 };
@@ -1868,6 +1873,11 @@ export const store = {
    */
   async createAsset({
     channelId, title, slug, description, unlockMode = 'ad_gated', coverUrl = null, moderationState = null,
+    // Which tier opens it, when the mode is `members`. Defaulted rather than
+    // required, because the pair (unlock_mode, member_tier) is checked as one
+    // thing by the database: a call that asks for a members file without naming a
+    // tier gets tier 1 — the smallest true answer — instead of a constraint error.
+    memberTier = unlockMode === 'members' ? 1 : 0,
   }) {
     return withTransaction(async (c) => {
       let state = moderationState;
@@ -1884,10 +1894,10 @@ export const store = {
         state = seen.n > 0 ? 'approved' : 'pending';
       }
       const { rows } = await c.query(
-        `insert into assets (channel_id, title, slug, description, kind, unlock_mode, status, moderation_state, cover_url)
-         values ($1, $2, $3, $4, 'digital', $5, 'live', $6, $7)
+        `insert into assets (channel_id, title, slug, description, kind, unlock_mode, member_tier, status, moderation_state, cover_url)
+         values ($1, $2, $3, $4, 'digital', $5, $6, 'live', $7, $8)
          returning *`,
-        [channelId, title, slug || slugify(title), description || '', unlockMode, state, coverUrl],
+        [channelId, title, slug || slugify(title), description || '', unlockMode, memberTier, state, coverUrl],
       );
       const asset = rows[0];
       await c.query(
@@ -2379,6 +2389,338 @@ export const store = {
         order by f.created_at desc`,
       [profileId, SEARCHABLE_ASSET_STATES],
     );
+  },
+
+  // ---- members: dues paid to the creator, confirmed by the creator ---------
+  /**
+   * The tiers a store offers, cheapest first. Empty for a Free store — the
+   * capability is checked where the seller writes, not here, because a query
+   * that silently returns nothing is worse than a page that says why.
+   */
+  membershipTiers(channelId) {
+    return many(
+      'select * from membership_tiers where channel_id = $1 order by tier_no',
+      [channelId],
+    );
+  },
+
+  /**
+   * Write a tier. Upsert, because a tier is one of at most two things and a
+   * seller editing their elite tier should not create a third one by accident.
+   *
+   * The audit row is written on EVERY save, old value included: this is the only
+   * place a price on this platform is set by a person, and "when did the dues
+   * change, and from what" is a question members are entitled to an answer to.
+   */
+  async saveMembershipTier({ channelId, tierNo, value, actorId = null }) {
+    const before = value.before ?? await one(
+      'select * from membership_tiers where channel_id = $1 and tier_no = $2',
+      [channelId, tierNo],
+    );
+    const row = await one(
+      `insert into membership_tiers (channel_id, tier_no, name, dues_npr, period_months, perks, accent)
+       values ($1, $2, $3, $4, $5, $6, $7)
+       on conflict (channel_id, tier_no) do update
+         set name = excluded.name, dues_npr = excluded.dues_npr,
+             period_months = excluded.period_months, perks = excluded.perks,
+             accent = excluded.accent, updated_at = now()
+       returning *`,
+      [channelId, tierNo, value.name, value.duesNpr, value.periodMonths, value.perks, value.accent],
+    );
+    await this.audit('member.tier_set', {
+      tierNo, name: row.name, duesNpr: row.dues_npr, periodMonths: row.period_months,
+      was: before ? { name: before.name, duesNpr: before.dues_npr, periodMonths: before.period_months } : null,
+    }, { actorId, subjectType: 'channel', subjectId: channelId });
+    return row;
+  },
+
+  /**
+   * Remove a tier. Refused while anybody holds it.
+   *
+   * The database refuses too (the composite foreign key is `on delete restrict`),
+   * and this catches that refusal to return a sentence instead of a 500 — but the
+   * database is the one that is right: a seller may rename a tier and change what
+   * it costs, and may not delete the thing people paid for.
+   */
+  async deleteMembershipTier({ channelId, tierNo, actorId = null }) {
+    const held = await scalar(
+      'select count(*)::int from memberships where channel_id = $1 and tier_no = $2',
+      [channelId, tierNo],
+    );
+    if (held) return { ok: false, reason: 'tier-held', holders: held };
+    const { rowCount } = await query(
+      'delete from membership_tiers where channel_id = $1 and tier_no = $2',
+      [channelId, tierNo],
+    );
+    if (rowCount) {
+      await this.audit('member.tier_removed', { tierNo },
+        { actorId, subjectType: 'channel', subjectId: channelId });
+    }
+    return { ok: rowCount > 0, reason: rowCount ? null : 'tier-missing' };
+  },
+
+  /** Where the dues go, in the creator's words. Public: that is the point. */
+  async setMembershipNote({ channelId, note, actorId = null }) {
+    const row = await one(
+      'update channels set membership_note = $2, updated_at = now() where id = $1 returning membership_note',
+      [channelId, note],
+    );
+    await this.audit('member.payment_note_set', { note: row?.membership_note ?? null },
+      { actorId, subjectType: 'channel', subjectId: channelId });
+    return row?.membership_note ?? null;
+  },
+
+  membershipFor(profileId, channelId) {
+    if (!profileId || !channelId) return Promise.resolve(null);
+    return one(
+      'select * from memberships where profile_id = $1 and channel_id = $2',
+      [profileId, channelId],
+    );
+  },
+
+  /** Every store a person belongs to, for their own page. */
+  membershipsOf(profileId) {
+    return many(
+      `select m.*, c.slug, c.name, c.avatar_url, c.logo_url,
+              t.name as tier_name, t.accent, t.perks, t.dues_npr, t.period_months
+         from memberships m
+         join channels c on c.id = m.channel_id
+         left join membership_tiers t
+           on t.channel_id = m.channel_id and t.tier_no = m.tier_no
+        where m.profile_id = $1
+        order by m.joined_at desc`,
+      [profileId],
+    );
+  },
+
+  /**
+   * Say you belong, with the reference for what you sent.
+   *
+   * One row per (person, store), so this is an upsert rather than a new claim
+   * each time: a second attempt after a typo edits the claim instead of stacking
+   * a second one in the creator's queue. A rejected claim may be replaced — the
+   * person is not left in a state they cannot get out of — and a CONFIRMED one is
+   * left alone, because dues already confirmed are not re-claimed by a form.
+   */
+  async joinMembership({ profileId, channelId, tierNo, claim = {} }) {
+    const reference = String(claim.txnReference ?? '').trim().slice(0, 120);
+    // A claim without a matchable reference is not a claim: it would sit in the
+    // creator's queue asking them to find a payment by description, which is how
+    // a queue becomes unanswerable. Refused here as well as at the route, and the
+    // database refuses it a third time — this is the one field the whole manual
+    // rail hangs on.
+    if (reference.length < 4) return null;
+    const row = await one(
+      `insert into memberships
+         (profile_id, channel_id, tier_no, status, amount_npr, method, txn_reference,
+          payer_name, payer_number, claimed_at)
+       values ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, now())
+       on conflict (profile_id, channel_id) do update
+         set tier_no = excluded.tier_no, status = 'pending',
+             amount_npr = excluded.amount_npr, method = excluded.method,
+             txn_reference = excluded.txn_reference, payer_name = excluded.payer_name,
+             payer_number = excluded.payer_number, claimed_at = now(),
+             rejected_reason = null
+       where memberships.status <> 'active'
+       returning *`,
+      [profileId, channelId, tierNo, claim.amountNpr ?? null, claim.method ?? null,
+        reference || null, claim.payerName ?? null, claim.payerNumber ?? null],
+    );
+    return row ?? null;
+  },
+
+  /**
+   * The creator looked at their own statement and found it.
+   *
+   * Two rules live in this statement rather than in the route above it:
+   *
+   *   * `confirmed_by` must be the channel's owner. Not by policy — an operator
+   *     cannot do it at all, because this money never reached the platform and
+   *     nobody here can see a statement that contains it. The `exists` clause is
+   *     the sentence "only the creator can confirm this" written as SQL.
+   *   * A period is ADDED to whatever time is left, never in place of it. A
+   *     member who pays early keeps the days they already paid for — the same
+   *     rule Patreon documents when a membership changes, and the reason this is
+   *     `greatest(coalesce(period_end, now()), now())` rather than `now()`.
+   */
+  async confirmMembership({ profileId, channelId, ownerId, actorId = null }) {
+    const row = await one(
+      `update memberships m
+          set status = 'active',
+              confirmed_at = now(),
+              confirmed_by = $3,
+              rejected_reason = null,
+              period_end = greatest(coalesce(m.period_end, now()), now())
+                           + make_interval(months => (select t.period_months
+                                                        from membership_tiers t
+                                                       where t.channel_id = m.channel_id
+                                                         and t.tier_no = m.tier_no))
+        where m.profile_id = $1
+          and m.channel_id = $2
+          and m.status = 'pending'
+          and exists (select 1 from channels c where c.id = m.channel_id and c.owner_id = $3)
+        returning *`,
+      [profileId, channelId, ownerId],
+    );
+    if (!row) return null;
+    await this.audit('member.confirmed', {
+      tierNo: row.tier_no, amountNpr: row.amount_npr, txnReference: row.txn_reference,
+      periodEnd: row.period_end, channelId,
+    }, { actorId: actorId ?? ownerId, subjectType: 'profile', subjectId: profileId });
+    return row;
+  },
+
+  /** The creator looked and did not find it. The reason is for the member. */
+  async rejectMembership({ profileId, channelId, ownerId, reason = null, actorId = null }) {
+    const row = await one(
+      `update memberships m
+          set status = 'rejected', rejected_reason = $4, confirmed_at = null,
+              confirmed_by = null, period_end = null
+        where m.profile_id = $1 and m.channel_id = $2 and m.status = 'pending'
+          and exists (select 1 from channels c where c.id = m.channel_id and c.owner_id = $3)
+        returning *`,
+      [profileId, channelId, ownerId, String(reason || '').trim().slice(0, 200) || null],
+    );
+    if (!row) return null;
+    await this.audit('member.rejected', { reason: row.rejected_reason, channelId },
+      { actorId: actorId ?? ownerId, subjectType: 'profile', subjectId: profileId });
+    return row;
+  },
+
+  /**
+   * Leave. A delete, because that is what a person means by it.
+   *
+   * The audit row stays, so the creator's record of who paid and when survives
+   * the leaving — and the unlock rows a membership wrote are left to expire with
+   * the period rather than being ripped out early. Nobody's library should go
+   * blank because a person clicked "leave" while their dues were still running.
+   */
+  async leaveMembership(profileId, channelId) {
+    const row = await one(
+      'delete from memberships where profile_id = $1 and channel_id = $2 returning *',
+      [profileId, channelId],
+    );
+    if (row) {
+      await this.audit('member.left', { tierNo: row.tier_no, status: row.status, channelId },
+        { actorId: profileId, subjectType: 'channel', subjectId: channelId });
+    }
+    return Boolean(row);
+  },
+
+  /**
+   * The creator's queue: claims waiting to be checked against a statement.
+   * Oldest first, because a person who sent money yesterday should not be behind
+   * one who sent it today.
+   */
+  pendingMemberships(channelId) {
+    return many(
+      `select m.*, p.display_name, p.email, t.name as tier_name, t.dues_npr, t.period_months
+         from memberships m
+         join profiles p on p.id = m.profile_id
+         left join membership_tiers t
+           on t.channel_id = m.channel_id and t.tier_no = m.tier_no
+        where m.channel_id = $1 and m.status = 'pending'
+        order by m.claimed_at asc nulls last`,
+      [channelId],
+    );
+  },
+
+  /** Everyone who is in, current or not, for the seller's own page. */
+  membersOfChannel(channelId) {
+    return many(
+      `select m.*, p.display_name, p.email, t.name as tier_name, t.accent, t.dues_npr
+         from memberships m
+         join profiles p on p.id = m.profile_id
+         left join membership_tiers t
+           on t.channel_id = m.channel_id and t.tier_no = m.tier_no
+        where m.channel_id = $1
+        order by m.joined_at desc`,
+      [channelId],
+    );
+  },
+
+  /** Being named on the storefront is the perk; being hidden is the member's call. */
+  async setMemberListed({ profileId, channelId, listed }) {
+    const row = await one(
+      `update memberships set publicly_listed = $3
+        where profile_id = $1 and channel_id = $2
+        returning publicly_listed`,
+      [profileId, channelId, Boolean(listed)],
+    );
+    return row ? row.publicly_listed : null;
+  },
+
+  /**
+   * The storefront's roster: confirmed members who chose to be named.
+   *
+   * No count is returned. A membership count is a vanity metric that changes who
+   * asks to join (the same reason the follower count is not on the page, 0029),
+   * and the plates themselves are the social proof.
+   */
+  publicRoster(channelId, { limit = 12 } = {}) {
+    return many(
+      `select m.profile_id, m.tier_no, m.joined_at, p.display_name,
+              coalesce(t.name, 'Member') as tier_name, coalesce(t.accent, 'indigo') as accent
+         from memberships m
+         join profiles p on p.id = m.profile_id
+         left join membership_tiers t
+           on t.channel_id = m.channel_id and t.tier_no = m.tier_no
+        where m.channel_id = $1 and m.status = 'active' and m.publicly_listed
+        order by m.joined_at desc
+        limit $2`,
+      [channelId, limit],
+    );
+  },
+
+  /**
+   * Which of a store's files a membership tier already opens.
+   *
+   * One query for a whole storefront rather than one per file: the page needs a
+   * set, and a set is what the browse page's `unlockedIds` already is.
+   */
+  memberOpenAssetIds(channelId, tierNo) {
+    return many(
+      `select id from assets
+        where channel_id = $1 and unlock_mode = 'members' and member_tier <= $2`,
+      [channelId, Number(tierNo) || 1],
+    );
+  },
+
+  /**
+   * Write the unlock a membership is worth, without ever shortening one.
+   *
+   * Deliberately NOT `grantUnlock`: that one writes `excluded.expires_at` over
+   * whatever was there, which would cut a permanent unlock or an ad-won window
+   * down to the membership's end date. Here the expiry only ever moves forward,
+   * and the method is left alone — the honest answer to "why can I open this" is
+   * the first reason that was true.
+   */
+  async grantMembershipUnlock({ assetId, channelId, userId, expiresAt }) {
+    if (!expiresAt) return null;
+    const { rows } = await query(
+      `insert into unlocks (asset_id, channel_id, user_id, method, ads_completed, expires_at)
+       values ($1, $2, $3, 'membership', 0, $4)
+       on conflict (asset_id, user_id) do update
+         set expires_at = case when unlocks.expires_at is null then null
+                               else greatest(unlocks.expires_at, excluded.expires_at) end,
+             revoked_at = null, revoked_reason = null
+       returning *`,
+      [assetId, channelId, userId, expiresAt],
+    );
+    return rows[0];
+  },
+
+  /**
+   * Does this person's membership currently open this file? For routes that need
+   * the answer without writing anything (the asset page, the storefront).
+   */
+  async memberCoversAsset({ profileId, channelId, asset }) {
+    if (!profileId || !asset || asset.unlock_mode !== 'members') return null;
+    const m = await this.membershipFor(profileId, channelId);
+    if (!m || m.status !== 'active' || !m.period_end) return null;
+    if (new Date(m.period_end).getTime() <= Date.now()) return null;
+    if ((Number(m.tier_no) || 1) < (Number(asset.member_tier) || 1)) return null;
+    return m;
   },
 
   // ---- pending ad views (awaiting a signed postback) ----------------------
@@ -3210,15 +3552,21 @@ export const store = {
    * view a network will not credit, so the creator would be handing files over
    * for nothing and blaming us for the revenue.
    */
-  async setUnlockPolicy(assetId, { ads_required, ad_min_seconds, unlock_hours } = {}) {
+  async setUnlockPolicy(assetId, { ads_required, ad_min_seconds, unlock_hours, mode } = {}) {
     const int = (v, lo, hi, fallback) => {
       const n = Number(v);
       if (!Number.isFinite(n)) return fallback;
       return Math.min(hi, Math.max(lo, Math.round(n)));
     };
+    // The mode travels with the rest of the policy, because a file whose
+    // `assets.unlock_mode` says "members" while its policy row still says
+    // "ad_gated" is two rows disagreeing about one decision. The assets column
+    // remains the authority the content path reads; this keeps the copy honest.
+    const wanted = ['open', 'ad_gated', 'paid', 'members'].includes(String(mode)) ? String(mode) : null;
     return one(
       `update asset_unlock_policy
-          set ads_required = $2, ad_min_seconds = $3, unlock_hours = $4
+          set ads_required = $2, ad_min_seconds = $3, unlock_hours = $4,
+              mode = coalesce($5, mode), updated_at = now()
         where asset_id = $1
         returning *`,
       [
@@ -3226,6 +3574,7 @@ export const store = {
         int(ads_required, 1, 5, 1),
         int(ad_min_seconds, 5, 120, 15),
         int(unlock_hours, 1, 720, 24),
+        wanted,
       ],
     );
   },

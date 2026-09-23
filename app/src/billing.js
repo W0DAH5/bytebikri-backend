@@ -239,6 +239,13 @@ export function planBenefits(plan, { availableSlots = null } = {}) {
   out.push(c.marketplace_listed
     ? 'Explore listing, if you want it — bytebikri brings the traffic'
     : 'Your own address only — free forever');
+  // Members are the plan's most concrete return: the store sets what dues are,
+  // collects them itself, and keeps all of it. The sentence says that, because a
+  // bullet that reads "memberships" would be the one line on the pricing page a
+  // seller has to guess at.
+  if (c.memberships) {
+    out.push('Members: a roster with your own plates, and files that open for them without an ad — dues go straight to you, bytebikri takes nothing');
+  }
   // -1 is "unlimited", the same convention as max_assets. Printing the -1 was
   // the kind of detail that makes a pricing page look unfinished.
   out.push(c.custom_sections === -1 ? 'Unlimited custom sections on your storefront'

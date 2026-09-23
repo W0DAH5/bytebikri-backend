@@ -109,6 +109,38 @@ function measure(name, bgName, theme) {
   } catch { return null; }
 }
 
+/**
+ * The membership plates: eight palettes, checked rather than admired.
+ *
+ * This is the test the design rests on. A member's NAME is a solid accent colour
+ * and the gradient lives on the ring and the chip — because gradient text is
+ * checked at its WORST stop, not its average, which is why the researched guidance
+ * is to keep it off body-sized text. So there are exactly two things to prove:
+ *
+ *   1. every palette's ink is readable on both themes, at the size a name is; and
+ *   2. every palette's WHITE ink is readable on both of its gradient stops, which
+ *      is what a chip and an avatar initial are (white on the dark end).
+ *
+ * A ninth palette added without this arithmetic is the failure mode: it renders,
+ * it looks fine on the author's monitor, and it is unreadable for somebody else.
+ */
+test('every membership palette is readable on both themes, at both ends of its gradient', async () => {
+  const { ACCENTS } = await import('../src/memberships.js');
+  const page = { dark: flatten('surface-base', [0, 0, 0], THEMES.dark), light: flatten('surface-base', [0, 0, 0], THEMES.light) };
+  const problems = [];
+  for (const [key, a] of Object.entries(ACCENTS)) {
+    const ink = { dark: ratio(hex(a.onDark), page.dark), light: ratio(hex(a.onLight), page.light) };
+    if (ink.dark < 4.5) problems.push(`${key}: name ink on the dark theme is ${ink.dark.toFixed(2)}:1`);
+    if (ink.light < 4.5) problems.push(`${key}: name ink on the light theme is ${ink.light.toFixed(2)}:1`);
+    for (const [end, value] of [['from', a.from], ['to', a.to]]) {
+      const r = ratio(hex('#ffffff'), hex(value));
+      if (r < 4.5) problems.push(`${key}: white on the gradient's ${end} stop (${value}) is ${r.toFixed(2)}:1`);
+    }
+  }
+  assert.deepEqual(problems, [],
+    'a palette a member can be given must be readable in both themes — the chip and the avatar are white-on-gradient, the name is ink-on-page');
+});
+
 // ── the pairs that appear on screen ──────────────────────────────────────────
 
 /** [foreground, background, minimum, note] */

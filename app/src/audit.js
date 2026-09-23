@@ -65,6 +65,23 @@ export const AUDIT_FAMILIES = [
     decisions: true,
   },
   {
+    key: 'members',
+    label: 'Members',
+    // Its own family, and not folded into Money, because none of these rows is
+    // about the platform's money: a tier is a price the platform never collects,
+    // a claim is a reference somebody says they sent, and a confirmation is the
+    // CREATOR saying they saw it arrive. Filing them under Money would put a
+    // figure nobody here can verify next to the two charges that are ours.
+    //
+    // `decisions: false` for the same reason, from the other side: the console's
+    // decisions tab is what an OPERATOR decided. Nobody here confirms a
+    // membership — they cannot, the money never arrived — so these rows are
+    // recorded, searchable and not part of that tab.
+    note: 'Memberships: a tier set or removed, a claim made, the creator\'s confirmation or refusal, and the payment instruction a store publishes. Dues are paid to the creator directly — these rows record a relationship, not a transaction the platform handled.',
+    prefixes: ['member.'],
+    decisions: false,
+  },
+  {
     key: 'stores',
     label: 'Stores & files',
     note: 'Sellers publishing, editing and connecting networks. High volume, low drama — and the only place a dispute about "when did that change" gets settled.',

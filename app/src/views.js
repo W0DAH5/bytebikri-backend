@@ -46,6 +46,14 @@ import {
 // route enforces it with. The page prints the number and the rule; a promise about a
 // week that is written twice is a promise that drifts.
 import { ALLOWED_TYPES, MAX_BYTES, HOLD_DAYS, extFor } from './kyc.js';
+// Membership rules and copy. A pure module like `kyc.js`: it imports nothing, so
+// the plate palettes, the tier validation and the one money sentence are shared
+// with the routes without a view module ever reaching for a database.
+import {
+  ACCENTS, ACCENT_KEYS, PERIODS, CLAIM_METHODS, PLATE_COPY, MONEY_LINE, FREE_PLAN_LINE,
+  CONFIRM_LINE, LAPSE_LINE, accentOf, plateStyle, tierByNo, duesLine, methodLabel,
+  membershipState, daysLeft, defaultTierName,
+} from './memberships.js';
 
 const FAMILY_LABELS = Object.fromEntries(AUDIT_FAMILIES.map((f) => [f.key, f.label]));
 
@@ -682,21 +690,311 @@ export function verifiedSentence(verification, { today = new Date() } = {}) {
   return `<p class="fine" style="margin-top:var(--space-3)">${esc(badge.sentence)}</p>`;
 }
 
-export function storefront({ channel, assets, slots, user, estimate, pageviews, unlockedIds = new Set(), consent = null, moderation = null, countryBlocked = null, verification = null, watching = false }) {
+// ---------------------------------------------------------------------------
+// Memberships — the plate, the roster, and the panel where somebody joins
+// ---------------------------------------------------------------------------
+//
+// The design decisions here are borrowed and adapted, and it is worth saying
+// which, because the shape of a paid tier is not obvious:
+//
+//   * The EFFECT rides the ring and the tier chip, never the name. Gradient text
+//     fails a contrast check at small sizes — the guidance is to decide the text
+//     colour first and put the gradient where it can be checked at its worst
+//     stop — so a member's name is a solid accent colour that clears 4.5:1 on
+//     both themes, and the shimmer lives on a 2px ring and a badge.
+//   * The top tier is the shiny one. That is Discord's published deployment
+//     advice for role styles (keep gradient and holographic to one or two roles)
+//     and it is enforced by `plateStyle()`, not offered as a setting.
+//   * The animation is OFF unless the visitor has no motion preference — the
+//     researched pattern is to add animation inside `prefers-reduced-motion:
+//     no-preference` rather than to add it by default and take it back.
+//   * A locked file is still LISTED. Every paywall study worth reading says the
+//     lock goes on the content and never on the teaser: the title, the cover and
+//     the description are what make joining worth a click, and the wall is the
+//     download.
+//
+// The one thing that is not borrowed: nothing here implies the platform handles
+// the money. The dues go to the creator, and MONEY_LINE says so on every screen
+// that asks for them.
+
+/** The CSS custom properties a plate needs, from its palette. */
+function plateStyleAttr(accentKey) {
+  const a = accentOf(accentKey);
+  return `--plate-ink:${a.onDark};--plate-ink-light:${a.onLight};--plate-a:${a.from};--plate-b:${a.to}`;
+}
+
+/**
+ * One member: a ring, a name, and what they hold.
+ *
+ * The initial is drawn from the display name rather than an avatar image, because
+ * a roster of twelve uploaded avatars is twelve more things to moderate and the
+ * plate is about the name anyway.
+ */
+function memberPlate({ name, accent = 'indigo', tier = null, style = 'solid', joined = null, me = false }) {
+  const label = String(name || 'Member');
+  const initial = label.trim().slice(0, 1).toUpperCase() || 'M';
+  return `<li class="member${me ? ' member--me' : ''}">
+  <span class="member-avatar${style === 'gradient' ? ' member-avatar--shine' : ''}"
+        style="${plateStyleAttr(accent)}" aria-hidden="true">${esc(initial)}</span>
+  <span class="member-body">
+    <span class="member-name" style="${plateStyleAttr(accent)}">${esc(label)}</span>
+    ${tier ? `<span class="member-tier${style === 'gradient' ? ' member-tier--shine' : ''}"
+        style="${plateStyleAttr(accent)}">${esc(tier)}</span>` : ''}
+  </span>
+  ${joined ? `<span class="member-since fine">${esc(joined)}</span>` : ''}
+</li>`;
+}
+
+/** Everyone who chose to be named. No count — the plates are the proof. */
+function memberRoster(roster = []) {
+  if (!roster.length) return '';
+  return `<ul class="member-roster">
+    ${roster.map((m) => memberPlate({
+    name: m.display_name, accent: m.accent, tier: m.tier_name,
+    style: plateStyle(m.tier_no), joined: `since ${longDay(m.joined_at)}`,
+  })).join('')}
+  </ul>`;
+}
+
+/**
+ * What a member sees about themselves — four states, four sentences.
+ *
+ * A person who has sent money and is waiting needs a different page from a person
+ * whose period has ended, and both need a different page from somebody who has
+ * never joined. Collapsing these into "your membership" is how a paid feature
+ * turns into a support queue.
+ */
+function myMembershipCard({ channel, membership, tiers, rosterSize = 0 }) {
+  const state = membershipState(membership);
+  const tier = tierByNo(tiers, membership?.tier_no);
+  const accent = tier?.accent || 'indigo';
+  const left = daysLeft(membership?.period_end);
+  const plate = plateStyle(membership?.tier_no);
+  const listed = membership?.publicly_listed !== false;
+
+  if (state === 'pending') {
+    return `<div class="member-self" style="${plateStyleAttr(accent)}">
+      <div class="member-self-head">
+        <span class="member-avatar member-avatar--shine" aria-hidden="true">${esc(String(channel.name).slice(0, 1).toUpperCase())}</span>
+        <div>
+          <strong>Your claim is with the creator.</strong>
+          <p class="small" style="margin:0">${esc(tier?.name || 'Member')} —
+            you sent <span class="mono">${esc(membership.txn_reference || 'a reference')}</span>
+            ${membership.claimed_at ? `on ${esc(longDay(membership.claimed_at))}` : ''}.
+            They check their own statement and confirm it, and the files open then.</p>
+        </div>
+      </div>
+      <p class="fine">${esc(MONEY_LINE)} Nothing has gone wrong here: a claim waits for a person, and that is the design.</p>
+      <form method="post" action="/s/${esc(channel.slug)}/leave">
+        <button class="btn btn-sm" type="submit">Cancel this claim</button>
+      </form>
+    </div>`;
+  }
+
+  if (state === 'rejected') {
+    return `<div class="member-self" style="${plateStyleAttr(accent)}">
+      <strong>That reference was not found.</strong>
+      <p class="small">${esc(membership.rejected_reason || 'The creator checked their statement and could not find it.')}
+        Nothing is broken — a wrong digit in a reference is the usual reason. Send it again below and it goes back in the queue.</p>
+    </div>`;
+  }
+
+  const live = state === 'active';
+  return `<div class="member-self${live ? ' member-self--live' : ''}" style="${plateStyleAttr(accent)}">
+    <div class="member-self-head">
+      <span class="member-avatar${live && plate === 'gradient' ? ' member-avatar--shine' : ''}"
+            aria-hidden="true">${esc(String(channel.name).slice(0, 1).toUpperCase())}</span>
+      <div>
+        <strong>${live ? `You are a member — ${esc(tier?.name || 'Member')}` : 'Your period has ended.'}</strong>
+        <p class="small" style="margin:0">${live
+    ? `Files behind this tier open for you with no ad${left !== null ? `, for ${plural(left, 'more day')}` : ''}.`
+    : `${esc(LAPSE_LINE)}`}</p>
+      </div>
+      ${live && left !== null ? `<span class="member-countdown">${plural(left, 'day')} left</span>` : ''}
+    </div>
+    <div class="row" style="gap:var(--space-3);align-items:center">
+      <form method="post" action="/s/${esc(channel.slug)}/members/listing">
+        <input type="hidden" name="listed" value="${listed ? 'no' : 'yes'}">
+        <button class="btn btn-sm" type="submit">${listed ? 'Hide me from the member list' : 'Show me in the member list'}</button>
+      </form>
+      <form method="post" action="/s/${esc(channel.slug)}/leave">
+        <button class="btn btn-sm" type="submit">Leave</button>
+      </form>
+      ${live ? '' : `<a class="btn btn-sm btn-primary" href="#join">Send this period's dues</a>`}
+    </div>
+    <p class="fine">${listed
+    ? 'You are named on this store’s member list. That is the perk — it is the only place a plate is visible — and hiding it changes nothing else.'
+    : 'You are hidden from the member list. Your files stay open either way.'}
+      ${rosterSize ? ` ${plural(rosterSize, 'person', 'people')} are named here.` : ''}</p>
+  </div>`;
+}
+
+/**
+ * The join panel: what the tiers are, where to send the money, and the form that
+ * records the reference.
+ *
+ * The order is the whole design. Tier cards first (what you get), then the
+ * creator's own instruction (where to send it), then — only then — the form. A
+ * payment form above the explanation asks somebody to trust a number with no
+ * context, and the money line sits directly under the button, not in a footer.
+ */
+function joinPanel({ channel, user, tiers, membership, flash = null }) {
+  const state = membershipState(membership);
+  if (state === 'active' || state === 'pending') return '';
+  const cards = tiers.map((t) => {
+    const plate = plateStyle(t.tier_no);
+    return `<li class="tier-card${plate === 'gradient' ? ' tier-card--elite' : ''}" style="${plateStyleAttr(t.accent)}">
+      <div class="tier-head">
+        <span class="member-avatar${plate === 'gradient' ? ' member-avatar--shine' : ''}"
+              aria-hidden="true">${esc(t.name.slice(0, 1).toUpperCase())}</span>
+        <div>
+          <strong>${esc(t.name)}</strong>
+          <p class="tier-dues">${esc(duesLine(t))}</p>
+        </div>
+      </div>
+      ${t.perks ? `<p class="tier-perk">${esc(t.perks)}</p>` : ''}
+      <p class="fine">${esc(PLATE_COPY[plate])}${plate === 'gradient' ? ' — and the top tier is the only one that wears it' : ''}</p>
+      <div class="plate-sample" aria-label="${esc(PLATE_COPY[plate])}">
+        <span class="member-avatar${plate === 'gradient' ? ' member-avatar--shine' : ''}"
+              aria-hidden="true">${esc(t.name.slice(0, 1).toUpperCase())}</span>
+        <span class="member-name">Your name</span>
+        <span class="member-tier${plate === 'gradient' ? ' member-tier--shine' : ''}">${esc(t.name)}</span>
+      </div>
+    </li>`;
+  }).join('');
+
+  const paid = channel.membership_note
+    ? `<div class="note note-info" style="margin-top:var(--space-4)">
+        <strong>Where the dues go, in the creator’s own words:</strong>
+        <p class="small" style="margin:var(--space-2) 0 0">${esc(channel.membership_note)}</p>
+        <p class="fine" style="margin:var(--space-2) 0 0">${esc(MONEY_LINE)}</p>
+      </div>`
+    : `<div class="note note-warning" style="margin-top:var(--space-4)">
+        <strong>This store has not said where to send the dues yet.</strong>
+        The tiers are open, so you can see what membership is — but there is nothing to pay until the creator
+        writes the instruction down. ${esc(MONEY_LINE)}
+      </div>`;
+
+  // The tiers are shown to EVERYONE, signed in or not: what membership is and what
+  // it costs is the shop window, and hiding it until somebody signs in is the
+  // opposite of the researched rule that the teaser is never the thing you hide.
+  // Only the form needs an account.
+  if (!user) {
+    return `<div id="join" class="join-panel">
+      <div class="section-head" style="margin-bottom:var(--space-4)">
+        <h3>Join</h3>
+        <p>Dues go to the creator, not to bytebikri. You send it, you paste the reference, they confirm it.</p>
+      </div>
+      ${cards ? `<ul class="tier-grid">${cards}</ul>` : ''}
+      ${paid}
+      <a class="btn btn-primary" style="margin-top:var(--space-5)"
+         href="/login?next=${encodeURIComponent(`/s/${channel.slug}#join`)}">Sign in to join</a>
+      <p class="fine" style="margin-top:var(--space-3)">A membership is a name on a list, so it needs an account.
+        Nothing is charged here and nothing is held.</p>
+    </div>`;
+  }
+
+  const methodOptions = CLAIM_METHODS.map((m) => `<option value="${m}">${esc(methodLabel(m))}</option>`).join('');
+  const tierSelect = tiers.length > 1
+    ? `<div class="field">
+        <label for="join-tier">Which tier</label>
+        <select class="input" id="join-tier" name="tier">
+          ${tiers.map((t) => `<option value="${t.tier_no}"${Number(t.tier_no) === 1 ? ' selected' : ''}>${esc(t.name)} — ${esc(duesLine(t))}</option>`).join('')}
+        </select>
+      </div>`
+    : `<input type="hidden" name="tier" value="${esc(String(tiers[0]?.tier_no ?? 1))}">`;
+
+  return `<div id="join" class="join-panel">
+    <div class="section-head" style="margin-bottom:var(--space-4)">
+      <h3>Join</h3>
+      <p>Dues go to the creator, not to bytebikri. You send it, you paste the reference, they confirm it.</p>
+    </div>
+    ${cards ? `<ul class="tier-grid">${cards}</ul>` : ''}
+    ${paid}
+    <form method="post" action="/s/${esc(channel.slug)}/join" class="join-form">
+      ${tierSelect}
+      <div class="row" style="gap:var(--space-4);align-items:flex-start">
+        <div class="field" style="flex:1 1 150px">
+          <label for="join-method">How you sent it</label>
+          <select class="input" id="join-method" name="method">${methodOptions}</select>
+        </div>
+        <div class="field" style="flex:1 1 150px">
+          <label for="join-reference">Reference</label>
+          <input class="input" id="join-reference" name="reference" required minlength="4" maxlength="120"
+                 placeholder="the code on your receipt">
+          <span class="hint">This is the only thing the creator can match against their statement.</span>
+        </div>
+        <div class="field" style="flex:0 1 120px">
+          <label for="join-amount">Amount</label>
+          <input class="input" id="join-amount" name="amount" type="number" min="0" max="100000" step="1"
+                 inputmode="numeric" placeholder="NPR">
+        </div>
+      </div>
+      <button class="btn btn-primary" type="submit">Send the reference</button>
+      <p class="fine" style="margin-top:var(--space-3)">Nothing is charged here and nothing is held.
+        The creator confirms it against their own statement, and until they do, no file opens — that is the wait, not a bug.</p>
+    </form>
+  </div>`;
+}
+
+/**
+ * The whole members section for a storefront: roster, your own card, the panel.
+ *
+ * Rendered for every store that has tiers, whether or not the viewer is signed
+ * in — a locked thing people can see is a shop window, and the researched lesson
+ * from every paywall is that the teaser is never the thing behind the wall.
+ */
+function membersSection({ channel, user, tiers, membership, roster, membershipsOn, flash = null }) {
+  if (!tiers.length) return '';
+  const named = roster.filter((m) => m.profile_id !== user?.id);
+  return `<section class="section" id="members">
+  <div class="section-head">
+    <h2>Members</h2>
+    <p>${named.length === 1 ? 'One person is named here' : `${named.length} people are named here`} — they chose
+      it, and the plate next to a name is the perk. Dues go straight to the creator; bytebikri takes nothing.</p>
+  </div>
+  ${flash ? `<div class="note note-${flash.kind === 'danger' ? 'warning' : 'success'}" role="status">${esc(flash.message)}</div>` : ''}
+  ${memberRoster(named)}
+  ${membership ? myMembershipCard({ channel, membership, tiers, rosterSize: named.length }) : ''}
+  ${membershipsOn ? joinPanel({ channel, user, tiers, membership }) : ''}
+</section>`;
+}
+
+export function storefront({
+  channel, assets, slots, user, estimate, pageviews, unlockedIds = new Set(), consent = null,
+  moderation = null, countryBlocked = null, verification = null, watching = false,
+  // Memberships: what the store offers, what this viewer holds, who is named, and
+  // whether the plan includes the feature at all. Empty tiers means the section
+  // is not rendered — a store that does not use this looks exactly as it did.
+  tiers = [], membership = null, roster = [], membershipsOn = false, memberFlash = null,
+}) {
   const cards = assets.map((a) => {
     const open = a.unlock_mode === 'open';
     const unlocked = open || (user && unlockedIds.has(a.id));
     // A listed file the viewer cannot unlock does not get an unlock badge — it
     // gets the reason. The badge is the one place a card can lie, and "Ad-gated"
     // on a file that refuses every unlock is the lie this round removed.
+    // A members-only file is still LISTED, locked, with what it takes to open it.
+    // Hiding it would leave the storefront with nothing to sell, which is the
+    // mistake every paywall study warns about: the wall goes on the content, not
+    // on the shop window.
+    const membersOnly = a.unlock_mode === 'members';
+    const needsTier = membersOnly ? (Number(a.member_tier) || 1) : 0;
+    const tierLabel = membersOnly
+      ? (tierByNo(tiers, needsTier)?.name || defaultTierName(needsTier))
+      : null;
     const badge = a.availability && !a.availability.unlockable
       ? pill(a.availability.state === 'blocked' ? 'Not here' : 'Listed, no unlock', 'warning')
-      : open
-        ? pill('Free', 'success')
-        : unlocked ? pill('Unlocked', 'success') : pill('Ad-gated', 'locked');
+      : membersOnly
+        ? (unlocked ? pill('Open to you', 'success') : pill('Members', 'accent'))
+        : open
+          ? pill('Free', 'success')
+          : unlocked ? pill('Unlocked', 'success') : pill('Ad-gated', 'locked');
     const foot = a.availability && !a.availability.unlockable
       ? (a.availability.state === 'blocked' ? 'Not available in your country' : 'Listed, but not unlockable here')
-      : open ? 'No ad needed' : `${a.ads_required} ad${a.ads_required === 1 ? '' : 's'} to unlock`;
+      : membersOnly
+        ? (unlocked ? 'Opens with your membership — no ad' : `${tierLabel} members open this — no ad`)
+        : open ? 'No ad needed' : `${a.ads_required} ad${a.ads_required === 1 ? '' : 's'} to unlock`;
     return `<a class="asset" href="/s/${esc(channel.slug)}/a/${esc(a.slug)}">
   <div style="position:relative">
     ${thumb({ title: a.title, coverUrl: a.cover_url })}
@@ -765,6 +1063,9 @@ ${placed.head}
   ${assets.length ? `<div class="grid-assets">${cards}</div>`
     : '<div class="empty">This store has not published anything yet.</div>'}
 </section>
+
+
+${membersSection({ channel, user, tiers, membership, roster, membershipsOn, flash: memberFlash })}
 
 ${placed.mid}
 ${placed.foot}`,
@@ -1083,7 +1384,7 @@ ${closed.length ? `<section class="section">
  * make a copy traceable, and the note says exactly that, because a product that
  * claims to be un-copyable and is not is worse than one that never claimed it.
  */
-function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, slug, assetSlug }) {
+function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, slug, assetSlug, lockedReason = null }) {
   const frame = (inner, kind) => `
     <figure class="stage stage-${kind}"${kind === 'image' ? '' : ' data-protect'}>
       ${inner}
@@ -1099,7 +1400,7 @@ function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, 
       ${cover}
       <div class="stage-veil">
         <span class="locked-glyph" aria-hidden="true">🔒</span>
-        <p class="small">${needsAd ? 'Unlocks after the ad' : 'Not unlocked yet'}</p>
+        <p class="small">${esc(lockedReason || (needsAd ? 'Unlocks after the ad' : 'Not unlocked yet'))}</p>
       </div>
     </div>`;
   }
@@ -1278,6 +1579,12 @@ export function assetPage({
   // state. Decided on the server (see src/geo.js and src/moderation.js) and
   // rendered here: the page never works out for itself who may do what.
   refusal = null,
+  // Memberships on this file: the viewer's own coverage, the store's tiers, and
+  // the name of the tier this file wants. Passed in rather than looked up,
+  // because a view renders synchronously and decides nothing about access.
+  memberCover = null,
+  memberTiers = [],
+  memberTierName = null,
   // One sentence for the owner when their file is not available to everyone.
   // The owner always sees the page; the sentence is the difference between
   // "somebody decided something about my file" and a support ticket.
@@ -1356,12 +1663,32 @@ export function assetPage({
        </div>${filesPanel}`
     : null;
 
+  /**
+   * Members-only files get a fourth affordance, and it is not a button that
+   * charges anybody: it is a link to the join panel, with the tier named. The
+   * money changes hands between two people, off this page, and pretending
+   * otherwise here would be the one lie the whole product is built to avoid.
+   */
+  const membersOnly = asset.unlock_mode === 'members';
+  const wantedTier = membersOnly ? (Number(asset.member_tier) || 1) : 0;
+  const wantedName = memberTierName || defaultTierName(wantedTier);
+  const memberGate = `<div class="member-gate">
+    <p class="small"><strong>${esc(wantedName)} members open this.</strong>
+      ${esc(wantedTier === 2 ? 'It is the top tier’s file.' : 'Any member can open it — no ad, while the dues are current.')}</p>
+    <a class="btn btn-primary btn-lg btn-block" href="/s/${esc(channel.slug)}#members">See what membership is</a>
+    <p class="fine" style="margin-top:var(--space-3);text-align:center">${esc(MONEY_LINE)}</p>
+  </div>`;
+
   const actionBlock = refusalBlock || (open
     ? `<div class="note note-success">Free — no ad needed.</div>${filesPanel}`
     : unlocked
       ? `<div class="note note-success"><strong>Unlocked.</strong>
-           ${accessExpiry(open ? null : accessUntil)}</div>${filesPanel}`
-      : `<button class="btn btn-primary btn-lg btn-block" id="unlock-btn"
+           ${memberCover
+    ? `This file is open through your <strong>${esc(memberTierName || wantedName)}</strong> membership, for as long as the period you have paid for runs${memberCover.period_end ? ` — ${plural(Math.max(daysLeft(memberCover.period_end) ?? 0, 0), 'day')} left` : ''}.`
+    : accessExpiry(open ? null : accessUntil)}</div>${filesPanel}`
+      : membersOnly
+        ? `${memberGate}${filesPanel}`
+        : `<button class="btn btn-primary btn-lg btn-block" id="unlock-btn"
                  data-asset="${esc(asset.id)}">
            Watch ${plural(policy?.ads_required || 1, 'ad')} to unlock
          </button>
@@ -1384,12 +1711,18 @@ export function assetPage({
   <div class="stack stack-8">
     ${mediaStage({
       previewFile, markUri, coverUrl: asset.cover_url, title: asset.title, unlocked, needsAd,
+      // The stage's own sentence. A members-only file behind an ad-shaped veil
+      // reading "Unlocks after the ad" would be the page's one outright lie: no ad
+      // opens this, and no amount of watching one will.
+      lockedReason: membersOnly ? `${wantedName} members open this — no ad` : null,
       slug: channel.slug, assetSlug: asset.slug,
     })}
 
     <div class="asset-head">
       <h1>${esc(asset.title)}</h1>
-      ${open ? pill('Free', 'success') : unlocked ? pill('Unlocked', 'success') : pill('Ad-gated', 'locked')}
+      ${open ? pill('Free', 'success')
+    : unlocked ? pill(memberCover ? 'Members' : 'Unlocked', 'success')
+      : membersOnly ? pill('Members', 'accent') : pill('Ad-gated', 'locked')}
       ${user && user.id === channel.owner_id
     ? `<a class="btn btn-sm" href="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}">Edit this file</a>` : ''}
     </div>
@@ -1410,8 +1743,12 @@ export function assetPage({
         <dl class="kv">
           <dt>Files</dt><dd>${plural(files.length, 'file')}</dd>
           ${kindLabel ? `<dt>Format</dt><dd>${esc(kindLabel)}${media ? ' — plays in the page' : ''}</dd>` : ''}
-          <dt>Access</dt><dd>${open ? 'Free' : unlocked ? 'Unlocked' : `${plural(policy?.ads_required || 1, 'rewarded ad')}`}</dd>
-          <dt>Unlock lasts</dt><dd>${plural(policy?.unlock_hours || 24, 'hour')}</dd>
+          <dt>Access</dt><dd>${open ? 'Free'
+    : membersOnly ? (unlocked ? `Open to you as a ${esc(memberTierName || wantedName)}` : `${esc(wantedName)} members — no ad`)
+      : unlocked ? 'Unlocked' : plural(policy?.ads_required || 1, 'rewarded ad')}</dd>
+          <dt>${membersOnly ? 'Open while' : 'Unlock lasts'}</dt><dd>${membersOnly
+    ? 'the dues you have paid for are current'
+    : plural(policy?.unlock_hours || 24, 'hour')}</dd>
           <dt>Store</dt><dd><a href="/s/${esc(channel.slug)}">${esc(channel.name)}</a></dd>
         </dl>
       </div>
@@ -1425,7 +1762,8 @@ export function assetPage({
 
   <aside class="unlock-card">
     <div class="panel">
-      <div class="panel-head"><h2 style="font-size:var(--text-md)">${unlocked ? 'Your access' : 'Unlock this file'}</h2></div>
+      <div class="panel-head"><h2 style="font-size:var(--text-md)">${unlocked ? 'Your access'
+    : membersOnly ? 'Open to members' : 'Unlock this file'}</h2></div>
       <div class="panel-body">${actionBlock}</div>
     </div>
     <p class="fine" style="margin-top:var(--space-4)">
@@ -4358,6 +4696,10 @@ function storeSectionNav(channel, current) {
     ['networks', 'Ad networks'],
     ['settings', 'Store settings'],
     ['reviews', 'Reviews'],
+    // Always shown, including on Free, where the page itself is the answer to
+    // "what am I missing" — a seller cannot want a feature nobody has told them
+    // about, and hiding it would make the plan comparison the only place it exists.
+    ['members', 'Members'],
   ];
   return `<nav class="subnav" aria-label="Store">
     ${items.map(([path, label]) => {
@@ -5047,12 +5389,210 @@ ${flashNote(flash)}
 }
 
 // ---------------------------------------------------------------------------
+// Members, from the seller's side
+// ---------------------------------------------------------------------------
+/**
+ * The seller's members page: what a tier costs, where the dues go, who is
+ * waiting, and who is in.
+ *
+ * Its centre of gravity is the QUEUE, not the roster. On a manual rail the work
+ * is a person checking their own statement, and the page is built to make that
+ * one job take ten seconds: each claim shows the reference in mono, the amount,
+ * the method, and the date — the four things the statement will have — with
+ * confirm and reject beside them.
+ *
+ * The confirm sentence is the only place the platform gives this instruction,
+ * and it is deliberately not optimistic: confirming is what opens the files, so
+ * confirming without looking gives away a store's own content.
+ */
+export function channelMembers({
+  channel, user, consent = null, flash = null, tiers = [], members = [],
+  pending = [], membershipsOn = false, plan = null, now = new Date(),
+}) {
+  if (!membershipsOn) {
+    return layout({
+      title: 'Members', user, activeChannel: channel, consent, current: 'dashboard',
+      body: `
+${pageHead(channel, 'members', 'Members', 'People who belong to this store, by name.')}
+${flashNote(flash)}
+<div class="section">
+  <div class="note note-info" role="status">
+    <strong>Members are part of the Store plan.</strong>
+    <p class="small" style="margin:var(--space-2) 0 0">${esc(FREE_PLAN_LINE)}</p>
+    <p class="small" style="margin:var(--space-2) 0 0">What the plan adds: up to two tiers you name, a roster of the
+      people who join, a plate next to their name on your storefront, and files that open for them without an ad.
+      The dues are yours — you set them, they are paid straight to you, and bytebikri takes no share of them.</p>
+    <a class="btn btn-primary btn-sm" style="margin-top:var(--space-4)"
+       href="/dashboard/${esc(channel.slug)}/billing">See the plans</a>
+  </div>
+</div>`,
+    });
+  }
+
+  const tierEditor = (tierNo) => {
+    const t = tierByNo(tiers, tierNo) || { tier_no: tierNo, name: defaultTierName(tierNo), dues_npr: 0, period_months: 1, perks: null, accent: 'indigo' };
+    const plate = plateStyle(tierNo);
+    const holders = members.filter((m) => Number(m.tier_no) === tierNo).length;
+    const accentOptions = ACCENT_KEYS.map((k) => `<option value="${k}"${t.accent === k ? ' selected' : ''}>${esc(ACCENTS[k].label)}</option>`).join('');
+    const periodOptions = PERIODS.map((p) => `<option value="${p}"${Number(t.period_months) === p ? ' selected' : ''}>${p === 1 ? 'a month' : p === 3 ? 'every three months' : 'a year'}</option>`).join('');
+    return `<form class="tier-editor" method="post"
+              action="/dashboard/${esc(channel.slug)}/members/tier/${tierNo}" style="${plateStyleAttr(t.accent)}">
+      <div class="row" style="align-items:center">
+        <span class="member-avatar${plate === 'gradient' ? ' member-avatar--shine' : ''}" aria-hidden="true">${esc(String(t.name || '').slice(0, 1).toUpperCase() || String(tierNo))}</span>
+        <strong>${tierNo === 2 ? 'Top tier' : 'Entry tier'}</strong>
+        <span class="spacer"></span>
+        <span class="fine">${holders ? `${holders} ${holders === 1 ? 'member' : 'members'}` : 'nobody yet'} · ${esc(PLATE_COPY[plate])}</span>
+      </div>
+      <div class="row" style="gap:var(--space-4);align-items:flex-start;margin-top:var(--space-4)">
+        <div class="field" style="flex:1 1 170px">
+          <label for="t${tierNo}-name">What it is called</label>
+          <input class="input" id="t${tierNo}-name" name="name" required minlength="2" maxlength="24" value="${esc(t.name)}">
+        </div>
+        <div class="field" style="flex:0 1 130px">
+          <label for="t${tierNo}-dues">Dues (NPR)</label>
+          <input class="input" id="t${tierNo}-dues" name="duesNpr" type="number" min="0" max="100000" step="1"
+                 inputmode="numeric" value="${Number(t.dues_npr) || 0}">
+        </div>
+        <div class="field" style="flex:0 1 170px">
+          <label for="t${tierNo}-period">How often</label>
+          <select class="input" id="t${tierNo}-period" name="periodMonths">${periodOptions}</select>
+        </div>
+        <div class="field" style="flex:0 1 130px">
+          <label for="t${tierNo}-accent">Plate</label>
+          <select class="input" id="t${tierNo}-accent" name="accent">${accentOptions}</select>
+        </div>
+      </div>
+      <div class="field">
+        <label for="t${tierNo}-perks">What they get, in one line</label>
+        <input class="input" id="t${tierNo}-perks" name="perks" maxlength="160" value="${esc(t.perks || '')}"
+               placeholder="e.g. every template I publish, plus the workshop recordings">
+        <span class="hint">The researched pattern is one skimmable line with the cadence in it. Promises you cannot
+          keep are the one thing that loses members.</span>
+      </div>
+      <div class="row" style="gap:var(--space-3)">
+        <button class="btn btn-primary btn-sm" type="submit">Save tier ${tierNo}</button>
+        ${holders ? '' : `<button class="btn btn-sm" type="submit" formaction="/dashboard/${esc(channel.slug)}/members/tier/${tierNo}/remove">Remove</button>`}
+      </div>
+      ${holders ? `<p class="fine">Remove is off while ${holders === 1 ? 'one person holds' : `${holders} people hold`} this
+        tier — you can rename it and change what it costs, but not delete what they paid for.</p>` : ''}
+    </form>`;
+  };
+
+  const queue = pending.map((m) => {
+    const state = 'pending';
+    return `<li class="queue-row">
+      <div class="queue-line">
+        <strong>${esc(m.display_name)}</strong>
+        <span class="pill">${esc(m.tier_name || defaultTierName(m.tier_no))}</span>
+        <span class="spacer"></span>
+        <span class="fine">${m.claimed_at ? relTime(m.claimed_at) : 'just now'}</span>
+      </div>
+      <dl class="kv">
+        <dt>Reference</dt><dd class="mono">${esc(m.txn_reference || 'not given')}</dd>
+        <dt>Amount</dt><dd>${m.amount_npr ? `NPR ${Number(m.amount_npr).toLocaleString('en-IN')}` : 'not said'}</dd>
+        <dt>Sent by</dt><dd>${esc(methodLabel(m.method))}${m.payer_number ? ` · ${esc(m.payer_number)}` : ''}</dd>
+        <dt>Dues unless this period</dt><dd>${m.dues_npr ? `NPR ${Number(m.dues_npr).toLocaleString('en-IN')} · ${esc(duesLine({ dues_npr: m.dues_npr, period_months: m.period_months }))}` : 'nothing set'}</dd>
+      </dl>
+      <div class="row" style="gap:var(--space-3)">
+        <form method="post" action="/dashboard/${esc(channel.slug)}/members/${esc(m.profile_id)}/confirm">
+          <button class="btn btn-primary btn-sm" type="submit">I found it — confirm</button>
+        </form>
+        <form method="post" action="/dashboard/${esc(channel.slug)}/members/${esc(m.profile_id)}/reject" class="row" style="gap:var(--space-2)">
+          <input class="input" name="reason" maxlength="200" placeholder="what you looked for">
+          <button class="btn btn-sm" type="submit">Not found</button>
+        </form>
+      </div>
+      <p class="fine">${esc(CONFIRM_LINE)}</p>
+    </li>`;
+  }).join('');
+
+  const roster = members.map((m) => {
+    const state = membershipState(m, now);
+    const left = daysLeft(m.period_end, now);
+    const label = { active: 'current', pending: 'waiting', rejected: 'not found' }[state] || 'ended';
+    return `<tr>
+      <td>${memberPlate({ name: m.display_name, accent: m.accent, tier: m.tier_name, style: plateStyle(m.tier_no) })}</td>
+      <td>${m.joined_at ? longDay(m.joined_at) : '—'}</td>
+      <td><span class="pill${state === 'active' ? ' pill-success' : state === 'pending' ? '' : ' pill-warning'}">${esc(label)}</span>
+        ${state === 'active' && left !== null ? `<span class="fine">${plural(left, 'day')} left</span>` : ''}</td>
+      <td>${m.confirmed_at ? longDay(m.confirmed_at) : 'not confirmed'}</td>
+      <td class="fine">${m.publicly_listed ? 'named on the storefront' : 'hidden from the list'}</td>
+    </tr>`;
+  }).join('');
+
+  return layout({
+    title: 'Members', user, activeChannel: channel, consent, current: 'dashboard',
+    body: `
+${pageHead(channel, 'members', 'Members', `Dues are yours and are paid to you directly. bytebikri is not in that
+  path — it cannot confirm a payment for you, and it takes no share of one.`)}
+${flashNote(flash)}
+
+<div class="section">
+  <div class="section-head">
+    <h2>Waiting on you</h2>
+    <p>Someone said they sent dues. Check your own statement for the reference, then confirm or say you did not find it.</p>
+  </div>
+  ${pending.length
+    ? `<ul class="queue">${queue}</ul>`
+    : `<div class="empty">Nothing waiting. Claims appear here the moment somebody sends their reference — and
+         until you confirm one, that person sees "the creator checks their own statement", not an error.</div>`}
+</div>
+
+<div class="section">
+  <div class="section-head">
+    <h2>Where the dues go</h2>
+    <p>Written by you, shown to anyone who joins. Say a wallet, a bank line, or "at the shop" — what matters is
+      that a stranger can act on it without asking you.</p>
+  </div>
+  <form method="post" action="/dashboard/${esc(channel.slug)}/members/note" class="stack">
+    <div class="field">
+      <label for="m-note">Payment instruction</label>
+      <textarea class="input" id="m-note" name="note" rows="2" maxlength="240"
+                placeholder="eSewa 98XXXXXXXX (Nima Crafts) — put your username in the remark">${esc(channel.membership_note || '')}</textarea>
+      <span class="hint">${esc(MONEY_LINE)}</span>
+    </div>
+    <button class="btn btn-primary btn-sm" type="submit">Save instruction</button>
+  </form>
+</div>
+
+<div class="section">
+  <div class="section-head">
+    <h2>Tiers</h2>
+    <p>Two at most, and the top one is the one that shines. Set what you can actually deliver — a tier that
+      outlives its promises is worse than no tier.</p>
+  </div>
+  ${tierEditor(1)}
+  ${tierEditor(2)}
+</div>
+
+<div class="section">
+  <div class="section-head">
+    <h2>Who is in</h2>
+    <p>${members.length ? `${plural(members.length, 'row')} — a membership that ends is kept, never deleted: the
+      record of who paid is yours to keep even after their period runs out.` : 'Nobody yet.'}</p>
+  </div>
+  ${members.length
+    ? `<div class="table-scroll"><table class="table">
+        <thead><tr><th>Member</th><th>Joined</th><th>State</th><th>Confirmed</th><th>Listed</th></tr></thead>
+        <tbody>${roster}</tbody>
+      </table></div>`
+    : `<div class="empty">No members yet. A file set to "Members only" is the invitation that works — the store
+         shows it, locked, with what it takes to open it.</div>`}
+</div>`,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // One asset, from the seller's side
 // ---------------------------------------------------------------------------
 
 export function assetManage({
   channel, asset, user, consent = null, flash = null, files = [],
   policy = {}, stats = {}, unlocks = 0,
+  // Whether this store's plan includes members, and which tiers exist. The
+  // "Members only" option is not offered on a plan that cannot use it: a setting
+  // that silently does nothing is the worst kind of control.
+  membershipsOn = false, tiers = [],
   // Availability: the countries this creator chose, and the countries the
   // platform did. Two lists rather than one, because they are two different
   // standing — a creator can undo theirs and cannot undo ours.
@@ -5217,9 +5757,19 @@ ${notice ? `
           <select class="input" id="a-mode" name="unlockMode">
             <option value="ad_gated" ${asset.unlock_mode === 'ad_gated' ? 'selected' : ''}>One rewarded ad</option>
             <option value="open" ${asset.unlock_mode === 'open' ? 'selected' : ''}>Free — no ad</option>
+            ${membershipsOn ? `<option value="members" ${asset.unlock_mode === 'members' ? 'selected' : ''}>Members only — no ad</option>` : ''}
           </select>
+          ${membershipsOn ? `<span class="hint">Members-only files stay on your storefront, locked, so they can be
+            seen — that is what makes joining worth a click.</span>` : ''}
           <span class="hint">Changing this does not take back an unlock anyone already has.</span>
         </div>
+        ${membershipsOn && tiers.length ? `<div class="field" style="flex:1 1 170px">
+          <label for="a-member-tier">Which members</label>
+          <select class="input" id="a-member-tier" name="memberTier">
+            ${tiers.map((t) => `<option value="${t.tier_no}"${Number(asset.member_tier) === Number(t.tier_no) ? ' selected' : ''}>${esc(t.name)}${Number(t.tier_no) === 2 ? ' — top tier only' : ' and above'}</option>`).join('')}
+          </select>
+          <span class="hint">Only used when access above is "Members only".</span>
+        </div>` : ''}
         <div class="field" style="flex:1 1 160px">
           <label for="a-status">State</label>
           ${hiddenByReports ? `
