@@ -37,6 +37,10 @@ import { SEARCHABLE_ASSET_STATES } from './moderation.js';
 // rule lives in `kyc.js` because the seller's page prints the number: a promise
 // about a week that is written twice is a promise that drifts.
 import { HOLD_DAYS } from './kyc.js';
+// Storefront themes: the curated palettes and the plan capability that gates them.
+// Imported for the same reason `HOLD_DAYS` is — the seller's settings page prints
+// the rule, so the rule lives once.
+import { themeOf, canTheme } from './themes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -2459,6 +2463,43 @@ export const store = {
     return { ok: rowCount > 0, reason: rowCount ? null : 'tier-missing' };
   },
 
+  /**
+   * Choose a storefront theme, or go back to the default.
+   *
+   * Two rules, both here rather than in the route, because both are about the
+   * record and not about the form:
+   *
+   *   * the capability is read from the plan the caller passes in, so a Free store
+   *     cannot end up with a theme through some other path later; and
+   *   * the audit row carries the PREVIOUS value. "When did my store start looking
+   *     like this" is asked after a rebrand, and a row that only says what was set
+   *     cannot answer what it was before.
+   */
+  async setChannelTheme({ channel, capabilities = null, theme, actorId = null }) {
+    // `this`, not a second import: the effective plan is the one method that knows
+    // about grace periods and pending upgrades, and a capability read anywhere else
+    // is a capability that can be granted by a row nobody checked.
+    const caps = capabilities ?? this.plan(channel)?.capabilities ?? {};
+    if (!canTheme(caps)) return { ok: false, reason: 'theme-plan' };
+    const wanted = theme === null ? null : themeOf(theme)?.key ?? null;
+    if (theme !== null && !wanted) return { ok: false, reason: 'theme-unknown' };
+    // `$2::text` is not decoration: without the cast, Postgres cannot infer the type
+    // of a parameter that appears only inside `is null`, and the update fails with
+    // 42P18 before it ever reaches the row.
+    const row = await one(
+      `update channels
+          set theme = $2::text,
+              theme_set_at = case when $2::text is null then null else now() end,
+              updated_at = now()
+        where id = $1
+        returning theme, theme_set_at`,
+      [channel.id, wanted],
+    );
+    await this.audit('channel.theme_set', { theme: row?.theme ?? null, was: channel.theme ?? null },
+      { actorId, subjectType: 'channel', subjectId: channel.id });
+    return { ok: true, reason: null, theme: row?.theme ?? null, at: row?.theme_set_at ?? null };
+  },
+
   /** Where the dues go, in the creator's words. Public: that is the point. */
   async setMembershipNote({ channelId, note, actorId = null }) {
     const row = await one(
@@ -3180,6 +3221,10 @@ export const store = {
       ads_enabled: (v) => v === true || v === 'on' || v === 'true',
       sells_digital: (v) => v === true || v === 'on' || v === 'true',
       sells_physical: (v) => v === true || v === 'on' || v === 'true',
+      // `theme` is NOT in this list, and that is deliberate: it is a paid
+      // capability, so it is written by its own method below where the plan is
+      // known and the audit row is written. A field this one accepted would let
+      // any future form that posts the whole channel set a theme on a Free store.
     };
     const sets = [];
     const values = [channelId];

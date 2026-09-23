@@ -441,6 +441,20 @@ test('plan benefits read as sentences, with no negative sentinel showing through
   assert.ok(planBenefits(PLANS.pro).some((l) => /Unlimited published files/.test(l)));
   assert.ok(planBenefits(PLANS.free).some((l) => /own address only/i.test(l)));
   assert.ok(planBenefits(PLANS.store).some((l) => /Explore/i.test(l)));
+
+  // The capability and the benefit list have to agree, in both directions. A plan
+  // that can theme but does not say so is the exact gap this round closed: the
+  // storefront theme was `can_theme: true` on the paid plans, absent from this list,
+  // and read by nothing for three migrations. Now that it exists, the line has to be
+  // there — and a Free plan must not be sold it.
+  for (const plan of [PLANS.store, PLANS.pro]) {
+    assert.ok(plan.capabilities.can_theme === true, `${plan.code} carries the capability`);
+    assert.ok(planBenefits(plan).some((l) => /storefront theme/i.test(l)),
+      `${plan.code} can theme and says so on the pricing page`);
+  }
+  assert.equal(PLANS.free.capabilities.can_theme, false);
+  assert.ok(!planBenefits(PLANS.free).some((l) => /theme/i.test(l)),
+    'a Free plan is not sold a look it cannot pick');
 });
 
 // ---------------------------------------------------------------------------

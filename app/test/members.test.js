@@ -266,6 +266,114 @@ test('a members-only file stays on the storefront, locked, and says what opens i
   } finally { await cleanup(channel, owner, member); }
 });
 
+// ── 4b. the tier card sells the FILES, not the idea of files ────────────────
+
+test('a tier card names the files it opens, and says which tier they sit behind', async () => {
+  const { owner, channel, member, tag } = await fixture();
+  try {
+    await fileIn(channel.id, { tier: 1, title: 'Pokhara sketchbook', tag: `${tag}-a` });
+    await fileIn(channel.id, { tier: 2, title: 'Wallpaper pack', tag: `${tag}-b` });
+    await fileIn(channel.id, { tier: 2, title: 'Brush set', tag: `${tag}-c` });
+    // A file that anybody can unlock is NOT part of what a tier buys, and listing it
+    // on a card would be selling something the visitor can already have.
+    await store.createAsset({
+      channelId: channel.id, title: 'Free sample', slug: `mem-free-${tag}`, description: 'open',
+      unlockMode: 'ad_gated', moderationState: 'approved',
+    });
+    const assets = await store.assetsOf(channel.id);
+    const html = views.storefront({
+      channel, assets, slots: [], user: null, membershipsOn: true, membership: null, roster: [],
+      tiers: await store.membershipTiers(channel.id),
+    });
+    assert.match(html, /Pokhara sketchbook/, 'the entry tier names the file it opens');
+    assert.match(html, /Wallpaper pack/, 'and the top tier names both of its own');
+    const flat = html.replace(/\s+/g, ' ');
+    assert.match(flat, /3 files open to this tier, with no ad/,
+      'the top tier counts everything at or below it — and says the one thing that matters: no ad');
+    assert.match(flat, /1 file open to this tier, with no ad/,
+      'the entry tier is countable too, and reads as a sentence rather than as a badge');
+    // Scoped to the members section: the ad-gated file is legitimately on the
+    // storefront, in Content — it is only the TIER CARDS that must not claim it.
+    const members = html.slice(html.indexOf('id="members"'), html.indexOf('id="join"'));
+    assert.doesNotMatch(members, /Free sample/, 'an ad-unlocked file is not part of what a tier buys');
+    assert.ok(member.id && owner.id, 'sanity');
+
+    // The card links to the file page — the teaser the research says converts: a
+    // named thing with a cover, not the phrase "bonus content".
+    assert.match(html, new RegExp(`/s/${channel.slug}/a/mem-file-1-${tag}-a`));
+  } finally { await cleanup(channel, owner, member); }
+});
+
+test('a tier with nothing behind it says so, rather than promising bonus content', async () => {
+  const { owner, channel, member } = await fixture();
+  try {
+    const html = views.storefront({
+      channel, assets: [], slots: [], user: null, membershipsOn: true, membership: null, roster: [],
+      tiers: await store.membershipTiers(channel.id),
+    });
+    // The honest failure. A card that says "perks: notes" and opens nothing is a
+    // chargeback waiting to happen, and the seller is the one who has to find out —
+    // so the storefront says it out loud, where they will see it.
+    const flat = html.replace(/\s+/g, ' ');
+    assert.match(flat, /No files are set to members-only yet/);
+    assert.match(flat, /nobody can join until there is something behind the door/);
+    assert.ok(member.id && owner.id, 'sanity');
+  } finally { await cleanup(channel, owner, member); }
+});
+
+test('the seller’s tier editor says what is behind each tier', async () => {
+  const { owner, channel, member, tag } = await fixture();
+  try {
+    await fileIn(channel.id, { tier: 1, title: 'Pokhara sketchbook', tag: `${tag}-a` });
+    await fileIn(channel.id, { tier: 2, title: 'Wallpaper pack', tag: `${tag}-b` });
+    const ownerView = { id: owner.id, email: owner.email, display_name: owner.display_name };
+    const html = views.channelMembers({
+      channel, user: ownerView,
+      tiers: await store.membershipTiers(channel.id),
+      members: [], pending: [], membershipsOn: true, plan: PLANS.store,
+      // The seller's OWN list: a paused file that sits behind a tier is still behind
+      // it, and an editor that hid it would let a seller delete a tier thinking
+      // nothing depended on it.
+      files: [
+        { title: 'Pokhara sketchbook', unlock_mode: 'members', member_tier: 1 },
+        { title: 'Wallpaper pack', unlock_mode: 'members', member_tier: 2 },
+        { title: 'Draft nobody can see', unlock_mode: 'members', member_tier: 2, paused: true },
+        { title: 'Open to all', unlock_mode: 'ad_gated' },
+      ],
+    });
+    assert.match(html, /Behind this tier now: Pokhara sketchbook/);
+    assert.match(html, /Pokhara sketchbook, Wallpaper pack, Draft nobody can see/,
+      'the top tier owns everything at or below it, paused files included');
+    assert.doesNotMatch(html, /Open to all/);
+    assert.ok(member.id, 'sanity');
+  } finally { await cleanup(channel, owner, member); }
+});
+
+test('the roster stacks on a phone instead of sliding off the side of it', async () => {
+  const { owner, channel, member } = await fixture();
+  try {
+    await store.joinMembership({ profileId: member.id, channelId: channel.id, tierNo: 1, claim: claim() });
+    await store.confirmMembership({
+      profileId: member.id, channelId: channel.id, ownerId: owner.id, actorId: owner.id,
+    });
+    const html = views.channelMembers({
+      channel, user: { id: owner.id, email: owner.email, display_name: owner.display_name },
+      tiers: await store.membershipTiers(channel.id),
+      members: await store.membersOfChannel(channel.id),
+      pending: [], membershipsOn: true, plan: PLANS.store, files: [],
+    });
+    // `table-stacked` is the product's phone pattern, and the roster is the one
+    // table on this page that a seller opens on a phone — in a queue, checking who
+    // paid. Five columns do not fit in 350 pixels; the sweep found them 570 wide in a
+    // 350 box. Every cell therefore carries the label it stacks under.
+    assert.match(html, /class="table table-stacked"/);
+    for (const col of ['Member', 'Joined', 'State', 'Confirmed', 'Listed']) {
+      assert.match(html, new RegExp(`data-label="${col}"`), `${col} stacks under a label`);
+    }
+    assert.ok(member.id, 'sanity');
+  } finally { await cleanup(channel, owner, member); }
+});
+
 // ── 5. the plan gate is real ────────────────────────────────────────────────
 
 test('members are a paid capability, and a Free store is told so', async () => {

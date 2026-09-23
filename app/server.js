@@ -70,6 +70,9 @@ import {
   PLATE_COPY, tierDraft, paymentNoteDraft, membershipState, membershipCurrent, memberBadge,
   duesLine, tierByNo,
 } from './src/memberships.js';
+// Storefront themes: curated palettes, and the plan capability that has been in
+// the plans table since migration 0001 without a single reader until now.
+import { THEMES, THEME_KEYS, THEME_NOTE, THEME_FREE_LINE, NO_THEME, canTheme, themeDraft, themeStyle } from './src/themes.js';
 import { SANDBOX_PROVIDER_IDS } from './src/providers/index.js';
 import { selectableProviders, providerById, payoutVerdict, loadRegistry } from './src/registry.js';
 import {
@@ -838,6 +841,9 @@ APP.get('/dashboard/:slug/members', async (req, res, next) => {
       tiers: await store.membershipTiers(channel.id),
       members: await store.membersOfChannel(channel.id),
       pending: await store.pendingMemberships(channel.id),
+      // What each tier actually opens, for the editor on this page: the seller's own
+      // list, paused files included, so the answer matches what they see elsewhere.
+      files: await store.assetsForOwner(channel.id),
       membershipsOn: plan.capabilities?.memberships === true,
       plan,
     }));
@@ -934,6 +940,41 @@ APP.post('/dashboard/:slug/members/:profileId/reject', async (req, res, next) =>
       reason: req.body?.reason, actorId: req.user.id,
     });
     return res.redirect(`${back}?${row ? 'member-rejected=1' : 'error=member-missing'}`);
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Choose the storefront's look.
+ *
+ * Its own route rather than a field on the settings form, because it is its own
+ * decision with its own capability: the settings form saves together, and a theme
+ * is gated on a plan where the rest of the form is not. Saving them together would
+ * mean a seller changing their tagline and losing their theme to one refusal.
+ */
+APP.post('/dashboard/:slug/theme', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    if (refuseWrite(req, res, channel)) return undefined;
+    // The query goes THROUGH the anchor, never after it: `#theme?error=x` is a
+    // fragment called "theme?error=x", which the browser never sends and the server
+    // never parses, so the seller would land on an unchanged page with no
+    // explanation. Same shape as the verification routes.
+    const back = (qs = '') => `/dashboard/${encodeURIComponent(channel.slug)}/settings${qs ? `?${qs}` : ''}#theme`;
+    const plan = store.plan(channel);
+    if (!canTheme(plan.capabilities)) return res.redirect(back('error=theme-plan'));
+    // `plain` means "back to the default look", which is the absence of a theme
+    // rather than a seventh palette — and it is offered to a paying store because
+    // the way back has to be as available as the way in.
+    const plain = req.body?.theme === NO_THEME;
+    const draft = themeDraft(plain ? '' : req.body?.theme);
+    if (!plain && !draft.ok) return res.redirect(back(`error=${draft.error}`));
+    const result = await store.setChannelTheme({
+      channel, capabilities: plan.capabilities,
+      theme: req.body?.theme === NO_THEME ? null : draft.value,
+      actorId: req.user.id,
+    });
+    return res.redirect(back(result.ok ? `theme-saved=${plain ? NO_THEME : draft.value}` : `error=${result.reason}`));
   } catch (err) { return next(err); }
 });
 
@@ -1374,6 +1415,12 @@ APP.get('/s/:slug', async (req, res, next) => {
       tiers, membership, membershipsOn,
       roster: tiers.length ? await store.publicRoster(channel.id) : [],
       memberFlash: flashFor(req.query),
+      // The store's own look. Two custom properties rather than a class per theme,
+      // so a seventh palette is one entry in `themes.js` and no stylesheet edit —
+      // and so a palette can never reach a surface whose contrast nobody measured:
+      // the band, and only the band, is what those two properties paint.
+      theme: channel.theme ?? null,
+      themeStyle: themeStyle(channel.theme),
       // The badge, from the same one row the seller's panel reads. A visitor sees
       // "identity checked" and the sentence says what was checked and when.
       verification: await store.verificationFor(channel.id),
@@ -2731,6 +2778,9 @@ const SUCCESS_FLASH = {
   'tier-saved': (v) => `Tier ${String(v || '')} saved. What a member pays, and what they get, is now what the storefront shows.`,
   'tier-removed': () => 'Tier removed. Nobody was holding it, so nothing changed for anybody but the panel.',
   'note-saved': () => 'Saved. This is what a visitor is told about paying you — keep it to something you would be happy to see written down.',
+  theme: (v) => (v === 'plain'
+    ? 'Back to the default look. Nothing else about your store changed.'
+    : `Saved — ${String(v || 'that')} is on your storefront now. It paints the band behind your name and nothing else, and it is checked for readability in both light and dark before it can be offered.`),
 };
 
 const ERROR_FLASH = {
@@ -2750,6 +2800,11 @@ const ERROR_FLASH = {
   'tier-period': 'Pick a period: monthly, every three months, or yearly.',
   'tier-held': 'Somebody holds that tier, so it stays. You can rename it and change what it costs — what you cannot do is delete the thing people paid for.',
   'tier-missing': 'There is nothing at that tier number. Tiers are 1 and 2.',
+  // Themes. The plan refusal is the interesting one: it says what the feature IS
+  // and what Free keeps, rather than implying something was taken away.
+  'theme-plan': THEME_FREE_LINE,
+  'theme-unknown': 'That is not one of the themes on offer. Nothing was changed — pick one from the list and try again.',
+  'theme-missing': 'No theme arrived with that press. Nothing was changed.',
   'bulk-action': 'That is not something this list can do. Nothing was changed.',
   'bulk-empty':
     'Nothing arrived to change — this list did not send a single file with that press. '
@@ -3792,6 +3847,11 @@ APP.get('/dashboard/:slug/settings', async (req, res, next) => {
       // ticked: a free store that asks for it gets an explanation, not a
       // silent revert to storefront.
       canList: plan.capabilities.marketplace_listed === true,
+      // The look of the store. `canTheme` reads the capability the plans table has
+      // been carrying since 0001 — and the page says what a plan would add rather
+      // than hiding the control a Free store cannot use.
+      themes: THEME_KEYS.map((k) => THEMES[k]),
+      canTheme: canTheme(plan.capabilities),
       subscription: await store.subscriptionOf(channel.id),
       stats: await store.reviewStatsOfChannel(channel.id),
     }));

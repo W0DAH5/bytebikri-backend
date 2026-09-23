@@ -338,11 +338,56 @@ test('store settings cannot promise a free store the Explore listing', () => {
   const pro = storeSettings({
     channel: { ...CHANNEL, listing_mode: 'marketplace' }, user: null, plan: PLANS.pro,
     canList: true, subscription: SUB, stats: { count: 3, average: 4.5 },
+    themes: [], canTheme: true,
   });
   assert.ok(/Included in your plan/.test(pro));
-  assert.ok(!/disabled/.test(pro));
+  // Scoped to the CONTROL rather than the page. A page-wide `/disabled/` was a
+  // proxy for "the listing radio is enabled", and it stopped meaning that the
+  // moment the page grew a second gated control with a disabled state of its own
+  // (the theme cards on Free) — a proxy that fails on an honest change teaches
+  // nothing. So it reads the radio.
+  assert.ok(!/name="listingMode"[^>]*disabled/.test(pro), 'a paid store can pick the listing');
   assert.ok(/a buyer cannot use this store to find you/i.test(pro),
     'the page states what is kept private, not just what is shown');
+});
+
+test('the theme control follows the plan, and Free is told rather than shown a locked door', async () => {
+  const { storeSettings } = await import('../src/views.js');
+  // The real list, not two hand-made strings: the card reads `key`, `label`, `note`
+  // and `animated` off these, and a stub would let the view and the route disagree
+  // about the shape while the test stayed green.
+  const { THEMES, THEME_KEYS } = await import('../src/themes.js');
+  const themes = THEME_KEYS.slice(0, 2).map((k) => THEMES[k]);
+  const free = storeSettings({
+    channel: CHANNEL, user: null, plan: PLANS.free, canList: false,
+    subscription: null, stats: {}, themes, canTheme: false,
+  });
+  assert.ok(/storefront keeps the default look/i.test(free),
+    'a free store is told what the plan adds, in the plan own words');
+  assert.ok(/disabled/.test(free), 'the cards are not pressable');
+  assert.ok(/theme-lock/.test(free), 'each one carries a chip naming the plan it belongs to');
+  assert.ok(/the Store plan/.test(free), 'and the sentence names the plan that would change it');
+  // The preview is NOT dimmed: a washed-out pastel is a picture of nothing, and the
+  // swatch is the one thing on this page that sells the feature. Asserted on the
+  // stylesheet, because "make the disabled cards look disabled" is exactly the patch
+  // somebody will apply later without knowing why it was left alone.
+  const css = read('public/styles.css');
+  assert.ok(/\.theme-pick:disabled \{ cursor: not-allowed; \}/.test(css.replace(/\s+/g, ' ')),
+    'a locked card keeps its full-colour preview and only dims its words');
+  // The list is SHOWN on Free, all six of them. Hiding it would be the other kind of
+  // lie: a capability nobody knows about is a capability nobody buys, and this one
+  // has spent three migrations being sold without a reader.
+
+  const paid = storeSettings({
+    channel: { ...CHANNEL, theme: 'mustang' }, user: null, plan: PLANS.store, canList: true,
+    subscription: SUB, stats: {}, themes, canTheme: true,
+  });
+  assert.ok(/aria-pressed="true"/.test(paid), 'the theme in force is marked as the current one');
+  assert.ok(/value="everest"/.test(paid) && /value="mustang"/.test(paid), 'every theme on offer is a pressable form');
+  assert.ok(/value="plain"/.test(paid) && /aria-pressed="false"/.test(paid),
+    'and the way back to the default is offered beside them, not hidden behind a support request');
+  assert.ok(/prefers-reduced-motion|less motion/i.test(paid),
+    'and the page answers the question a colour raises: does my shop now move?');
 });
 
 test('reviews are keyed off unlocks on both sides of the page', async () => {

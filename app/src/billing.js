@@ -251,7 +251,16 @@ export function planBenefits(plan, { availableSlots = null } = {}) {
   out.push(c.custom_sections === -1 ? 'Unlimited custom sections on your storefront'
     : c.custom_sections ? `${c.custom_sections} custom sections on your storefront`
       : 'A standard storefront layout');
-  if (c.theme_custom === true) out.push('Custom theme');
+  // The theme. `can_theme` has been true on the paid plans since migration 0001 and
+  // this list never mentioned it — the capability was in the plans table, absent from
+  // the pricing page, and read by nothing in the product. Now there is a storefront
+  // look behind it, so the line says what the look IS rather than the word "theme".
+  // `can_theme`, not `theme_custom` — the old line read a capability name that does not
+  // exist on any plan, so it was dead code in a benefit list: a bullet that could never
+  // print, for a feature that was never built. Both halves of that gap are closed here,
+  // and test/billing.test.js now holds the capability and the sentence together so
+  // neither half can go missing again.
+  if (c.can_theme === true) out.push('A storefront theme — six checked palettes, with a live preview of your own store name');
   // The badge now exists (§25), so the line can say what it actually is. It named
   // "documents" while nothing read the table that was built for them, and the
   // operator's own People page said the platform had no KYC step — the plan was

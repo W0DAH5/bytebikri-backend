@@ -74,6 +74,18 @@
   --plate-ink: var(--indigo-400);
   --plate-ink-light: var(--indigo-700);
 
+  /* Storefront themes, as the default palette. The same rule as the plates above:
+     `.store-head--themed` reads these three, and an undefined custom property is
+     dropped silently — a themed store would simply lose its band with nothing in
+     any log to say why. `--theme-ink` is the white every word in a themed band is
+     painted in, and `--theme-muted` the 92% white the smaller words use — the same
+     two values themes.js exports as BAND_INK and BAND_ALPHA, because the pair the
+     test composites is the pair the page paints. */
+  --theme-from: var(--indigo-600);
+  --theme-to: var(--indigo-700);
+  --theme-ink: #ffffff;
+  --theme-muted: rgba(255, 255, 255, 0.92);
+
   /* 4px base. Small steps stay fine-grained for component internals; the jump
      from 24 to 32 to 48 is for layout, where fine-grained steps are noise. */
   --space-1: 0.25rem;   --space-2: 0.5rem;    --space-3: 0.75rem;
@@ -2444,4 +2456,165 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   .member-since { display: none; }
   .join-panel, .member-gate { padding-top: var(--space-5); }
   .queue-row, .tier-editor { padding: var(--space-4); }
+}
+
+/* ── the store's own look, and the doors it sells ────────────────────────────
+   A theme paints one thing: the band behind the store's header. Opaque, a gradient
+   of the palette's two stops, with every word on it white.
+
+   Opaque rather than a wash, and that is the design decision this whole feature
+   rests on. A wash would have to be contrast-checked against two surfaces (the day
+   one and the night one) and would be too faint to notice on either; an opaque band
+   is the SAME in day and night, so each palette needs one measurement per stop, and
+   white text on a colour is the same ratio as that colour as ink on white — one
+   number governs every word in the band, in both directions, and test/themes.test.js
+   asserts it at both ends of the gradient and at the middle (where the eye spends
+   most of its time).
+
+   Everything INSIDE the band inverts with it: the pills and the follow button become
+   white surfaces with the palette's own deep stop as their ink, which is the same
+   ratio again, so nothing in here introduces a second contrast question. What stays
+   out of the band is deliberate — the file cards, their buttons and the member
+   plates keep the product's colours, because a theme that recolours every button is
+   a theme that fights the shop.
+
+   Motion: three of the six palettes drift, and every drift is declared inside
+   `prefers-reduced-motion: no-preference`. That is the product's standing pattern,
+   and it is also what Discord's own Nameplates FAQ tells users to reach for
+   ("Settings → Accessibility → Enable Reduced Motion"), which is the honest
+   admission that the right place for the switch is the reader's device. */
+
+/* The box, themed or not — and this rule is the one that makes a themed band a
+   BAND: without its own padding the store name sits hard against the gradient's
+   edge, which is what the first live screenshot of this feature showed. The default
+   look gets the same box with no paint, so choosing "Default" is a colour change
+   and never a layout change. */
+.store-head {
+  border-radius: var(--radius-xl);
+  padding: var(--space-6) var(--space-6) var(--space-5);
+  margin-bottom: var(--space-2);
+}
+.store-head--themed {
+  background-image: linear-gradient(135deg, var(--theme-from, var(--indigo-600)), var(--theme-to, var(--indigo-700)));
+  background-size: 190% 190%;
+  background-position: 0% 50%;
+  color: var(--theme-ink, #fff);
+}
+.store-head--themed :is(.lede, .store-meta, .fine, .verified-sentence) {
+  color: var(--theme-muted, rgba(255, 255, 255, 0.92));
+}
+.store-head--themed .store-meta .dot { color: color-mix(in srgb, var(--theme-ink, #fff) 45%, transparent); }
+/* One inversion inside the band: white surface, the palette's deep stop as ink. */
+.store-head--themed :is(.pill, .btn) {
+  background: var(--theme-ink, #fff);
+  border-color: transparent;
+  color: var(--theme-from, var(--indigo-700));
+}
+.store-head--themed .btn:hover { background: color-mix(in srgb, var(--theme-ink, #fff) 88%, var(--theme-from, var(--indigo-700))); }
+.store-head--themed a { color: var(--theme-ink, #fff); text-decoration-color: color-mix(in srgb, var(--theme-ink, #fff) 60%, transparent); }
+.store-head--themed :is(a, button, input, select, textarea):focus-visible {
+  outline-color: var(--theme-ink, #fff);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .store-head--themed { animation: theme-drift 26s ease-in-out infinite alternate; }
+}
+/* A slow diagonal cross, not a pulse: the band should look like a surface that
+   happens to be alive, never like something asking for attention. */
+@keyframes theme-drift {
+  from { background-position: 0% 50%; }
+  to { background-position: 100% 50%; }
+}
+
+/* Choosing the look. The card IS the preview: the band with the store's own name
+   on it, at the alpha the storefront uses — because a coloured square tells a
+   seller nothing about what their shop will look like. */
+.theme-grid {
+  display: grid; gap: var(--space-4);
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr));
+}
+.theme-card { margin: 0; }
+.theme-pick {
+  display: grid; gap: var(--space-3); width: 100%; text-align: left;
+  padding: var(--space-3);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  color: inherit; font: inherit; cursor: pointer;
+}
+/* A card a plan cannot use is NOT dimmed, and that is deliberate: the swatch is a
+   preview of what the plan would give you, and a washed-out pastel is a picture of
+   nothing. Only the words fade, and a chip says which plan the card belongs to. */
+.theme-pick:disabled { cursor: not-allowed; }
+.theme-pick:disabled .theme-body { opacity: 0.62; }
+.theme-lock {
+  font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: 0.06em;
+  border: 1px solid var(--border-subtle); border-radius: 999px;
+  padding: 1px var(--space-2); color: var(--text-faint);
+}
+.theme-pick:hover:not(:disabled) { border-color: var(--accent); }
+.theme-card--on .theme-pick { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.theme-band {
+  display: grid; place-items: center;
+  block-size: 58px; border-radius: var(--radius-sm);
+  /* The same gradient the storefront paints, at the size a card can hold. Not a
+     tinted square: the seller is looking at their own name on their own band. */
+  background-image: linear-gradient(135deg, var(--theme-from, var(--gray-700)), var(--theme-to, var(--gray-800)));
+}
+.theme-band-name { font-weight: 700; color: var(--theme-ink, #fff); }
+/* "Default" is not a palette, so its swatch is not a colour: it is the page's own
+   surface with a dashed edge. Showing the first palette's fallback gradient there
+   would be the card lying about what the store looks like today. */
+.theme-band--plain {
+  background-image: none;
+  background: var(--surface-sunken);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+.theme-band--plain .theme-band-name { color: var(--text-primary); }
+.theme-body { display: grid; gap: 0.15rem; }
+.theme-title { font-weight: 600; display: flex; gap: var(--space-2); align-items: baseline; }
+.theme-motion { font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); }
+
+/* What a tier opens. The locked files ARE the offer — a tier promising "bonus
+   content" converts nobody, and the researched shape (Patreon's tier list,
+   Substack's locked posts in the feed) is to name the things. */
+.tier-opens { display: grid; gap: var(--space-2); margin-top: var(--space-2); }
+.tier-file-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.2rem; }
+.tier-file-list li { display: flex; gap: var(--space-2); align-items: baseline; }
+.tier-file-list .locked-glyph { font-size: var(--text-2xs); opacity: 0.8; }
+
+@media (max-width: 560px) {
+  .store-head { padding: var(--space-5) var(--space-4); }
+  .store-head--themed::after { inset-inline: var(--space-4); }
+  .theme-grid { grid-template-columns: 1fr 1fr; gap: var(--space-3); }
+  .theme-band { block-size: 44px; }
+}
+
+/* The name effect, and why it is a halo rather than a gradient.
+   Discord's display-name styles put the gradient on the glyphs; the research on
+   gradient TEXT is that it is checked at its worst stop, not its average, which is
+   why this product keeps a member's name a solid colour. What the top tier gets
+   instead is a soft halo in the palette's DEEP stop, animated slowly — the glyph
+   pixels never change, so the contrast the palette test proved is the contrast a
+   reader gets, in both themes, before and after the animation.
+
+   The halo goes dark-side on purpose: on the night theme a dark halo around a
+   light name raises the edge contrast, and on the day theme it is a soft shadow
+   under dark ink. A light halo would do the opposite in both, which is the trap
+   in copying the effect without copying the arithmetic. */
+.member-name--aurora {
+  text-shadow: 0 0 10px color-mix(in srgb, var(--plate-b, var(--indigo-700)) 70%, transparent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .member-name--aurora {
+    animation: plate-halo 6.5s var(--ease-standard, ease-in-out) infinite alternate;
+  }
+}
+@keyframes plate-halo {
+  from { text-shadow: 0 0 8px color-mix(in srgb, var(--plate-b, var(--indigo-700)) 55%, transparent); }
+  to { text-shadow: 0 0 18px color-mix(in srgb, var(--plate-b, var(--indigo-700)) 85%, transparent); }
+}
+/* And the row itself: a 1px gradient edge for the top tier only. */
+.member--top {
+  border-color: color-mix(in srgb, var(--plate-a, var(--indigo-600)) 45%, var(--border-subtle));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--plate-a, var(--indigo-600)) 22%, transparent);
 }

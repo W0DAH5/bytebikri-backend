@@ -434,6 +434,14 @@ if (memberStore) {
     await store.setMembershipNote({ channelId: memberStore.id, note, actorId: nimaOwner });
   }
 
+  // A theme, because a storefront that has been dressed is the only way to see
+  // whether the band is subtle or loud — and `everest` is one of the two that
+  // drifts, which is the motion that has to be checked against real text.
+  const themed = await store.setChannelTheme({
+    channel: await store.channelById(memberStore.id), theme: 'everest', actorId: nimaOwner,
+  });
+  if (!themed.ok) say('store theme', `refused: ${themed.reason}`);
+
   // The file only elites open. Created through the store, approved the way an
   // operator approves one (there is no other honest way to make a file public),
   // with a cover and real bytes so the locked card is a picture rather than a

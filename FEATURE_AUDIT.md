@@ -262,6 +262,9 @@ single-asset management, and search.
 | Notifications | delegated in the model; nothing implemented |
 | Refund/dispute flow | decided: harsh measures; no mechanism |
 | KYC verification flow | **built in §29** — the document is handed over, stripped of metadata before it is stored, destroyed the moment a decision is recorded, and after seven days either way |
+| A storefront theme (the plans' `can_theme`) | **built in §31** — six curated palettes, each proven at ≥5.5:1 for white at both ends of its gradient and at the middle, a live preview on the seller's own store name, motion that is opt-in per device, and the capability read from the plan rather than restated |
+| Per-store fonts, free-form colours, seller CSS | absent **on purpose**: each is a claim about readability that no test can keep, and each can be priced and proven on its own later |
+| A per-store footer removal (`remove_footer`) | **still open** — the fourth capability sitting in the same plans table with no reader. Not a colour, so it is not part of §31, and it should be built or removed from the plans rather than left as a bullet nobody prints |
 | Paying a creator directly | **built in §30** — members: two tiers the store names, dues the member sends the creator and the creator alone confirms, a roster with plates, and files that open with no ad while the period runs |
 | Following a store | **built in §28** — a shelf at `/library`, a count of what appeared since you last looked, and no notification promised anywhere, because this product sends buyers none |
 | Offline viewing (Android) | absent **on purpose**: a disk cache of unlocked media is a leak with a progress bar |
@@ -2442,3 +2445,142 @@ the payment instruction, the two tier editors, and who is in.
   below the header at both widths.
 - Driven over HTTP: the storefront, the file page as a member (opens with "91 days left" and no
   ad), the seller's queue with the seeded claim.
+
+---
+
+## §31 — The storefront look the plans had been selling since migration 0001
+
+### What was asked
+
+Continue the paid-feature round: "discord like design additions in channel/store for payers —
+design additions, animations (store features) effect and animations on names, texts etc (do your
+research) like example what discord does (other app research)". The member plates and the name
+effect shipped in §30. This section is the **store-level** half: the look of the shop itself.
+
+### What the recon found, before anything was built
+
+`plans.capabilities.can_theme` has been `false` on Free and `true` on Store and Pro **since
+migration 0001** — written into the seeded capabilities of both paid plans, documented in the
+column's own comment, and **read by nothing in the product**. Not by the routes, not by the views,
+not by a test. `planBenefits` did not list it either: the line that would have printed read
+`c.theme_custom`, a capability name that exists on no plan, so it was dead code in a benefit list.
+Two halves of one gap — a bullet that could never print, for a feature that was never built —
+sitting under a price for three migrations. This is the same shape as the badge in §25 and the
+identity check in §29, and the third time this audit has found a capability with a price tag and no
+behaviour behind it.
+
+### What was built
+
+**A curated list of six palettes, not a colour picker** — `app/src/themes.js`, migration
+`0032_store_theme.sql` (`channels.theme`, `channels.theme_set_at`).
+
+The research is Gumroad's design tab and Linktree's pricing page. Gumroad ships **curated** fonts
+and colours with a preview that updates as you choose — a list, not a wheel. Linktree puts custom
+colours and backgrounds behind its paid plans and keeps "basic themes" free. This feature takes the
+first half of each and refuses the second, for a reason that is arithmetic: **a storefront whose
+text colour is chosen by the seller is a page whose contrast no test can check.** So the palettes
+are chosen to pass, and `test/themes.test.js` proves it at both ends of every gradient *and at the
+middle* — where a two-point check would miss a collapse — with white at **≥5.5:1 everywhere**, which
+is the margin that lets the band's secondary ink (92% white) clear the 4.5:1 body floor with room
+left over.
+
+**The band, and only the band.** The theme paints the store's own header — name, tagline, counts,
+badges, follow button — as an opaque gradient of the palette's two stops, with every word on it
+white. It reaches nothing else: the file cards, the buttons on them and the member plates keep the
+product's colours. Opaque rather than a wash is the decision that makes the whole feature checkable:
+a wash would need measuring against both the day and the night surface and would be too faint to
+notice on either; an opaque band is identical in both, so one number per stop governs every word in
+it, in both directions. Pills and the button inside the band invert to a white surface with the
+palette's deep stop as ink — the same ratio read the other way, so nothing inside the band opens a
+second contrast question.
+
+**Three of the six drift, and every drift is opt-in.** The animation lives inside
+`@media (prefers-reduced-motion: no-preference)`, moves `background-position` only (never the text),
+and takes 26 seconds to cross. Measured in a browser: `animation-name: theme-drift` under
+`no-preference`, `none` under `reduce`, with the theme itself still showing.
+
+**The gate is honest on both sides.** A paid store gets the six cards, a live preview of **its own
+name** on each band, and the way back to the default as a first-class choice. A Free store sees the
+same six at full colour with a `Store plan` chip on each and one sentence saying what the plan adds
+and what it keeps — the cards are *not* dimmed, because a washed-out pastel is a picture of nothing
+and the swatch is the one thing on that page that sells the feature. Hiding the list would be the
+other kind of lie: a capability nobody knows about is a capability nobody buys, and this one has
+spent three migrations in exactly that state.
+
+**The gate is read, never restated.** `store.setChannelTheme` resolves the capability through
+`this.plan(channel)` — the one method that knows about grace periods and pending upgrades — and
+`updateChannel`'s allow-list deliberately does **not** carry `theme`, so no future form that posts
+the whole channel set can set one on a Free store. The audit row records the **previous** value,
+because "when did my shop start looking like this" is asked after a rebrand.
+
+**And the pricing page now admits the feature exists**: the dead `theme_custom` line is replaced by
+`can_theme` and a sentence saying what the look is. `test/billing.test.js` now holds the capability
+and the sentence together in both directions — a plan that can theme must say so, and a Free plan
+must not be sold it.
+
+### Also in this section: the premium showcase
+
+The tier cards now **name the files they open**, with a lock glyph and a link to each — the shape
+Patreon's tier list and Substack's locked posts both use, and the reason a card promising "bonus
+content" converts nobody. A tier with nothing behind it says so out loud, on the storefront, where
+the seller will see it. The seller's own tier editor reads back what is behind each tier from their
+full file list — paused files included — so deleting a tier never happens blind.
+
+### What went wrong, and what was found by looking
+
+1. **The first live screenshot showed the name hard against the edge of the band.** The band rule
+   was written as `.store-head--themed` only; the product's plain `.store-head` had never carried a
+   padding because it had never carried a background. Fixed by giving the box itself the padding and
+   the radius, so "Default" is a colour change and never a layout change.
+2. **The first arithmetic was wrong, and the test said so.** The wash was 10% over the surface —
+   which made every palette fail on the night theme (everest 2.66:1) and put the rule under the
+   threshold in both. The band became opaque and the palettes were re-picked against the numbers
+   rather than the numbers being loosened to fit the palettes. `#1d4ed8` → `#1e3a8a`, and so on.
+3. **`--theme-from`, `--theme-to` were referenced but never defined** — the `:root` omission this
+   repository has hit twice before (`--plate-*` in §30). Caught by `ui.test.js`, fixed at the base.
+4. **The theme route built a fragment wrong** — `#theme?error=x` is a fragment called
+   `theme?error=x`, which the browser never sends. Caught by `verification.test.js`'s per-route
+   sweep; now `back(qs)` with the query built before the anchor, the same shape the verification
+   routes use.
+5. **`$2::text`** — Postgres could not infer the type of a parameter that appears only inside
+   `is null` (42P18), so the first palace of the update failed.
+6. **The roster table slid off a phone.** `columns.mjs` found five columns 570px wide inside a
+   350px box on `/dashboard/:slug/members`. It is the table a seller opens on a phone, in a queue,
+   checking who paid — now `table-stacked` with every cell labelled.
+7. **`planBenefits` was reading `theme_custom`**, a capability that exists on no plan. Dead code
+   for an unbuilt feature; now `can_theme`, and asserted.
+8. **A `test/ui.test.js` assertion had become a proxy.** The old test asserted `/disabled/` was
+   absent from the paid settings page — which stopped meaning "the listing radio works" the moment
+   the page grew a second gated control. Narrowed to the control it is about, and the theme control
+   got its own test.
+9. **Montage panels are not self-describing.** The first assembly put the "after" caption under the
+   "before" panel. Rebuilt with a fixed geometry and re-read.
+
+### What was run
+
+- `npm test` — **553 / 553 / 0**, including eleven new tests in `test/themes.test.js` (white at
+  ≥5.5:1 at both ends and the middle of every gradient, the 92% ink at the body floor, the inverted
+  controls measured against the same ratio, the curated-list invariants, the tokens the page paints
+  are the tokens the tests composite, the two emitted properties and nothing else, every refusal
+  (`theme-unknown`, free-form hex, markup), the capability read from the real `PLANS`, the motion
+  sentence for both kinds of palette, every drifting rule inside its guard, and the band reaching
+  nothing below it), three new member tests for the showcase and the roster's phone shape, and the
+  billing test that holds the capability to the pricing line.
+- `ci/eyes/sweep.mjs` — **66 clean, 0 with findings** (two pages more than §30: the theme adds no
+  route but the sweep list grew).
+- `ci/eyes/columns.mjs` — **32 tables on 19 pages, 0 findings at 390px** (was 1 finding; the roster
+  fix above).
+- Browser-measured: the band's computed gradient in both themes, white ink at `rgb(255,255,255)`,
+  the drift present under `no-preference` and absent under `reduce`, the chooser's seven cards with
+  the theme in force marked `aria-pressed="true"`, and the Free store's cards disabled but
+  full-colour.
+- Driven over HTTP: Nima's storefront (banded), a free store's settings page (all six shown, chip
+  on each), and the storefront's tier cards naming the file behind each tier.
+
+### What is deliberately not here
+
+Per-store fonts, free-form colours, seller-authored CSS, and a per-store footer removal
+(`remove_footer`, the fourth capability in the same boat as `can_theme`). Each is a promise about
+readability or about what the platform is that no test can keep, and each can be built, checked and
+sold on its own terms later. The audit's missing-surface table records them as open rather than
+solved.

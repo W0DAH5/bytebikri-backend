@@ -50,6 +50,9 @@ import { ALLOWED_TYPES, MAX_BYTES, HOLD_DAYS, extFor } from './kyc.js';
 // the plate palettes, the tier validation and the one money sentence are shared
 // with the routes without a view module ever reaching for a database.
 import {
+  THEMES, THEME_KEYS, THEME_NOTE, THEME_FREE_LINE, NO_THEME, themeOf, themeStyle, motionNote,
+} from './themes.js';
+import {
   ACCENTS, ACCENT_KEYS, PERIODS, CLAIM_METHODS, PLATE_COPY, MONEY_LINE, FREE_PLAN_LINE,
   CONFIRM_LINE, LAPSE_LINE, accentOf, plateStyle, tierByNo, duesLine, methodLabel,
   membershipState, daysLeft, defaultTierName,
@@ -733,11 +736,16 @@ function plateStyleAttr(accentKey) {
 function memberPlate({ name, accent = 'indigo', tier = null, style = 'solid', joined = null, me = false }) {
   const label = String(name || 'Member');
   const initial = label.trim().slice(0, 1).toUpperCase() || 'M';
-  return `<li class="member${me ? ' member--me' : ''}">
-  <span class="member-avatar${style === 'gradient' ? ' member-avatar--shine' : ''}"
+  // The top tier's row is marked so it can carry the glow and the edge; the entry
+  // tier's is not. One thing shines or nothing stands out — Discord's own advice
+  // for its role styles, and the reason this is derived from the tier rather than
+  // offered as a preference a store can spread across everybody.
+  const top = style === 'gradient';
+  return `<li class="member${me ? ' member--me' : ''}${top ? ' member--top' : ''}">
+  <span class="member-avatar${top ? ' member-avatar--shine' : ''}"
         style="${plateStyleAttr(accent)}" aria-hidden="true">${esc(initial)}</span>
   <span class="member-body">
-    <span class="member-name" style="${plateStyleAttr(accent)}">${esc(label)}</span>
+    <span class="member-name${top ? ' member-name--aurora' : ''}" style="${plateStyleAttr(accent)}">${esc(label)}</span>
     ${tier ? `<span class="member-tier${style === 'gradient' ? ' member-tier--shine' : ''}"
         style="${plateStyleAttr(accent)}">${esc(tier)}</span>` : ''}
   </span>
@@ -838,9 +846,17 @@ function myMembershipCard({ channel, membership, tiers, rosterSize = 0 }) {
  * payment form above the explanation asks somebody to trust a number with no
  * context, and the money line sits directly under the button, not in a footer.
  */
-function joinPanel({ channel, user, tiers, membership, flash = null }) {
+function joinPanel({ channel, user, tiers, membership, assets = [], flash = null }) {
   const state = membershipState(membership);
   if (state === 'active' || state === 'pending') return '';
+  // THE PREMIUM SHOWCASE, and it is the researched shape rather than a guessed one:
+  // every membership product worth copying shows the LOCKED THINGS on the tier card
+  // (Patreon lists the posts a tier opens; Substack shows premium posts in the feed
+  // with a lock on them). A tier that promises "bonus content" converts nobody —
+  // what converts is a named file with a cover and a link.
+  const opensForTier = (tierNo) => assets.filter(
+    (a) => a.unlock_mode === 'members' && (Number(a.member_tier) || 1) <= Number(tierNo),
+  );
   const cards = tiers.map((t) => {
     const plate = plateStyle(t.tier_no);
     return `<li class="tier-card${plate === 'gradient' ? ' tier-card--elite' : ''}" style="${plateStyleAttr(t.accent)}">
@@ -853,6 +869,20 @@ function joinPanel({ channel, user, tiers, membership, flash = null }) {
         </div>
       </div>
       ${t.perks ? `<p class="tier-perk">${esc(t.perks)}</p>` : ''}
+      ${(() => {
+    const opens = opensForTier(t.tier_no);
+    if (!opens.length) {
+      return `<p class="tier-opens fine">No files are set to members-only yet — nobody can join until there is
+        something behind the door.</p>`;
+    }
+    return `<div class="tier-opens">
+      <span class="fine">${plural(opens.length, 'file')} open to this tier, with no ad:</span>
+      <ul class="tier-file-list">
+        ${opens.slice(0, 4).map((a) => `<li><span class="locked-glyph" aria-hidden="true">🔒</span><a href="/s/${esc(channel.slug)}/a/${esc(a.slug)}">${esc(a.title)}</a></li>`).join('')}
+        ${opens.length > 4 ? `<li class="fine">and ${opens.length - 4} more</li>` : ''}
+      </ul>
+    </div>`;
+  })()}
       <p class="fine">${esc(PLATE_COPY[plate])}${plate === 'gradient' ? ' — and the top tier is the only one that wears it' : ''}</p>
       <div class="plate-sample" aria-label="${esc(PLATE_COPY[plate])}">
         <span class="member-avatar${plate === 'gradient' ? ' member-avatar--shine' : ''}"
@@ -944,7 +974,7 @@ function joinPanel({ channel, user, tiers, membership, flash = null }) {
  * in — a locked thing people can see is a shop window, and the researched lesson
  * from every paywall is that the teaser is never the thing behind the wall.
  */
-function membersSection({ channel, user, tiers, membership, roster, membershipsOn, flash = null }) {
+function membersSection({ channel, user, tiers, membership, roster, membershipsOn, assets = [], flash = null }) {
   if (!tiers.length) return '';
   const named = roster.filter((m) => m.profile_id !== user?.id);
   return `<section class="section" id="members">
@@ -956,7 +986,7 @@ function membersSection({ channel, user, tiers, membership, roster, membershipsO
   ${flash ? `<div class="note note-${flash.kind === 'danger' ? 'warning' : 'success'}" role="status">${esc(flash.message)}</div>` : ''}
   ${memberRoster(named)}
   ${membership ? myMembershipCard({ channel, membership, tiers, rosterSize: named.length }) : ''}
-  ${membershipsOn ? joinPanel({ channel, user, tiers, membership }) : ''}
+  ${membershipsOn ? joinPanel({ channel, user, tiers, membership, assets }) : ''}
 </section>`;
 }
 
@@ -967,6 +997,11 @@ export function storefront({
   // whether the plan includes the feature at all. Empty tiers means the section
   // is not rendered — a store that does not use this looks exactly as it did.
   tiers = [], membership = null, roster = [], membershipsOn = false, memberFlash = null,
+  // The store's chosen look. `themeStyle` is three custom properties rather than a
+  // class per theme, so a new palette is one entry in `themes.js` and no stylesheet
+  // change — and the band it paints sits behind text this module already colours,
+  // which is what keeps contrast the same question it was before themes existed.
+  theme = null, themeStyle = '',
 }) {
   const cards = assets.map((a) => {
     const open = a.unlock_mode === 'open';
@@ -1035,7 +1070,7 @@ ${countryBlocked ? `<div class="section" style="margin-bottom:0">
   </div>
 </div>` : ''}
 
-<div class="section" style="margin-bottom:0">
+<div class="section store-head${theme ? ` store-head--themed` : ''}"${themeStyle ? ` style="${esc(themeStyle)}"` : ''}>
   <div class="row">
     <h1>${esc(channel.name)}</h1>
     ${channel.listing_mode === 'marketplace'
@@ -1065,7 +1100,7 @@ ${placed.head}
 </section>
 
 
-${membersSection({ channel, user, tiers, membership, roster, membershipsOn, flash: memberFlash })}
+${membersSection({ channel, user, tiers, membership, roster, membershipsOn, assets, flash: memberFlash })}
 
 ${placed.mid}
 ${placed.foot}`,
@@ -5055,9 +5090,69 @@ ${pageHead(channel, 'billing', 'Billing', `Two things cost money here, and both 
 // Store settings
 // ---------------------------------------------------------------------------
 
+/**
+ * The look of the store.
+ *
+ * A row of swatches, not a colour picker, and the reason is on the page rather
+ * than in a comment: each one is checked for readability before it can be offered.
+ * The card that shows the choice IS the preview — the band with the store's own
+ * name on it, painted with the theme's palette at the alpha the storefront uses —
+ * so a seller sees the actual thing and not a coloured square.
+ *
+ * Free stores see the same list, dimmed, with the one sentence that says what the
+ * plan adds and what they keep. Hiding it would be the other kind of lie: a
+ * feature nobody knows about is a feature nobody buys, and this product's plans
+ * page has already spent three migrations selling this one without a reader.
+ */
+function themeChooser({ channel, themes, canTheme }) {
+  const current = channel.theme ?? null;
+  const card = (key, label, note, style, animated) => {
+    const active = key === current;
+    return `<form method="post" action="/dashboard/${esc(channel.slug)}/theme" class="theme-card${active ? ' theme-card--on' : ''}">
+      <input type="hidden" name="theme" value="${esc(key)}">
+      <button class="theme-pick" type="submit"${canTheme ? '' : ' disabled'}
+              aria-pressed="${active ? 'true' : 'false'}">
+        <span class="theme-band${style ? '' : ' theme-band--plain'}" style="${style}" aria-hidden="true">
+          <span class="theme-band-name">${esc(channel.name)}</span>
+        </span>
+        <span class="theme-body">
+          <span class="theme-title">${esc(label)}${animated ? '<span class="theme-motion" title="drifts slowly, and stops for anyone who asks for less motion">· moves</span>' : ''}${canTheme ? '' : '<span class="theme-lock">Store plan</span>'}</span>
+          <span class="fine">${esc(note)}</span>
+        </span>
+      </button>
+    </form>`;
+  };
+
+  const plain = card(NO_THEME, 'Default', 'The storefront every store has: no tint, no motion, nothing to decide.',
+    '', false);
+
+  return `<div class="theme-grid">
+    ${plain}
+    ${themes.map((t) => card(t.key, t.label, t.note, themeStyle(t.key), t.animated)).join('')}
+  </div>
+  ${canTheme
+    ? `<p class="fine">${esc(THEME_NOTE)} ${themeMotionLine(channel.theme)}</p>`
+    : `<p class="fine">${esc(THEME_FREE_LINE)}</p>
+       <a class="btn btn-sm btn-primary" href="/dashboard/${esc(channel.slug)}/billing">See what the plan adds</a>`}`;
+}
+
+/**
+ * What moves, said for the theme the store currently has.
+ *
+ * The sentence is `motionNote` from themes.js rather than a second copy here: the
+ * question "will my shop move now" is answered by the same string the module that
+ * knows whether a palette animates can produce, and two copies of that answer is
+ * how a page ends up promising stillness for a theme that drifts.
+ */
+function themeMotionLine(key) {
+  return `${motionNote(key)} The rest of the page never moves with it.`;
+}
+
 export function storeSettings({
   channel, user, consent = null, flash = null, plan, canList = false,
   subscription = null, stats = {}, verification = null, pendingRequest = null, capabilities = {},
+  // The storefront's look: the curated palettes, and whether this plan may pick one.
+  themes = [], canTheme = false,
 }) {
   // Who is behind the store. Shown as a state, not a score: the panel says what a
   // check is, what it costs nobody, and what we keep (the outcome — never a copy).
@@ -5218,6 +5313,15 @@ ${flashNote(flash)}
       <span class="fine">Changes are visible immediately.</span>
     </div>
   </form>
+
+  <section class="section" id="theme">
+    <div class="section-head">
+      <h2>The look of your store</h2>
+      <p>A band of colour behind your name on your storefront. Nothing below it changes: your files,
+        the buttons on them and your members' plates keep the product's colours.</p>
+    </div>
+    ${themeChooser({ channel, themes, canTheme })}
+  </section>
 
   <section class="section" id="verification">
     <div class="section-head">
@@ -5408,6 +5512,9 @@ ${flashNote(flash)}
 export function channelMembers({
   channel, user, consent = null, flash = null, tiers = [], members = [],
   pending = [], membershipsOn = false, plan = null, now = new Date(),
+  // The store's files, published or paused: the tier editor says what is behind
+  // each tier, and the answer has to be the seller's real list, not the public one.
+  files = [],
 }) {
   if (!membershipsOn) {
     return layout({
@@ -5433,6 +5540,10 @@ ${flashNote(flash)}
     const t = tierByNo(tiers, tierNo) || { tier_no: tierNo, name: defaultTierName(tierNo), dues_npr: 0, period_months: 1, perks: null, accent: 'indigo' };
     const plate = plateStyle(tierNo);
     const holders = members.filter((m) => Number(m.tier_no) === tierNo).length;
+    // A seller editing what a tier costs should be able to see what it currently
+    // gives away, without opening five file pages. Read from the same list the
+    // storefront reads, so the two cannot disagree about what is behind the door.
+    const behind = files.filter((a) => a.unlock_mode === 'members' && (Number(a.member_tier) || 1) <= tierNo);
     const accentOptions = ACCENT_KEYS.map((k) => `<option value="${k}"${t.accent === k ? ' selected' : ''}>${esc(ACCENTS[k].label)}</option>`).join('');
     const periodOptions = PERIODS.map((p) => `<option value="${p}"${Number(t.period_months) === p ? ' selected' : ''}>${p === 1 ? 'a month' : p === 3 ? 'every three months' : 'a year'}</option>`).join('');
     return `<form class="tier-editor" method="post"
@@ -5473,6 +5584,10 @@ ${flashNote(flash)}
         <button class="btn btn-primary btn-sm" type="submit">Save tier ${tierNo}</button>
         ${holders ? '' : `<button class="btn btn-sm" type="submit" formaction="/dashboard/${esc(channel.slug)}/members/tier/${tierNo}/remove">Remove</button>`}
       </div>
+      <p class="fine">${behind.length
+    ? `Behind this tier now: ${behind.map((a) => esc(a.title)).join(', ')}.`
+    : 'Nothing is behind this tier yet — a file only reaches members when its own page says “Members only”, so nobody can join for nothing.'}
+      ${behind.length ? '' : 'Set a file to members-only and it will show up here, and on the tier card buyers read.'}</p>
       ${holders ? `<p class="fine">Remove is off while ${holders === 1 ? 'one person holds' : `${holders} people hold`} this
         tier — you can rename it and change what it costs, but not delete what they paid for.</p>` : ''}
     </form>`;
@@ -5510,13 +5625,17 @@ ${flashNote(flash)}
     const state = membershipState(m, now);
     const left = daysLeft(m.period_end, now);
     const label = { active: 'current', pending: 'waiting', rejected: 'not found' }[state] || 'ended';
+    // Every cell labelled, so the row stacks into a readable block on a phone
+    // instead of sliding off the side of it. The roster is the one table on this
+    // page a seller opens on a phone — they are checking who paid while standing in
+    // a queue — and five columns never fitted in 350 pixels.
     return `<tr>
-      <td>${memberPlate({ name: m.display_name, accent: m.accent, tier: m.tier_name, style: plateStyle(m.tier_no) })}</td>
-      <td>${m.joined_at ? longDay(m.joined_at) : '—'}</td>
-      <td><span class="pill${state === 'active' ? ' pill-success' : state === 'pending' ? '' : ' pill-warning'}">${esc(label)}</span>
+      <td data-label="Member">${memberPlate({ name: m.display_name, accent: m.accent, tier: m.tier_name, style: plateStyle(m.tier_no) })}</td>
+      <td data-label="Joined">${m.joined_at ? longDay(m.joined_at) : '—'}</td>
+      <td data-label="State"><span class="pill${state === 'active' ? ' pill-success' : state === 'pending' ? '' : ' pill-warning'}">${esc(label)}</span>
         ${state === 'active' && left !== null ? `<span class="fine">${plural(left, 'day')} left</span>` : ''}</td>
-      <td>${m.confirmed_at ? longDay(m.confirmed_at) : 'not confirmed'}</td>
-      <td class="fine">${m.publicly_listed ? 'named on the storefront' : 'hidden from the list'}</td>
+      <td data-label="Confirmed">${m.confirmed_at ? longDay(m.confirmed_at) : 'not confirmed'}</td>
+      <td class="fine" data-label="Listed">${m.publicly_listed ? 'named on the storefront' : 'hidden from the list'}</td>
     </tr>`;
   }).join('');
 
@@ -5572,7 +5691,7 @@ ${flashNote(flash)}
       record of who paid is yours to keep even after their period runs out.` : 'Nobody yet.'}</p>
   </div>
   ${members.length
-    ? `<div class="table-scroll"><table class="table">
+    ? `<div class="table-scroll"><table class="table table-stacked">
         <thead><tr><th>Member</th><th>Joined</th><th>State</th><th>Confirmed</th><th>Listed</th></tr></thead>
         <tbody>${roster}</tbody>
       </table></div>`
