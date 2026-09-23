@@ -8107,6 +8107,28 @@ ${flashNote(flash)}
 
   <div class="panel" style="margin-top:var(--space-6)">
     <div class="panel-head">
+      <h2>${esc(moneyMap.toCreatorFromMembers.label)}</h2>
+      <span class="spacer"></span>
+      ${pill(moneyMap.toCreatorFromMembers.cut, 'success')}
+    </div>
+    <div class="panel-body">
+      <p class="small">${esc(moneyMap.toCreatorFromMembers.detail)}</p>
+      <dl class="kv" style="margin-top:var(--space-4)">
+        <dt>Paid by</dt><dd>${esc(moneyMap.toCreatorFromMembers.payer)}</dd>
+        <dt>Into</dt><dd>${esc(moneyMap.toCreatorFromMembers.account)}</dd>
+        <dt>Held by bytebikri</dt><dd><strong>${esc(moneyMap.toCreatorFromMembers.held)}</strong></dd>
+      </dl>
+      <p class="fine">
+        This leg is on the map for the same reason the other two are: a page that claims to show where
+        the money goes cannot leave out the flow that does not touch it. Your
+        <a href="/dashboard/${esc(channel.slug)}/members">members page</a> is where the roster and the
+        dues-in-flight live.
+      </p>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:var(--space-6)">
+    <div class="panel-head">
       <h2>Our estimate, next to the statement</h2>
       <span class="spacer"></span>
       <span class="fine">assumed $${Number(rpmUsd).toFixed(2)} per 1,000 views</span>

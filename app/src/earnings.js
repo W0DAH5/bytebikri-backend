@@ -453,6 +453,27 @@ export const MONEY_MAP = {
     cut: '0% to bytebikri',
     detail: 'The advertiser pays the network. The network pays your account. bytebikri is not a party to either leg and cannot see the balance.',
   },
+  /*
+   * The third leg, and the one memberships added: a member sends the creator money
+   * with bytebikri nowhere in the path. It belongs on this map — the page's own
+   * heading is "Where the money goes, and who is holding it. It is not us" — and the
+   * map was written when there were only two legs. A money map that omits a flow
+   * because the platform is not a party to it is a map that stops being true the
+   * first time somebody pays somebody here.
+   *
+   * The answers are phrases of the same length as their neighbours, because this
+   * structure is rendered as four equal boxes on the landing hero (see
+   * test/design.test.js) — the dues leg is not in that map, but keeping the same
+   * shape is what stops the next person adding one that is.
+   */
+  toCreatorFromMembers: {
+    label: 'Your members’ dues',
+    payer: 'Your members',
+    account: 'Your own account',
+    held: 'Nothing, ever',
+    cut: '0% to bytebikri',
+    detail: 'A member sends the dues straight to you — eSewa, Khalti, bank, whatever you wrote down. bytebikri never receives them, cannot confirm or refund one, and takes no share: not a 0% rate, an absence of a path.',
+  },
   toPlatform: {
     label: 'What you pay bytebikri',
     payer: 'You',

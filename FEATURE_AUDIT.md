@@ -2671,6 +2671,15 @@ half-built.
   the `minTenantSlotsBeforeTax` threshold **from `slots.js`**, so the panel and the allocation policy
   cannot drift.
 
+**The money map gained its third leg.** `MONEY_MAP` had two entries — what the network pays the
+creator, and what the creator pays the platform — and the earnings page's own heading is *"Where the
+money goes, and who is holding it. It is not us."* Memberships added a flow between two people who
+are both not us, and a map that omits a flow because the platform is not a party to it stops being a
+map the first time somebody pays somebody here. `toCreatorFromMembers` now renders as its own panel
+on the earnings page: paid by your members, into your own account, **held by bytebikri: nothing,
+ever**, **0% to bytebikri**. Same four-phrase shape as the other legs, and the earnings test holds
+that shape, because this structure is also the landing hero's four equal boxes.
+
 **The seller's page gained a section, "Where the money goes"** — four rows: what they collect, what
 bytebikri charges them (two things, named with prices), where the ad positions are (arithmetic:
 "you keep 4 of the 5"), and what their members will see. The rent figure itself stays on the earnings
@@ -2693,7 +2702,9 @@ Memberships turned out to be a lie-detector for sentences written when nothing h
 
 ### What was run
 
-- `npm test` — **555 / 555 / 0**, including two new tests: the seller's rows are arithmetic read from
+- `npm test` — **555 / 555 / 0**, including three new tests: the money map's third leg (its answers
+  are phrases of the same length as its neighbours', and its detail names rails a Nepali member can
+  actually use); the seller's rows are arithmetic read from
   the slot policy (and a short page is told "no rent to price" instead of a split of positions never
   taken from it), and the member's promise is present on the selling page **before** anybody sends
   money, on the anonymous branch too, and on their own card afterwards.

@@ -190,6 +190,19 @@ test('the money map states both directions, and the payer on each leg', () => {
   assert.match(MONEY_MAP.toPlatform.detail, /neither is a share of what you earn/i);
   assert.match(MONEY_MAP.toPlatform.detail, /dues/i,
     'and the line names the money a member sends, rather than pretending it does not exist');
+
+  // The third leg: memberships added a flow between two people who are not us, and a
+  // map whose heading is "Where the money goes, and who is holding it. It is not us"
+  // cannot omit it. Same shape as the other two, so the page renders it the same way.
+  const dues = MONEY_MAP.toCreatorFromMembers;
+  assert.equal(dues.cut, '0% to bytebikri');
+  assert.equal(dues.held, 'Nothing, ever');
+  assert.equal(dues.payer, 'Your members');
+  for (const phrase of [dues.payer, dues.account, dues.held, dues.cut]) {
+    assert.ok(phrase.length <= 24, `a money-map answer is a phrase: "${phrase}"`);
+  }
+  assert.match(dues.detail, /ESewa|eSewa|Khalti|bank/,
+    'the detail names rails a Nepali member can actually use');
   // The one thing that must never appear: bytebikri holding or forwarding it.
   // "cannot see the balance" is allowed and deliberate — naming the balance is
   // the point. Claiming one is not.
