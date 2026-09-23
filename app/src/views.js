@@ -42,6 +42,10 @@ import {
   METHODS, methodOf, stateOf, lapseOf, withinNoticeWindow, badgeFor, whatItMeans, requestability, STATE_WORDING,
   DEFAULT_MONTHS, LAPSE_WINDOW_DAYS,
 } from './verification.js';
+// What may be handed over and how long it is held, from the same module the upload
+// route enforces it with. The page prints the number and the rule; a promise about a
+// week that is written twice is a promise that drifts.
+import { ALLOWED_TYPES, MAX_BYTES, HOLD_DAYS, extFor } from './kyc.js';
 
 const FAMILY_LABELS = Object.fromEntries(AUDIT_FAMILIES.map((f) => [f.key, f.label]));
 
@@ -762,6 +766,87 @@ ${placed.head}
 ${placed.mid}
 ${placed.foot}`,
   });
+}
+
+/**
+ * Handing a document over, while a check is open.
+ *
+ * Three states and each one is a different sentence, because a person who has just
+ * sent a photo of their citizenship needs to know exactly one thing: what happens
+ * to it now. Held → destroyed when a person decides, and after the week either way.
+ * Destroyed with the request still open → hand it over again. No request → ask
+ * first, and the button that opens the ask is above this.
+ *
+ * The copy does not say "we take security seriously" and it does not promise
+ * something we cannot do. It says where the file goes, who can open it, that every
+ * open is written down, and what is removed before it is even stored — which is the
+ * only honest kind of promise a small platform can make about somebody's identity.
+ */
+function documentBlock({ channel, pendingRequest, openRequest }) {
+  if (!pendingRequest) return '';
+  const held = pendingRequest.document_key;
+  const destroyedAt = pendingRequest.document_destroyed_at;
+  const kinds = Object.values(ALLOWED_TYPES).map((t) => t.label.replace(/ (photo|image)$/, '')).join(', ');
+  const mb = Math.round(MAX_BYTES / 1024 / 1024);
+
+  if (held) {
+    return `<div class="note note-info" role="status" style="margin-top:var(--space-4)">
+      <strong>A copy is with us, waiting for a person to look at it.</strong>
+      You handed it over ${relTime(pendingRequest.document_added_at)}. It is destroyed the moment somebody
+      records an outcome, and in ${HOLD_DAYS} days whether or not they got to it.
+      ${Number(pendingRequest.opens) ? `<span class="fine">It has been opened ${plural(Number(pendingRequest.opens), 'time')} by
+      a person on the console — every open is written down with their name on it.</span>` : '<span class="fine">Nobody has opened it yet.</span>'}
+      <span class="fine">The camera's own notes — where you were, which phone it was, the time — were removed
+      before it was stored, so what is on disk is the picture and nothing else.</span>
+      <span class="fine">The limit of what any of this can promise: a person looking at a screen can photograph
+      that screen. What we control is that only named people can open it, and that every open is written down.</span>
+    </div>
+    <form method="post" action="/dashboard/${esc(channel.slug)}/verification/document"
+          enctype="multipart/form-data" style="margin-top:var(--space-4)">
+      <div class="field">
+        <label for="v-doc-again">Sent the wrong page?</label>
+        <input class="input" id="v-doc-again" type="file" name="document" accept="${Object.keys(ALLOWED_TYPES).join(',')}" required>
+        <span class="hint">Sending another one destroys this one first. ${kinds}, up to ${mb} MB.</span>
+      </div>
+      <button class="btn btn-sm" type="submit">Replace it</button>
+    </form>`;
+  }
+
+  const again = destroyedAt
+    ? `<p class="small">The copy you handed over ${relTime(destroyedAt)} has been destroyed. Nothing of it is left —
+       not the file, not a thumbnail, not a number from it. Hand another one over if the request is still open.</p>`
+    : `<p class="small">Nobody has seen a document for this request yet. Hand one over here and a person on the
+       console opens it; or show it to somebody in person, which is the same check.</p>`;
+
+  return `<div class="note" role="status" style="margin-top:var(--space-4)">
+    <strong>${destroyedAt ? 'The copy is gone.' : 'Hand the document over here, if you would rather not wait for a person.'}</strong>
+    ${again}
+  </div>
+  <form method="post" action="/dashboard/${esc(channel.slug)}/verification/document"
+        enctype="multipart/form-data" style="margin-top:var(--space-4)">
+    <div class="field">
+      <label for="v-doc">A photo of the document</label>
+      <input class="input" id="v-doc" type="file" name="document" accept="${Object.keys(ALLOWED_TYPES).join(',')}" required>
+      <span class="hint">${kinds} — a photo taken with the phone camera is exactly right, up to ${mb} MB.</span>
+    </div>
+    <div class="panel panel-body" style="margin-bottom:var(--space-4)">
+      <ul class="list-plain">
+        <li>Only the people on the console who decide checks can open it, and <strong>every open is written down
+          with the name of the person who opened it</strong>.</li>
+        <li>The camera's own notes — where you were, which phone it was, the time — are <strong>removed before the
+          file is stored</strong>. Nobody here needs to know where you stood.</li>
+        <li>It is destroyed the moment somebody records an outcome, and in ${HOLD_DAYS} days either way. Nothing of
+          it is kept: not the file, not a thumbnail, not a number printed on it.</li>
+        <li>The record keeps the outcome — what was checked, the date, and who decided it. That is all the badge
+          has ever claimed.</li>
+      </ul>
+      <p class="fine" style="margin-top:var(--space-3)">What this cannot promise: a person looking at a screen can
+      photograph that screen. The controls here are that only named people can open it and that every open is
+      recorded, which is why the log matters more than the lock.</p>
+    </div>
+    <button class="btn btn-primary" type="submit">Hand it over</button>
+    <span class="fine">${openRequest ? '' : ''}</span>
+  </form>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -4805,6 +4890,9 @@ ${flashNote(flash)}
       <div class="panel-body">
         ${vState === 'verified' ? `
           <p class="small">${esc(badgeFor(verification).sentence)}</p>
+          ${verification.document_destroyed_at ? `<p class="fine">The copy you handed over was destroyed on
+            ${esc(longDay(verification.document_destroyed_at))} — the outcome is recorded, and nothing of the
+            document is left here.</p>` : ''}
           <p class="fine" style="margin-top:var(--space-3)">
             It lapses on ${esc(longDay(verification.expires_at))}${lapse && lapse.level !== 'current' ? ` <strong>(${esc(lapse.label)})</strong>` : ''}.
             A person here works the list of checks that are close to their date and will write to you about two
@@ -4828,6 +4916,8 @@ ${flashNote(flash)}
           ${withdrawForm()}` : ''}
         ${vState === 'rejected' ? `
           <p class="small">The last check did not go through.</p>
+          ${verification.document_destroyed_at ? `<p class="fine">The copy you handed over was destroyed on
+            ${esc(longDay(verification.document_destroyed_at))}, refusal or not — a decision is a decision.</p>` : ''}
           ${verification.notes ? `<p class="fine">What the person noted: “${esc(verification.notes)}”</p>` : ''}
           <p class="fine">It is not a finding against you, and it changes nothing about your store. Show the same
           document again, or a different one.</p>` : ''}
@@ -4836,9 +4926,10 @@ ${flashNote(flash)}
           and stopped counting on ${esc(longDay(verification.expires_at))}. Nothing was revoked — a proof of who
           somebody is ages, so it is looked at again rather than assumed for ever.</p>` : ''}
 
+        ${documentBlock({ channel, pendingRequest, openRequest: waiting })}
         ${ask.ok ? `
           <form method="post" action="/dashboard/${esc(channel.slug)}/verification"
-                style="margin-top:var(--space-5)">
+                enctype="multipart/form-data" style="margin-top:var(--space-5)">
             ${ask.detail ? `<p class="small" style="margin-bottom:var(--space-4)">${esc(ask.detail)}</p>` : ''}
             <div class="field">
               <label for="v-note">Anything we need to know to reach you? <span class="muted">(optional)</span></label>
@@ -4846,6 +4937,14 @@ ${flashNote(flash)}
                      placeholder="Where you are, or when to call.">
               <span class="hint">Logistics only. <strong>Do not paste a document number here</strong> —
               nobody needs it in writing, and this field is kept.</span>
+            </div>
+            <div class="field">
+              <label for="v-doc-ask">The document itself <span class="muted">(optional — you can send it later, or show it in person)</span></label>
+              <input class="input" id="v-doc-ask" type="file" name="document"
+                     accept="${Object.keys(ALLOWED_TYPES).join(',')}">
+              <span class="hint">A photo of the page is exactly right: ${Object.values(ALLOWED_TYPES).map((t) => t.label.replace(/ (photo|image)$/, '')).join(', ')}
+              up to ${Math.round(MAX_BYTES / 1024 / 1024)} MB. Many phones save a photo as HEIC — if it is refused, change the camera setting to
+              “most compatible”, or send a screenshot instead.</span>
             </div>
             <button class="btn btn-primary" type="submit">${vState === 'verified' ? 'Ask for the next check' : 'Ask for a check'}</button>
           </form>` : `
@@ -5804,6 +5903,53 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
  * belongs to them. Showing our own estimate beside real invoices would teach an
  * operator to trust the wrong figure.
  */
+/**
+ * The console's window onto a document a seller handed over.
+ *
+ * One image, one sentence about what opening it does, and a destroy promise that is
+ * true because the decision route keeps it — the same rule this page prints is the
+ * one `recordVerification` executes. The seller is shown the same number of opens
+ * from the same audit rows, so the two pages cannot tell different stories about who
+ * looked.
+ *
+ * The picture is NOT rendered inline as an `<img>` here. An operator opens it
+ * deliberately, in a new tab, and the open is written down with their name; a
+ * thumbnail on the queue would be a view nobody chose and a copy in the console's
+ * own cache. That is also why there is no "download" link: the file is for looking
+ * at once, not for keeping.
+ */
+function documentWindow(c, pendingRequest) {
+  if (!pendingRequest?.document_key) return '';
+  const opens = Number(pendingRequest.opens) || 0;
+  return `<div class="panel" style="margin-top:var(--space-5)">
+  <div class="panel-head">
+    <h2 style="font-size:var(--text-md)">A copy is here, waiting for a person</h2>
+    <span class="spacer"></span>
+    ${pill(opens ? `Opened ${plural(opens, 'time')}` : 'Not opened yet', opens ? 'info' : '')}
+  </div>
+  <div class="panel-body">
+    <p class="small" style="margin-top:0">
+      Handed over ${esc(relTime(pendingRequest.document_added_at))} — ${esc(pendingRequest.document_mime || 'an image')},
+      ${esc(humanBytes(pendingRequest.document_bytes))}. The camera's own notes were removed before it was stored.
+    </p>
+    <a class="btn btn-sm" href="/admin/verification/${esc(pendingRequest.id)}/document"
+       target="_blank" rel="noopener">Open the document</a>
+    <p class="fine" style="margin-top:var(--space-3)">
+      Opening it writes your name and the time into the audit log, and the seller sees the count — that is
+      the whole reason they were willing to send it. It is destroyed the moment an outcome is recorded
+      below, and in ${HOLD_DAYS} days whether or not anybody looks. Only a person on this console can open
+      it, and there is no copy anywhere else to keep.
+    </p>
+  </div>
+</div>`;
+}
+
+/** `2.4 MB` — the size of a document, said the way a person says it. */
+function humanBytes(n) {
+  const v = Number(n) || 0;
+  return v >= 1048576 ? `${(v / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(v / 1024))} KB`;
+}
+
 export function adminStoreDetail({
   user, consent = null, flash = null, data = null, rules = [], actions = [], labels = {},
   verification = null, verifications = [], pendingRequest = null,
@@ -5935,8 +6081,9 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
 <section class="section" id="verification">
   <div class="section-head">
     <h2>Who is behind this store${vState === 'verified' ? ' · checked' : vState === 'rejected' ? ' · refused' : vState === 'expired' ? ' · lapsed' : ''}</h2>
-    <p>A document was seen by a person, and what they saw is recorded here. The document is not —
-    the database refuses to store one. This is not a moderation decision: a checked seller can
+    <p>A document was seen by a person, and what they saw is recorded here. The document itself is
+    not kept: a copy handed over for a check is destroyed the moment an outcome is recorded, and
+    after ${HOLD_DAYS} days either way. This is not a moderation decision — a checked seller can
     still publish a file that gets taken down.</p>
   </div>
 
@@ -5945,6 +6092,8 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
     Asked ${esc(relTime(pendingRequest.created_at))}. Work it in the order it arrived${vState === 'verified'
     ? ` — and note that their current check runs until ${esc(longDay(verification.expires_at))}, so the badge stays up while you arrange this one.` : '.'}
   </div>` : ''}
+
+  ${documentWindow(c, pendingRequest)}
 
   ${vState === 'verified' ? `<div class="panel"><div class="panel-body">
     <div class="row" style="align-items:baseline;gap:var(--space-3);flex-wrap:wrap">
@@ -5985,8 +6134,9 @@ ${flash ? `<div class="note note-${flash.kind}" style="margin-top:var(--space-6)
   <div class="panel" style="margin-top:var(--space-5)"><div class="panel-body">
     <form method="post" action="/admin/stores/${esc(c.slug)}/verification">
       <p class="small" style="margin-bottom:var(--space-4)">
-        Look at the document somewhere else — in person, or in a call where they hold it up. Nothing
-        is uploaded here, and nothing should be: record the outcome, and the document stays with its owner.
+        Look at the document the way it suits both of you — in person, in a call where they hold it up,
+        or in the window above if they handed a copy over. Recording an outcome destroys any copy that
+        is here, in the same press: the file does not outlive the decision by a single request.
       </p>
       <div class="row" style="align-items:flex-end;gap:var(--space-4);flex-wrap:wrap">
         <div class="field" style="flex:1 1 200px">

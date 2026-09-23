@@ -165,15 +165,42 @@ if (alice && OPERATOR && !(await one(
 // its window runs from that day and it is already inside the notice band — which is
 // the state the console's "ending soon" list exists for, and the state that is
 // impossible to fake from a screenshot.
-if (nima && OPERATOR && !(await one(
-  `select id from seller_verifications where channel_id = $1 and status in ('verified','rejected')`, [nima.id]))) {
-  const seen = new Date();
-  seen.setMonth(seen.getMonth() - 23);
-  await store.recordVerification({
-    channelId: nima.id, outcome: 'verified', method: 'citizenship', actorId: OPERATOR.id,
-    months: 24, seenAt: seen, note: 'Seen in person at the shop; name matched the account.',
-  });
-  say('nima checked', `citizenship, seen ${Math.round((Date.now() - seen.getTime()) / 86400000 / 30)} months ago`);
+// A person may have worked the queue in the preview — that is what the console is
+// for, and since §30 recording an outcome is one press on a page that now has a
+// document on it. Doing so replaces the deliberate state below with a fresh
+// twenty-four-month check, and hides the "ending soon" list this store exists to
+// show. So the seeder puts the DEMONSTRATED state back rather than only creating it:
+// outcomes decided by a preview session are removed, and the one it seeds is
+// re-asserted. This is the demo seeder, not a migration — it is allowed to be this
+// deliberate about the state it exists to produce.
+if (nima && OPERATOR) {
+  const deliberateMonths = 23;
+  const rows = await many(
+    `select id, verified_at from seller_verifications
+      where channel_id = $1 and status in ('verified','rejected') order by created_at desc`, [nima.id]);
+  const wanted = (d) => {
+    const when = new Date();
+    when.setMonth(when.getMonth() - deliberateMonths);
+    return Math.abs(new Date(d).getTime() - when.getTime()) < 10 * 86400000;
+  };
+  // The deliberate row is the one dated twenty-three months back; anything else in
+  // the decided history is a preview session's work, and it is what stands between
+  // this store and the "ending soon" list.
+  const keep = rows.filter((r) => r.verified_at && wanted(r.verified_at));
+  const extra = rows.filter((r) => !keep.some((k) => k.id === r.id));
+  if (extra.length) {
+    await many(`delete from seller_verifications where id = any($1::uuid[])`, [extra.map((r) => r.id)]);
+    say('nima checked', `reset — removed ${extra.length} decided row(s) a preview session left behind`);
+  }
+  if (!keep.length) {
+    const seen = new Date();
+    seen.setMonth(seen.getMonth() - deliberateMonths);
+    await store.recordVerification({
+      channelId: nima.id, outcome: 'verified', method: 'citizenship', actorId: OPERATOR.id,
+      months: 24, seenAt: seen, note: 'Seen in person at the shop; name matched the account.',
+    });
+    say('nima checked', `citizenship, seen ${deliberateMonths} months ago`);
+  }
 }
 
 // Nima: the plan she would have to be on to ask, bought the way a seller buys it —
@@ -190,7 +217,10 @@ if (nima && OPERATOR) {
     say('nima upgraded', 'Store plan, matched by the operator');
   }
   const open = await one(`select id from seller_verifications where channel_id = $1 and status = 'pending'`, [nima.id]);
-  if (!open) {
+  if (open) {
+    await many(`update seller_verifications set request_note = $2 where id = $1`,
+      [open.id, 'I am at the shop most mornings, and can bring the original.']);
+  } else {
     const asked = await store.askForVerification({
       channelId: nima.id, note: 'I am at the shop most mornings, and can bring the original.',
     });
@@ -349,6 +379,84 @@ if (alice) {
   }
 }
 
+// ── 5. The identity document, held the way a real one is ─────────────────────
+// Nima is the store waiting on a check by design (§26), so she is also the store
+// that has handed a document over: it makes the two halves of the promise visible
+// in the preview at once — her settings page says a copy is with us and what will
+// happen to it, and the console's page for her store says a person can open it, that
+// the open will be written down, and that a decision destroys it.
+//
+// The file is SYNTHETIC, built here from zlib and a CRC table, and it looks like
+// what it is: a grey rectangle with bars on it, not a photograph of anybody's
+// citizenship certificate. A demo database holding a realistic ID would be a worse
+// thing to ship than a demo database holding an obvious placeholder — and this one
+// goes through `stripMetadata` on the way in, exactly like an upload does, so the
+// write path the tests cover is the write path the preview uses.
+const nimaStore = nima || await one(`select id, slug, name from channels where slug = 'nima-crafts'`);
+if (nimaStore) {
+  const { storage } = await import('../app/src/store.js');
+  const { stripMetadata, sniff } = await import('../app/src/kyc.js');
+  const zlibMod = await import('node:zlib');
+  const open = await store.pendingVerificationFor(nimaStore.id);
+  const ownerRow = await one('select owner_id from channels where id = $1', [nimaStore.id]);
+  if (open && ownerRow && !open.document_key && !open.document_destroyed_at) {
+    const placeholder = documentPlaceholder(zlibMod);
+    const cleaned = stripMetadata(placeholder, sniff(placeholder) || 'image/png');
+    const key = await storage.put(cleaned, 'document.png', { namespace: 'kyc' });
+    const attached = await store.attachVerificationDocument({
+      channelId: nimaStore.id, key, mime: 'image/png', bytes: cleaned.length, actorId: ownerRow.owner_id,
+    });
+    say('nima document', attached.ok
+      ? `held for review (${cleaned.length} bytes, built here — no real document is in this database)`
+      : 'could not be attached');
+  } else if (open?.document_key) {
+    say('nima document', 'already held for review');
+  }
+}
+
+/**
+ * An 84×56 greyscale PNG with a few bars on it, written by hand.
+ *
+ * Hand-written because the alternative is a dependency (`sharp`, `pngjs`) or an
+ * image copied into the repository, and neither belongs in a seeder. The chunk
+ * structure is the whole format: signature, IHDR, IDAT (zlib), IEND, each with its
+ * CRC. It is a placeholder that a person can recognise as a placeholder.
+ */
+function documentPlaceholder(zlib) {
+  const w = 84;
+  const h = 56;
+  const rows = [];
+  for (let y = 0; y < h; y += 1) {
+    const row = Buffer.alloc(1 + w);          // filter byte 0, then greyscale pixels
+    for (let x = 0; x < w; x += 1) {
+      const margin = x < 6 || x > w - 7 || y < 5 || y > h - 6;
+      const bar = ![12, 20, 28, 36, 44].includes(y) ? 255 : (x > 10 && x < 62 ? 90 : 200);
+      row[1 + x] = margin ? 30 : bar;
+    }
+    rows.push(row);
+  }
+  const chunk = (type, data) => {
+    const head = Buffer.alloc(8);
+    head.writeUInt32BE(data.length, 0);
+    head.write(type, 4, 'latin1');
+    const body = Buffer.concat([head, data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(zlib.crc32(body) >>> 0, 0);
+    return Buffer.concat([body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;      // bit depth
+  ihdr[9] = 0;      // colour type: greyscale
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(Buffer.concat(rows))),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
 // ── What the database now holds ──────────────────────────────────────────────
 const rules = await many(`select r.country_code, r.state, r.source, a.title
                             from asset_country_rules r join assets a on a.id = r.asset_id`);
@@ -359,7 +467,8 @@ console.log('\n  country rules:',
   rules.map((r) => `${r.title} ${r.country_code} ${r.state} (${r.source})`).join(', ') || 'none');
 console.log('  waiting files:',
   waitingNow.map((w) => `${w.title} at ${w.name}`).join(', ') || 'none');
-const checks = await many(`select c.name, v.status, v.method, v.expires_at, v.notice_sent_at
+const checks = await many(`select c.name, v.status, v.method, v.expires_at, v.notice_sent_at,
+                                  v.docs_retained, v.document_destroyed_at
                               from seller_verifications v
                               join channels c on c.id = v.channel_id order by v.created_at`);
 const { lapseOf } = await import('../app/src/verification.js');
@@ -367,7 +476,9 @@ console.log('  identity:',
   checks.map((c) => {
     const l = lapseOf(c);
     const when = l ? ` — ${l.label}` : '';
-    return `${c.name} ${c.status}${c.method && c.status !== 'pending' ? ` (${c.method})` : ''}${when}${l && l.level !== 'current' && !c.notice_sent_at && l.level !== 'lapsed' ? ' (nobody told yet)' : ''}`;
+    const doc = c.docs_retained ? ' · a copy is held for review'
+      : c.document_destroyed_at ? ' · the copy handed over was destroyed' : '';
+    return `${c.name} ${c.status}${c.method && c.status !== 'pending' ? ` (${c.method})` : ''}${when}${doc}${l && l.level !== 'current' && !c.notice_sent_at && l.level !== 'lapsed' ? ' (nobody told yet)' : ''}`;
   }).join(', ') || 'none');
 console.log('\n  open the preview at /  ·  the creator’s view at /dashboard/alice'
   + '  ·  the queue at /admin\n');

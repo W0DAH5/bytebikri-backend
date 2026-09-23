@@ -175,6 +175,41 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024, files: 2, fields: 12 },
 });
 
+/**
+ * The identity-document uploader, and it is a separate instance on purpose.
+ *
+ * The shared `upload` allows 25 MB and two files, which is right for a content
+ * upload and wrong for a passport: the smaller cap is the one that matters, and it
+ * has to be enforced by multer BEFORE the bytes are buffered — a limit checked
+ * after the buffer is full is a limit that has already spent the memory.
+ */
+const uploadDocument = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_BYTES, files: 1, fields: 6 },
+});
+
+/**
+ * Multer refuses inside the middleware, so its refusals never reach a route: an
+ * oversized file arrives as an error before any of our code runs, and the default
+ * answer is a bare `PayloadTooLargeError` page. This turns the two refusals a
+ * person can actually cause into the same kind of flash every other refusal in this
+ * product uses, and lets anything else through to the error handler.
+ *
+ * `back` is a function of the request, because the URL it returns needs the slug —
+ * which is why this cannot be a plain string built once at module load.
+ */
+const documentUpload = (back) => (req, res, next) =>
+  uploadDocument.single('document')(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.redirect(back(req, 'error=doc-too-big'));
+    }
+    if (err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE') {
+      return res.redirect(back(req, 'error=doc-one'));
+    }
+    return next(err);
+  });
+
 // ---------------------------------------------------------------------------
 // Session
 //
@@ -577,6 +612,22 @@ APP.get('/marketplace', async (req, res, next) => {
     }));
   } catch (err) { next(err); }
 });
+
+/**
+ * The open request with the two derived facts the page needs about a held document.
+ *
+ * `opens` is a count of the audit lines the operator's viewer writes, so the number
+ * the seller is shown cannot be incremented by anything except a person actually
+ * opening their document. `sweep` destroys holds that have passed their week; it is
+ * passed by the two pages that can show a document and not by the routes that only
+ * need the row, so a sweep never runs as a side effect of an unrelated page.
+ */
+async function heldRequest(channelId, { sweep = false } = {}) {
+  if (sweep) await store.sweepVerificationDocuments();
+  const open = await store.pendingVerificationFor(channelId);
+  if (!open) return null;
+  return { ...open, opens: await store.documentOpens(open.id) };
+}
 
 // ---------------------------------------------------------------------------
 // The library: what this person holds, and the stores they follow
@@ -2309,6 +2360,11 @@ const mimeFor = (key) => ({
 // still exists for programmatic use; this is the form a person actually uses,
 // which is why it redirects back with a message instead of returning JSON.
 // ---------------------------------------------------------------------------
+// The identity-document rules: what may come in, what is taken out of it before it
+// is stored, and how long it is held. Pure module — no database, no filesystem, and
+// the seller's page prints the same `HOLD_DAYS` this file enforces.
+import { ALLOWED_TYPES, MAX_BYTES, HOLD_DAYS, sniff, stripMetadata, extFor } from './src/kyc.js';
+
 const PLAN_CODES = Object.keys(PLANS);
 const PAY_METHODS = ['esewa', 'khalti', 'imepay', 'bank', 'other'];
 
@@ -2384,7 +2440,14 @@ const SUCCESS_FLASH = {
   saved_country: () => 'Country rule saved. Visitors in that country are answered by it from their next request.',
   // Verification. The seller's two, then the operator's two — and each one says
   // what happens NEXT, because a check is a wait and a refusal is not an ending.
-  asked: () => 'Asked. A person looks at one document and records what they saw — we work in the order requests arrive, and nothing is uploaded here.',
+  // The ask can now carry the document itself, so the sentence has three endings:
+  // one with a copy, one without, and one where the copy replaced an earlier one.
+  asked: () => 'Asked. A person looks at one document and records what they saw — we work in the order requests arrive. You can hand the document over here, or show it to somebody in person; both are the same check.',
+  'asked-with-doc': (v) => `Asked, and the copy you sent went with it. A person opens it, records what they saw, and it is destroyed the moment they do — and after ${HOLD_DAYS} days either way.`,
+  'already-with-doc': () => 'You had already asked — the copy you sent is attached to that request, and a person will get to it.',
+  doc: () => `Copy received. A person opens it, records what they saw, and it is destroyed the moment they do — and after ${HOLD_DAYS} days whether or not anybody looked.`,
+  'doc-replaced': () => `Copy received, and the one before it is destroyed. Same rule: gone the moment a decision is recorded, and after ${HOLD_DAYS} days either way.`,
+  'withdrawn-doc': () => 'Withdrawn. The request is gone and the copy you handed over was destroyed with it.',
   withdrawn: () => 'Withdrawn. The request is gone and nobody is waiting on anything.',
   verified: () => 'Recorded. The badge is on the store now, with what was checked and the date — and no copy of the document was kept.',
   noticed: () => 'Sent. The seller has the date, what happens on it, and that nothing else changes.',
@@ -2403,6 +2466,14 @@ const ERROR_FLASH = {
   'undo-taken': 'That change has already been taken back. Undo works once — the second time, the files are already where you left them.',
   'undo-late': 'That change is more than 30 minutes old, so undoing it automatically is no longer offered — the files are as they were left. Set them back by hand and the list will show the new change as its own.',
   'no-numbers': 'That looks like a document number. Nothing here needs it and this field is kept — say where you are or when to call instead.',
+  // The document refusals. Each names the rule it refused under, because a person
+  // who photographed their citizenship on an iPhone gets a HEIC file and has no way
+  // to know that the platform cannot read one.
+  'doc-type': 'That is not a photo this can check — send a JPEG, PNG or WebP picture of the document. A PDF or a screenshot from a document app cannot be read here, and one with scripts in it is the last thing we will store.',
+  'doc-too-big': `That file is larger than the ${Math.round(MAX_BYTES / 1024 / 1024)} MB limit for a document. A photo of the page at normal size is well under it — resizing usually fixes this.`,
+  'doc-one': 'One file at a time, please — a single photo of the document. Nothing was stored.',
+  'doc-none': 'Choose the picture first, then press the button. Nothing was stored.',
+  'doc-no-request': 'Ask for a check first — the copy hangs off the request, and a document with nothing to be checked against is exactly what we are not keeping.',
   // NOT `plan`: see the FLASH_CODE map on the ask route. Two entries under one key
   // is not a merge, it is a deletion — the later declaration wins and the earlier
   // message becomes unreachable, silently, in a file where nothing looks wrong.
@@ -3153,7 +3224,34 @@ APP.post('/admin/payments/rent/:id', async (req, res, next) => {
 // false in the database, so a future change that tries to accept an upload fails
 // at the column rather than quietly becoming a breach.
 
-APP.post('/dashboard/:slug/verification', async (req, res, next) => {
+/**
+ * The one door a document comes in through, used by both forms.
+ *
+ * The "ask for a check" form and the "hand it over" form post one file field to the
+ * same rules, so the type check, the size check, the metadata strip and the audit
+ * line exist once. What differs is only what happens to the request row afterwards.
+ *
+ * Returns `{ ok: true, mime, bytes, key }`, or `{ ok: false, code }` where the code
+ * is a flash key — never a sentence, because query strings are echoed back to the
+ * reader by the flash map and that map is the only writer of that text.
+ */
+async function takeDocument(req) {
+  const file = req.file;
+  if (!file) return { ok: false, code: null };              // nothing sent is not a refusal
+  // The header is a claim; the bytes decide. A PDF or an SVG is refused by name.
+  const mime = sniff(file.buffer);
+  if (!mime || !ALLOWED_TYPES[mime]) return { ok: false, code: 'doc-type' };
+  if (file.size > MAX_BYTES) return { ok: false, code: 'doc-too-big' };
+  // The camera's own notes — GPS, device, timestamp — are removed BEFORE the write,
+  // so the page's promise is true of the bytes on disk and not only of the response.
+  const cleaned = stripMetadata(file.buffer, mime);
+  if (!cleaned.length) return { ok: false, code: 'doc-type' };
+  const key = await storage.put(cleaned, `document.${extFor(mime)}`, { namespace: 'kyc' });
+  return { ok: true, mime, bytes: cleaned.length, key };
+}
+
+APP.post('/dashboard/:slug/verification', documentUpload((req, qs) =>
+  `/dashboard/${encodeURIComponent(req.params.slug)}/settings?${qs}#verification`), async (req, res, next) => {
   // Query before fragment: `#verification?error=check-plan` never reaches the
   // server, so a seller on the free plan would be bounced back to a form with no
   // explanation at all — the exact silent-refusal failure this route's flash keys
@@ -3202,10 +3300,96 @@ APP.post('/dashboard/:slug/verification', async (req, res, next) => {
       return res.redirect(back('error=no-numbers'));
     }
 
+    const doc = await takeDocument(req);
+    if (!doc.ok && doc.code) return res.redirect(back(`error=${doc.code}`));
+
     const done = await store.askForVerification({ channelId: channel.id, note });
     await store.audit('seller.verification_requested', { channelId: channel.id });
-    return res.redirect(back(`saved=${done.ok ? 'asked' : 'already'}`));
+
+    // A file sent WITH an ask that could not open a request has nowhere to live: the
+    // document hangs off the request row, and there is no request. So it is destroyed
+    // rather than left on disk with nothing pointing at it — a stored document nobody
+    // can find is the exact thing this flow exists not to produce.
+    if (doc.ok) {
+      const attached = await store.attachVerificationDocument({
+        channelId: channel.id, key: doc.key, mime: doc.mime, bytes: doc.bytes, actorId: req.user.id,
+      });
+      if (!attached.ok) await storage.remove(doc.key);
+    }
+    const saved = done.ok
+      ? (doc.ok ? 'asked-with-doc' : 'asked')
+      : (doc.ok ? 'already-with-doc' : 'already');
+    return res.redirect(back(`saved=${saved}`));
   } catch (err) { return next(err); }
+});
+
+/**
+ * Hand the document over for a request that is already open.
+ *
+ * Two steps, because the request has to exist first: the document lives on the
+ * request row, and a document with nothing to be checked against is a liability
+ * with no purpose. Sending a second one replaces the first and destroys it in the
+ * same call — "I sent the wrong page" must not leave the wrong page on disk for the
+ * rest of the week.
+ */
+APP.post('/dashboard/:slug/verification/document', documentUpload((req, qs) =>
+  `/dashboard/${encodeURIComponent(req.params.slug)}/settings?${qs}#verification`), async (req, res, next) => {
+  const back = (qs = '') => `/dashboard/${encodeURIComponent(req.params.slug)}/settings${qs ? `?${qs}` : ''}#verification`;
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    if (refuseWrite(req, res, channel)) return undefined;
+    const open = await store.pendingVerificationFor(channel.id);
+    if (!open) return res.redirect(back('error=doc-no-request'));
+
+    const doc = await takeDocument(req);
+    if (!doc.ok) return res.redirect(back(`error=${doc.code || 'doc-none'}`));
+
+    const attached = await store.attachVerificationDocument({
+      channelId: channel.id, key: doc.key, mime: doc.mime, bytes: doc.bytes, actorId: req.user.id,
+    });
+    if (!attached.ok) {
+      await storage.remove(doc.key);
+      return res.redirect(back('error=doc-no-request'));
+    }
+    return res.redirect(back(open.document_key ? 'saved=doc-replaced' : 'saved=doc'));
+  } catch (err) { return next(err); }
+});
+
+/**
+ * The operator's window onto a held document — and the only way to read one.
+ *
+ * Four properties, and each is a decision rather than a default:
+ *
+ *   - it is looked up by the REQUEST's id, never by the storage key. A URL carrying
+ *     a key is a URL that can be guessed, pasted into a chat, and found in a log;
+ *   - `private, no-store` and `noindex`, because a cached identity document is a
+ *     copy nobody decided to make and nobody can delete;
+ *   - `inline` with the stored type, so it renders as a picture and never as a
+ *     download of unknown content with a filename the browser will trust;
+ *   - and every open writes an audit line with the operator's name on it, which is
+ *     the whole accountability story: the seller is told a person may look, and the
+ *     record says which person did.
+ */
+APP.get('/admin/verification/:id/document', async (req, res, next) => {
+  try {
+    if (!req.user || req.user.role !== 'admin') return res.status(404).end();
+    const row = await store.verificationDocumentById(req.params.id);
+    if (!row || !row.document_key) return res.status(404).end();
+    const bytes = await storage.get(row.document_key);
+    await store.audit('seller.verification_document_opened',
+      { channelId: row.channel_id, requestId: row.id, bytes: row.document_bytes },
+      { actorId: req.user.id, subjectType: 'channel', subjectId: row.channel_id });
+    res.setHeader('content-type', row.document_mime);
+    res.setHeader('cache-control', 'private, no-store, max-age=0');
+    res.setHeader('x-robots-tag', 'noindex, nofollow');
+    res.setHeader('x-content-type-options', 'nosniff');
+    res.setHeader('content-disposition', `inline; filename="document.${extFor(row.document_mime) || 'bin'}"`);
+    res.send(bytes);
+  } catch (err) {
+    if (err.code === 'ENOENT' || /bad storage key/.test(err.message)) return res.status(404).end();
+    return next(err);
+  }
 });
 
 APP.post('/dashboard/:slug/verification/withdraw', async (req, res, next) => {
@@ -3213,9 +3397,14 @@ APP.post('/dashboard/:slug/verification/withdraw', async (req, res, next) => {
   try {
     const channel = await ownerChannel(req, res);
     if (!channel) return undefined;
+    // `withdrawVerificationRequest` destroys any held copy BEFORE it deletes the
+    // request: the row is the only pointer to the bytes, and a pointer nobody has is
+    // a file nobody can destroy.
+    const had = await store.pendingVerificationFor(channel.id);
     await store.withdrawVerificationRequest(channel.id);
-    await store.audit('seller.verification_withdrawn', { channelId: channel.id });
-    return res.redirect(back('saved=withdrawn'));
+    await store.audit('seller.verification_withdrawn',
+      { channelId: channel.id, hadDocument: Boolean(had?.document_key) });
+    return res.redirect(back(had?.document_key ? 'saved=withdrawn-doc' : 'saved=withdrawn'));
   } catch (err) { return next(err); }
 });
 
@@ -3300,7 +3489,10 @@ APP.get('/dashboard/:slug/settings', async (req, res, next) => {
       // whether there is an open request — a seller can be waiting on the next check
       // while the current one still counts, and the panel has to be able to say both.
       verification: await store.verificationFor(channel.id),
-      pendingRequest: await store.pendingVerificationFor(channel.id),
+      // A held document outlives its week only if nothing sweeps it, and this is one
+      // of the two pages that can show one — so the sweep runs here, and twice is
+      // free because the second call matches nothing.
+      pendingRequest: await heldRequest(channel.id, { sweep: true }),
       capabilities: plan.capabilities,
       // Whether the marketplace is REACHABLE, not just whether the box is
       // ticked: a free store that asks for it gets an explanation, not a
@@ -3855,7 +4047,10 @@ APP.get('/admin/stores/:slug', async (req, res, next) => {
     const channelId = data?.channel?.id ?? null;
     const verification = channelId ? await store.verificationFor(channelId) : null;
     const verifications = channelId ? await store.verificationsFor(channelId) : [];
-    const pendingRequest = channelId ? await store.pendingVerificationFor(channelId) : null;
+    // The second of the two pages that can show a held document, so the sweep runs
+    // here as well as on the seller's settings page — whoever opens one first clears
+    // the holds that have outlived their week.
+    const pendingRequest = channelId ? await heldRequest(channelId, { sweep: true }) : null;
     // A store that does not exist is not a 404 for the operator: "no such store"
     // is a legitimate answer that deserves a page with a way back.
     return res.send(views.adminStoreDetail({

@@ -33,6 +33,10 @@ export const OPEN_RENT_STATUSES = ['issued', 'submitted'];
 import { POLICY } from './slots.js';
 import { familyCase, AUDIT_FAMILIES } from './audit.js';
 import { SEARCHABLE_ASSET_STATES } from './moderation.js';
+// How long a held identity document lives, and the sizes that may come in. The
+// rule lives in `kyc.js` because the seller's page prints the number: a promise
+// about a week that is written twice is a promise that drifts.
+import { HOLD_DAYS } from './kyc.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -86,6 +90,20 @@ export const storage = {
   async exists(key) {
     if (!KEY_RE.test(String(key || ''))) return false;
     try { await fs.access(path.join(UPLOAD_DIR, key)); return true; } catch { return false; }
+  },
+
+  /**
+   * Destroy a file, and say whether there was one.
+   *
+   * Added for the identity documents, and it is the point of them: the platform
+   * promises that a copy handed over for a check stops existing when the check is
+   * decided, and a promise about deletion has to be a call that unlinks the bytes.
+   * A missing file is not an error — the answer is `false`, which is what "there
+   * was nothing there" means, and the caller records the same outcome either way.
+   */
+  async remove(key) {
+    if (!KEY_RE.test(String(key || ''))) return false;
+    try { await fs.unlink(path.join(UPLOAD_DIR, key)); return true; } catch { return false; }
   },
 };
 
@@ -362,11 +380,137 @@ export const store = {
 
   /** Withdraw a request nobody has looked at yet. */
   async withdrawVerificationRequest(channelId) {
+    // Destroy first, delete second. The request row is where a held document lives,
+    // so the delete is the thing that would remove the only pointer to the bytes —
+    // and a pointer nobody has is a file nobody can destroy. Withdrawal is one of
+    // the three ways a document leaves; the other two are a decision and the sweep.
+    await this.destroyHeldDocument(channelId, { reason: 'withdrawn' });
     const res = await query(
       `delete from seller_verifications where channel_id = $1 and status = 'pending'`,
       [channelId],
     );
     return { ok: res.rowCount > 0 };
+  },
+
+  // ---- the document a request may carry ----------------------------------
+  /**
+   * Take a copy in, for a request that is open.
+   *
+   * One per request, so handing over a second one REPLACES the first and destroys
+   * it in the same call: "I sent the wrong page" must not leave the wrong page on
+   * disk for the rest of the week. Refuses when there is no open request, because a
+   * document with nothing to be checked against is a liability with no purpose.
+   */
+  async attachVerificationDocument({ channelId, key, mime, bytes, actorId = null }) {
+    const open = await this.pendingVerificationFor(channelId);
+    if (!open) return { ok: false, reason: 'no-request' };
+    await this.destroyHeldDocument(channelId, { reason: 'replaced' });
+    await query(
+      `update seller_verifications
+          set document_key = $2, document_mime = $3, document_bytes = $4,
+              document_added_at = now(), document_destroyed_at = null
+        where id = $1`,
+      [open.id, key, mime, bytes],
+    );
+    // The seller's own id, passed in by the route: the pending row has no owner
+    // column, and an audit line whose actor is null is a line that answers "when"
+    // and not "who" — which is the half of the question this log exists for.
+    await this.audit('seller.verification_document_handed',
+      { channelId, mime, bytes, requestId: open.id },
+      { actorId, subjectType: 'channel', subjectId: channelId });
+    return { ok: true, requestId: open.id };
+  },
+
+  /**
+   * The row a document belongs to, for the one route that can serve it.
+   *
+   * Looked up by the REQUEST's id, never by the storage key: a URL carrying a key
+   * would be a URL that can be guessed at, logged, and shared, and the key is the
+   * only thing standing between a citizen's certificate and the open internet.
+   */
+  verificationDocumentById(verificationId) {
+    if (!UUID_RE.test(String(verificationId || ''))) return Promise.resolve(null);
+    return one(
+      `select v.id, v.channel_id, v.status, v.document_key, v.document_mime,
+              v.document_bytes, v.document_added_at, c.slug as channel_slug, c.name as channel_name,
+              (select count(*)::int from audit_logs l
+                where l.action = 'seller.verification_document_opened'
+                  and l.meta->>'requestId' = v.id::text) as opens
+         from seller_verifications v
+         join channels c on c.id = v.channel_id
+        where v.id = $1`,
+      [verificationId],
+    );
+  },
+
+  /**
+   * Destroy the copy this store is holding, and say which one went.
+   *
+   * The ONLY place the bytes are deleted, and every path that ends a hold goes
+   * through it — a decision, a withdrawal, a replacement, and the sweep. That is
+   * deliberate: four call sites each doing their own `storage.remove` is four
+   * chances for one of them to forget, and the failure mode of forgetting is a
+   * document sitting on disk after the platform told somebody it was destroyed.
+   *
+   * The audit line is written even when there was nothing to destroy, because
+   * "we said we deleted it and here is the record" is the claim being made.
+   */
+  async destroyHeldDocument(channelId, { reason = 'decided', actorId = null } = {}) {
+    const row = await one(
+      `select id, document_key from seller_verifications
+        where channel_id = $1 and document_key is not null
+        order by document_added_at desc limit 1`,
+      [channelId],
+    );
+    if (!row) return null;
+    const removed = await storage.remove(row.document_key);
+    await query(
+      `update seller_verifications
+          set document_key = null, document_mime = null, document_bytes = null,
+              document_destroyed_at = now()
+        where id = $1`,
+      [row.id],
+    );
+    await this.audit('seller.verification_document_destroyed',
+      { channelId, reason, requestId: row.id, removed },
+      { actorId, subjectType: 'channel', subjectId: channelId });
+    return { requestId: row.id, removed };
+  },
+
+  /**
+   * The backstop: holds that have outlived their week.
+   *
+   * Called when either page that can show a document is opened — the seller's
+   * settings and the operator's queue — so the sweep is a function of the pages
+   * that need it rather than a job that has to exist, be deployed and be watched.
+   * Running it twice is free (the second call matches nothing), which is what makes
+   * that safe.
+   *
+   * An expired hold does NOT close the request. The person is still waiting, and
+   * closing their request because a queue was slow would punish them for our week;
+   * the page tells them the copy is gone and how to hand it over again.
+   */
+  async sweepVerificationDocuments({ days = HOLD_DAYS } = {}) {
+    const stale = await many(
+      `select channel_id from seller_verifications
+        where document_key is not null
+          and document_added_at < now() - ($1 || ' days')::interval`,
+      [String(days)],
+    );
+    for (const row of stale) {
+      await this.destroyHeldDocument(row.channel_id, { reason: 'expired' });
+    }
+    return stale.length;
+  },
+
+  /** How many times a person has opened the copy for this request. */
+  documentOpens(requestId) {
+    if (!UUID_RE.test(String(requestId || ''))) return Promise.resolve(0);
+    return scalar(
+      `select count(*)::int from audit_logs
+        where action = 'seller.verification_document_opened' and meta->>'requestId' = $1`,
+      [String(requestId)],
+    );
   },
 
   /**
@@ -387,16 +531,24 @@ export const store = {
     // ago has one month left, whatever day somebody enters it.)
     const until = new Date(seenAt || Date.now());
     until.setMonth(until.getMonth() + Number(months));
+    // The outcome is what ends the reason to hold a document, so the document is
+    // destroyed HERE — inside the one function every decision goes through — rather
+    // than in the route that happens to call it today. The timestamp travels onto
+    // the outcome row, because the pending row (which is where the file lived) is
+    // about to be deleted and the seller is shown when their copy stopped existing.
+    const destroyed = await this.destroyHeldDocument(channelId, { reason: 'decided', actorId });
     const row = await one(
       `insert into seller_verifications
-         (channel_id, method, status, decided_by, decided_at, verified_at, expires_at, notes, docs_retained)
-       values ($1, $2, $3, $4, now(), $5, $6, $7, false)
+         (channel_id, method, status, decided_by, decided_at, verified_at, expires_at, notes,
+          document_destroyed_at)
+       values ($1, $2, $3, $4, now(), $5, $6, $7, $8)
        returning *`,
       [
         channelId, method, outcome, actorId,
         outcome === 'verified' ? (seenAt ? new Date(seenAt) : new Date()) : null,
         outcome === 'verified' ? until : null,
         clean,
+        destroyed ? new Date() : null,
       ],
     );
     // A request that has just been answered is not still open.

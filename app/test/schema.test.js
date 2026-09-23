@@ -149,15 +149,34 @@ test('the ad-gated model contains no payment fields on content', async () => {
   assert.deepEqual(rows, [], `payment fields on content: ${JSON.stringify(rows)}`);
 });
 
-test('KYC stores the result, never the documents', async () => {
-  // contype 'c' = CHECK. Without it, the NOT NULL constraint on the same column
-  // also matches and the assertion passes for the wrong reason.
+test('KYC still holds no document it does not have to, and cannot lie about holding one', async () => {
+  // 0001 expressed the intent as a column that could only ever be false:
+  // `check (docs_retained = false)`. That was right for a platform with no way to
+  // accept a document, and it became wrong the moment §29 added one — the column
+  // now has to say something. The rule it is held to is stronger than the old one,
+  // because a constant cannot be out of date and a computed column can:
+  //
+  //   * `docs_retained` is DERIVED from the key, so it can never claim a document
+  //     is being held when there is none, or the reverse;
+  //   * a document may exist ONLY on a pending request — a decided row is not
+  //     waiting for anything, so holding evidence against it has no purpose;
+  //   * the key must be a storage key of the right shape with a type this platform
+  //     accepts, so a row cannot point at an arbitrary path.
+  const gen = await query(`
+    select is_generated, generation_expression from information_schema.columns
+     where table_name = 'seller_verifications' and column_name = 'docs_retained'`);
+  assert.equal(gen.rows.length, 1, 'docs_retained must still exist as the answer to "are we holding a copy"');
+  assert.equal(gen.rows[0].is_generated, 'ALWAYS', 'docs_retained must be computed, not written by hand');
+  assert.match(gen.rows[0].generation_expression, /document_key IS NOT NULL/i,
+    `unexpected: ${gen.rows[0].generation_expression}`);
+
   const { rows } = await query(`
     select conname, pg_get_constraintdef(oid) def from pg_constraint
      where conrelid = 'seller_verifications'::regclass and contype = 'c'
-       and pg_get_constraintdef(oid) ilike '%docs_retained%'`);
-  assert.equal(rows.length, 1, 'seller_verifications must CHECK that docs_retained is false');
-  assert.match(rows[0].def, /docs_retained\s*=\s*false/i, `unexpected: ${rows[0].def}`);
+       and pg_get_constraintdef(oid) ilike '%document_%'`);
+  const defs = rows.map((r) => r.def).join(' | ');
+  assert.match(defs, /status = 'pending'/i, 'a document may only be held for an OPEN request');
+  assert.match(defs, /image\/(jpeg|png|webp)/i, 'and only of a type the platform accepted on the way in');
 });
 
 test('a seller\'s legal name and phone are not in any buyer-facing table', async () => {
