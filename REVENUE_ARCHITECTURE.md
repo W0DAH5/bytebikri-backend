@@ -2,6 +2,14 @@
 
 Every number below is read out of the repository, not asserted. File paths are the proof.
 
+Written because the question "how did you make the revenue architecture for these features?" has an
+answer that is easy to misread: **the architecture predates the features.** Memberships, the theme and
+the premium file gate did not add a revenue line. They added reasons to hold the one plan price and
+reasons for the pages the one rent slot is priced on — which is the whole of it.
+
+See also: `FEATURE_AUDIT.md` §31b (the round that wrote this down and fixed three sentences the
+memberships had turned false).
+
 ## The whole model: four legs, two of which are ours
 
 | # | Leg | Payer → Payee | bytebikri | Code that decides it |
