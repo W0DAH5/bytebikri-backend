@@ -24,16 +24,20 @@ export const BASE = process.env.EYES_BASE || 'http://127.0.0.1:3000';
 export const PAGES = {
   operator: ['/admin', '/admin/stores', '/admin/stores/alice', '/admin/connections',
     '/admin/payments', '/admin/reports', '/admin/moderation', '/admin/audit',
-    '/admin/users', '/admin/plans', '/admin/earnings'],
-  alice: ['/dashboard/alice', '/dashboard/alice/earnings', '/dashboard/alice/billing',
+    '/admin/users', '/admin/plans', '/admin/earnings', '/library'],
+  // The library is on every account's list because every account is a buyer too: it
+  // is the one page in the product that a seller, an operator and a shopper all read
+  // the same way, and alice is seeded with unlocks in each of the four states the
+  // shelf can render (§28).
+  alice: ['/library', '/dashboard/alice', '/dashboard/alice/earnings', '/dashboard/alice/billing',
     '/dashboard/alice/slots', '/dashboard/alice/networks', '/dashboard/alice/settings',
     '/dashboard/alice/reviews'],
   // Nima is the seller the demo state keeps deliberately awkward: her identity check is
   // inside its notice window AND she is waiting on the next one, which is the only page
   // in the product that has to say two contradictory-looking things at once. A state
   // that is seeded on purpose needs to be the state that is checked on purpose.
-  nima: ['/dashboard/nima-crafts', '/dashboard/nima-crafts/settings', '/dashboard/nima-crafts/billing'],
-  bob: ['/dashboard/bob'],
+  nima: ['/library', '/dashboard/nima-crafts', '/dashboard/nima-crafts/settings', '/dashboard/nima-crafts/billing'],
+  bob: ['/library', '/dashboard/bob'],
 };
 
 // Where an id-bearing page is linked from, and what one looks like. `take` is how

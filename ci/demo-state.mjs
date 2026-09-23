@@ -265,6 +265,90 @@ if (alice) {
   say('alice file list', `${list.all} files (${list.live} live, ${list.paused} paused${made ? `, ${made} added just now` : ''})`);
 }
 
+// ── 4. The buyer's side of the same shop ─────────────────────────────────────
+// The library page had nothing to show, which is a page nobody can review: the
+// demo needed a person who has unlocked things and watches stores. Alice is that
+// person (a seller is a buyer too), and the four states below are the four the
+// shelf can render — so every branch of the page is visible in the preview
+// rather than only in a test:
+//
+//   * an ad unlock with its window still open;
+//   * a free file, which has no window at all;
+//   * a window that has closed (the same row, two days later);
+//   * a file the store paused after it was unlocked — an unlock does not make a
+//     file immune to its own seller, and the shelf says so instead of hiding it;
+//   * and a review, because reviews hang off unlocks and the page can say which
+//     of a person's unlocks they have already spoken about.
+//
+// Everything is written through the store's own calls, and the two date fields a
+// person cannot type — `expires_at` in the past, `seen_at` before the store's
+// files were published — are moved the way time would have moved them.
+if (alice) {
+  const aliceOwnerRow = await one('select owner_id from channels where id = $1', [alice.id]);
+  const aliceUser = aliceOwnerRow?.owner_id;
+  const bob = await one(`select id, slug, name from channels where slug = 'bob'`);
+  const nima = await one(`select id, slug, name from channels where slug = 'nima-crafts'`);
+
+  if (aliceUser && bob) {
+    const pick = async (slug) =>
+      one('select id, title, slug, unlock_mode from assets where channel_id = $1 and slug = $2', [bob.id, slug]);
+
+    // 1. A file bob decided to give away, and 2. one with a 24-hour window.
+    const freeOne = await pick('studio-print-16');
+    if (freeOne) {
+      await store.updateAsset(freeOne.id, { unlock_mode: 'open' });
+      await store.grantUnlock({
+        assetId: freeOne.id, channelId: bob.id, userId: aliceUser, method: 'open',
+        adsCompleted: 0, policy: { unlock_hours: 0 },
+      });
+    }
+    const streetSet = await pick('kathmandu-street-set');
+    if (streetSet) {
+      await store.grantUnlock({ assetId: streetSet.id, channelId: bob.id, userId: aliceUser, policy: { unlock_hours: 24 } });
+    }
+
+    // 3. A window that has closed, and the review that came out of it.
+    const closedOne = await pick('studio-print-01');
+    if (closedOne) {
+      const unlock = await store.grantUnlock({
+        assetId: closedOne.id, channelId: bob.id, userId: aliceUser, policy: { unlock_hours: 24 },
+      });
+      await many(`update unlocks set expires_at = now() - interval '2 days' where id = $1`, [unlock.id]);
+      const review = await one('select id from reviews where unlock_id = $1', [unlock.id]);
+      if (!review) {
+        await store.addReview({
+          unlockId: unlock.id, assetId: closedOne.id, channelId: bob.id, buyerId: aliceUser, rating: 4,
+          body: 'Sharp and clean at print size. I wanted the originals too, and those are a separate pack.',
+        });
+      }
+    }
+
+    // 4. Unlocked yesterday, paused by its own seller since.
+    const downOne = await pick('studio-print-02');
+    if (downOne) {
+      await store.grantUnlock({ assetId: downOne.id, channelId: bob.id, userId: aliceUser, policy: { unlock_hours: 24 } });
+      await store.updateAsset(downOne.id, { status: 'paused' });
+    }
+
+    // The two stores this person watches. Bob published everything he has since
+    // Alice last looked; Nima's only file is new too, but it is still waiting for
+    // its first review, so the count stays at zero — a file nobody can find is not
+    // news, and that is the rule the demo should be able to show.
+    if (nima) await store.followChannel(aliceUser, nima.id);
+    await store.followChannel(aliceUser, bob.id);
+    await many(`update follows set seen_at = now() - interval '9 days' where profile_id = $1`, [aliceUser]);
+    if (nima) {
+      await many(`update follows set seen_at = now() - interval '2 days' where profile_id = $1 and channel_id = $2`,
+        [aliceUser, nima.id]);
+    }
+
+    const counts = await store.unlockCounts(aliceUser);
+    const shelf = await store.followedChannels(aliceUser);
+    say('alice library', `${counts.all} unlocked (${counts.open} open now), `
+      + shelf.map((s) => `${s.slug}: ${s.new_count} new`).join(', '));
+  }
+}
+
 // ── What the database now holds ──────────────────────────────────────────────
 const rules = await many(`select r.country_code, r.state, r.source, a.title
                             from asset_country_rules r join assets a on a.id = r.asset_id`);

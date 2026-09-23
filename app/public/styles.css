@@ -2146,3 +2146,56 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
      the last row of the table clear it with room to spare so nothing is covered. */
   .bulk-bar.is-live { margin-bottom: var(--space-4); }
 }
+
+/* ── the library: a shelf with timers on it ────────────────────────────────
+   Unlocks are windows, not purchases, so the list has to answer "can I open
+   this right now, and for how long" before it answers anything else. Each row
+   is a bordered strip rather than a table row: there are two facts per file and
+   a table would give them equal weight, while the title is what a person scans
+   for and the state is what they check. The state group is pushed to the end of
+   the row on a wide screen and wraps under the title on a phone, which is the
+   order the eye reads it in either way. */
+.shelf-list {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; gap: var(--space-3);
+}
+.shelf-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3) var(--space-5);
+  padding: var(--space-4) var(--space-5);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+.shelf-what {
+  display: grid; gap: 0.15rem;
+  flex: 1 1 18rem; min-width: 0;
+}
+.shelf-what > a, .shelf-what > strong { font-weight: 600; }
+.shelf-state {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3);
+  margin-left: auto;
+}
+/* A divider, not a pill: the review state belongs to the file, not to the window,
+   and a second pill next to "Open" would read as a second status. */
+.shelf-extra {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--border-subtle);
+}
+@media (max-width: 700px) {
+  .shelf-row { padding: var(--space-4); }
+  .shelf-state { margin-left: 0; }
+  .shelf-extra { padding-left: 0; border-left: 0; }
+}
+
+/* Following, on the store it is about. It sits under the store's own numbers and
+   above the content, so it is read once and then out of the way — and it carries
+   the sentence about what a follow does NOT do, which is why it is not just a
+   button. */
+.watch-form {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+.watch-form .fine { margin: 0; }

@@ -2105,6 +2105,130 @@ export const store = {
     );
   },
 
+  // ---- the buyer's shelf: what is open to me, and what I watch ------------
+  /**
+   * A person's unlocks, as the library shows them.
+   *
+   * Three facts per row that the storefront cannot answer, and each one is why
+   * this page exists rather than a link to the store:
+   *
+   *   * `open` — whether the window is still open. An unlock is a borrow, not a
+   *     purchase (24 hours by default, `unlock_hours = 0` meaning permanent), and
+   *     the difference between "yours until 9pm" and "yours" is the whole point of
+   *     the page. Computed here from `expires_at`, the same field the download
+   *     route checks, so the page cannot say open when the file would refuse.
+   *   * the ASSET's availability, because a store can take a file down after
+   *     somebody unlocked it, and a library that offers a link to a removed file
+   *     is a library that lies by omission.
+   *   * the review, if one was written — reviews hang off an unlock, so this is
+   *     the only page that can tell a person which of their unlocks they have not
+   *     spoken about yet.
+   *
+   * Ordering is by `open` first, then most recent: what is usable now is at the
+   * top, and the history is arranged the way memory is.
+   */
+  myUnlocks(profileId, { limit = 100 } = {}) {
+    return many(
+      `select u.id, u.asset_id, u.channel_id, u.method, u.granted_at,
+              u.expires_at, u.revoked_at, u.revoked_reason,
+              (u.revoked_at is null and (u.expires_at is null or u.expires_at > now())) as open,
+              a.slug as asset_slug, a.title, a.status as asset_status,
+              a.moderation_state, a.hidden_by_reports, a.cover_url,
+              c.slug as channel_slug, c.name as channel_name,
+              r.id as review_id, r.rating as review_rating, r.created_at as review_at
+         from unlocks u
+         join assets a on a.id = u.asset_id
+         join channels c on c.id = u.channel_id
+         left join reviews r on r.unlock_id = u.id
+        where u.user_id = $1
+        order by (u.revoked_at is null and (u.expires_at is null or u.expires_at > now())) desc,
+                 u.granted_at desc
+        limit $2`,
+      [profileId, Math.min(Math.max(Number(limit) || 100, 1), 500)],
+    );
+  },
+
+  /** The one number the library's headline needs, without reading its rows. */
+  unlockCounts(profileId) {
+    return one(
+      `select count(*)::int as all,
+              count(*) filter (where revoked_at is null
+                                 and (expires_at is null or expires_at > now()))::int as open
+         from unlocks where user_id = $1`,
+      [profileId],
+    );
+  },
+
+  /**
+   * Start watching a store. Idempotent, and `seen_at` starts at the follow
+   * moment — a store followed today has nothing "new" in it, which is the only
+   * reading of "new" that does not announce a store's entire back catalogue.
+   */
+  async followChannel(profileId, channelId) {
+    const rows = await query(
+      `insert into follows (profile_id, channel_id) values ($1, $2)
+       on conflict (profile_id, channel_id) do nothing
+       returning *`,
+      [profileId, channelId],
+    );
+    return rows[0] || (await one(
+      'select * from follows where profile_id = $1 and channel_id = $2', [profileId, channelId],
+    ));
+  },
+  async unfollowChannel(profileId, channelId) {
+    const { rowCount } = await query(
+      'delete from follows where profile_id = $1 and channel_id = $2', [profileId, channelId],
+    );
+    return rowCount > 0;
+  },
+  followState(profileId, channelId) {
+    if (!profileId || !channelId) return Promise.resolve(null);
+    return one('select * from follows where profile_id = $1 and channel_id = $2', [profileId, channelId]);
+  },
+  /**
+   * The buyer looked at the store. Only ever moves a row that exists, so a
+   * stranger's visit writes nothing, and it never inserts — following is an act,
+   * not a side effect of browsing.
+   */
+  async markChannelSeen(profileId, channelId) {
+    if (!profileId || !channelId) return false;
+    const { rowCount } = await query(
+      'update follows set seen_at = now() where profile_id = $1 and channel_id = $2',
+      [profileId, channelId],
+    );
+    return rowCount > 0;
+  },
+  /**
+   * The shelf, with one derived number per store: files that appeared since this
+   * buyer last opened the store page.
+   *
+   * "Appeared" means published AND findable — live, and in the same
+   * `SEARCHABLE_ASSET_STATES` the marketplace uses. A store's first file waits for
+   * a person before it joins search, and a file its seller has since paused is not
+   * on the storefront either; counting either would send the reader to a store page
+   * to hunt for something that is not there. The tail of the shelf card prints the
+   * store's live count next to it, so the two numbers have to agree.
+   */
+  followedChannels(profileId) {
+    return many(
+      `select c.id, c.slug, c.name, c.tagline, c.avatar_url, c.banner_url, c.logo_url,
+              c.listing_mode, c.moderation_state,
+              f.created_at as followed_at, f.seen_at,
+              (select count(*)::int from assets a
+                where a.channel_id = c.id
+                  and a.status = 'live'
+                  and a.moderation_state = any($2)
+                  and a.created_at > f.seen_at)          as new_count,
+              (select count(*)::int from assets a
+                where a.channel_id = c.id and a.status = 'live') as live_count
+         from follows f
+         join channels c on c.id = f.channel_id
+        where f.profile_id = $1
+        order by f.created_at desc`,
+      [profileId, SEARCHABLE_ASSET_STATES],
+    );
+  },
+
   // ---- pending ad views (awaiting a signed postback) ----------------------
   async createPendingView(v) {
     return one(

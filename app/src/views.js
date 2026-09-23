@@ -334,6 +334,7 @@ export function layout({
     <a class="brand" href="/"><span class="brand-mark">B</span> ByteBikri</a>
     <nav class="nav" aria-label="Main">
       ${navLink('/marketplace', 'Explore', 'marketplace')}
+      ${user ? navLink('/library', 'Library', 'library') : ''}
       ${activeChannel ? navLink(`/dashboard/${esc(activeChannel.slug)}`, 'Dashboard', 'dashboard') : ''}
       ${user?.role === 'admin' ? navLink('/admin', 'Console', 'admin') : ''}
     </nav>
@@ -674,7 +675,7 @@ export function verifiedSentence(verification, { today = new Date() } = {}) {
   return `<p class="fine" style="margin-top:var(--space-3)">${esc(badge.sentence)}</p>`;
 }
 
-export function storefront({ channel, assets, slots, user, estimate, pageviews, unlockedIds = new Set(), consent = null, moderation = null, countryBlocked = null, verification = null }) {
+export function storefront({ channel, assets, slots, user, estimate, pageviews, unlockedIds = new Set(), consent = null, moderation = null, countryBlocked = null, verification = null, watching = false }) {
   const cards = assets.map((a) => {
     const open = a.unlock_mode === 'open';
     const unlocked = open || (user && unlockedIds.has(a.id));
@@ -708,7 +709,11 @@ export function storefront({ channel, assets, slots, user, estimate, pageviews, 
   const placed = placeSlots(slots);
 
   return layout({
-    title: channel.name, user, activeChannel: channel, consent,
+    // A visitor looking at somebody else's shop window does not have a dashboard,
+    // and the nav used to offer them one: every store page linked /dashboard/<slug>
+    // to whoever was looking — including people with no account and sellers who do
+    // not own this store. The link belongs to the owner, so it renders for the owner.
+    title: channel.name, user, activeChannel: user && user.id === channel.owner_id ? channel : null, consent,
     reveal: true,
     body: `
 ${channel.banner_url
@@ -740,6 +745,7 @@ ${countryBlocked ? `<div class="section" style="margin-bottom:0">
     <span>${plural(pageviews, 'view')} in the last 30 days</span>
   </div>
   ${verifiedSentence(verification)}
+  ${watchControl({ channel, user, watching })}
 </div>
 
 ${placed.head}
@@ -755,6 +761,223 @@ ${placed.head}
 
 ${placed.mid}
 ${placed.foot}`,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Following a store, and the library it puts things on
+// ---------------------------------------------------------------------------
+//  Two things a buyer holds and could not see anywhere: the files they have
+//  unlocked, and how long each one stays open.
+//
+//  An unlock here is a WINDOW, not a purchase — 24 hours by default, and the
+//  seller chooses — paid for with an ad rather than money. So the page is not a
+//  receipt and not a download list; it is a shelf with timers on it, which is the
+//  shape Hoopla and Kanopy arrived at for borrowed films, and why their shelves
+//  lead with what is still open and say when it closes.
+//
+//  The stores half is the audit's own missing line — "Following a store: absent"
+//  — and it is deliberately the smaller half. A follow here cannot promise to
+//  tell anybody anything, because nothing in this product sends mail to a buyer:
+//  it keeps a store on the shelf and counts what appeared since this person last
+//  looked. Substack's help centre is the cautionary tale (it still has to explain
+//  that a follower gets no email), so the copy says what following does and does
+//  not do, at the button and again on this page.
+// ---------------------------------------------------------------------------
+
+/**
+ * The two decisions the download route makes, made here too.
+ *
+ * The shelf must not offer a file that route would refuse, and the order is the
+ * order a person checks: is my window still open, and is the file still up. A
+ * file the store paused keeps its row — the unlock happened, and a shelf that
+ * quietly drops it makes the person wonder what they did wrong.
+ */
+const unlockState = (u) =>
+  !u.open ? (u.revoked_at ? 'taken' : 'ended')
+    : (u.asset_status === 'live' && !u.hidden_by_reports) ? 'open' : 'down';
+
+/** `24 Aug, 21:04` — the same shape the asset page's access line uses. */
+const atTime = (d) => new Date(d).toLocaleString('en-GB', {
+  day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+});
+
+const starsOf = (n) =>
+  `<span class="stars" aria-label="${n} out of 5">${'★'.repeat(n)}${'☆'.repeat(5 - n)}</span>`;
+
+/**
+ * Follow, or stop following, on the store it is about.
+ *
+ * Three cases, and the two silences are decisions:
+ *   - the owner sees nothing. Following your own shop is a bookmark to a page
+ *     you can already reach, and a control that changes nothing teaches people
+ *     that the buttons here do nothing;
+ *   - a signed-out visitor sees nothing. The shop window is not the place to
+ *     sell an account, and the library page explains where follows come from;
+ *   - a signed-in buyer gets one small button and one honest sentence, because
+ *     the word "follow" is read as a promise to tell you about new files, and
+ *     nothing here can make that promise.
+ */
+function watchControl({ channel, user, watching }) {
+  if (!user || user.id === channel.owner_id) return '';
+  const action = watching ? 'unfollow' : 'watch';
+  const note = watching
+    ? 'It is on your <a href="/library">library</a> shelf. Nothing is emailed — the count waits for you there.'
+    : 'New files are counted on your <a href="/library">library</a> shelf. Nothing is emailed.';
+  return `<form class="watch-form" method="post" action="/s/${esc(channel.slug)}/${action}">
+    ${watching
+      ? `${pill('Following', 'success')}<button class="btn btn-sm btn-ghost" type="submit">Stop following</button>`
+      : '<button class="btn btn-sm" type="submit">Follow this store</button>'}
+    <span class="fine">${note}</span>
+  </form>`;
+}
+
+/**
+ * One row of the shelf: what it is, whose store it is, and where the window
+ * stands. Four states rather than two, because "not open" is three different
+ * facts and each deserves its own sentence and its own way out.
+ */
+function unlockRow(u) {
+  const state = unlockState(u);
+  const href = `/s/${esc(u.channel_slug)}/a/${esc(u.asset_slug)}`;
+  const title = state === 'down'
+    ? `<strong>${esc(u.title)}</strong>`
+    : `<a href="${href}">${esc(u.title)}</a>`;
+
+  const stateCell = {
+    open: `${pill(u.expires_at ? 'Open' : 'Free', 'success')}
+      <span class="fine">${u.expires_at ? `Until ${esc(atTime(u.expires_at))}` : 'No window — free to everyone'}</span>`,
+    ended: `${pill('Ended')}
+      <span class="fine">The window closed ${relTime(u.expires_at)}</span>
+      <a class="btn btn-sm" href="${href}">Unlock it again</a>`,
+    taken: `${pill('Taken back', 'warning')}
+      <span class="fine">This one was taken back. The record stays here.</span>`,
+    down: `${pill('File taken down', 'warning')}
+      <span class="fine">The store took this file down after you unlocked it. Your unlock is still recorded.</span>`,
+  }[state];
+
+  const review = u.review_rating
+    ? `<span class="fine">You rated it ${starsOf(u.review_rating)}</span>`
+    : state === 'open' ? `<a class="fine" href="${href}">Say what you thought</a>` : '';
+
+  return `<li class="shelf-row">
+  <div class="shelf-what">
+    ${title}
+    <span class="fine">${esc(u.channel_name)} · unlocked ${relTime(u.granted_at)}</span>
+  </div>
+  <div class="shelf-state">${stateCell}${review ? `<span class="shelf-extra">${review}</span>` : ''}</div>
+</li>`;
+}
+
+/** A followed store, with the one derived number that makes following useful. */
+function followedCard(c) {
+  const n = Number(c.new_count) || 0;
+  return `<article class="card">
+  <div class="row">
+    <h3 style="margin:0;font-size:var(--text-md)"><a href="/s/${esc(c.slug)}">${esc(c.name)}</a></h3>
+    <span class="spacer"></span>
+    ${n ? pill(n === 1 ? '1 new file' : `${num(n)} new files`, 'accent') : ''}
+  </div>
+  <p class="small" style="margin:var(--space-2) 0">${esc(c.tagline || 'A store on ByteBikri.')}</p>
+  <div class="row-tight fine">
+    <span>${plural(c.live_count || 0, 'file')} live</span>
+    <span>·</span>
+    <span>${n ? `you last looked ${relTime(c.seen_at)}` : 'nothing new since you last looked'}</span>
+  </div>
+  <form method="post" action="/library/unfollow/${esc(c.slug)}" style="margin-top:var(--space-3)">
+    <button class="btn btn-sm btn-ghost" type="submit">Stop following</button>
+  </form>
+</article>`;
+}
+
+/**
+ * The library.
+ *
+ * Two lists and a shelf, in the order a person needs them: what is open now,
+ * what has ended (with the way back in), and the stores being watched. Nothing
+ * on this page carries a price, because nothing on this page was bought from
+ * bytebikri — an unlock is an ad, and the network pays the creator directly.
+ *
+ * The headline prints the account's own totals, computed from the same columns
+ * the rows use, so a cap on how many rows are drawn can never make the page read
+ * as if files had gone missing.
+ */
+export function library({ user, consent = null, unlocks = [], counts = {}, shelf = [], unwatched = null,
+  // The person's own store, when they have one. A seller reading their library is
+  // one click from their dashboard everywhere else in the product, and losing that
+  // link on this page would make the shelf a dead end for exactly the people who
+  // run shops.
+  channel = null, error = null }) {
+  const open = unlocks.filter((u) => unlockState(u) === 'open');
+  const closed = unlocks.filter((u) => unlockState(u) !== 'open');
+  const all = Number(counts.all) || unlocks.length;
+  const openCount = Number(counts.open) || open.length;
+  const cut = Math.max(all - unlocks.length, 0);
+
+  const headline = openCount
+    ? `<strong>${plural(openCount, 'file')} open to you right now</strong>, out of the ${plural(all, 'file')} you have unlocked here.`
+    : all
+      ? `Nothing is open to you right now. You have unlocked ${plural(all, 'file')} here — the ones that ended are below, and any of them can be opened again.`
+      : '';
+
+  const errorNote = error === 'no-store'
+    ? `<div class="note note-danger" role="alert"><strong>That store is not here.</strong>
+         The link may be old, or the store may have moved to another address. Nothing changed on your shelf.</div>`
+    : '';
+
+  return layout({
+    title: 'Library', user, current: 'library', activeChannel: channel, consent,
+    body: `
+<div class="section" style="margin-bottom:0">
+  <h1>Your library</h1>
+  <p class="lede" style="margin-top:var(--space-3)">Everything you have unlocked, and the stores you follow.
+  An unlock is a window, not a purchase: you watch an ad, the network pays the creator directly, and
+  bytebikri takes no cut of it. Nothing here has a price.</p>
+  ${headline ? `<p style="margin-top:var(--space-3)">${headline}</p>` : ''}
+</div>
+
+${errorNote}
+${unwatched ? `<div class="note note-info" role="status">
+  <strong>${esc(unwatched)} is off your shelf.</strong>
+  <form method="post" action="/library/follow/${esc(unwatched)}" style="display:inline;margin-left:var(--space-3)">
+    <button class="btn btn-sm" type="submit">Follow it again</button>
+  </form>
+</div>` : ''}
+
+<section class="section">
+  <div class="section-head">
+    <h2>Open now</h2>
+    <p>${open.length ? 'These are yours to open this minute.' : 'Nothing here at the moment.'}</p>
+  </div>
+  ${open.length ? `<ul class="shelf-list">${open.map(unlockRow).join('')}</ul>`
+    : all
+      ? `<div class="empty">Everything you unlocked has run out for now. Any of the files below can be
+           unlocked again — it takes one ad.</div>`
+      : `<div class="empty">You have not unlocked anything yet. Every file on this site is one ad away —
+           <a href="/marketplace">have a look at the listed stores</a>.</div>`}
+  ${cut ? `<p class="fine">Showing the ${num(unlocks.length)} most recent of your ${plural(all, 'unlock')}, open ones first.</p>` : ''}
+</section>
+
+${closed.length ? `<section class="section">
+  <div class="section-head">
+    <h2>Ended</h2>
+    <p>${plural(closed.length, 'file')} whose window has closed. Nothing is lost — the store still has them,
+      and unlocking again costs one ad.</p>
+  </div>
+  <ul class="shelf-list">${closed.map(unlockRow).join('')}</ul>
+</section>` : ''}
+
+<section class="section">
+  <div class="section-head">
+    <h2>Stores you follow</h2>
+    <p>Following keeps a store here and counts what appeared since you last looked at it. It does not email
+      or ping you — this product sends buyers no notifications, so a count on this page is the whole promise.</p>
+  </div>
+  ${shelf.length
+    ? `<div class="grid-channels">${shelf.map(followedCard).join('')}</div>`
+    : `<div class="empty">You are not following any store yet. Open a store you like — the button sits under its
+         name on the store page — and it will wait for you here.</div>`}
+</section>`,
   });
 }
 
@@ -1065,7 +1288,7 @@ export function assetPage({
   const placed = placeSlots(slots);
 
   return layout({
-    title: asset.title, user, activeChannel: channel, consent,
+    title: asset.title, user, activeChannel: user && user.id === channel.owner_id ? channel : null, consent,
     body: `
 <a class="back-link" href="/s/${esc(channel.slug)}">← ${esc(channel.name)}</a>
 

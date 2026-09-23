@@ -8,7 +8,7 @@ Three codebases live here and they are at very different stages:
 
 | Codebase | Path | State |
 |---|---|---|
-| **Web app** (server + storefront) | `app/` | works, **500 tests**, running locally |
+| **Web app** (server + storefront) | `app/` | works, **513 tests**, running locally |
 | **Android app** (Kotlin/Compose) | `android/` | **written against the real API now, never compiled** |
 | **Old prototype** | `index.js`, `admin.js`, `middleware.js`, `prototype/`, `db/schema.sql` | dead code, superseded |
 
@@ -262,11 +262,12 @@ single-asset management, and search.
 | Notifications | delegated in the model; nothing implemented |
 | Refund/dispute flow | decided: harsh measures; no mechanism |
 | KYC verification flow | schema exists, no upload, no review |
-| Following a store | absent |
+| Following a store | **built in §28** — a shelf at `/library`, a count of what appeared since you last looked, and no notification promised anywhere, because this product sends buyers none |
 | Offline viewing (Android) | absent **on purpose**: a disk cache of unlocked media is a leak with a progress bar |
 | Comments, replies between buyers | reviews only; a comment thread is a moderation load nobody has agreed to carry |
-| Bulk asset operations | one file at a time; a seller with 200 files will want more |
+| Bulk asset operations | **built in §27** — search, filters, sorts, paging, page/all-matching selection, and a change that can be taken back exactly |
 | Analytics beyond the estimate | no per-asset view counts, no traffic sources in the UI |
+| ~~A buyer's shelf~~ | **built in §28** — every unlock with its window (open / ended / taken back / file taken down), the stores being followed, and whether a person has reviewed what they opened |
 
 ### Missing infrastructure
 
@@ -2167,7 +2168,7 @@ there is no second copy of the truth to disagree with the first.
 
 ### What was run
 
-- `npm test` — **500 / 500 / 0**, including seventeen new tests in `test/bulk.test.js`:
+- `npm test` — **501 / 501 / 0**, including seventeen new tests in `test/bulk.test.js`:
   the counts that partition the store, the sorts, paging, the ownership guard (a stranger's
   id changes nothing), the held-file skip and its count, the filter-as-selection path, the
   restore-not-invert undo, the hold that arrived after the change, the one-shot window, the
@@ -2183,3 +2184,134 @@ there is no second copy of the truth to disagree with the first.
 - `ci/eyes/sweep.mjs` — **56 clean, 0 with findings.**
 - Looked at, in the browser: the toolbar, chips and undo strip at 1440px and 390px; the
   sticky bar with rows ticked on both; the phone card with the box beside its title.
+
+---
+
+## §28 — the buyer's shelf, and the line the audit never closed
+
+### What was missing, in the audit's own words
+
+`## 6. What is missing → Missing product surface` has carried this row since it was
+written:
+
+| Missing | Note |
+|---|---|
+| Following a store | absent |
+
+Looking at it properly turned up a bigger hole next to it, which the audit never had
+a row for because the product had never been read from the buyer's side at all:
+
+**There is no library.** An unlock in this product is a **window** — `unlock_hours`,
+24 by default, `0` meaning permanent — bought with an ad rather than with money. The
+asset page says so in one line (`accessExpiry`), the download route enforces it, and
+nothing anywhere listed what a person holds or when it runs out. A buyer who unlocked
+a file in the morning had one place to find it again: the tab they left open.
+
+### Research: what a shelf looks like when access is a window
+
+- **Hoopla and Kanopy** are the exact shape of this problem — borrowed media with a
+  stated lending period, no purchase at all. Their shelves lead with what is still
+  open, print when it closes, and offer the borrow again when it does. Nobody there
+  shows an expired item as a dead row; it stays visible with a way back in.
+- **Gumroad's Library** is the purchase-shaped version: filter by product or creator,
+  sort by date, and the tile is the way back to the content. Useful for the part that
+  transfers — a shelf is scanned by what it *is*, not by when it was acquired.
+- **itch.io's library and collections** show the same split this page ended up with:
+  a flat shelf of what you have, and a second list of the stores you chose to keep.
+- **Substack's follow documentation** is the caution on the other half. Their help
+  centre has to keep explaining that a *follower* "won't get posts in their inbox",
+  because the word follow is read as a promise to tell you about new files. This
+  product has no way to reach a buyer at all — no buyer mail, no push — so a Follow
+  that implied a notification would be a lie with a well-designed button.
+
+What that settled, in decisions:
+
+1. **The shelf leads with "open now", not with "recent".** The first number on the page
+   is how many files can be opened this minute; the rest is under *Ended*, still
+   visible, with the way to open them again.
+2. **"Not open" is three different facts, not one.** *Ended* (the window closed),
+   *Taken back* (the platform or the seller revoked it — the row says the record stays),
+   and *File taken down* (the store paused or removed the file after it was unlocked).
+   Collapsing them into "unavailable" would have been four lines shorter and would have
+   told a person nothing about what happened to their unlock.
+3. **The follow is a row and a count, never a message.** `follows(profile_id,
+   channel_id, created_at, seen_at)`, `seen_at` moved by *reading the store*, and "N new
+   files" derived at read time from it. There is no `notifications` table waiting to be
+   wired and no copy that says "we'll email you" — the page says the opposite, twice.
+4. **A file is not sold here.** The lede prints the platform's own rule where a buyer
+   reads it for the first time: *you watch an ad, the network pays the creator directly,
+   and bytebikri takes no cut of it. Nothing here has a price.*
+5. **The count only promises what a reader can find.** "New" means live *and*
+   searchable, so a store's first file waiting for its human review is not announced,
+   and neither is a file the seller has since paused.
+
+### Built
+
+- `0029_follows.sql` — the pair-keyed table, `seen_at` seeded at follow time (a store
+  followed today has nothing "new" in it), two indexes, no notification state. Migration
+  0029; the test database is built from the same files.
+- `store.myUnlocks` / `unlockCounts` / `followChannel` / `unfollowChannel` /
+  `followState` / `markChannelSeen` / `followedChannels`. `markChannelSeen` is an
+  **update, never an insert**: opening a store moves a line only for somebody who
+  already follows it, so browsing cannot subscribe anybody. `grantUnlock` was already
+  the one grant path, so nothing about the shelf can disagree with the route.
+- `views.library()` — the shelf (open, then ended/revoked/taken-down), the followed
+  stores with their count, the unfollow flash strip with its way back, and the
+  `no-store` case for a slug that no longer resolves. Two sections are conditional, so
+  an empty shelf is three sentences and a pointer to Explore rather than four empty
+  headings.
+- `views.watchControl()` on the storefront — rendered only for a signed-in person who
+  does not own the store, with the sentence about what following does not do. Four
+  routes: `POST /s/:slug/watch`, `POST /s/:slug/unfollow`, `POST /library/follow/:slug`,
+  `POST /library/unfollow/:slug`, all behind one 60/min limiter, all redirecting back to
+  where the person was standing.
+- The storefront now moves a follower's `seen_at` when it is opened, and so does the
+  file page — reaching a file means reaching the store that keeps it.
+- `ci/demo-state.mjs` seeds the shelf through the store's own calls: an ad unlock with
+  its window open, a free file with no window, a window closed two days ago with the
+  review it produced, a file paused by its seller after it was unlocked, and two
+  followed stores (one with 16 new files, one whose single file is still waiting for a
+  person). All five states on the shelf are visible in the preview.
+
+### Found by doing it
+
+1. **Every store page linked a dashboard that was not the reader's.** `activeChannel:
+   channel` was passed unconditionally, so a signed-out visitor to `/s/alice` got a nav
+   link to `/dashboard/alice` — which 404s for them, and reads as a broken product. Now
+   the link appears only for the owner (that page and the asset page).
+2. **"3 new files" next to "1 file live" would have been a page contradicting itself.**
+   `new_count` counted anything not removed; the card's own tail prints the store's live
+   count, and the storefront shows live files. A paused file is not news. One clause
+   (`status = 'live'`), one more test, and the two numbers agree by construction.
+3. **The library dropped the Dashboard link for sellers.** A seller reading their shelf
+   lost the one nav item they use most. The page now receives the person's own channel
+   and the nav splits at that name, exactly like every dashboard page.
+4. **`?unwatched=` was a reflected string waiting to happen.** It is the only query
+   parameter this page echoes, so it is validated as a slug shape at the route *and*
+   escaped at the render — and there is a test that posts markup through it.
+5. **`channels.cover_url` does not exist.** The first query was written by habit from
+   `assets.cover_url`; the store columns are `avatar_url` / `banner_url` / `logo_url`.
+   The probe caught it in one run, which is the argument for probing new queries against
+   the real schema instead of reading them.
+
+### What was run
+
+- `npm test` — **513 / 513 / 0**, including twelve new tests in `test/library.test.js`:
+  the window the route would check, the file its seller took down, follow idempotency,
+  unfollow-as-delete, the visit that moves a line only for a follower, the paused file
+  that is not news, the unreviewed file that is not news either, shelf ordering, the
+  counts that come from the account rather than the rows drawn, the promise that is
+  never made, the empty shelf, and the escaped `?unwatched=`.
+- `ci/eyes/sweep.mjs` — **64 clean, 0 with findings** (`/library` added for operator,
+  alice, nima and bob; the four new pages are in the count).
+- `ci/eyes/columns.mjs` — **31 tables on 18 pages, 0 findings at 390px** — the new page
+  uses no tables, which is the point of a shelf.
+- Migration 0029 applied to the dev database and to the test database built by
+  `scripts/test-db.mjs`.
+- Driven over HTTP with a real session: the signed-out redirect to
+  `?next=%2Flibrary`, follow → `?stop following`, unfollow from the library →
+  `?unwatched=…` with the way back, a slug that does not resolve →
+  `?error=no-store`, the owner's own store → no row written, a non-follower's visit →
+  no row written and no count moved.
+- Looked at, in the browser: the library at 1440px and at 390×844 (full page), the
+  store header with the Following pill and its sentence at 390px.

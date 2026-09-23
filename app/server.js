@@ -579,6 +579,106 @@ APP.get('/marketplace', async (req, res, next) => {
 });
 
 // ---------------------------------------------------------------------------
+// The library: what this person holds, and the stores they follow
+// ---------------------------------------------------------------------------
+//  The page is small. The rules behind it are the part worth reading, and there
+//  are four:
+//
+//    * a follow is for OTHER people's stores. Following your own shop is a
+//      bookmark to a page you can already reach, so the route refuses it and the
+//      control is never rendered in the first place;
+//    * following is idempotent and unfollowing is a delete, both answered with a
+//      redirect, so a double-click or a back button cannot leave a half state;
+//    * opening a store page (or a file in it) is what moves the "what is new"
+//      line, and only for somebody who already follows it — there is no row to
+//      update for anybody else;
+//    * nothing here sends a message. The page says so twice, because the word
+//      "follow" is read as a promise to tell you about new files and this product
+//      has no way to reach a buyer yet.
+// ---------------------------------------------------------------------------
+
+/**
+ * Following is a write, offered on a page a script can post to in a loop.
+ */
+const limitWatch = rateLimit({
+  windowMs: 60_000, max: 60, name: 'follows',
+  render: (info) => views.tooMany({ ...info, consent: null }),
+});
+
+/**
+ * The one implementation behind all four routes.
+ *
+ * `back` is where the person was standing, and it changes what the answer says:
+ * on the store page the button itself is the feedback (it flips to "Following"),
+ * so the redirect goes back to the store; on the library the row disappears, so
+ * the redirect carries the slug and the page says what happened — with the way
+ * back, because removing something is exactly the kind of action that deserves
+ * an undo rather than a confirmation dialog.
+ */
+async function followRoute(req, res, { follow, back }) {
+  const channel = await store.channelBySlug(req.params.slug);
+  if (!channel) return res.redirect('/library?error=no-store');
+  const onStore = back === 'store';
+  const home = onStore ? `/s/${channel.slug}` : '/library';
+  // Your own store is not something you keep on your own shelf.
+  if (req.user.id === channel.owner_id) return res.redirect(home);
+  if (follow) await store.followChannel(req.user.id, channel.id);
+  else await store.unfollowChannel(req.user.id, channel.id);
+  if (onStore) return res.redirect(home);
+  return res.redirect(follow ? home : `${home}?unwatched=${encodeURIComponent(channel.slug)}`);
+}
+
+APP.get('/library', async (req, res, next) => {
+  try {
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    // A slug-shaped string or nothing: the one query parameter this page needs,
+    // and the only one it will echo. It is a store the person just removed.
+    const unwatched = /^[a-z0-9][a-z0-9-]{0,60}$/i.test(String(req.query.unwatched || ''))
+      ? String(req.query.unwatched)
+      : null;
+    res.send(views.library({
+      user: req.user, consent: req.consent,
+      // Their own store, if they have one: the nav keeps the Dashboard link, so the
+      // library is not a dead end for a seller.
+      channel: (await store.channelsOf(req.user.id))[0] || null,
+      unlocks: await store.myUnlocks(req.user.id, { limit: 100 }),
+      counts: await store.unlockCounts(req.user.id),
+      shelf: await store.followedChannels(req.user.id),
+      unwatched,
+      error: req.query.error === 'no-store' ? 'no-store' : null,
+    }));
+  } catch (err) { next(err); }
+});
+
+APP.post('/library/follow/:slug', limitWatch, async (req, res, next) => {
+  try {
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    await followRoute(req, res, { follow: true, back: 'library' });
+  } catch (err) { next(err); }
+});
+
+APP.post('/library/unfollow/:slug', limitWatch, async (req, res, next) => {
+  try {
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    await followRoute(req, res, { follow: false, back: 'library' });
+  } catch (err) { next(err); }
+});
+
+APP.post('/s/:slug/watch', limitWatch, async (req, res, next) => {
+  try {
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    await followRoute(req, res, { follow: true, back: 'store' });
+  } catch (err) { next(err); }
+});
+
+APP.post('/s/:slug/unfollow', limitWatch, async (req, res, next) => {
+  try {
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    await followRoute(req, res, { follow: false, back: 'store' });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // Getting back into an account
 // ---------------------------------------------------------------------------
 // Four routes, and the shape of two of them is the security property: the POST
@@ -947,6 +1047,11 @@ APP.get('/s/:slug', async (req, res, next) => {
     // own refreshes.
     if (isPublicChannel(channel)) await store.bumpPageView(channel.id);
 
+    // Opening a store is what answers "what is new since I last looked", so a
+    // follower's line moves here. There is no row to move for anybody else, which
+    // is the property that matters: browsing can never quietly follow someone.
+    if (req.user) await store.markChannelSeen(req.user.id, channel.id);
+
     // A storefront shows the slots that have something in them. An empty
     // channel slot is a hole the owner should fill, not a curiosity for a
     // shopper — so it is rendered where it can be acted on, and here it is not.
@@ -985,6 +1090,9 @@ APP.get('/s/:slug', async (req, res, next) => {
     res.send(views.storefront({
       channel, assets, slots, user: req.user, estimate, pageviews, unlockedIds,
       consent: req.consent,
+      // Whether this person already follows this store — the button is the state,
+      // so it has to be known before the page is drawn.
+      watching: Boolean(await store.followState(req.user?.id, channel.id)),
       // The badge, from the same one row the seller's panel reads. A visitor sees
       // "identity checked" and the sentence says what was checked and when.
       verification: await store.verificationFor(channel.id),
@@ -1137,6 +1245,11 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
     if (!isAssetPublic(asset.moderation_state) && !maySeeEverything && !holdsUnlock) {
       return notFoundPage(req, res, 'file');
     }
+
+    // Reaching a file means reaching the store that keeps it, so a follower's
+    // "what is new" line moves here as well. Same rule as the storefront: no row,
+    // no write.
+    if (req.user) await store.markChannelSeen(req.user.id, channel.id);
 
     // The country decision, resolved the same way the storefront resolves it:
     // the file's own rule wins, the store's block applies where there is none.
