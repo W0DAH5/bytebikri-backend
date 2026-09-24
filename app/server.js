@@ -90,6 +90,7 @@ import {
   watermarkLabel, watermarkSvgDataUri, derivativeKey, cachedDerivative, cacheDerivative,
   rangeFor, assetShape,
 } from './src/media.js';
+import { placementPanelShown } from './src/placement.js';
 import { selfTest as adapterSelfTest, advisories as adapterAdvisories, ADAPTERS } from './src/providers/index.js';
 import * as views from './src/views.js';
 import { REVEAL_BOOTSTRAP } from './src/views.js';
@@ -1837,8 +1838,19 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
     // pass, and which no module-level test could see.
     const unlockPolicy = await store.unlockPolicy(asset.id);
 
+    // Where this file's breaks are, if it has any: the buyer is told before they
+    // click, the same way the ask is. A file that opens freely and breaks at 11:08
+    // must say so on the page rather than surprise somebody mid-listen.
+    //
+    // Skipped entirely when the file opens no content (`open` mode carries its
+    // files panel immediately) — a break nobody can reach is copy about nothing.
+    const placement = ['watch', 'listen', 'read'].includes(
+      assetShape(files, { url: asset.external_url }),
+    ) ? await store.adPlanFor(asset, { membersOnly: asset.unlock_mode === 'members' }) : null;
+
     res.send(views.assetPage({
       channel, asset, files, unlocked, user: req.user, consent: req.consent,
+      placement,
       accessUntil: unlock?.expires_at ?? null,
       previewFile, markUri, markLabel,
       alreadyReported,
@@ -2331,6 +2343,40 @@ APP.get('/api/unlock/status', async (req, res, next) => {
     res.json(await unlockStatus({
       assetId: req.query.assetId, userId: user.id, viewId: req.query.viewId,
     }));
+  } catch (err) { next(err); }
+});
+
+/*
+ * The length a player measured.
+ *
+ * Slice 3 needs a runtime before it can place a break, and both easier answers
+ * were refused: an `ffprobe` dependency on the server (a second media stack to
+ * keep working, for a number a browser already knows), and a box for the seller
+ * to type minutes into (the same mistake the ask ladder exists to fix).
+ *
+ * So the player reports it. Anyone who can play the file at all may report — a
+ * member, an unlocked viewer, a visitor on an open file — because the number is a
+ * fact about the file rather than about the reporter, and requiring a role would
+ * mean the demo's files never get one. What it is not is trusted for money: the
+ * plan decides where breaks go, not how much the file asks for, and the ask is
+ * derived from the seller's own value either way. A wrong figure costs the seller
+ * at worst a badly placed break on their own file, and the seller's page prints
+ * the number so they can see it.
+ */
+APP.post('/api/assets/:assetId/runtime', limitWatch, async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user) return requireUser(res);
+    if (!isUuid(req.params.assetId)) {
+      return res.status(400).json({ ok: false, error: 'assetId must be a uuid' });
+    }
+    const asset = await store.assetById(req.params.assetId);
+    if (!asset) return res.status(404).json({ ok: false, error: 'asset not found' });
+    // Only for something with a playhead. An image set has no duration, and a
+    // "measured" 4,000 seconds on one would move every break in it.
+    const row = await store.reportRuntime(asset.id, req.body?.durationSec);
+    if (!row) return res.status(400).json({ ok: false, error: 'durationSec must be between 1 and 86400' });
+    res.json({ ok: true, runtimeSec: row.runtime_sec });
   } catch (err) { next(err); }
 });
 
@@ -4279,6 +4325,29 @@ APP.post('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
       // carry this one decision cannot drift apart.
       mode: req.body.unlockMode === 'open' ? 'open' : wantsMembers ? 'members' : 'ad_gated',
     });
+    /*
+     * Which of the shape's placements this file keeps.
+     *
+     * An unchecked box is not in the body at all, so the submitted set IS the
+     * answer — and `setAdPlan` filters it against what the file's shape actually
+     * has. A five-into-three problem (the body says `placement=mid` twice) is
+     * impossible here because the name is not repeated, and a hand-crafted body
+     * naming a placement this shape does not have is dropped rather than refused:
+     * the seller's page never offered it, so there is nothing to explain.
+     *
+     * The panel is only rendered for shapes that have timed placements, so a
+     * download's save must not wipe the choices its shape would have had if it
+     * were, say, a video. That is why the array is only read when the file has a
+     * placement panel at all — see `placementChoicesSubmitted`.
+     */
+    const shapeFiles = await store.filesOf(asset.id);
+    const shape = assetShape(shapeFiles, { url: asset.external_url });
+    if (placementPanelShown(shape)) {
+      const submitted = [].concat(req.body.placement ?? []);
+      const choices = {};
+      for (const key of submitted) choices[String(key)] = true;
+      await store.setAdPlan(asset.id, choices);
+    }
     await store.audit('asset.updated', { assetId: asset.id, channelId: channel.id });
     return res.redirect(`${back}?saved=1`);
   } catch (err) { return next(err); }

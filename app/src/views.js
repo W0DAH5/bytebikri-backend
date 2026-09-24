@@ -29,7 +29,7 @@ import { MIN_PASSWORD_LENGTH } from './security.js';
 // itself is decided on the server, from the files (`media.js` → `assetShape`) —
 // this module only names it, so there is exactly one place that decides and no
 // second one that could disagree.
-import { shapeLabel, SHAPE_ORDER } from './media.js';
+import { shapeLabel, SHAPE_ORDER, assetShape } from './media.js';
 // Dependency-free, so a view can call it directly: `planUsage` is the one
 // definition of "how full is this plan", used by the dashboard, the operator's
 // plans page and the message at the upload wall.
@@ -72,6 +72,9 @@ import {
 import {
   ASK_LEVELS, ASK_PROMISE, ASK_INPUT_LINE, resolveAsk, askLabel, askReason, bandFor, descriptionAskClaim,
 } from './adscale.js';
+import {
+  PLACEMENT_BOUNDS, planFor, stamp, placementSentence,
+} from './placement.js';
 // The person's own premium: what a name may wear, and the gate that decides whether
 // it is worn at all (`plusWear()` — active only, decided in SQL).
 import {
@@ -1546,9 +1549,12 @@ ${closed.length ? `<section class="section">
  * make a copy traceable, and the note says exactly that, because a product that
  * claims to be un-copyable and is not is worse than one that never claimed it.
  */
-function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, slug, assetSlug, lockedReason = null }) {
+function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, slug, assetSlug, lockedReason = null, assetId = null }) {
+  // `data-asset-id` is what lets the player tell the server how long the file is
+  // when its metadata loads (slice 3: placement needs a measured runtime, and the
+  // player is the only component that has one).
   const frame = (inner, kind) => `
-    <figure class="stage stage-${kind}"${kind === 'image' ? '' : ' data-protect'}>
+    <figure class="stage stage-${kind}"${kind === 'image' ? '' : ' data-protect'}${assetId ? ` data-asset-id="${esc(assetId)}"` : ''}>
       ${inner}
       ${kind === 'image' ? '' : `<div class="stage-mark" style="background-image:url('${esc(markUri)}')" aria-hidden="true"></div>`}
     </figure>`;
@@ -1747,6 +1753,10 @@ export function assetPage({
   // rung that changes what is on the page — everything else is an explanation
   // beside the same button.
   blockRung = null,
+  // Where this file's breaks sit (slice 3). Decided by the server through the same
+  // planner the seller's page and the pipeline read; null for a shape with nowhere
+  // inside it to put one.
+  placement = null,
   markUri = '', markLabel = '', accessUntil = null, consent = null,
   reviews = [], reviewStats = {}, canReview = false, myReview = null, reviewError = null,
   reported = null, alreadyReported = false, reportError = null,
@@ -1894,6 +1904,23 @@ export function assetPage({
       Waiting is the way back here: this store sells no memberships, and the pause lifts by itself.
     </p>`}`;
 
+  /*
+   * NO SENTENCE ABOUT BREAKS INSIDE THE FILE YET, and the absence is deliberate.
+   *
+   * `placement.js` computes them and the seller's own page prints them, but nothing
+   * can yet STOP a player at one: the ask is still the door, and a page that
+   * announced "it asks for one view while you watch, at 11:08" would be promising
+   * the person on the other side of it something the product does not do. That is
+   * exactly the class of sentence slice 2 was written to close ("2 ads of 45
+   * seconds" that opened after one), and it is not reopened here.
+   *
+   * The buyer hears where the breaks are in the same commit that makes them real —
+   * the player gate. Until then the plan decides what the SELLER sees, which is
+   * true today, and nothing else.
+   */
+  const planSentence = null;
+  void placement; void placementSentence;
+
   const actionBlock = refusalBlock || (open
     ? `<div class="note note-success">Free — no ad needed.</div>${filesPanel}`
     : unlocked
@@ -1936,7 +1963,7 @@ export function assetPage({
 <div class="asset-layout">
   <div class="stack stack-8">
     ${mediaStage({
-      previewFile, markUri, coverUrl: asset.cover_url, title: asset.title, unlocked, needsAd,
+      previewFile, markUri, coverUrl: asset.cover_url, title: asset.title, unlocked, needsAd, assetId: asset.id,
       // The stage's own sentence. A members-only file behind an ad-shaped veil
       // reading "Unlocks after the ad" would be the page's one outright lie: no ad
       // opens this, and no amount of watching one will.
@@ -6264,6 +6291,10 @@ export function assetManage({
   caseFile = null, appeals = [],
 }) {
   const publicHref = `/s/${channel.slug}/a/${asset.slug}`;
+  // The shape, derived from the file the seller actually uploaded — the same call
+  // the storefront and the content path make, so the panel below cannot offer a
+  // placement the file does not have.
+  const shape = assetShape(files, { url: asset.external_url });
   const openAppeal = appeals.find((a) => a.status === 'open') || null;
   const decidedAppeals = appeals.filter((a) => a.status !== 'open');
   const hiddenByReports = Boolean(asset.hidden_by_reports);
@@ -6286,10 +6317,29 @@ export function assetManage({
   const storedLevel = String(policy.ask_level) === 'light' ? 'light' : 'standard';
   const value = Math.max(0, Number(asset.declared_value_npr) || 0);
   const storedAsk = { ads: Number(policy.ads_required) || 1, seconds: Number(policy.ad_min_seconds) || 15, level: storedLevel };
+  const asks = Object.fromEntries(ASK_LEVELS.map((l) => [l.key, resolveAsk({ valueNpr: value, planCode, level: l.key })]));
   // What the seller's own description promises, read back to them if it no longer
   // matches the ask (see `descriptionAskClaim`). Null when they make no claim.
   const descriptionClaim = descriptionAskClaim(asset.description);
-  const asks = Object.fromEntries(ASK_LEVELS.map((l) => [l.key, resolveAsk({ valueNpr: value, planCode, level: l.key })]));
+  /**
+   * Where this file's breaks go, computed by the same module the buyer's page and
+   * the pipeline read.
+   *
+   * The seller is shown the shape the platform derived, the length the player
+   * measured, and the breaks that follow from both. They are shown it because the
+   * alternative — a set of checkboxes whose effect you find out about later — is
+   * how a setting becomes a mystery. Every placement the shape allows is a
+   * checkbox; every one the rules would not place says why, next to it.
+   */
+  const placementPlan = planFor({
+    shape,
+    durationSec: asset.runtime_sec ?? null,
+    ask: { ...storedAsk, ceiling: asks[storedLevel].ceiling },
+    planCode,
+    choices: policy.ad_plan,
+    chapters: files.length || 1,
+    membersOnly: asset.unlock_mode === 'members',
+  });
   // Drift: the ask was calibrated when the file was worth something else. Said
   // plainly and never auto-corrected — an ask that moved on its own under a
   // visitor's feet would be worse than one that is briefly behind.
@@ -6311,6 +6361,58 @@ export function assetManage({
           <span class="ask-bar-n">${i + 1}</span>
         </span>`).join('')}
     </span>`;
+
+  /**
+   * The placement panel: what this shape has, what it kept, and where the breaks
+   * land. Rendered only for shapes that have anywhere to put one — a download's
+   * panel would be an empty box with a promise in it.
+   */
+  const placementPanel = placementPlan ? `
+      <div class="panel" style="margin-top:var(--space-5)">
+        <div class="panel-head">
+          <h2>Where the breaks go</h2>
+          <span class="pill">${esc(shapeLabel(shape))}</span>
+        </div>
+        <div class="panel-body">
+          <p class="small">${esc(placementPlan.reasonText)}</p>
+          ${placementPlan.cues.length ? `
+          <ul class="fine" style="margin:var(--space-3) 0 0;padding-left:var(--space-4)">
+            ${placementPlan.cues.map((c) => `<li>${esc(c.label)} — ${c.kind === 'post'
+    ? 'an offer, not a toll' : `${placementPlan.budget.seconds} seconds`}</li>`).join('')}
+          </ul>` : ''}
+          ${placementPlan.notes.map((n) => `<p class="fine" style="margin-top:var(--space-3)">${esc(n)}</p>`).join('')}
+          ${placementPlan.refused.map((r) => `<p class="fine" style="margin-top:var(--space-3);color:var(--warning-text)">
+            ${esc(r.reason)}</p>`).join('')}
+
+          ${placementPlan.allowed.length > 1 ? `
+          <div class="field" style="margin-top:var(--space-5)">
+            <span class="field-label">Breaks you allow in this file</span>
+            <div class="stack">
+              ${placementPlan.allowed.filter((p) => p.key !== 'aside').map((p) => `
+              <label class="choice">
+                <input type="checkbox" name="placement" value="${esc(p.key)}" ${p.kept ? 'checked' : ''}>
+                <span>
+                  <strong>${esc(p.label)}</strong>
+                  <span class="fine">${esc(p.why)}</span>
+                </span>
+              </label>`).join('')}
+            </div>
+            <span class="hint">Turning one off is instant and affects nobody who is watching right now.
+            What a file may ask for in total does not change: this decides where that ask is paid, not how much.</span>
+          </div>` : '<p class="fine">This shape has one place an ad can sit, and turning it off would mean turning ads off.</p>'}
+
+          <p class="fine" style="margin-top:var(--space-4)">
+            The rules, on every plan: no break in the first ${esc(stamp(PLACEMENT_BOUNDS.firstBreakAfter))} of a file
+            or the last ${esc(stamp(PLACEMENT_BOUNDS.lastBreakBeforeEnd))}; never two within
+            ${PLACEMENT_BOUNDS.minGap / 60} minutes of each other; a reader breaks between chapters, never inside one;
+            and a live file breaks only when you say so.
+          </p>
+          ${asset.runtime_sec
+    ? `<p class="fine">This file runs ${esc(stamp(asset.runtime_sec))} — measured by the player, not typed here.</p>`
+    : `<p class="fine">The player has not measured this file's length yet, so no break inside it can be
+            placed. Open the file once and this panel fills in.</p>`}
+        </div>
+      </div>` : '';
 
   const askPanel = `
       <div class="ask-panel">
@@ -6524,6 +6626,7 @@ ${notice ? `
         </div>
       </div>
       ${askPanel}
+      ${placementPanel}
       <div class="row" style="gap:var(--space-4);align-items:flex-start">
         <div class="field" style="flex:1 1 140px">
           <label for="a-hours">Access lasts</label>

@@ -40,6 +40,8 @@ import { SEARCHABLE_ASSET_STATES } from './moderation.js';
 // about a week that is written twice is a promise that drifts.
 import { HOLD_DAYS } from './kyc.js';
 import { resolveAsk } from './adscale.js';
+import { placementsFor, planFor } from './placement.js';
+import { assetShape } from './media.js';
 // The signal vocabulary, so a recorded kind is one the ladder understands. Pure
 // module: no database, no clock of its own, imports nothing.
 import { SIGNALS } from './blocked.js';
@@ -4034,6 +4036,99 @@ export const store = {
         wanted,
       ],
     );
+  },
+
+  /**
+   * The seller's choice of placements, filtered through what the shape allows.
+   *
+   * The filter is the whole method. `placement.js` owns which placements exist for
+   * a shape and what each one means, so a hand-crafted POST asking for a between-
+   * chapter gate on a video is not rejected with an error — it is simply not a key
+   * the shape has, and it never reaches the column. Rejecting it would be worse:
+   * the seller's page would have to explain a rule it does not show.
+   */
+  async setAdPlan(assetId, choices = {}) {
+    const asset = await this.assetById(assetId);
+    if (!asset) return null;
+    const files = await this.filesOf(assetId);
+    // The same derivation the storefront uses, so the seller cannot choose
+    // placements for a shape their file does not have.
+    const shape = assetShape(files, { url: asset.external_url });
+    const allowed = new Set(placementsFor(shape));
+    const clean = {};
+    for (const key of Object.keys(choices)) {
+      if (allowed.has(key)) clean[key] = Boolean(choices[key]);
+    }
+    return one(
+      `update asset_unlock_policy
+          set ad_plan = $2, updated_at = now()
+        where asset_id = $1
+        returning *`,
+      [assetId, JSON.stringify(clean)],
+    );
+  },
+
+  /**
+   * The length a player measured, reported by the client.
+   *
+   * Written once per file per value and never by the seller: the point of the
+   * column is that the number is a measurement rather than a claim. Only the asset
+   * owner's own file is accepted by the caller, and only a plausible length — a
+   * "duration" of four hours on a ten-second clip would move every break in it.
+   */
+  async reportRuntime(assetId, seconds) {
+    const secs = Math.round(Number(seconds));
+    if (!Number.isFinite(secs) || secs <= 0 || secs > 86_400) return null;
+    return one(
+      `update assets set runtime_sec = $2, updated_at = updated_at
+        where id = $1 and (runtime_sec is null or runtime_sec <> $2)
+        returning *`,
+      [assetId, secs],
+    );
+  },
+
+  /**
+   * The plan a file actually runs: one call, so no caller can half-apply it.
+   *
+   * Everything the planner needs is gathered here — the derived shape, the length
+   * the player measured, the ask the ladder produced, the plan the store pays for,
+   * the seller's choices and whether the viewer is a member — and the result is
+   * the planner's own object. A caller that renders the seller's page and a caller
+   * that renders the buyer's page therefore cannot disagree about where the breaks
+   * are, which is the failure mode this whole slice would otherwise have.
+   */
+  async adPlanFor(asset, { membersOnly = false } = {}) {
+    if (!asset) return null;
+    const [files, policy, channel] = await Promise.all([
+      this.filesOf(asset.id),
+      this.unlockPolicy(asset.id),
+      this.channelById(asset.channel_id),
+    ]);
+    const shape = assetShape(files, { url: asset.external_url });
+    const planCode = channel ? this.effectivePlanCode(channel) : 'free';
+    const ask = policy
+      ? {
+        ads: Number(policy.ads_required) || 0,
+        seconds: Number(policy.ad_min_seconds) || 0,
+        level: policy.ask_level === 'light' ? 'light' : 'standard',
+        ceiling: resolveAsk({
+          valueNpr: asset.declared_value_npr ?? 0, planCode, level: policy.ask_level === 'light' ? 'light' : 'standard',
+        }).ceiling,
+      }
+      : null;
+    return planFor({
+      shape,
+      durationSec: asset.runtime_sec ?? null,
+      ask,
+      planCode,
+      choices: policy?.ad_plan ?? null,
+      // A reader's chapters are its files: one image per page, one page per
+      // chapter in a cbz, one track per audio file. The planner is told the count
+      // rather than deciding it, because what counts as a chapter is a fact about
+      // the upload and not about ad placement.
+      chapters: files.length,
+      membersOnly,
+    });
   },
 
   /**

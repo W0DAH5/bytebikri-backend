@@ -307,6 +307,35 @@
     el.addEventListener('dragstart', (e) => e.preventDefault());
   });
 
+  /*
+   * THE LENGTH OF A FILE, MEASURED BY THE THING THAT KNOWS.
+   *
+   * Slice 3 places a break inside a file, and it needs to know how long the file
+   * is. Both easier answers were refused: `ffprobe` on the server (a second media
+   * stack for a number the browser already has) and a box for the seller to type
+   * minutes into. So the player reports what it measured, once per page load, and
+   * the server keeps it if nothing better is there.
+   *
+   * It is only sent when the element actually loaded metadata: a duration of NaN
+   * on a link that failed would be a file whose length is "unknown" forever.
+   */
+  document.querySelectorAll('video[src], audio[src]').forEach((el) => {
+    const assetId = el.closest('[data-asset-id]')?.dataset.assetId;
+    if (!assetId) return;
+    el.addEventListener('loadedmetadata', () => {
+      const seconds = Math.round(el.duration);
+      if (!Number.isFinite(seconds) || seconds <= 0) return;
+      api(`/api/assets/${encodeURIComponent(assetId)}/runtime`, {
+        method: 'POST',
+        body: JSON.stringify({ durationSec: seconds }),
+      }).catch(() => {
+        // Best effort by design: a file whose length never arrives simply gets no
+        // break inside it, which is the same as it not having one. Nothing is
+        // reported to the person watching — this is not a control they operate.
+      });
+    }, { once: true });
+  });
+
   // A media element that fails is almost always an expired link (four hours) or
   // a revoked unlock. Saying which beats a black rectangle.
   document.querySelectorAll('video[src], audio[src]').forEach((el) => {
