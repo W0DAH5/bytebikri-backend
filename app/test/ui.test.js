@@ -390,6 +390,38 @@ test('the theme control follows the plan, and Free is told rather than shown a l
     'and the page answers the question a colour raises: does my shop now move?');
 });
 
+test('a paid store can drop our name from its own pages, and only its own pages', async () => {
+  // `remove_footer` was true on both paid plans since migration 0001, mentioned on the
+  // pricing page nowhere, and rendered nowhere — a capability that existed only in a
+  // JSONB column. It is now read, so the two shapes have to be checked: a Free store
+  // keeps the line, a paid store loses it, and the platform's legal notices survive
+  // both. The last one is the assertion with teeth: a plan may remove our NAME, never
+  // our notice.
+  const { storefront } = await import('../src/views.js');
+  const base = {
+    channel: { slug: 's', name: 'S', owner_id: 'o' }, assets: [], slots: [], user: null,
+    estimate: null, pageviews: null, unlockedIds: new Set(),
+  };
+  const free = storefront({ ...base });
+  const paid = storefront({ ...base, plainFooter: true });
+
+  assert.match(free, /the shop belongs to the creator/, 'a Free store carries our name');
+  assert.doesNotMatch(paid, /the shop belongs to the creator/,
+    'a paid store does not, on its own storefront');
+  for (const [label, html] of [['free', free], ['paid', paid]]) {
+    for (const path of ['/legal/privacy', '/legal/terms', '/legal/cookies']) {
+      assert.ok(html.includes(path), `${label}: ${path} is still reachable from the footer`);
+    }
+  }
+  // And the flag does not travel: a platform page (the landing page, the console, the
+  // person's own library) is not a store's shop window and keeps the line whatever any
+  // plan says — they are built by other functions entirely, which is exactly why this
+  // is asserted here rather than assumed.
+  const { layout } = await import('../src/views.js');
+  assert.match(layout({ title: 't', user: null, body: 'x' }), /the shop belongs to the creator/);
+  assert.doesNotMatch(layout({ title: 't', user: null, body: 'x', plainFooter: true }), /the shop belongs to the creator/);
+});
+
 test('reviews are keyed off unlocks on both sides of the page', async () => {
   const { assetPage } = await import('../src/views.js');
   const base = {

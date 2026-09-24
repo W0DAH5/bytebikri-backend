@@ -467,6 +467,46 @@ test('plan benefits read as sentences, with no negative sentinel showing through
   assert.equal(PLANS.free.capabilities.can_theme, false);
   assert.ok(!planBenefits(PLANS.free).some((l) => /theme/i.test(l)),
     'a Free plan is not sold a look it cannot pick');
+
+  // Same pair of assertions for the other capability that sat in the plans table with
+  // no reader and no mention: `remove_footer`, true on both paid plans since migration
+  // 0001. It is implemented now (the storefront and its file pages drop the wordmark
+  // line), so the pricing page has to say so — and a Free store must not be told it can.
+  for (const plan of [PLANS.store, PLANS.pro]) {
+    assert.equal(plan.capabilities.remove_footer, true, `${plan.code} carries the capability`);
+    assert.ok(planBenefits(plan).some((l) => /without bytebikri/i.test(l)),
+      `${plan.code} can drop our name and says so`);
+  }
+  assert.equal(PLANS.free.capabilities.remove_footer, false);
+  assert.ok(!planBenefits(PLANS.free).some((l) => /without bytebikri/i.test(l)),
+    'a Free store keeps our name and is not told otherwise');
+});
+
+test('no plan, at any price, removes the platform\'s legal notices', () => {
+  // The line `remove_footer` is sold on has one limit, and the limit is the point: a
+  // visitor reading a creator's store is still on this platform's pages, under this
+  // platform's privacy notice and terms. A capability that could hide those would be
+  // selling a compliance problem, so the promise ("the legal notices stay") and the
+  // rendering are checked together — the sentence in `planBenefits` and the markup in
+  // `layout`, which is the only place the footer is built.
+  assert.ok(planBenefits(PLANS.pro).some((l) => /legal notices stay/i.test(l)),
+    'the limit is stated where the benefit is sold');
+  const views = readFileSync(new URL('../src/views.js', import.meta.url), 'utf8');
+  const footer = views.slice(views.indexOf('<footer class="footer'));
+  const end = footer.indexOf('</footer>');
+  const markup = footer.slice(0, end);
+  assert.match(markup, /legal\/privacy/);
+  assert.match(markup, /legal\/terms/);
+  assert.match(markup, /legal\/cookies/);
+  // The wordmark line is the only thing inside the footer that the plan may switch
+  // off. Asserted on the legal-links span specifically: everything between its tags
+  // must be unconditional, so a later edit cannot quietly move a notice inside the
+  // conditional that hides our name.
+  assert.match(markup, /plainFooter \? '' : '<span>ByteBikri/,
+    'the flag is wired to the branding line');
+  const links = markup.slice(markup.indexOf('<span class="row-tight">'), markup.lastIndexOf('</span>'));
+  assert.doesNotMatch(links, /plainFooter/,
+    'nothing in the legal-notices span depends on the plan');
 });
 
 // ---------------------------------------------------------------------------

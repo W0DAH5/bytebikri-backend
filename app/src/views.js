@@ -337,6 +337,20 @@ export function layout({
    * is noise, and noise is how the reminders that matter get skimmed past.
    */
   showAddressNotice = true,
+  /**
+   * A paid store may take bytebikri's name off ITS OWN pages — the storefront and the
+   * files on it. `plans.capabilities.remove_footer` has been true on both paid plans
+   * since migration 0001 and was rendered nowhere until now, which made it the same
+   * shape of defect this repository keeps finding: a capability in the table, absent
+   * from the pricing page, and read by nothing.
+   *
+   * It removes the wordmark LINE, not the footer. Privacy, Terms and Cookies stay on
+   * every page on every plan, because the visitor reading a creator's store is still on
+   * this platform's pages, under this platform's notice, and a plan that could hide
+   * that would be selling a compliance problem rather than a feature. (Linktree sells
+   * exactly this and keeps its legal links for the same reason.)
+   */
+  plainFooter = false,
 }) {
   const onAddressPage = current === 'verify';
   const navLink = (href, label, key) =>
@@ -390,10 +404,10 @@ export function layout({
 ${showAddressNotice && !onAddressPage ? addressNotice(user) : ''}
 <main id="main"${wide ? '' : ''} class="wrap">${body}</main>
 ${consentBanner(consent)}
-<footer class="footer">
+<footer class="footer${plainFooter ? ' footer-plain' : ''}">
   <div class="wrap">
     <div class="row">
-      <span>ByteBikri — the shop belongs to the creator.</span>
+      ${plainFooter ? '' : '<span>ByteBikri — the shop belongs to the creator.</span>'}
       <span class="row-tight">
         <a href="/legal/privacy" style="color:inherit">Privacy</a>
         <a href="/legal/terms" style="color:inherit">Terms</a>
@@ -1074,6 +1088,10 @@ export function storefront({
   // change — and the band it paints sits behind text this module already colours,
   // which is what keeps contrast the same question it was before themes existed.
   theme = null, themeStyle = '',
+  // The store's plan may take our name off its own shop window. Decided by the server
+  // from the plan, passed in rather than re-derived here: one reader of a capability is
+  // how the pricing page and the page it prices stay in agreement.
+  plainFooter = false,
 }) {
   const cards = assets.map((a) => {
     const open = a.unlock_mode === 'open';
@@ -1126,7 +1144,7 @@ export function storefront({
     // to whoever was looking — including people with no account and sellers who do
     // not own this store. The link belongs to the owner, so it renders for the owner.
     title: channel.name, user, activeChannel: user && user.id === channel.owner_id ? channel : null, consent,
-    reveal: true,
+    reveal: true, plainFooter,
     body: `
 ${channel.banner_url
     ? `<div class="store-hero">
@@ -1695,6 +1713,10 @@ export function assetPage({
   markUri = '', markLabel = '', accessUntil = null, consent = null,
   reviews = [], reviewStats = {}, canReview = false, myReview = null, reviewError = null,
   reported = null, alreadyReported = false, reportError = null,
+  // A paid store's own file pages are part of its shop window, so they lose the
+  // wordmark line with its storefront. Decided by the server from the plan; the view
+  // never asks the database anything.
+  plainFooter = false,
   // What this viewer is refused, and why — a country rule, or the file's own
   // state. Decided on the server (see src/geo.js and src/moderation.js) and
   // rendered here: the page never works out for itself who may do what.
@@ -1870,6 +1892,7 @@ export function assetPage({
 
   return layout({
     title: asset.title, user, activeChannel: user && user.id === channel.owner_id ? channel : null, consent,
+    plainFooter,
     body: `
 <a class="back-link" href="/s/${esc(channel.slug)}">← ${esc(channel.name)}</a>
 

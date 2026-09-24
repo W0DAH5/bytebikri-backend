@@ -265,7 +265,7 @@ single-asset management, and search.
 | A storefront theme (the plans' `can_theme`) | **built in §31** — six curated palettes, each proven at ≥5.5:1 for white at both ends of its gradient and at the middle, a live preview on the seller's own store name, motion that is opt-in per device, and the capability read from the plan rather than restated |
 | Per-store fonts, free-form colours, seller CSS | absent **on purpose**: each is a claim about readability that no test can keep, and each can be priced and proven on its own later |
 | A member-paid ad-free experience, charged to the seller | **still open** — the revenue-side sibling of the theme round. It cannot be sold by withholding ad money (the networks pay the store directly), so it needs a seller-side capability, a price, and a rule about the platform's rented slot. Researched, deliberately not half-built |
-| Per-store footer removal (`remove_footer`) | **still open** — the fourth capability sitting in the same plans table with no reader. Not a colour, so it is not part of §31, and it should be built or removed from the plans rather than left as a bullet nobody prints |
+| Per-store footer removal (`remove_footer`) | **built in §33** — a paid store's storefront and file pages lose bytebikri's name; the legal notices stay on every page of every plan, because those are not a store's to remove. Sold on the pricing page in the same words, and pinned in two test files |
 | Paying a creator directly | **built in §30** — members: two tiers the store names, dues the member sends the creator and the creator alone confirms, a roster with plates, and files that open with no ad while the period runs |
 | Following a store | **built in §28** — a shelf at `/library`, a count of what appeared since you last looked, and no notification promised anywhere, because this product sends buyers none |
 | Offline viewing (Android) | absent **on purpose**: a disk cache of unlocked media is a leak with a progress bar |
@@ -2580,11 +2580,10 @@ full file list — paused files included — so deleting a tier never happens bl
 
 ### What is deliberately not here
 
-Per-store fonts, free-form colours, seller-authored CSS, and a per-store footer removal
-(`remove_footer`, the fourth capability in the same boat as `can_theme`). Each is a promise about
-readability or about what the platform is that no test can keep, and each can be built, checked and
-sold on its own terms later. The audit's missing-surface table records them as open rather than
-solved.
+Per-store fonts, free-form colours, and seller-authored CSS. Each is a promise about readability that
+no test can keep, and each can be built, checked and sold on its own terms later. (A per-store footer
+removal was in this list and is not any more: §33 built it, with the platform's own legal notices
+excluded — the one part of a footer that is not a store's to remove.)
 
 ---
 
@@ -2985,4 +2984,12 @@ will not do to the person who caused them.
 - **A real ad-network integration.** Everything here is verified against the sandbox network; the
   postback path has never carried a signed request from a live provider (credential-gated, and recorded
   as such since §23).
-- **`remove_footer`** is still a capability rendered nowhere (carried from §31).
+- **`remove_footer` is no longer a capability with no reader.** It was true on both paid plans from
+  migration 0001, mentioned on the pricing page nowhere, and rendered nowhere — the same shape of gap
+  as `can_theme` (§31) and `verified_badge` (§25) before it. A paid store now loses bytebikri's name on
+  its own storefront and file pages, and the platform's legal notices stay on every page of every plan,
+  because a visitor reading a creator's store is still on this platform's pages under this platform's
+  notice — a capability that could hide those would be selling a compliance problem. Both halves are
+  pinned in `test/billing.test.js` (the capability and the sentence that sells it, plus the assertion
+  that nothing in the legal-links span depends on the plan) and in `test/ui.test.js` (both shapes, and
+  that a platform page keeps the line whatever a plan says).

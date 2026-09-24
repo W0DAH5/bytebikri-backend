@@ -1533,6 +1533,11 @@ APP.get('/s/:slug', async (req, res, next) => {
       // the band, and only the band, is what those two properties paint.
       theme: channel.theme ?? null,
       themeStyle: themeStyle(channel.theme),
+      // The paid plans may take bytebikri's name off their own shop window. Read from
+      // the same `capabilities` row the pricing page reads, so a plan cannot sell this
+      // and fail to deliver it (which is what `remove_footer` did for eight migrations:
+      // true on both paid plans, rendered nowhere, sold nowhere).
+      plainFooter: store.plan(channel).capabilities?.remove_footer === true,
       // The badge, from the same one row the seller's panel reads. A visitor sees
       // "identity checked" and the sentence says what was checked and when.
       verification: await store.verificationFor(channel.id),
@@ -1839,6 +1844,7 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
       // Which tier the viewer holds, and what the file needs — the two facts the
       // refusal sentence is built from.
       memberCover,
+      plainFooter: store.plan(channel).capabilities?.remove_footer === true,
       memberTiers: asset.unlock_mode === 'members' ? await store.membershipTiers(channel.id) : [],
       memberTierName: asset.unlock_mode === 'members'
         ? (await store.membershipTiers(channel.id)).find((t) => Number(t.tier_no) === (Number(asset.member_tier) || 1))?.name ?? null

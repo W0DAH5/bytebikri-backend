@@ -2727,3 +2727,10 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
    place had drifted into claiming membership opens any file with no ad. */
 .never-do { margin: 0; padding-inline-start: var(--space-5); display: grid; gap: var(--space-2); }
 .never-do li { font-size: var(--text-sm); line-height: var(--leading-normal); color: var(--text-secondary); }
+
+/* A paid store's pages, with our name off them. The only change is where the row
+   starts: the legal links sit at the right edge, where they already were, instead of
+   being dragged left with a wordmark that is no longer there. The footer keeps its own
+   padding and the links keep their colour on every plan — this is a rule about
+   alignment, not about hiding anything. */
+.footer-plain .row { justify-content: flex-end; }

@@ -268,6 +268,15 @@ export function planBenefits(plan, { availableSlots = null } = {}) {
   // "documents" while nothing read the table that was built for them, and the
   // operator's own People page said the platform had no KYC step — the plan was
   // selling a feature the product denied having.
+  // Branding removal, sold as what it is. `remove_footer` has been true on both paid
+  // plans since migration 0001 and was read by nothing — the pricing page never
+  // mentioned it, so a seller could not have known they had it. It is now implemented
+  // (see `layout()` in src/views.js) and sold here, with the one limit stated up front:
+  // the platform's legal notices stay on every page, because a visitor reading a
+  // creator's store is still on this platform's pages under this platform's notice.
+  if (c.remove_footer === true) {
+    out.push('Your storefront without bytebikri\u2019s name on it — the legal notices stay, because those are not a store\u2019s to remove');
+  }
   if (c.verified_badge) {
     out.push('A checked-seller badge: a person looks at one identity document, records what they saw, and keeps no copy');
   }
