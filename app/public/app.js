@@ -38,6 +38,12 @@
 
     let poll = null;
     let ticker = null;
+    // One unlock attempt, which may take more than one ad. The attempt is the
+    // server's row, not a browser idea: `requiredViews` of them have to be
+    // proven by signed postbacks before anything opens. Kept across a closed
+    // modal on purpose — a person who stops half way and comes back should
+    // continue from what they already watched, not start the ask again.
+    let attempt = null;
 
     const setStatus = (text, kind = '') => {
       if (!statusEl) return;
@@ -101,7 +107,7 @@
       else setTimeout(close, 2600);
     };
 
-    const finish = async (viewId, assetId) => {
+    const finish = async (viewId, assetId, creditedBefore = 0) => {
       clearInterval(ticker);
       if (countEl) countEl.textContent = '✓';
       // The status has to change here. It said "Starting…" while a view was being
@@ -127,6 +133,22 @@
           location.reload();
           return;
         }
+        // The ad was credited and the file asks for more than one. The next ad
+        // belongs to the SAME attempt — starting a new one would create a new
+        // ask, and the page promised this file's ask, not twice the ask.
+        if (Number(s.viewsDone) > creditedBefore && Number(s.viewsDone) < Number(s.viewsRequired)) {
+          if (attempt) attempt.viewsDone = Number(s.viewsDone);
+          // No line is printed here on purpose. The next ad's own sentence says
+          // the same thing and STAYS on screen ("Ad 2 of 2. The first view was
+          // credited."); a separate sentence set at this instant is replaced
+          // within milliseconds and is therefore read by nobody.
+          if (note) {
+            note.textContent = 'This file asks for more than one view. The unlock is not granted yet.';
+            note.style.color = '';
+          }
+          await runAd(assetId);
+          return;
+        }
         // Providers reconcile asynchronously, so keep asking for a while rather
         // than declaring failure the moment the ad ends.
         if (Date.now() - started < 90_000) {
@@ -140,10 +162,24 @@
     };
 
     const runAd = async (assetId) => {
-      const start = await api('/api/unlock/start', {
-        method: 'POST',
-        body: JSON.stringify({ assetId }),
-      });
+      // A second ad on the same file reuses the attempt the first one opened.
+      // Before playing it, the progress is re-read from the server: the counts
+      // are the network's, and a person who closed the modal mid-ask must not be
+      // charged for the views they already sat through.
+      if (attempt) {
+        const s = await api(`/api/unlock/status?assetId=${encodeURIComponent(assetId)}`
+          + `&viewId=${encodeURIComponent(attempt.viewId)}`);
+        if (s.unlocked) { location.reload(); return; }
+        attempt.viewsDone = Number(s.viewsDone) || 0;
+        attempt.adConfig = { ...attempt.adConfig, requiredViews: Number(s.viewsRequired) || 1 };
+      }
+
+      const start = attempt
+        ? { ok: true, viewId: attempt.viewId, adConfig: attempt.adConfig }
+        : await api('/api/unlock/start', {
+          method: 'POST',
+          body: JSON.stringify({ assetId }),
+        });
 
       if (!start.ok) {
         if (start.status === 401) {
@@ -158,7 +194,34 @@
 
       const cfg = start.adConfig;
       const seconds = Number(cfg.minSeconds) || 15;
+      // How many views this file asks for, and how many the network has already
+      // proved. The number is the server's; the browser only counts up to it.
+      const viewsRequired = Math.max(1, Number(cfg.requiredViews) || 1);
+      // A resumed ask arrives with its own progress: the attempt is the server's
+      // row, so somebody who reloaded half way is not asked for the first view
+      // again, and the panel says which view this is.
+      const creditedSoFar = Math.max(Number(attempt?.viewsDone) || 0, Number(start.viewsDone) || 0);
+      const thisAd = Math.min(creditedSoFar + 1, viewsRequired);
+      if (!attempt) attempt = { viewId: start.viewId, adConfig: cfg, viewsDone: creditedSoFar };
 
+      // What is owed, said once — and said for the whole ad rather than in the
+      // instant between two of them. The credited views are named because the
+      // fear this screen has to answer is "does the next one start the count
+      // again?", and the answer has to be on screen while it is being asked.
+      const creditedTail = creditedSoFar === 0
+        ? 'The next one is asked for only if this one is credited.'
+        : `${creditedSoFar === 1 ? 'The first view was credited' : `${creditedSoFar} views credited`}. `
+          + (viewsRequired - creditedSoFar === 1 ? 'This is the last one.' : 'One more follows this one.');
+      setStatus(viewsRequired > 1
+        ? `Ad ${thisAd} of ${viewsRequired}. ${creditedTail}`
+        : 'Starting…');
+
+      // The modal's own line about the ask, kept in step with the one above it:
+      // "the second one is asked for only if the first is credited" is the right
+      // sentence while it is still a question, and the wrong one once the first
+      // view is credited and the second ad is already playing.
+      const askTail = $('#ad-ask-tail');
+      if (askTail && viewsRequired > 1) askTail.textContent = `. ${creditedTail}`;
       if (providerLine) providerLine.textContent = `${cfg.providerId} · rewarded video`;
       if (modal) modal.hidden = false;
       if (note) {
@@ -207,7 +270,7 @@
         }
       }
 
-      setTimeout(() => finish(start.viewId, assetId), seconds * 1000 + 400);
+      setTimeout(() => finish(start.viewId, assetId, creditedSoFar), seconds * 1000 + 400);
     };
 
     unlockBtn.addEventListener('click', () => {

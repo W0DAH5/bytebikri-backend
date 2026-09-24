@@ -330,7 +330,7 @@ already printed on a page until the copy changes in the same commit.
 | # | Slice | Change | Test | Deliberately not |
 |---|---|---|---|---|
 | 1 | **Shapes** | `media.js` shape detection (7 kinds); store sections; ≤4 chips; card chips; empty sections absent | classification table test; a 4-shape store renders 4 sections and a 1-shape store renders none; chips absent below 2 shapes | no placement logic, no reader |
-| 2 | **Enforcement** | server counts verified views against `required_ads` per unlock (not per connection); the client runs ad *n* only after postback *n−1* | 1 of 2 views → still locked; 2 of 2 → open; replayed postback does not count twice; "2 ads of 45 s" becomes true | no changes to the ask ladder |
+| 2 | **Enforcement** | server counts verified views against `required_ads` per unlock (not per connection); the client runs ad *n* only after postback *n−1*; the attempt is the promise and survives a reload — and an attempt past the sweep window is not resumed | 1 of 2 views → still locked; 2 of 2 → open; replayed postback does not count twice; a reload resumes the same attempt; an abandoned one is swept; "2 ads of 45 s" becomes true | no changes to the ask ladder |
 | 3 | **Placement** | `assets.ad_plan` (jsonb) computed from shape + runtime + value + plan ceiling; player cue markers; seller checkboxes per shape | planner: never last 90 s, ≥4 min apart, ≤180 s total, ≤ plan ceiling; unknown duration → 1 pre-roll | no real ad tag yet — the plan drives the existing reward flow |
 | 4 | **The attention door** | tier gains `join_mode` (`dues` / `attention` / both); verified views accrue standing; member room page | an attention join never creates a dues row; a member file stays ad-free in `dues` mode; `supporter` mode's ask equals the public ask | no money handling of any kind |
 | 5 | **The ledger** | `attention_events` + a store-facing page: views, seconds, per surface, per placement; the platform slot's own numbers separated from the store's | arithmetic test; the page states which side earned what; no payout field exists anywhere | share-back/credit (waits for leg 6) |
@@ -357,7 +357,7 @@ seconds" is currently a sentence, not a gate.
 | Slice | State |
 |---|---|
 | 1 Shapes | **Built** — `assetShape` in `media.js`, sections and chips on the storefront, shape on every card, 12 tests (`media.test.js`, `shapes.test.js`). Suite 620/620/0 |
-| 2 Enforcement | Not started — `required_ads` is stored and displayed, still granted on one `complete` |
+| 2 Enforcement | **Built** — the grant is `count(completed views) >= the attempt's own ask`; progress is reported, not guessed; an attempt survives a reload; 8 tests (`adviews.test.js`), 5 screenshots from a real two-ad walk (`docs/evidence/round35`, harness `ci/eyes/walk-ads.mjs`). Suite 628/628/0 |
 | 3 Placement | Not started |
 | 4 Attention door | Not started |
 | 5 Ledger | Not started |

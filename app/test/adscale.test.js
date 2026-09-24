@@ -26,7 +26,7 @@ process.env.DATABASE_URL ||= 'postgres://postgres:postgres@127.0.0.1:55432/byteb
 
 const {
   ASK_FLOOR, ASK_ABSOLUTE, ASK_BANDS, ASK_CEILING, ASK_LEVELS, ASK_PROMISE, ASK_INPUT_LINE,
-  bandFor, ceilingFor, resolveAsk, askLabel, askSentence, askReason,
+  bandFor, ceilingFor, resolveAsk, askLabel, askSentence, askReason, descriptionAskClaim,
 } = await import('../src/adscale.js');
 const { store, PLANS } = await import('../src/store.js');
 const { close, query } = await import('../src/db.js');
@@ -288,4 +288,49 @@ test('the publish path does not accept a typed ask', async () => {
   assert.doesNotMatch(views, /name="adMinSeconds"/, 'and the publish form offers no box for one');
   // The seed is the other writer that was found: it may not either.
   assert.doesNotMatch(server, /setAdMinSeconds/);
+});
+
+test('a description that promises a different ask is read, narrowly', () => {
+  // The defect this catches: the demo file's description said "Unlock with one ad"
+  // while the derived ask had become two, and the page printed both sentences.
+  // Free text is the seller's, so the platform reads it and says what it sees
+  // instead of rewriting it.
+  assert.equal(descriptionAskClaim('Unlock with one ad.'), 1);
+  assert.equal(descriptionAskClaim('Two ads and you are in'), 2);
+  assert.equal(descriptionAskClaim('3 ads to unlock'), 3);
+  assert.equal(descriptionAskClaim('No ads, ever'), 0);
+  assert.equal(descriptionAskClaim('Watch 2 ADS'), 2, 'case does not matter');
+
+  // The narrowness is the feature: a warning on prose that made no claim is a
+  // warning that teaches sellers to ignore warnings.
+  assert.equal(descriptionAskClaim('Ad-free for members'), null);
+  assert.equal(descriptionAskClaim('Ads are how this store pays for itself'), null);
+  assert.equal(descriptionAskClaim('One of forty templates, ad supported'), null);
+  assert.equal(descriptionAskClaim(''), null);
+  assert.equal(descriptionAskClaim(null), null);
+  // Only the FIRST claim is reported, and a two-digit count is not one of ours.
+  assert.equal(descriptionAskClaim('One ad. Two ads. Three.'), 1);
+  assert.equal(descriptionAskClaim('99 ads'), 99);
+});
+
+test('the seller page says which sentence disagrees, and says it to the seller only', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const path = await import('node:path');
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const views = readFileSync(path.join(here, '..', 'src', 'views.js'), 'utf8');
+
+  // The hint lives next to the description box on the seller's own page. The
+  // buyer's page has no business quoting the seller's draft back at them — and a
+  // warning rendered where a visitor can see it would be a worse bug than the
+  // contradiction it reports, so its placement is asserted rather than assumed.
+  const hint = views.indexOf('descriptionClaim !== null');
+  const descField = views.indexOf('id="a-desc"');
+  assert.ok(hint > descField, 'the hint is rendered with the description field');
+  assert.ok(hint - descField < 1200, 'and in that field, not somewhere later in the file');
+  assert.doesNotMatch(
+    views.slice(views.indexOf('export function assetPage'), views.indexOf('export function assetManage')),
+    /descriptionClaim/,
+    'the buyer\'s file page never reads the claim',
+  );
 });

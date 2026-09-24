@@ -180,6 +180,32 @@ export function askLabel(ask) {
   return `${ads === 1 ? '1 ad' : `${ads} ads`} of ${seconds} seconds`;
 }
 
+/**
+ * An ad count a seller's own description promises, if it promises one.
+ *
+ * The description is free text and the ask is derived, so the two can disagree
+ * without anything noticing: the demo file shipped with "Unlock with one ad" in
+ * its description, and the moment its value moved it into a two-view band the
+ * page said two things at once — the seller's sentence above the button's. The
+ * platform cannot police prose, so this does not edit it or block a save. It
+ * reads the ONE claim that has a number in it and lets the seller's own page say
+ * that the number has moved.
+ *
+ * Deliberately narrow: a digit or a number word immediately followed by "ad" or
+ * "ads". "No ads", "ads are", "ad-free" and prose about advertising in general
+ * are all left alone — a false warning on a seller's page teaches them to ignore
+ * the true ones.
+ */
+const AD_COUNT_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6 };
+
+export function descriptionAskClaim(text) {
+  const match = /\b(no|\d{1,2}|one|two|three|four|five|six)\s+ads?\b/i.exec(String(text || ''));
+  if (!match) return null;
+  const word = match[1].toLowerCase();
+  if (word === 'no') return 0; // "no ads" is a real claim, and about a free file it is right
+  return AD_COUNT_WORDS[word] ?? Number(word);
+}
+
 /** The buyer's sentence, with the file's value in it. */
 export function askSentence(ask) {
   if (!ask) return '';

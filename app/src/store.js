@@ -2848,6 +2848,24 @@ export const store = {
     if (!UUID_RE.test(String(viewId || ''))) return null;
     return one('select * from pending_views where id = $1', [viewId]);
   },
+  /**
+   * The attempt this person already has open on this file, if any.
+   *
+   * An ask is a server row, not a browser idea, so a person who reloads — or
+   * closes the tab and comes back — must not be made to watch what they already
+   * watched. There is at most one of these per (file, person) that matters: the
+   * oldest stale ones are removed by the sweep, which is why the unlock path
+   * runs it before creating anything.
+   */
+  async openAttemptFor({ assetId, userId }) {
+    return one(
+      `select * from pending_views
+        where asset_id = $1 and user_id = $2 and completed = false
+        order by created_at desc
+        limit 1`,
+      [assetId, userId],
+    );
+  },
   async completePendingView(viewId, client) {
     const run = (client || { query }).query.bind(client || { query });
     const { rows } = await run(
@@ -2891,19 +2909,60 @@ export const store = {
     const { rows } = await run(
       `insert into ad_view_events
          (channel_id, user_id, asset_id, connection_id, provider_id, external_id,
-          kind, state, completed, duration_sec, revenue_usd, meta, signature_ok)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, true)
+          kind, state, completed, duration_sec, revenue_usd, meta, signature_ok,
+          pending_view_id)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, true, $13)
        on conflict (connection_id, external_id) do nothing
        returning *`,
       [
         e.channel_id, e.user_id, e.asset_id, e.connection_id, e.provider_id, e.external_id ?? null,
         e.kind ?? 'rewarded', e.state ?? 'complete', e.completed ?? false,
         e.duration_sec ?? null, e.revenue_usd ?? null, JSON.stringify(e.meta ?? {}),
+        // Which attempt this delivery counts toward. Null is legitimate: a
+        // provider that echoes a user id instead of our view id still produces a
+        // billable event, and dropping it would be dropping the creator's money.
+        e.pending_view_id ?? null,
       ],
     );
     // No row returned means the unique index rejected it: already claimed.
     if (!rows.length) return { claimed: false };
     return { claimed: true, event: rows[0] };
+  },
+
+  /**
+   * Completed deliveries for ONE unlock attempt — the number the grant waits for.
+   *
+   * Read inside the grant's transaction, after the attempt row has been locked
+   * (`lockPendingView`), so two postbacks arriving at the same instant from the
+   * same network cannot each see one view and both decline to release the file.
+   * The count is over `completed = true` only: a 'skip' or a 'declined' delivery
+   * is recorded, is evidence, and is not a view the person sat through.
+   */
+  async completedViewsForPendingView(pendingViewId, client) {
+    const run = (client || { query }).query.bind(client || { query });
+    const { rows } = await run(
+      `select count(*)::int as n from ad_view_events
+        where pending_view_id = $1 and completed = true`,
+      [pendingViewId],
+    );
+    return rows[0]?.n ?? 0;
+  },
+
+  /**
+   * The attempt, locked for the duration of the transaction that decides it.
+   *
+   * `for update` is the whole point: the grant is a read-then-act on the count of
+   * deliveries, and a read-then-act without a lock is the bug this file already
+   * has a comment about (see `claimAdView`). Here the lock is on the attempt
+   * rather than the delivery, because the attempt is the thing being decided.
+   */
+  async lockPendingView(viewId, client) {
+    const run = (client || { query }).query.bind(client || { query });
+    const { rows } = await run(
+      'select * from pending_views where id = $1 for update',
+      [viewId],
+    );
+    return rows[0] ?? null;
   },
   adViews({ channelId, limit = 500 } = {}) {
     return many(

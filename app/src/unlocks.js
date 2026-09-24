@@ -92,10 +92,27 @@ export async function startUnlock({ assetId, userId, providerId, personalised = 
     return { ok: false, error: 'daily unlock limit reached for this asset' };
   }
 
-  const nonce = crypto.randomBytes(16).toString('hex');
   const adRef = await store.adRefFor(userId);
-  const view = await store.createPendingView({
-    nonce,
+
+  /**
+   * What this person has already sat through counts.
+   *
+   * The ask lives in the attempt, not in the browser, so without the two lines
+   * below a reload mid-ask created a SECOND attempt and the first credited view
+   * vanished with it — the same person was asked for two more, having already
+   * watched one. The attempt that comes back carries its OWN `required_ads`: the
+   * promise the page printed when the person started, even if the seller has
+   * edited the ask since.
+   *
+   * The sweep runs here because this is the only place these rows are made, and
+   * because a resume must not reach back past its window: an attempt nobody
+   * finished is what the sweep is for, and it is indexed for it.
+   */
+  await store.sweepStalePendingViews();
+  const open = await store.openAttemptFor({ assetId, userId });
+
+  const view = open || await store.createPendingView({
+    nonce: crypto.randomBytes(16).toString('hex'),
     asset_id: assetId,
     channel_id: asset.channel_id,
     user_id: userId,
@@ -104,16 +121,22 @@ export async function startUnlock({ assetId, userId, providerId, personalised = 
     required_ads: policy.ads_required || 1,
     ad_min_seconds: policy.ad_min_seconds || 15,
   });
+  const viewsRequired = Math.max(1, Number(view.required_ads) || 1);
+  const viewsDone = Math.min(await store.completedViewsForPendingView(view.id), viewsRequired);
 
   return {
     ok: true,
     viewId: view.id,
-    nonce,
+    nonce: view.nonce,
+    // Not decoration: it is the difference between "one of your views is already
+    // banked" and "start from nothing", and the panel says one or the other.
+    resumed: Boolean(open) && viewsDone > 0,
+    viewsDone,
     // Handed to the client so it can render/watch. This is a *request*, not a
     // grant: nothing here is trusted when it comes back.
     adConfig: {
-      providerId: connection.provider_id,
-      connectionId: connection.id,
+      providerId: view.provider_id,
+      connectionId: view.connection_id,
       // The identifier the client passes through to the network. A random UUID4
       // that resolves to a user only inside our database — an ad network has no
       // business knowing who is watching.
@@ -138,11 +161,26 @@ export async function startUnlock({ assetId, userId, providerId, personalised = 
   };
 }
 
-/** Status poll — the browser asks whether the postback has landed. */
+/**
+ * Status poll — the browser asks whether the postback has landed.
+ *
+ * `viewsDone` / `viewsRequired` are what make an ask of two or three honest: the
+ * browser can tell "the first ad was credited, start the second" from "keep
+ * waiting", and neither answer can grant anything. The client still cannot
+ * complete a view; it can only learn how many the network has proved.
+ */
 export async function unlockStatus({ assetId, userId, viewId }) {
   const unlocked = await store.isUnlocked(assetId, userId);
   const view = viewId ? await store.pendingView(viewId) : null;
-  return { unlocked, viewCompleted: Boolean(view?.completed), viewId: view?.id ?? null };
+  const viewsDone = view ? await store.completedViewsForPendingView(view.id) : 0;
+  const viewsRequired = Math.max(1, Number(view?.required_ads) || 1);
+  return {
+    unlocked,
+    viewCompleted: Boolean(view?.completed) || unlocked,
+    viewsDone: Math.min(viewsDone, viewsRequired),
+    viewsRequired,
+    viewId: view?.id ?? null,
+  };
 }
 
 /**
@@ -262,8 +300,16 @@ export async function handlePostback({ providerId, connectionId, ctx }) {
     return { ok: true, unlocked: false, state: event.state, reason: 'the file is not live' };
   }
 
-  // (3) claim + grant, atomically.
+  // (3) claim + count + grant, atomically.
   const result = await store.withTransaction(async (client) => {
+    // The attempt is locked before anything is counted. The decision below is a
+    // read-then-act on the number of deliveries, and without the lock two
+    // postbacks arriving together can each count one view and both decline to
+    // release the file — which would cost the viewer a third ad on a file that
+    // asked for two. Locking the attempt (not the delivery) is locking the thing
+    // being decided.
+    const attempt = await store.lockPendingView(view.id, client);
+
     const claim = await store.claimAdView({
       channel_id: view.channel_id,
       user_id: userId,
@@ -277,6 +323,8 @@ export async function handlePostback({ providerId, connectionId, ctx }) {
       duration_sec: event.meta?.durationSec ?? view.ad_min_seconds,
       revenue_usd: event.revenueUsd ?? null,
       meta: event.meta ?? {},
+      // Which attempt this delivery belongs to, so the count below can find it.
+      pending_view_id: view.id,
     }, client);
 
     if (!claim.claimed) {
@@ -296,6 +344,31 @@ export async function handlePostback({ providerId, connectionId, ctx }) {
       return { ok: true, unlocked: false, state: event.state, reason: `state "${event.state}" does not grant` };
     }
 
+    // (5) the attempt's own ask, not the policy's — they are the same number at
+    // the moment the attempt starts, and the attempt's is the one the page
+    // printed. A seller raising the ask mid-watch must not change what this
+    // person was told, in either direction.
+    if (!attempt) {
+      return {
+        ok: true, unlocked: false, state: event.state,
+        reason: 'the unlock attempt expired before this view arrived',
+      };
+    }
+    const viewsRequired = Math.max(1, Number(attempt.required_ads) || 1);
+    const viewsDone = await store.completedViewsForPendingView(view.id, client);
+
+    // (6) fewer views than the ask: the delivery is recorded, the attempt stays
+    // OPEN, and nothing is released yet. The attempt stays open on purpose — the
+    // next delivery has to find it, and the browser polls its progress to know
+    // whether to start the next ad or to keep waiting.
+    if (viewsDone < viewsRequired) {
+      return {
+        ok: true, unlocked: false, state: event.state,
+        viewsDone, viewsRequired,
+        reason: `view ${viewsDone} of ${viewsRequired} credited`,
+      };
+    }
+
     await store.completePendingView(view.id, client);
     const unlock = await store.grantUnlock({
       assetId: view.asset_id,
@@ -303,6 +376,10 @@ export async function handlePostback({ providerId, connectionId, ctx }) {
       userId,
       policy,
       client,
+      // What the unlock actually cost the person. `unlocks.ads_completed` has
+      // existed since the first migration and never carried the real number —
+      // while one view was enough, the number was always 1.
+      adsCompleted: viewsDone,
     });
 
     return {
@@ -312,13 +389,30 @@ export async function handlePostback({ providerId, connectionId, ctx }) {
       expiresAt: unlock.expires_at,
       state: event.state,
       revenueUsd: event.revenueUsd,
+      viewsDone,
+      viewsRequired,
     };
   });
 
   if (result.unlocked) {
-    await store.audit('unlock.granted', {
-      assetId: view.asset_id, userId, providerId, connectionId, viewId: view.id,
-      revenueUsd: event.revenueUsd,
+    await store.audit(
+      'unlock.granted',
+      {
+        assetId: view.asset_id, userId, providerId, connectionId, viewId: view.id,
+        revenueUsd: event.revenueUsd, views: result.viewsDone ?? undefined,
+      },
+      // The third argument, not a key in the meta: a row that names a person and
+      // cannot be attributed to one is exactly what migration 0019 exists to
+      // clean up, and the audit tests assert no new row is written that way.
+      { actorId: userId, subjectType: 'asset', subjectId: view.asset_id },
+    );
+  } else if (result.viewsDone !== undefined && result.viewsDone < result.viewsRequired) {
+    // Progress, not failure — the distinction matters because the seller's
+    // evidence page reads these rows, and a counted view logged as a refusal
+    // would report an ad that ran and paid as an ad that never arrived.
+    await store.audit('postback.view_counted', {
+      providerId, connectionId, viewId: view.id,
+      viewsDone: result.viewsDone, viewsRequired: result.viewsRequired,
     });
   } else if (!result.duplicate) {
     await store.audit('postback.no_grant', {

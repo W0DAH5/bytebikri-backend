@@ -70,7 +70,7 @@ import {
 // from this one table, so a page cannot promise a friendlier ask than the pipeline
 // enforces.
 import {
-  ASK_LEVELS, ASK_PROMISE, ASK_INPUT_LINE, resolveAsk, askLabel, askReason, bandFor,
+  ASK_LEVELS, ASK_PROMISE, ASK_INPUT_LINE, resolveAsk, askLabel, askReason, bandFor, descriptionAskClaim,
 } from './adscale.js';
 // The person's own premium: what a name may wear, and the gate that decides whether
 // it is worn at all (`plusWear()` — active only, decided in SQL).
@@ -2005,13 +2005,13 @@ ${reportBlock({ channel, asset, user, alreadyReported, reported })}
 <div class="modal" id="ad-modal" hidden role="dialog" aria-modal="true" aria-labelledby="ad-title">
   <div class="modal-card">
     <div class="row">
-      <span class="pill pill-locked">Rewarded ad${ask && ask.ads > 1 ? ` · 1 of ${ask.ads}` : ''}</span>
+      <span class="pill pill-locked">Rewarded ad${ask && ask.ads > 1 ? ` · ${ask.ads} ads` : ''}</span>
       <span class="spacer"></span>
       <button class="btn btn-sm btn-ghost" id="ad-close" type="button" aria-label="Close">✕</button>
     </div>
     <h2 id="ad-title" style="margin-top:var(--space-4);font-size:var(--text-lg)">Your ad is playing</h2>
     ${ask ? `<p class="small" style="margin-top:var(--space-2)">
-      ${esc(askLabel(ask))}${ask.ads > 1 ? ` — the second one is asked for only if the first is credited` : ''}.
+      ${esc(askLabel(ask))}<span id="ad-ask-tail">${ask.ads > 1 ? '. The next one is asked for only if this one is credited.' : '.'}</span>
     </p>` : ''}
     <p class="fine" id="ad-provider" style="margin-top:var(--space-1)"></p>
     <div class="ad-frame" style="margin-top:var(--space-5)">
@@ -6286,6 +6286,9 @@ export function assetManage({
   const storedLevel = String(policy.ask_level) === 'light' ? 'light' : 'standard';
   const value = Math.max(0, Number(asset.declared_value_npr) || 0);
   const storedAsk = { ads: Number(policy.ads_required) || 1, seconds: Number(policy.ad_min_seconds) || 15, level: storedLevel };
+  // What the seller's own description promises, read back to them if it no longer
+  // matches the ask (see `descriptionAskClaim`). Null when they make no claim.
+  const descriptionClaim = descriptionAskClaim(asset.description);
   const asks = Object.fromEntries(ASK_LEVELS.map((l) => [l.key, resolveAsk({ valueNpr: value, planCode, level: l.key })]));
   // Drift: the ask was calibrated when the file was worth something else. Said
   // plainly and never auto-corrected — an ask that moved on its own under a
@@ -6480,6 +6483,11 @@ ${notice ? `
       <div class="field">
         <label for="a-desc">Description</label>
         <textarea class="textarea" id="a-desc" name="description" rows="4" maxlength="2000">${esc(asset.description || '')}</textarea>
+        ${descriptionClaim !== null && descriptionClaim !== storedAsk.ads ? `<span class="hint" style="color:var(--warning-text)">
+          This description says ${descriptionClaim === 0 ? 'no ads' : `${descriptionClaim} ${descriptionClaim === 1 ? 'ad' : 'ads'}`},
+          and the file now asks for ${storedAsk.ads}. Visitors see both, so one of them should change — the description is
+          yours to edit, and the ask follows the value below.
+        </span>` : ''}
       </div>
       <div class="row" style="gap:var(--space-4);align-items:flex-start">
         <div class="field" style="flex:1 1 160px">

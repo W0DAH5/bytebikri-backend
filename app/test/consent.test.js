@@ -159,7 +159,18 @@ test('a refusal removes the identifier the network would have received', async (
   assert.equal(typeof after_.adConfig.userId, 'string',
     'consent should not have removed the identifier when it was given');
   assert.equal(after_.adConfig.personalised, true);
-  assert.notEqual(after_.adConfig.custom, before.adConfig.custom, 'each view needs its own id');
+  // The id belongs to the VIEW, and a view is an attempt: a second call for the
+  // same unfinished ask resumes it and keeps its id (asking again would charge
+  // the same person twice for one file), while a different file is a different
+  // view and gets a different id. What must never happen is the id being the
+  // person — that is what the per-account test below pins down.
+  const other = await store.createAsset({
+    channelId: channel.id, title: `Other ${tag}`, slug: `other-${tag}`,
+  });
+  const otherView = await startUnlock({ assetId: other.id, userId: owner.id, personalised: true });
+  assert.notEqual(otherView.adConfig.custom, before.adConfig.custom, 'each view needs its own id');
+  assert.equal(after_.adConfig.custom, before.adConfig.custom, 'a reload resumes the same view');
+  assert.equal(after_.viewId, before.viewId);
 });
 
 test('the identifier is per account and reveals nothing about the account', async () => {
