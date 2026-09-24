@@ -1225,14 +1225,12 @@ ${channel.membership_note ? `<div class="section">
     : 'Two doors, and only one of them is money. The first is dues sent straight to the creator; the second is '
       + 'views on this store’s own files, and the price is the platform’s.'}</p>
   </div>
-  ${inRoom ? '' : ''}
   ${doors.dues && !inRoom ? `<p class="small"><strong>With dues.</strong> ${esc(MONEY_LINE)}
     <a href="/s/${esc(channel.slug)}#join">Send the reference →</a></p>` : ''}
-  ${doors.attention ? `<p class="small"><strong>By watching.</strong> ${esc(attentionLine(roomTier))}</p>
-    ${user
-    ? `<p class="fine">${esc(attentionStandingLine({ tier: roomTier, standing }))}</p>`
-    : ''}
-    ${watchingDoor({ channel, tier: roomTier, standing, user, membership, price, wide: true })}` : ''}
+  ${/* The watching door renders its own lead-in, its own counter and its own money
+       sentence — the room used to add a second copy of the first two, which is what a
+       screenshot of this page caught: the same fact stated twice, one line apart. */
+    doors.attention ? watchingDoor({ channel, tier: roomTier, standing, user, membership, price, wide: true }) : ''}
   ${membershipsOn ? '' : `<p class="fine">${esc(FREE_PLAN_LINE)}</p>`}
 </div>`,
   });
