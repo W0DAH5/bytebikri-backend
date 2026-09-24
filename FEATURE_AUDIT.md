@@ -2993,3 +2993,78 @@ will not do to the person who caused them.
   pinned in `test/billing.test.js` (the capability and the sentence that sells it, plus the assertion
   that nothing in the legal-links span depends on the plan) and in `test/ui.test.js` (both shapes, and
   that a platform page keeps the line whatever a plan says).
+
+## §33 — The sentence that never rendered, and a preview that could not take money
+
+Two defects found by walking the money flow in a browser, and they share a shape: the platform did the
+right thing and then either **said nothing** or **could not be asked to do it at all**.
+
+### `?saved=plus-claimed` said "Saved."
+
+`flashFor` in `server.js` matched query-parameter *names*, left to right. `SUCCESS_FLASH` carries a
+generic `saved: () => 'Saved.'` for the many routes whose outcome needs no explanation, and because the
+key `saved` sits before the outcome keys in the map, it shadowed every sentence keyed by the **value**.
+Seven outcomes were unreachable: `plus-claimed`, `plus-look`, `plus-stopped`, `doc`, `doc-replaced`,
+`withdrawn`, `withdrawn-doc`.
+
+The cost was concentrated in the one place a manual rail cannot afford it. A person who has just sent
+NPR 149 read **"Saved."** where the product had written:
+
+> *"Sent. An operator checks that reference against the platform's own statement — nothing is worn until
+> it is matched, and if it never is, nothing about your account changes."*
+
+That sentence is the entire explanation of how a claim works on a rail where bytebikri is not a party to
+the money. It had been written, reviewed, and printed nowhere. Every test in this repository drives a
+view directly and hands it the flash object, so **nothing was ever asked to choose one** — which is why
+the suite was green throughout.
+
+The rule now lives in `src/flash.js` with its own tests: **the value of `saved` names the outcome and is
+asked first**, and only a value that names nothing falls back to the parameter's own name (so
+`?saved=1` still means "Saved.", and `?published=<slug>` still means the publishing sentence).
+`test/flash.test.js` then reads the real vocabulary out of `server.js`, comments stripped, and checks
+that every outcome any route can name has a sentence — which on its first run found a second real gap:
+the verification flow returns `?saved=already` when somebody asks for a check they have already asked
+for, the map had `already-with-doc` but not `already`, and the page said "Saved." to a person whose
+click had recorded nothing. It now says what happened: one request is open, and nothing needs doing.
+
+### The preview could not demonstrate the product's own money flows
+
+Every demo account was seeded with an unconfirmed address, and **every route that takes money in refuses
+an unconfirmed address** — `POST /plus/join`, the plan payment, the rent payment. So a person clicking
+through the preview as Alice or Carol could not submit a claim or an upgrade at all; they met the
+"confirm your email first" refusal, which is correct behaviour on a state the seeder left behind. The
+seeder could still *create* the running state, because it calls store methods rather than routes — and
+that is precisely how a demo ends up showing the result of a purchase nobody following it could make.
+
+`ci/demo-state.mjs` now confirms the four demo addresses through the product's own two steps
+(`tokens.issue` mints the link the mail would have carried, `verify.confirm` spends it — the same
+function `/verify/:token` calls). Only the delivery is skipped, because a seeder has no mailbox and does
+not need one: the demo sign-ins are printed on screen. The first confirmation's timestamp is preserved
+by `confirm`'s own `coalesce`, so the consent evidence is not rewritten.
+
+Then the whole flow was walked as a person walks it, in a browser: sign in, open `/plus`, submit a
+reference through the rendered form, and read the page. That is what surfaced the shadowed sentence. A
+second walk as Bob confirmed the fix end to end — the page came back with the full "Sent. An operator
+checks…" line, the sections measured cleanly one after another (222 → 653 → 1460 → 1817), no console
+error, no horizontal overflow.
+
+### What else the pass verified, from the parallel round's own claims
+
+Six claims that had only been asserted in documents were read off live pages instead: the money map's
+fourth leg renders on the seller's earnings page (*"What people pay bytebikri — NPR 149 a month, for a
+palette and an effect beside their own name"*); the ladder's refusals print for the seller
+(*"No full-page interstitial, no countdown before the page, no blanked store"*); `remove_footer` drops
+bytebikri's name on a paid storefront while the legal notices stay, and the free store keeps both; a
+member opening a members-only file meets no ad and **still sees the platform's rented box around the
+content** — the "we are still winning more" shape the brief asked for, measured rather than claimed; and
+the console totals count the third charge.
+
+### Still open
+
+- **Walking the store-plan and rent payments in the browser.** The address gate they share is now
+  satisfied in the demo, but only the Plus claim was walked end to end; the other two would each need a
+  pending request created first.
+- **Flat vs scaled pricing for the person's premium**, and **whether the platform's own row may
+  disappear for a paying viewer** — both unchanged, both the user's call.
+- **A real ad-network integration** (unchanged, credential-gated).
+
