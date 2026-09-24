@@ -2912,14 +2912,20 @@ anchor, because a button that lands on nothing is a worse lie than a missing one
 in `test/blocked.test.js` (#90 renders the rung twice); the first cut offered the membership button
 unconditionally, and the page said so before the code did.
 
-Three refusals hold it up, each with a source in `AD_ECONOMY.md`: **no browser checks** (79 % of
+Five refusals hold it up, each with a source in `AD_ECONOMY.md`: **no browser checks** (79 % of
 ad-blocking is undetectable, reader mode defeats every detection, and a wall around a guess lands on the
 people who were compromising — NYU measured 13.6 % *more* intrusive ads on allowlists), **no accusation**
 (the subject of every sentence is the missing view), and **no mark on the account** (a count that ages
-out, nothing to clear). Closing an ad yourself is recorded as `declined` and climbs nothing.
-The seller sees the count and nothing else: *"N unlock attempts in the last 6 hours produced no confirmed
-view — a blocker, a dropped connection, or a network that did not call back. The platform does not guess
-which, and it does not penalise the person."*
+out, nothing to clear). Closing an ad yourself is recorded as `declined` and climbs nothing. All five are
+held in one list (`NEVER_DO` in `src/blocked.js`) and — since this round — **printed on the seller's
+ad-slots page**, from that list rather than as a paraphrase, beside the count. They had been written with
+sources, asserted in `test/blocked.test.js` and imported by the view layer while rendering nowhere, and
+the paragraph standing in their place had drifted into the same over-promise that had to be corrected on
+the visitor's side of the ladder (*"a membership opens everything with no ad at all"*, which is false of
+an ad-gated file). The seller now sees the count: *"N unlock attempts in the last 6 hours produced no
+confirmed view — a blocker, a dropped connection, or a network that did not call back. The platform does
+not guess which, and it does not penalise the person."* — and under it, the five things this platform
+will not do to the person who caused them.
 
 ### Where the third charge is stated
 
