@@ -84,10 +84,44 @@ PUBLIC_BASE_URL=https://your.domain    # required, https. Postback URLs are buil
 SESSION_SECRET=…                       # required, 32+ chars.
 ACCESS_TOKEN_SECRET=…                  # required, 32+ chars. Signs download links.
 AD_POSTBACK_SECRET=…                   # rotate it even though the sandbox is off in production.
-STORAGE_DRIVER=local                   # see §5.
-LOG_LEVEL=info
-SENTRY_DSN=                            # optional. Errors are logged either way.
+
+# Mail. The server REFUSES TO START in production without a real driver.
+EMAIL_DRIVER=resend                    # or smtp. 'console' prints links to the log and is refused here.
+RESEND_API_KEY=…                       # with EMAIL_DRIVER=resend
+# SMTP_URL=smtps://user:pass@smtp.example:465   # with EMAIL_DRIVER=smtp (needs nodemailer installed)
+EMAIL_FROM=ByteBikri <no-reply@your.domain>     # required, on a domain you control
+
+# The operator, shown on the legal pages. A privacy notice without these is not
+# fit to be public, and /legal/privacy says so.
+OPERATOR_LEGAL_NAME=
+OPERATOR_ADDRESS=
+OPERATOR_EMAIL=
+OPERATOR_DISTRICT=
+OPERATOR_COUNTRY=NP
+
+# Payment rails. Optional: a store's plan, its rent and a person's Plus month are
+# all claimed by reference and matched by hand at /admin/payments. Until one is set,
+# the page says "not configured" and names the variable. Money only ever moves TO
+# bytebikri on these, and nothing pays out from here.
+PAY_ESEWA_ID=
+PAY_KHALTI_ID=
+PAY_IMEPAY_ID=
+PAY_BANK_ACCOUNT=
 ```
+
+That is the whole list — every variable `.env.example` sets — and
+`app/test/config.test.js` enforces half of that claim: it fails if the example file
+sets anything the source never reads. Three
+variables used to be listed here and are gone because **nothing read them** —
+`STORAGE_DRIVER`, `LOG_LEVEL` and `SENTRY_DSN`. Setting them looked like
+configuration and changed nothing, which is worse than their being absent:
+
+- **storage** has no driver switch. Files go to the local filesystem, so §5 is the
+  section that matters and the answer today is a mounted volume.
+- **logging** is plain console output at a fixed level.
+- **error reporting** is not wired: a 500 is logged with an error id a person can
+  quote, and no reporter receives it.
+
 
 Then check, without starting anything:
 

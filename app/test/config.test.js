@@ -289,4 +289,17 @@ test('every variable .env.example sets is a variable the code reads', async () =
   assert.deepEqual(unread, [],
     `these variables are set in .env.example and read by nothing: ${unread.join(', ')} — `
     + 'setting them looks like configuration and changes nothing');
+
+  // And the deployment guide has to LIST all of them. DEPLOY.md §3 says "That is the
+  // whole list — every variable .env.example sets", which is exactly the sort of claim
+  // that goes stale silently: it omitted EMAIL_DRIVER, OPERATOR_* and the payment rails
+  // for as long as it existed, while calling itself exhaustive. Now the two files are
+  // held together, so a variable added to one and forgotten in the other fails here.
+  const deploy = fs.readFileSync(path.join(repo, 'DEPLOY.md'), 'utf8');
+  const section = deploy.slice(deploy.indexOf('## 3. Environment'), deploy.indexOf('Then check, without starting'));
+  assert.ok(section.length > 200, 'DEPLOY.md §3 is where this is checked');
+  const listed = new Set([...section.matchAll(/^#?\s*([A-Z][A-Z0-9_]*)=/gm)].map((m) => m[1]));
+  const undocumented = named.filter((name) => !listed.has(name));
+  assert.deepEqual(undocumented, [],
+    `these variables are in .env.example and missing from DEPLOY.md §3: ${undocumented.join(', ')}`);
 });
