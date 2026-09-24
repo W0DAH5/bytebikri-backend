@@ -27,6 +27,7 @@ import { query, many, scalar, health as dbHealth, close as closeDb } from './src
 import { allocateSlots, estimateRentSlotValue, POLICY } from './src/slots.js';
 import { csvCell, csvDocument, exportAll, truncationNote } from './src/export.js';
 import { AUDIT_FAMILIES, actorOf } from './src/audit.js';
+import { successFlash } from './src/flash.js';
 // The first message this platform sends to somebody who did not ask for it. See
 // the header of src/notices.js for why a person sends it rather than a job.
 import { sendLapseNotice } from './src/notices.js';
@@ -2960,6 +2961,12 @@ const SUCCESS_FLASH = {
   asked: () => 'Asked. A person looks at one document and records what they saw — we work in the order requests arrive. You can hand the document over here, or show it to somebody in person; both are the same check.',
   'asked-with-doc': (v) => `Asked, and the copy you sent went with it. A person opens it, records what they saw, and it is destroyed the moment they do — and after ${HOLD_DAYS} days either way.`,
   'already-with-doc': () => 'You had already asked — the copy you sent is attached to that request, and a person will get to it.',
+  // The fourth ending, and it was missing: the same flow can come back from a click
+  // with no document at all, and with no sentence keyed to that outcome the page said
+  // "Saved." — which, to somebody who has just asked for a re-check, reads as though
+  // something was recorded when nothing was. Found by `test/flash.test.js`, whose job
+  // is to notice that a route named an outcome the vocabulary had no words for.
+  already: () => 'You had already asked — this did not send a second request. One is open, and a person will get to it; nothing needs doing until it is answered.',
   doc: () => `Copy received. A person opens it, records what they saw, and it is destroyed the moment they do — and after ${HOLD_DAYS} days whether or not anybody looked.`,
   'doc-replaced': () => `Copy received, and the one before it is destroyed. Same rule: gone the moment a decision is recorded, and after ${HOLD_DAYS} days either way.`,
   'withdrawn-doc': () => 'Withdrawn. The request is gone and the copy you handed over was destroyed with it.',
@@ -3150,9 +3157,12 @@ async function moderationBrief(channel) {
 }
 
 function flashFor(query = {}, context = {}) {
-  for (const [key, build] of Object.entries(SUCCESS_FLASH)) {
-    if (query[key]) return { kind: 'success', message: build(query[key]) };
-  }
+  // The dispatch lives in src/flash.js so it can be tested: it was wrong for four
+  // rounds in a way no test could see, because a route never returned where the
+  // sentence it had written was rendered. `?saved=plus-claimed` read "Saved." — see
+  // that module's header for what that cost.
+  const succeeded = successFlash(SUCCESS_FLASH, query);
+  if (succeeded) return succeeded;
   if (query.error) {
     // A message may be a function of the state the person was in when they hit
     // it. The file limit is the case that matters: "your plan's file limit is

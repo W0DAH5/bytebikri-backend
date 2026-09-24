@@ -527,6 +527,45 @@ if (memberStore) {
   }
 }
 
+// ── 4c-before. The addresses the money needs, confirmed the way a person ─────
+//             confirms them ──────────────────────────────────────────────────
+//
+// This block exists because a browser pass found the preview unable to demonstrate
+// its own money flows. Every demo account was created unconfirmed, and every route
+// that takes money in refuses an unconfirmed address — POST /plus/join, the plan
+// payment, the rent payment. So a person clicking through the preview as Alice or
+// Carol could not submit a claim or an upgrade at all; they got the "confirm your
+// email first" refusal, which is correct behaviour on a state the seeder had left
+// behind. The seeder could still CREATE those states, because it calls the store
+// methods the routes call rather than the routes — which is exactly how a demo ends
+// up showing the result of a purchase nobody following it could make.
+//
+// Two steps, both of them the product's own: `tokens.issue` mints the link the mail
+// would have carried, and `verify.confirm` spends it — the same function the
+// /verify/:token route calls. Only the DELIVERY is skipped, because a seeder has no
+// mailbox and does not need one: the demo sign-ins are printed on screen.
+//
+// Reversible and idempotent: an address already confirmed is left alone, and the
+// first confirmation's timestamp is preserved (`confirm` uses coalesce for the same
+// reason — the first confirmation is the consent evidence).
+{
+  const tokens = await import('../app/src/tokens.js');
+  const verify = await import('../app/src/verify.js');
+  const people = ['alice', 'bob', 'nima', 'carol'].map((n) => `${n}@bytebikri.local`);
+  const rows = await many('select id, email, email_verified_at from profiles where email = any($1::text[])', [people]);
+  let confirmed = 0;
+  for (const person of rows) {
+    if (person.email_verified_at) continue;
+    const { token } = await tokens.issue({ userId: person.id, kind: 'email_verify' });
+    const done = await verify.confirm({ token });
+    if (!done.ok) throw new Error(`demo-state: could not confirm ${person.email}`);
+    confirmed += 1;
+  }
+  say('addresses', confirmed
+    ? `confirmed ${confirmed} demo address(es) — the money routes refuse an unconfirmed one`
+    : 'already confirmed');
+}
+
 // ── 4c. ByteBikri Plus (§32): the person's own premium, in both its states ───
 //
 // The same shape as the memberships block above, and for the same reason: the
