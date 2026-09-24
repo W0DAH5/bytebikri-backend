@@ -53,6 +53,22 @@ export function getAdapter(id) {
 }
 
 /**
+ * Whether the BROWSER should drive the sandbox network for this provider.
+ *
+ * The client has always had a branch that calls `/dev/simulate-network/…` for a
+ * view so a developer can watch the whole loop complete, guarded by a flag it
+ * expects on the start response — and nothing ever sent that flag, so the branch
+ * was dead and every walkthrough had to be driven from outside the page. This is
+ * the missing half, and the guard is the same one `getAdapter` applies: outside
+ * production, and only for a provider that is itself a sandbox. In production the
+ * property is absent, the branch does not run, and the dev route refuses anyway.
+ */
+export const devSimulatorFor = (providerId) =>
+  process.env.NODE_ENV !== 'production'
+  && SANDBOX_PROVIDER_IDS.has(providerId)
+  && Boolean(BY_ID.get(providerId));
+
+/**
  * Normalized states, because networks disagree on vocabulary:
  *
  *   complete    user finished and is owed the reward -> GRANTS AN UNLOCK

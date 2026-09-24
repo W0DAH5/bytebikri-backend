@@ -41,7 +41,7 @@ import { SEARCHABLE_ASSET_STATES } from './moderation.js';
 import { HOLD_DAYS } from './kyc.js';
 import { resolveAsk } from './adscale.js';
 import { placementsFor, planFor } from './placement.js';
-import { assetShape } from './media.js';
+import { assetShape, measuredSeconds } from './media.js';
 // The signal vocabulary, so a recorded kind is one the ladder understands. Pure
 // module: no database, no clock of its own, imports nothing.
 import { SIGNALS } from './blocked.js';
@@ -217,6 +217,18 @@ const pgNum = (v) => (v === null || v === undefined ? v : Number(v));
 // attacker-controlled input, and letting the driver throw turns a 404 into a 500
 // — which a webhook sender reads as "retry me".
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The access modes a seller can put a file on.
+ *
+ * `paid` is in the database's check constraint and deliberately NOT here: it is
+ * reserved for a money path that does not exist yet, and offering it in a select
+ * would be offering nothing. Two writers of this list have already drifted once —
+ * the policy row was left behind when the asset row learned `breaks`, which is two
+ * rows disagreeing about one decision, the exact thing the mode field exists to
+ * prevent. One list, both writers.
+ */
+export const SELLER_MODES = ['open', 'ad_gated', 'members', 'breaks'];
 
 /**
  * The own-look join, written once and used by every query that renders a person's
@@ -2839,12 +2851,26 @@ export const store = {
   // ---- pending ad views (awaiting a signed postback) ----------------------
   async createPendingView(v) {
     return one(
-      `insert into pending_views (nonce, asset_id, channel_id, user_id, connection_id, provider_id, required_ads, ad_min_seconds)
-       values ($1, $2, $3, $4, $5, $6, $7, $8)
+      `insert into pending_views
+         (nonce, asset_id, channel_id, user_id, connection_id, provider_id, required_ads,
+          ad_min_seconds, break_index, break_at_sec)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        returning *`,
       [v.nonce, v.asset_id, v.channel_id, v.user_id, v.connection_id, v.provider_id,
-       v.required_ads ?? 1, v.ad_min_seconds ?? 15],
+       v.required_ads ?? 1, v.ad_min_seconds ?? 15, v.break_index ?? null, v.break_at_sec ?? null],
     );
+  },
+
+  /**
+   * The shape of an asset, derived from the files it carries.
+   *
+   * One place, because four now read it: the storefront card, the section it sits
+   * in, the seller's placement panel, and the planner. A second copy of this rule
+   * is how a file ends up listed under "Watch" and planned as a download.
+   */
+  async shapeOf(asset) {
+    if (!asset) return null;
+    return assetShape(await this.filesOf(asset.id), { url: asset.external_url });
   },
   async pendingView(viewId) {
     if (!UUID_RE.test(String(viewId || ''))) return null;
@@ -3933,7 +3959,23 @@ export const store = {
     const allowed = {
       title: (v) => String(v).trim().slice(0, 200),
       description: (v) => String(v).trim().slice(0, 2000),
-      unlock_mode: (v) => (v === 'open' ? 'open' : 'ad_gated'),
+      /*
+       * Every mode the seller's form offers, and every mode the database allows.
+       *
+       * This used to read `v === 'open' ? 'open' : 'ad_gated'`, which quietly threw
+       * away two of the three other answers: choosing "Members only — no ad" saved,
+       * redirected to a page that said Saved, and left the file ad-gated. A control
+       * that silently does nothing is worse than a control that is missing, and this
+       * one was missing from the list while being offered in the form.
+       *
+       * 'paid' is still absent on purpose: it is the reserved, unbuilt mode, and a
+       * form must not be able to reach a state no code implements.
+       */
+      unlock_mode: (v) => (SELLER_MODES.includes(String(v)) ? String(v) : 'ad_gated'),
+      // Which tier opens a members-only file. Written with the mode, never alone —
+      // the database checks the pair as one decision (`assets_member_shape`), so a
+      // patch that names a tier without the mode cannot land anyway.
+      member_tier: (v) => (Number(v) === 2 ? 2 : Number(v) === 1 ? 1 : 0),
       // What the file is worth. Not a price: nothing on this platform has a
       // checkout (see `NOT_CHARGED`), this column is never rendered to a visitor,
       // and migration 0004 removed the column that WAS a price. It is the input the
@@ -4014,7 +4056,7 @@ export const store = {
     // `assets.unlock_mode` says "members" while its policy row still says
     // "ad_gated" is two rows disagreeing about one decision. The assets column
     // remains the authority the content path reads; this keeps the copy honest.
-    const wanted = ['open', 'ad_gated', 'paid', 'members'].includes(String(mode)) ? String(mode) : null;
+    const wanted = SELLER_MODES.includes(String(mode)) ? String(mode) : null;
     return one(
       `update asset_unlock_policy
           set ads_required   = $2,
@@ -4077,8 +4119,8 @@ export const store = {
    * "duration" of four hours on a ten-second clip would move every break in it.
    */
   async reportRuntime(assetId, seconds) {
-    const secs = Math.round(Number(seconds));
-    if (!Number.isFinite(secs) || secs <= 0 || secs > 86_400) return null;
+    const secs = measuredSeconds(seconds);
+    if (secs === null) return null;
     return one(
       `update assets set runtime_sec = $2, updated_at = updated_at
         where id = $1 and (runtime_sec is null or runtime_sec <> $2)

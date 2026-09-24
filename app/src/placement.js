@@ -92,6 +92,29 @@ export const PLACEMENTS = {
   },
 };
 
+/**
+ * The shapes whose breaks a player can actually stop for, today.
+ *
+ * `watch` and `listen` are played by a real `<video>`/`<audio>` element, so the
+ * page can pause the playhead, run the verified view, and put it back where it
+ * was. The others are named here and nowhere else:
+ *
+ *   read   — the between-chapter gate needs the reader surface (slice 6). Until
+ *            there is a page-turner of our own, there is nothing to stop, and a
+ *            "gate" rendered as a heading on a page of images would be theatre.
+ *   play   — a game asks for a view at a failure state IT owns (slice 3's own
+ *            catalogue entry); that is a shell we have not built.
+ *   stream — seller-scheduled by rule, never automatic (rule 4).
+ *   download — no playhead (its ads are the page's boxes).
+ *
+ * So this is not a preference list: it is the list of shapes where the promise
+ * "it asks while you watch" can be kept. A mode that switched a read into breaks
+ * would promise a gate nobody can honour, which is the failure slice 2 closed.
+ */
+export const BREAK_SHAPES = ['watch', 'listen'];
+
+export const breaksSupported = (shape) => BREAK_SHAPES.includes(shape);
+
 /** Placements that happen inside the content, in play order. */
 export const TIMED = ['pre', 'mid', 'between', 'post'];
 
@@ -437,6 +460,48 @@ export function placementSentence(plan) {
       + `at ${mid.map((c) => stamp(c.atSec)).join(' and ')}, and nothing before you start.`;
   }
   return null;
+}
+
+/**
+ * The timed cues a player can stop at, indexed for the client.
+ *
+ * `between` cues are excluded on purpose: they have no playhead, and a client
+ * that tried to stop at one would be stopping at a number it made up.
+ */
+export function breakCues(plan) {
+  if (!plan?.cues?.length) return [];
+  return plan.cues
+    .map((cue, index) => ({ cue, index }))
+    .filter(({ cue }) => cue.kind === 'mid' && Number.isFinite(cue.atSec))
+    .map(({ cue, index }, position) => ({
+      index,
+      // The order the viewer meets them, which is what the page prints.
+      position: position + 1,
+      atSec: cue.atSec,
+      seconds: plan.budget.seconds,
+    }));
+}
+
+/**
+ * The buyer's sentence for a file that opens free and asks inside it.
+ *
+ * Different from `placementSentence` because the promise is different: there is no
+ * door to lift here, so the sentence says when the views come and states plainly
+ * that nothing blocks the start. It is rendered ONLY for a file whose mode is
+ * `breaks` — the words are a description of the player's behaviour, and printing
+ * them on a file whose player does not do it would be the kind of sentence this
+ * whole slice exists to avoid.
+ */
+export function breakSentence(plan) {
+  const cues = breakCues(plan);
+  if (!cues.length) return null;
+  const times = cues.map((c) => stamp(c.atSec));
+  const when = times.length === 1
+    ? `at ${times[0]}`
+    : `at ${times.slice(0, -1).join(', ')} and ${times.at(-1)}`;
+  return `Free to open, and nothing before you start. It asks for `
+    + `${cues.length === 1 ? 'one view' : `${cues.length} views`} while you watch, ${when} — each one `
+    + 'confirmed by the ad network before the player moves on.';
 }
 
 /** Total seconds of content an ad plan will interrupt, for the ledger. */

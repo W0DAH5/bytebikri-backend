@@ -358,8 +358,63 @@ seconds" is currently a sentence, not a gate.
 |---|---|
 | 1 Shapes | **Built** — `assetShape` in `media.js`, sections and chips on the storefront, shape on every card, 12 tests (`media.test.js`, `shapes.test.js`). Suite 620/620/0 |
 | 2 Enforcement | **Built** — the grant is `count(completed views) >= the attempt's own ask`; progress is reported, not guessed; an attempt survives a reload; 8 tests (`adviews.test.js`), 5 screenshots from a real two-ad walk (`docs/evidence/round35`, harness `ci/eyes/walk-ads.mjs`). Suite 628/628/0 |
-| 3 Placement | **Half built** — planner, seller controls, measured runtime, seller panel; 20 tests (`placement.test.js`, `adplan.test.js`), one screenshot (`docs/evidence/round35/walk-7-placement-seller.png`). **Remaining: the player gate** — until playback stops at a cue, the plan is real to the seller and invisible to the buyer. Suite 650/650/0 |
+| 3 Placement | **Built** — planner, seller controls, measured runtime, seller panel, and the player gate. 33 tests (`placement.test.js`, `adplan.test.js`, `breakgate.test.js`), 12 screenshots from two real browser walks (`docs/evidence/round36`, harnesses `ci/eyes/break-walk.mjs` and `ci/eyes/breaks-seller-walk.mjs`). Suite 663/663/0 |
 | 4 Attention door | Not started |
 | 5 Ledger | Not started |
 | 6 Reader | Not started |
 | 7 Live | Not started |
+
+---
+
+## 10. The player gate — what a break is, and what stops it
+
+Slice 3's first half could place a break and describe it to the seller. Nothing
+could stop a player at one, so the plan was real to the seller and invisible to the
+buyer — and the buyer-facing sentence was deliberately withheld rather than
+promised. The gate is the other half, and it is built.
+
+**The rule it rests on is one sentence: a break is a pause, not an unlock.**
+
+| What happens | Where it is decided |
+|---|---|
+| A file can carry breaks at all | `unlock_mode = 'breaks'`, a separate mode — never a reinterpretation of `open`, which has been promising "Free — no ad needed" to visitors since it shipped |
+| Which cues exist | the planner (`src/placement.js`), from the shape, the measured runtime, the value ladder's ask and the seller's choices — never the client |
+| Where the playhead stops | `data-cues` on the stage, rendered by the server, drawn from `breakCues(plan)` |
+| What releases it | `count(completed views) >= 1` on the attempt, checked by `/api/unlock/status`. The countdown is cosmetic and says so |
+| Whether a break was credited | the signed postback, exactly as the door's is. A break's postback grants **nothing** — it marks one cue paid, in its own audit line (`postback.break_credited`) |
+
+**Three things it deliberately is not.** It is not DRM: a viewer with devtools can
+seek past a cue, and the client's own comment says so; the seek clamp stops
+scrubbing, which is the ordinary way, not the determined one. It is not a door: a
+file that asks at the door can never carry a break, so nothing a server-checked
+unlock released can be released by a pause in a page — a seek costs the store an
+impression it never used to have, and can never cost it content it was charging
+for. And it is not a trap: the modal has a ✕, it closes the wait, and the sentence
+after it says which half lost what — "the file keeps playing, the store was not
+credited for that view." A late postback after somebody has left still counts.
+
+**Measured, in a browser.** The 40-minute fixture's cues are real seconds, so the
+walk plays into them: the playhead stops at 667.7s of a 668s cue, the modal numbers
+itself "Break 1 of 2", the sandbox postback releases it back at the cue, a scrub to
+2063s lands on 1763s, and the second break ends with the file playing on. Console
+errors: none. Screenshots 8–18 in `docs/evidence/round36`.
+
+**Four defects the walking found, all fixed:**
+
+1. A player that reported an unchanged runtime got a 400 on every page load. The
+   route treated the store's *no-op* the same as a bad number, so every viewer
+   after the first had a failed request in their console for a fact the server
+   already had. The bound now lives in one place (`measuredSeconds`) with both
+   readers; "already known" answers `{ok:true, changed:false}`.
+2. The ✕ did nothing on a breaks page. The door wires its own ✕ only when the door
+   exists, and a file with breaks has no door — a close button that closed nothing,
+   found by clicking it. It now ends the wait, armed before anything is asked of the
+   network so it also works while the ad request is in flight.
+3. The policy row stopped following the file. `setUnlockPolicy` had its own copy of
+   the mode allow-list and it did not include `breaks`, so the two rows that carry
+   one decision silently disagreed. One list now (`SELLER_MODES`), both writers
+   read it, and a test asserts there is exactly one.
+4. The seller's editor told a *free* file that it "now asks for 1" ad — a warning
+   comparing the description against the policy row rather than against what a
+   visitor is asked for. On a free or members-only file that is zero, and on a
+   breaks file it is the plan's cue count, and the sentence now says which.

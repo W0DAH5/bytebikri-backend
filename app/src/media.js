@@ -180,6 +180,24 @@ export function assetShape(files = [], { url = null } = {}) {
 /** Can this be played rather than handed over? */
 export const isPlayable = (mimeType, filename) => ['video', 'audio'].includes(mediaKind(mimeType, filename));
 
+/** Nothing playable is longer than a day; the bound exists so nonsense cannot be stored. */
+export const MAX_RUNTIME_SEC = 86_400;
+
+/**
+ * A length a player could have measured, in whole seconds — or null.
+ *
+ * One rule with two readers: the store, which decides whether to write it, and the
+ * route, which has to answer a browser. They disagree if the rule is written
+ * twice, and they did: the route called a *no-op* a bad request, so every page
+ * load after the first put a 400 in a viewer's console for a file whose length was
+ * already known. The number is the same fact in both places; now so is the rule.
+ */
+export function measuredSeconds(value) {
+  const secs = Math.round(Number(value));
+  if (!Number.isFinite(secs) || secs <= 0 || secs > MAX_RUNTIME_SEC) return null;
+  return secs;
+}
+
 /** Can this be watermarked server-side? (Video and audio cannot — see below.) */
 export const isWatermarkable = (mimeType, filename) => mediaKind(mimeType, filename) === 'image';
 

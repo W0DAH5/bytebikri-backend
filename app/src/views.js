@@ -73,7 +73,7 @@ import {
   ASK_LEVELS, ASK_PROMISE, ASK_INPUT_LINE, resolveAsk, askLabel, askReason, bandFor, descriptionAskClaim,
 } from './adscale.js';
 import {
-  PLACEMENT_BOUNDS, planFor, stamp, placementSentence,
+  PLACEMENT_BOUNDS, planFor, stamp, placementSentence, breakCues, breakSentence, breaksSupported,
 } from './placement.js';
 // The person's own premium: what a name may wear, and the gate that decides whether
 // it is worn at all (`plusWear()` — active only, decided in SQL).
@@ -664,7 +664,8 @@ export function marketplace({ channels, user, consent = null, q = '', results = 
                 <p class="asset-desc">${esc(a.description || 'No description yet.')}</p>
                 <div class="asset-foot">
                   <span>${esc(a.channel_name)}</span>
-                  <span>${a.unlock_mode === 'open' ? 'Free' : 'One ad'}</span>
+                  <span>${a.unlock_mode === 'open' ? 'Free'
+    : a.unlock_mode === 'breaks' ? 'Free, a break inside' : 'One ad'}</span>
                 </div>
               </div>
             </a>`).join('')}</div>`
@@ -1102,7 +1103,11 @@ export function storefront({
   plainFooter = false,
 }) {
   const cards = assets.map((a) => {
-    const open = a.unlock_mode === 'open';
+    // A `breaks` file is open too — the door does not charge. What it adds is the
+    // ask inside it, which the card states the same way an ad-gated card states
+    // the door's price: the cost is visible before the click, always.
+    const breaksMode = a.unlock_mode === 'breaks';
+    const open = a.unlock_mode === 'open' || breaksMode;
     const unlocked = open || (user && unlockedIds.has(a.id));
     // A listed file the viewer cannot unlock does not get an unlock badge — it
     // gets the reason. The badge is the one place a card can lie, and "Ad-gated"
@@ -1121,7 +1126,7 @@ export function storefront({
       : membersOnly
         ? (unlocked ? pill('Open to you', 'success') : pill('Members', 'accent'))
         : open
-          ? pill('Free', 'success')
+          ? (breaksMode ? pill('Free · a break inside', 'success') : pill('Free', 'success'))
           : unlocked ? pill('Unlocked', 'success') : pill('Ad-gated', 'locked');
     const foot = a.availability && !a.availability.unlockable
       ? (a.availability.state === 'blocked' ? 'Not available in your country' : 'Listed, but not unlockable here')
@@ -1549,12 +1554,20 @@ ${closed.length ? `<section class="section">
  * make a copy traceable, and the note says exactly that, because a product that
  * claims to be un-copyable and is not is worse than one that never claimed it.
  */
-function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, slug, assetSlug, lockedReason = null, assetId = null }) {
+function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, slug, assetSlug, lockedReason = null, assetId = null, gate = null }) {
   // `data-asset-id` is what lets the player tell the server how long the file is
   // when its metadata loads (slice 3: placement needs a measured runtime, and the
   // player is the only component that has one).
+  //
+  // `data-cues` is the break gate: the seconds a `breaks` file stops at, computed
+  // by the server's planner and never by the client. The player knows where to
+  // pause; it does not decide whether it may move on — that answer comes back from
+  // the network's postback through `data-break-url`.
+  const gateAttr = gate && gate.cues?.length
+    ? ` data-cues="${esc(JSON.stringify(gate.cues))}" data-break-url="${esc(gate.breakUrl)}"`
+    : '';
   const frame = (inner, kind) => `
-    <figure class="stage stage-${kind}"${kind === 'image' ? '' : ' data-protect'}${assetId ? ` data-asset-id="${esc(assetId)}"` : ''}>
+    <figure class="stage stage-${kind}"${kind === 'image' ? '' : ' data-protect'}${assetId ? ` data-asset-id="${esc(assetId)}"` : ''}${gateAttr}>
       ${inner}
       ${kind === 'image' ? '' : `<div class="stage-mark" style="background-image:url('${esc(markUri)}')" aria-hidden="true"></div>`}
     </figure>`;
@@ -1757,6 +1770,10 @@ export function assetPage({
   // planner the seller's page and the pipeline read; null for a shape with nowhere
   // inside it to put one.
   placement = null,
+  // The break gate for a file that opens free and asks inside it: where the player
+  // stops, and where it asks permission to move on. Null for every other mode,
+  // because the cues are a description of what the player does.
+  gate = null,
   markUri = '', markLabel = '', accessUntil = null, consent = null,
   reviews = [], reviewStats = {}, canReview = false, myReview = null, reviewError = null,
   reported = null, alreadyReported = false, reportError = null,
@@ -1783,7 +1800,11 @@ export function assetPage({
   // link one click away: the store link refuses, and nothing says why.
   carveOut = null,
 }) {
-  const open = asset.unlock_mode === 'open';
+  // A `breaks` file opens free too — the door does not charge. What differs is that
+  // its player stops at the cues in `gate`, which is why the page says so above the
+  // player rather than leaving it to be discovered.
+  const breaksMode = asset.unlock_mode === 'breaks';
+  const open = asset.unlock_mode === 'open' || breaksMode;
   const needsAd = !open && !unlocked;
   const media = Boolean(previewFile?.playable);
 
@@ -1905,24 +1926,28 @@ export function assetPage({
     </p>`}`;
 
   /*
-   * NO SENTENCE ABOUT BREAKS INSIDE THE FILE YET, and the absence is deliberate.
+   * THE SENTENCE ABOUT BREAKS, and it is printed only where the player can keep it.
    *
-   * `placement.js` computes them and the seller's own page prints them, but nothing
-   * can yet STOP a player at one: the ask is still the door, and a page that
-   * announced "it asks for one view while you watch, at 11:08" would be promising
-   * the person on the other side of it something the product does not do. That is
-   * exactly the class of sentence slice 2 was written to close ("2 ads of 45
-   * seconds" that opened after one), and it is not reopened here.
-   *
-   * The buyer hears where the breaks are in the same commit that makes them real —
-   * the player gate. Until then the plan decides what the SELLER sees, which is
-   * true today, and nothing else.
+   * `gate` is non-null exactly when the file's mode is `breaks`, the viewer can
+   * actually open it, and the plan placed at least one cue — which is the same set
+   * of conditions under which the client has a cue list to stop at. So the words
+   * and the behaviour travel together, and neither can be shipped without the
+   * other: a file that announced "it asks for one view while you watch, at 11:08"
+   * without a player that stops there would be the same class of sentence slice 2
+   * was written to close.
    */
-  const planSentence = null;
-  void placement; void placementSentence;
+  const breakLine = gate && !unlocked ? null : (gate ? breakSentence(placement) : null);
+  // What the ad modal describes. A `breaks` file's modal is about ONE view inside
+  // the file, so the door's sentence ("2 ads of 45 seconds") would be wrong there —
+  // the client fills this line in with the break's own position instead.
+  const modalAsk = breaksMode ? null : ask;
 
   const actionBlock = refusalBlock || (open
-    ? `<div class="note note-success">Free — no ad needed.</div>${filesPanel}`
+    ? `<div class="note note-success">${breaksMode
+    ? 'Free to open. No ad before it starts.'
+    : 'Free — no ad needed.'}</div>${breakLine ? `<p class="small">${esc(breakLine)}</p>` : ''}
+       ${breaksMode ? `<div id="unlock-status" class="fine" role="status" aria-live="polite"
+            style="margin-top:var(--space-3);text-align:center"></div>` : ''}${filesPanel}`
     : unlocked
       ? `<div class="note note-success"><strong>Unlocked.</strong>
            ${memberCover
@@ -1964,6 +1989,7 @@ export function assetPage({
   <div class="stack stack-8">
     ${mediaStage({
       previewFile, markUri, coverUrl: asset.cover_url, title: asset.title, unlocked, needsAd, assetId: asset.id,
+      gate,
       // The stage's own sentence. A members-only file behind an ad-shaped veil
       // reading "Unlocks after the ad" would be the page's one outright lie: no ad
       // opens this, and no amount of watching one will.
@@ -2032,18 +2058,18 @@ ${reportBlock({ channel, asset, user, alreadyReported, reported })}
 <div class="modal" id="ad-modal" hidden role="dialog" aria-modal="true" aria-labelledby="ad-title">
   <div class="modal-card">
     <div class="row">
-      <span class="pill pill-locked">Rewarded ad${ask && ask.ads > 1 ? ` · ${ask.ads} ads` : ''}</span>
+      <span class="pill pill-locked">Rewarded ad${modalAsk && modalAsk.ads > 1 ? ` · ${modalAsk.ads} ads` : ''}</span>
       <span class="spacer"></span>
       <button class="btn btn-sm btn-ghost" id="ad-close" type="button" aria-label="Close">✕</button>
     </div>
     <h2 id="ad-title" style="margin-top:var(--space-4);font-size:var(--text-lg)">Your ad is playing</h2>
-    ${ask ? `<p class="small" style="margin-top:var(--space-2)">
-      ${esc(askLabel(ask))}<span id="ad-ask-tail">${ask.ads > 1 ? '. The next one is asked for only if this one is credited.' : '.'}</span>
-    </p>` : ''}
+    ${modalAsk ? `<p class="small" style="margin-top:var(--space-2)">
+      ${esc(askLabel(modalAsk))}<span id="ad-ask-tail">${modalAsk.ads > 1 ? '. The next one is asked for only if this one is credited.' : '.'}</span>
+    </p>` : `<p class="small" style="margin-top:var(--space-2)"><span id="ad-ask-tail"></span></p>`}
     <p class="fine" id="ad-provider" style="margin-top:var(--space-1)"></p>
     <div class="ad-frame" style="margin-top:var(--space-5)">
       <div style="text-align:center">
-        <div class="ad-count" id="ad-count">${Number(ask?.seconds) || 15}</div>
+        <div class="ad-count" id="ad-count">${Number(modalAsk?.seconds) || 15}</div>
         <div class="fine" style="margin-top:var(--space-2)">seconds remaining</div>
       </div>
       <div class="ad-progress" id="ad-progress"></div>
@@ -4169,7 +4195,7 @@ ${(() => {
         </td>
         <td><strong>${esc(a.title)}</strong>
           <div class="fine">${esc(a.slug)} · ${plural(Number(st.files) || 0, 'file')}${
-    a.unlock_mode === 'open' ? ' · open to everyone' : ''}</div></td>
+    a.unlock_mode === 'open' ? ' · open to everyone' : a.unlock_mode === 'breaks' ? ' · open, breaks inside' : ''}</div></td>
         <td data-label="State">${/* A file the report threshold hid is not the same as one the seller
                 paused, and calling both "Paused" told a seller they had done something
                 they had not done — while hiding the one thing they needed to know. The
@@ -4179,7 +4205,10 @@ ${(() => {
         : a.status === 'removed' ? pill('Removed', 'danger') : pill('Live', 'success')}
           ${a.hidden_by_reports ? `<div class="fine" style="margin-top:var(--space-1)">
             <a href="/dashboard/${esc(channel.slug)}/assets/${esc(a.id)}">Your side of it →</a></div>` : ''}</td>
-        <td data-label="Access">${a.unlock_mode === 'open' ? pill('Free', 'success') : pill('Ad-gated', 'locked')}</td>
+        <td data-label="Access">${a.unlock_mode === 'open' ? pill('Free', 'success')
+    : a.unlock_mode === 'breaks' ? pill('Free · break inside', 'success')
+      : a.unlock_mode === 'members' ? pill('Members', 'accent')
+        : pill('Ad-gated', 'locked')}</td>
         <td class="num" data-label="Unlocks">${num(Number(st.unlocks) || 0)}</td>
         <td data-label="Ad views · 30d">${series.length
     ? `<div class="row" style="gap:var(--space-3);align-items:center">${sparkline({ points: series, max: sharedMax })}
@@ -6331,6 +6360,10 @@ export function assetManage({
    * how a setting becomes a mystery. Every placement the shape allows is a
    * checkbox; every one the rules would not place says why, next to it.
    */
+  // Could this file take the ask inside it at all? Two conditions, the same ones
+  // the save route enforces: a shape with a player that can stop, and a plan that
+  // actually places a break. Shown as an option only when both hold, because a
+  // choice that cannot be honoured is worse than no choice.
   const placementPlan = planFor({
     shape,
     durationSec: asset.runtime_sec ?? null,
@@ -6340,6 +6373,23 @@ export function assetManage({
     chapters: files.length || 1,
     membersOnly: asset.unlock_mode === 'members',
   });
+  const breaksPossible = breaksSupported(shape) && breakCues(placementPlan).length > 0;
+  /*
+   * What this file asks a VISITOR for, which is not the same as what its policy row
+   * says.
+   *
+   * The row always carries an ask — it is calibrated from the value — but on a file
+   * that is free, or opened by a membership, nobody is ever asked for it, and on a
+   * file that carries breaks the ask lands inside the player rather than at the
+   * door. The description-drift warning below compares the seller's own words
+   * against this number, and it used to compare against the row: a free file whose
+   * description promised "no ads" was told it now asks for one. The sentence was
+   * false about a file nobody was being charged for.
+   */
+  const openMode = asset.unlock_mode === 'open' || asset.unlock_mode === 'members';
+  const askedOfVisitors = openMode
+    ? 0
+    : asset.unlock_mode === 'breaks' ? breakCues(placementPlan).length : storedAsk.ads;
   // Drift: the ask was calibrated when the file was worth something else. Said
   // plainly and never auto-corrected — an ask that moved on its own under a
   // visitor's feet would be worse than one that is briefly behind.
@@ -6375,6 +6425,24 @@ export function assetManage({
         </div>
         <div class="panel-body">
           <p class="small">${esc(placementPlan.reasonText)}</p>
+          ${asset.unlock_mode === 'breaks' ? `
+          <p class="small" style="margin-top:var(--space-3)">
+            <strong>Live:</strong> this file opens free and these are the breaks the player stops for.
+            ${placementPlan.cues.length < storedAsk.ads ? ` It can hold ${placementPlan.cues.length}
+            of the ${plural(storedAsk.ads, 'view')} its value gives it, so the rest is not asked for.` : ''}
+          </p>` : asset.unlock_mode === 'open' ? `
+          <p class="small" style="margin-top:var(--space-3)">
+            <strong>Not live:</strong> this file is free with no ad at all, so nothing below runs. Switching
+            its access to “Free, with a break inside”${breaksPossible ? '' : ' — once the file has a measured length'} turns
+            them on.
+          </p>` : `
+          <p class="small" style="margin-top:var(--space-3)">
+            <strong>Not live:</strong> this file asks at the door. In-file breaks belong to files that
+            open free, so that nothing a person has to pay for can be released by a pause in a page.
+            ${breaksPossible
+    ? 'Choosing “Free, with a break inside” above moves the ask to the points below.'
+    : 'This file cannot take one yet: it needs a player that can stop, and a measured length.'}
+          </p>`}
           ${placementPlan.cues.length ? `
           <ul class="fine" style="margin:var(--space-3) 0 0;padding-left:var(--space-4)">
             ${placementPlan.cues.map((c) => `<li>${esc(c.label)} — ${c.kind === 'post'
@@ -6585,10 +6653,11 @@ ${notice ? `
       <div class="field">
         <label for="a-desc">Description</label>
         <textarea class="textarea" id="a-desc" name="description" rows="4" maxlength="2000">${esc(asset.description || '')}</textarea>
-        ${descriptionClaim !== null && descriptionClaim !== storedAsk.ads ? `<span class="hint" style="color:var(--warning-text)">
+        ${descriptionClaim !== null && descriptionClaim !== askedOfVisitors ? `<span class="hint" style="color:var(--warning-text)">
           This description says ${descriptionClaim === 0 ? 'no ads' : `${descriptionClaim} ${descriptionClaim === 1 ? 'ad' : 'ads'}`},
-          and the file now asks for ${storedAsk.ads}. Visitors see both, so one of them should change — the description is
-          yours to edit, and the ask follows the value below.
+          and the file now asks for ${askedOfVisitors}${asset.unlock_mode === 'breaks' ? ', inside it' : ''}.
+          ${openMode ? 'Nobody is asked for anything while access is free, so the description is the only half a visitor reads.'
+    : 'Visitors see both, so one of them should change — the description is yours to edit, and the ask follows the value below.'}
         </span>` : ''}
       </div>
       <div class="row" style="gap:var(--space-4);align-items:flex-start">
@@ -6597,10 +6666,16 @@ ${notice ? `
           <select class="input" id="a-mode" name="unlockMode">
             <option value="ad_gated" ${asset.unlock_mode === 'ad_gated' ? 'selected' : ''}>One rewarded ad</option>
             <option value="open" ${asset.unlock_mode === 'open' ? 'selected' : ''}>Free — no ad</option>
+            ${breaksPossible ? `<option value="breaks" ${asset.unlock_mode === 'breaks' ? 'selected' : ''}>Free, with a break inside</option>` : ''}
             ${membershipsOn ? `<option value="members" ${asset.unlock_mode === 'members' ? 'selected' : ''}>Members only — no ad</option>` : ''}
           </select>
           ${membershipsOn ? `<span class="hint">Members-only files stay on your storefront, locked, so they can be
             seen — that is what makes joining worth a click.</span>` : ''}
+          ${breaksPossible ? `<span class="hint"><strong>Free, with a break inside</strong> lifts the door and
+            pays for the file with a break the player stops for, at the points in the panel below. Nothing before
+            the start. The break is enforced in the page, so a determined viewer can seek past it — the honest
+            trade for a door more people will walk through. Your call, and it can be switched back any time.</span>`
+    : ''}
           <span class="hint">Changing this does not take back an unlock anyone already has.</span>
         </div>
         ${membershipsOn && tiers.length ? `<div class="field" style="flex:1 1 170px">

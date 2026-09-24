@@ -116,6 +116,29 @@ test('every page render passes consent, or the banner silently disappears', () =
   assert.deepEqual(missing, [], `these render calls do not pass consent: ${missing.join(', ')}`);
 });
 
+test('one list of access modes, and the offer matches what can be honoured', () => {
+  // The mode reaches the database through two writers — the asset row and its
+  // policy copy — and they have already drifted once: `breaks` was added to one and
+  // not the other, so the policy row kept the previous mode. Nothing looked wrong,
+  // because the buyer's path reads the asset. A second list is how that happens, so
+  // the test is that there is not one.
+  const storeSrc = read('src/store.js');
+  const lists = [...storeSrc.matchAll(/\['open',\s*'ad_gated'[^\]]*\]/g)];
+  assert.equal(lists.length, 1, `expected one literal mode list, found ${lists.length}: ${lists.map((m) => m[0])}`);
+  assert.equal(lists[0][0], "['open', 'ad_gated', 'members', 'breaks']");
+  const writers = [...storeSrc.matchAll(/SELLER_MODES\.includes\(String\(mode\)\)|SELLER_MODES\.includes\(String\(v\)\)/g)];
+  assert.equal(writers.length, 2, 'the two writers must both read the shared list');
+
+  // The choice is offered on the seller's page for a file that can carry it, and
+  // the description warning compares the seller's own words against what a VISITOR
+  // is asked for — not against the policy row, which carries an ask even on a file
+  // nobody is charged for.
+  assert.match(views, /value="breaks"/);
+  assert.match(views, /const askedOfVisitors = /);
+  assert.match(views, /descriptionClaim !== askedOfVisitors/);
+  assert.doesNotMatch(views, /descriptionClaim !== storedAsk\.ads/);
+});
+
 test('the consent banner offers a real refusal', () => {
   // Both answers must be submit buttons with equal standing — a dimmed link to
   // "manage preferences" as the only way to say no is the dark pattern the

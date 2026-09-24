@@ -82,15 +82,15 @@ import { SIGNALS, BLOCKING_SIGNALS, signalFrom, rungFor, SIGNAL_WINDOW_HOURS } f
 import { SANDBOX_PROVIDER_IDS } from './src/providers/index.js';
 import { selectableProviders, providerById, payoutVerdict, loadRegistry } from './src/registry.js';
 import {
-  startUnlock, unlockStatus, handlePostback, signHousePostback,
+  startUnlock, startBreak, unlockStatus, handlePostback, signHousePostback,
   verifyAccessToken, issueDownloadUrl, issueStreamUrl,
 } from './src/unlocks.js';
 import {
   mediaKind, isPlayable, isWatermarkable, hasImageMagick, watermarkImage,
   watermarkLabel, watermarkSvgDataUri, derivativeKey, cachedDerivative, cacheDerivative,
-  rangeFor, assetShape,
+  rangeFor, assetShape, measuredSeconds, MAX_RUNTIME_SEC,
 } from './src/media.js';
-import { placementPanelShown } from './src/placement.js';
+import { placementPanelShown, breakCues, breaksSupported } from './src/placement.js';
 import { selfTest as adapterSelfTest, advisories as adapterAdvisories, ADAPTERS } from './src/providers/index.js';
 import * as views from './src/views.js';
 import { REVEAL_BOOTSTRAP } from './src/views.js';
@@ -1649,7 +1649,7 @@ APP.get('/api/stores/:slug', async (req, res, next) => {
           // removing one are both 403. Null means nothing stands in the way.
           unlockable: a.availability.unlockable,
           unavailableFor: a.availability.unlockable ? null : a.availability.reason,
-          unlocked: a.unlock_mode === 'open' || unlockedIds.has(a.id),
+          unlocked: ['open', 'breaks'].includes(a.unlock_mode) || unlockedIds.has(a.id),
           adsRequired: (await store.unlockPolicy(a.id))?.ads_required ?? 1,
           adMinSeconds: (await store.unlockPolicy(a.id))?.ad_min_seconds ?? 15,
         };
@@ -1769,7 +1769,7 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
     const memberCover = req.user
       ? await store.memberCoversAsset({ profileId: req.user.id, channelId: channel.id, asset })
       : null;
-    const unlocked = (asset.unlock_mode === 'open' || holdsUnlock || Boolean(memberCover))
+    const unlocked = (['open', 'breaks'].includes(asset.unlock_mode) || holdsUnlock || Boolean(memberCover))
       && availability.unlockable;
 
     // Content URLs are minted per request, per user, and expire. They are only
@@ -1844,13 +1844,29 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
     //
     // Skipped entirely when the file opens no content (`open` mode carries its
     // files panel immediately) — a break nobody can reach is copy about nothing.
-    const placement = ['watch', 'listen', 'read'].includes(
-      assetShape(files, { url: asset.external_url }),
-    ) ? await store.adPlanFor(asset, { membersOnly: asset.unlock_mode === 'members' }) : null;
+    const shape = assetShape(files, { url: asset.external_url });
+    const placement = ['watch', 'listen', 'read'].includes(shape)
+      ? await store.adPlanFor(asset, { membersOnly: asset.unlock_mode === 'members' }) : null;
+    /*
+     * The break gate, handed to the player as data.
+     *
+     * Only for a `breaks` file that is actually open to this person: the cues are a
+     * description of what the player will do, and a locked file's player is not
+     * running. `cleared` is not sent — what this person already sat through is the
+     * database's business, and the client learns it the same way it learns
+     * everything else: by asking the status route.
+     */
+    const gate = unlocked && asset.unlock_mode === 'breaks' && placement
+      ? {
+        breakUrl: '/api/unlock/break',
+        cues: breakCues(placement).map((c) => ({ index: c.index, atSec: c.atSec, seconds: c.seconds })),
+      }
+      : null;
 
     res.send(views.assetPage({
       channel, asset, files, unlocked, user: req.user, consent: req.consent,
       placement,
+      gate,
       accessUntil: unlock?.expires_at ?? null,
       previewFile, markUri, markLabel,
       alreadyReported,
@@ -2288,6 +2304,36 @@ APP.post('/api/unlock/start', limitUnlock, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/*
+ * A break inside a file the viewer is already watching.
+ *
+ * Same shape as the door's start route and deliberately a different endpoint: the
+ * two release different things. This one lets the PLAYER move on past a cue; the
+ * door releases the bytes. Keeping them apart is what stops a break from ever
+ * being mistaken for an unlock — in the routes, in the ledger, and in whatever
+ * reads either later.
+ */
+APP.post('/api/unlock/break', limitUnlock, async (req, res, next) => {
+  try {
+    const user = req.user;
+    if (!user) return requireUser(res);
+    if (!isUuid(req.body?.assetId)) {
+      return res.status(400).json({ ok: false, error: 'assetId must be a uuid' });
+    }
+    res.json(await startBreak({
+      assetId: req.body.assetId,
+      userId: user.id,
+      cueIndex: req.body?.cueIndex,
+      providerId: req.body?.providerId,
+      // A break asks the network for a view on a file the viewer already has, so
+      // the consent question is the same one the door asks and it gets the same
+      // answer. Passing it here is what keeps the break from being the quieter
+      // route around a refusal.
+      personalised: req.consent?.ads === true,
+    }));
+  } catch (err) { next(err); }
+});
+
 /**
  * A rewarded view that did not arrive.
  *
@@ -2374,9 +2420,17 @@ APP.post('/api/assets/:assetId/runtime', limitWatch, async (req, res, next) => {
     if (!asset) return res.status(404).json({ ok: false, error: 'asset not found' });
     // Only for something with a playhead. An image set has no duration, and a
     // "measured" 4,000 seconds on one would move every break in it.
-    const row = await store.reportRuntime(asset.id, req.body?.durationSec);
-    if (!row) return res.status(400).json({ ok: false, error: 'durationSec must be between 1 and 86400' });
-    res.json({ ok: true, runtimeSec: row.runtime_sec });
+    const secs = measuredSeconds(req.body?.durationSec);
+    if (secs === null) {
+      return res.status(400).json({ ok: false, error: `durationSec must be between 1 and ${MAX_RUNTIME_SEC}` });
+    }
+    // Asked again on every page load, so "already known" is the ORDINARY answer and
+    // it is a success. It used to fall through the same `null` as a bad number and
+    // came back 400 — a failed request in every viewer's console, for a fact the
+    // server already had.
+    const row = await store.reportRuntime(asset.id, secs);
+    if (!row) return res.json({ ok: true, changed: false });
+    res.json({ ok: true, runtimeSec: row.runtime_sec, changed: true });
   } catch (err) { next(err); }
 });
 
@@ -2594,7 +2648,11 @@ async function resolveContentRequest(req, res, { event }) {
   //
   // Someone who already holds an unlock keeps it: the check below is on NEW
   // grants, and `isUnlocked` is consulted first.
-  if (asset.unlock_mode === 'open' && asset.status === 'live' && !await store.isUnlocked(a, u)) {
+  // `breaks` is free to open with views inside it: the door does not charge, and
+  // what the breaks gate is the PLAYER, not the bytes (migration 0038, decision 2).
+  // So it is granted exactly like a free file, and no break can ever be the thing
+  // between somebody and content they would otherwise have to pay for.
+  if (['open', 'breaks'].includes(asset.unlock_mode) && asset.status === 'live' && !await store.isUnlocked(a, u)) {
     await store.grantUnlock({
       assetId: a, channelId: asset.channel_id, userId: u, method: 'open', adsCompleted: 0,
       policy: { unlock_hours: 0 },   // free access does not expire
@@ -2742,7 +2800,7 @@ APP.get('/api/content/:assetId', async (req, res, next) => {
       });
     }
 
-    const unlocked = asset.unlock_mode === 'open' || await store.isUnlocked(asset.id, req.user.id);
+    const unlocked = ['open', 'breaks'].includes(asset.unlock_mode) || await store.isUnlocked(asset.id, req.user.id);
     const policy = await store.unlockPolicy(asset.id);
     const label = watermarkLabel({ ref: req.user.id, assetId: asset.id });
 
@@ -3108,6 +3166,14 @@ const ERROR_FLASH = {
   'already-checked': 'This store is checked. There is nothing to ask for until the check lapses.',
   name: 'A store needs a name.',
   title: 'A file needs a title — it becomes the page address.',
+  // The mode that moves the ask inside the file, refused with its reason. Both
+  // halves are said because both are actionable: the length is measured by opening
+  // the file once, and the door is always available meanwhile.
+  'no-breaks': 'Not switched. A break inside a file needs a length to sit against, anything the '
+    + 'file may ask for inside the first two minutes or the last ninety seconds is refused by the '
+    + 'platform, and only a video or a queue has a player that can stop. Open this file once — its '
+    + 'length is measured by the player, not typed — or keep the ask at the door, which is exactly '
+    + 'where it is now: nothing changed.',
   plan: 'That plan is not available from your current one.',
   listing: 'Explore is part of the paid plans. Switch to your own address, or upgrade on the billing page.',
   banner: 'The banner must be an image under 5 MB.',
@@ -4305,10 +4371,45 @@ APP.post('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
     const wantsMembers = req.body.unlockMode === 'members'
       && store.plan(channel).capabilities?.memberships === true;
     const memberTier = wantsMembers ? (Number(req.body.memberTier) === 2 ? 2 : 1) : 0;
+
+    /*
+     * "Free, with a break inside" — offered only where it can be kept.
+     *
+     * Two conditions, and both are the product's own rules rather than this
+     * route's opinion: the shape must have a player the gate can stop (`watch` or
+     * `listen`), and the plan must actually place a break. A file whose length the
+     * player has not measured yet places nothing, and a `breaks` file with no cues
+     * would be a FREE file — which is not what the seller chose, and quietly
+     * giving content away under a label about ads is the worst kind of surprise.
+     * So the request is refused with a reason and the door stays.
+     */
+    const shape = await store.shapeOf(asset);
+    const wantsBreaks = req.body.unlockMode === 'breaks';
+    /*
+     * The plan is computed from a COPY carrying the value the seller just typed,
+     * not the stored one. `adPlanFor` reads the ask out of the policy row, which is
+     * still calibrated to the old value at this point in the route — so asking it
+     * directly would refuse a switch to `breaks` on the strength of a number the
+     * seller is in the middle of replacing.
+     */
+    const asSaved = { ...asset, declared_value_npr: Number(req.body.valueNpr) || 0 };
+    const plan = wantsBreaks ? await store.adPlanFor(asSaved, { membersOnly: false }) : null;
+    const breaksOk = Boolean(plan) && breaksSupported(shape) && breakCues(plan).length > 0;
+    if (wantsBreaks && !breaksOk) {
+      // The title and description still save: a seller who chose the wrong mode
+      // should not lose their typing over it.
+      await store.updateAsset(asset.id, {
+        title,
+        description: String(req.body.description || '').trim().slice(0, 2000),
+        declared_value_npr: req.body.valueNpr,
+      });
+      return res.redirect(`${back}?error=no-breaks`);
+    }
+
     await store.updateAsset(asset.id, {
       title,
       description: String(req.body.description || '').trim().slice(0, 2000),
-      unlock_mode: req.body.unlockMode === 'open' ? 'open' : wantsMembers ? 'members' : 'ad_gated',
+      unlock_mode: wantsBreaks ? 'breaks' : req.body.unlockMode === 'open' ? 'open' : wantsMembers ? 'members' : 'ad_gated',
       member_tier: memberTier,
       status: req.body.status === 'paused' ? 'paused' : 'live',
       // Saved BEFORE the policy below, and the order is the whole point: the ask is
@@ -4323,7 +4424,7 @@ APP.post('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
       unlock_hours: req.body.unlockHours,
       // The same value that was just written to the asset, so the two rows that
       // carry this one decision cannot drift apart.
-      mode: req.body.unlockMode === 'open' ? 'open' : wantsMembers ? 'members' : 'ad_gated',
+      mode: wantsBreaks ? 'breaks' : req.body.unlockMode === 'open' ? 'open' : wantsMembers ? 'members' : 'ad_gated',
     });
     /*
      * Which of the shape's placements this file keeps.
@@ -4340,8 +4441,6 @@ APP.post('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
      * were, say, a video. That is why the array is only read when the file has a
      * placement panel at all — see `placementChoicesSubmitted`.
      */
-    const shapeFiles = await store.filesOf(asset.id);
-    const shape = assetShape(shapeFiles, { url: asset.external_url });
     if (placementPanelShown(shape)) {
       const submitted = [].concat(req.body.placement ?? []);
       const choices = {};

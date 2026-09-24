@@ -294,6 +294,222 @@
     });
   }
 
+  /*
+   * ── THE BREAK GATE ────────────────────────────────────────────────────────
+   *
+   * A file whose access is "Free to open — a view inside" stops at the cues its
+   * seller's plan placed, asks for a rewarded view, and goes on when the ad
+   * NETWORK has confirmed it. The cues come from the server (`data-cues`), the
+   * confirmation comes from the server (`/api/unlock/status`), and this code
+   * decides neither — it only stops the playhead and puts it back.
+   *
+   * WHAT THIS IS, AND WHAT IT IS NOT. It is a pause, verified server-side, that
+   * cannot be forged: a client that lies about the ad still cannot make the server
+   * say "credited", and the status route is what releases the playhead. It is NOT
+   * DRM. A viewer with devtools can seek past a cue, exactly as anyone can
+   * screenshot a page or download a signed URL they hold. The forward-seek clamp
+   * below stops the ordinary way of skipping a break — scrubbing the bar — and
+   * nothing here pretends to stop the other. That is the trade the mode exists on:
+   * a door more people walk through, priced by a pause most of them sit through.
+   *
+   * Files that ask AT the door are untouched by all of this. Their access is a row
+   * in the database, checked before a single byte is minted.
+   */
+  document.querySelectorAll('[data-cues]').forEach((stage) => {
+    const el = stage.querySelector('video[src], audio[src]');
+    if (!el) return;
+    let cues = [];
+    try { cues = JSON.parse(stage.dataset.cues || '[]'); } catch { cues = []; }
+    if (!cues.length) return;
+    const assetId = stage.dataset.assetId;
+    const breakUrl = stage.dataset.breakUrl;
+    if (!assetId || !breakUrl) return;
+
+    // Cues already paid for in this sitting. The server is the record — this is
+    // only what saves a second postback round trip after a rewind.
+    const cleared = new Set();
+    const nextCue = () => cues.find((c) => !cleared.has(c.index) && el.currentTime + 0.35 >= c.atSec);
+    let gating = false;
+    // Set while a break is on screen, so the ✕ can end the wait. See the handler.
+    let declineBreak = null;
+
+    const modal = $('#ad-modal');
+    const countEl = $('#ad-count');
+    const progress = $('#ad-progress');
+    const note = $('#ad-note');
+    const hint = $('#ad-hint');
+    const providerLine = $('#ad-provider');
+    const titleEl = $('#ad-title');
+    const askLine = $('#ad-ask-tail');
+    const statusEl = $('#unlock-status');
+    let ticker = null;
+
+    const say = (text, kind = '') => {
+      if (!statusEl) return;
+      statusEl.textContent = text;
+      statusEl.style.color = kind ? `var(--${kind}-text)` : '';
+    };
+
+    /** Wait for the network's confirmation — the only thing that releases the player. */
+    const waitForCredit = async (viewId) => {
+      const deadline = Date.now() + 90_000;
+      while (Date.now() < deadline) {
+        const s = await api(`/api/unlock/status?assetId=${encodeURIComponent(assetId)}`
+          + `&viewId=${encodeURIComponent(viewId)}`);
+        if (Number(s.viewsDone) >= Number(s.viewsRequired)) return true;
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+      return false;
+    };
+
+    const runBreak = async (cue) => {
+      gating = true;
+      // The escape hatch is armed BEFORE anything is asked of the network, so the
+      // ✕ works from the first frame the modal is on screen. It was armed after the
+      // simulated call returned, which meant that in a slow sandbox the button was
+      // dead for exactly as long as the request took — found by holding that
+      // request open in a browser walk and clicking it.
+      const declined = new Promise((resolve) => { declineBreak = () => resolve('declined'); });
+      el.pause();
+      const position = cues.filter((c) => c.index <= cue.index || cleared.has(c.index)).length;
+      const start = await api(breakUrl, {
+        method: 'POST',
+        body: JSON.stringify({ assetId, cueIndex: cue.index }),
+      });
+      if (!start.ok) {
+        // A break that cannot start does not hold the file hostage: the person
+        // gets the rest of what they came for, and the store's evidence page is
+        // what records that the view did not run.
+        say(start.error || 'Could not start a view. Playing on.', 'danger');
+        gating = false;
+        el.play().catch(() => {});
+        return;
+      }
+      const seconds = Number(start.adConfig?.minSeconds) || 15;
+      if (titleEl) titleEl.textContent = 'Your ad is playing';
+      // No leading period: on an `ad_gated` file this span CONTINUES the door's
+      // sentence ("…to unlock this file. The next one is…"), but a file with breaks
+      // has no door sentence to continue, so the span starts the line and used to
+      // render as a floating full stop before "Break 1 of 2".
+      if (askLine) askLine.textContent = `Break ${position} of ${cues.length} in this file.`;
+      if (providerLine) providerLine.textContent = `${start.adConfig.providerId} · rewarded video`;
+      if (note) {
+        note.textContent = 'The player moves on when the network confirms the view, not when this '
+          + 'countdown ends.';
+        note.style.color = '';
+      }
+      if (hint) {
+        hint.textContent = 'If nothing appears in a few seconds, an ad blocker is the usual reason. '
+          + 'Allowing ads for this page is what fixes it.';
+      }
+      if (countEl) countEl.textContent = String(seconds);
+      if (progress) progress.style.width = '0%';
+      if (modal) modal.hidden = false;
+      say(`Break ${position} of ${cues.length}…`);
+      let left = seconds;
+      clearInterval(ticker);
+      ticker = setInterval(() => {
+        left -= 1;
+        if (countEl) countEl.textContent = String(Math.max(left, 0));
+        if (progress) progress.style.width = `${Math.min(((seconds - left) / seconds) * 100, 100)}%`;
+        if (left <= 0) clearInterval(ticker);
+      }, 1000);
+
+      // The sandbox network, exactly as the door's flow drives it. A real
+      // integration never calls this: the network calls us. Not awaited, because
+      // nothing on this page depends on its answer — the postback is what the wait
+      // below is waiting for, and whether it lands in 30ms or three seconds must not
+      // decide whether a person can leave.
+      if (start.adConfig?.devSimulator) {
+        api(`/dev/simulate-network/${encodeURIComponent(start.adConfig.providerId)}`, {
+          method: 'POST',
+          body: JSON.stringify({
+            viewId: start.viewId,
+            connectionId: start.adConfig.connectionId,
+            durationSec: seconds,
+          }),
+        }).catch(() => { /* the wait below decides */ });
+      }
+
+      // What releases the playhead is the network, not the countdown — so closing
+      // the break is a RACE with the postback rather than a decision made here. A
+      // person who leaves while the postback is in flight still has it credited.
+      const outcome = await Promise.race([
+        waitForCredit(start.viewId).then((ok) => (ok ? 'credited' : 'unconfirmed')),
+        declined,
+      ]);
+      declineBreak = null;
+      clearInterval(ticker);
+      if (modal) modal.hidden = true;
+      gating = false;
+      /*
+       * Asked once per sitting, whatever came of it.
+       *
+       * A cue that stayed uncleared would be re-asked on the very next timeupdate,
+       * which is a modal that reappears every ninety seconds for a person whose
+       * network is slow — and a promise this page has no business making, that the
+       * next attempt will go differently. A reload is a new sitting, and both of
+       * the sentences below say so in their own way.
+       */
+      cleared.add(cue.index);
+      if (outcome === 'credited') {
+        say(`Break ${position} of ${cues.length} — confirmed. Playing on.`, 'success');
+        // Back to the cue, not forward past it: the few hundred milliseconds the
+        // pause consumed are replayed rather than lost.
+        el.currentTime = cue.atSec;
+        el.play().catch(() => {});
+      } else if (outcome === 'declined') {
+        // The door's modal has a ✕ and this one is the same modal. On a file with
+        // breaks there is no door, so the button had NO handler at all — a close
+        // button that closed nothing, found by clicking it. It closes the wait now,
+        // and the sentence is the honest description of what that costs: the store
+        // loses the impression, the viewer loses nothing, because the file was
+        // theirs before the break started.
+        say(`Break ${position} of ${cues.length} dropped. The file keeps playing — the store was `
+          + 'not credited for that view.', 'warning');
+        el.play().catch(() => {});
+      } else {
+        say('The network has not confirmed that view yet. You can keep watching — reload to try the '
+          + 'break again.', 'danger');
+        el.play().catch(() => {});
+      }
+    };
+
+    /*
+     * The ✕, for a break.
+     *
+     * The door wires its own ✕ only when the door exists, so nothing was listening
+     * here. Wired to a race rather than a cancellation, because the postback may
+     * already be on its way — see runBreak.
+     */
+    $('#ad-close')?.addEventListener('click', () => {
+      if (gating && declineBreak) declineBreak();
+    });
+
+    el.addEventListener('timeupdate', () => {
+      if (gating) return;
+      const cue = nextCue();
+      if (cue) runBreak(cue).catch(() => { gating = false; });
+    });
+
+    // Scrubbing past an unpaid cue lands on the cue instead. This is the whole
+    // "gate" in the ordinary case, and the reason the countdown is not the thing
+    // being trusted.
+    el.addEventListener('seeking', () => {
+      if (gating) return;
+      const cue = cues.find((c) => !cleared.has(c.index) && el.currentTime > c.atSec + 1
+        && cues.filter((x) => x.index < c.index).every((x) => cleared.has(x.index)));
+      if (cue) el.currentTime = cue.atSec;
+    });
+
+    // A person who leaves mid-break and comes back gets the pause again, and the
+    // server remembers nothing about the modal — which is the right place for that
+    // state to live.
+    el.addEventListener('play', () => {
+      if (!gating && nextCue()) el.pause();
+    });
+  });
+
   // ── protected media ──────────────────────────────────────────────────────
   //
   // Deterrence, and nothing more. The honest statement is in the markup above

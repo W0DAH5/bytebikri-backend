@@ -20,8 +20,9 @@
  */
 import crypto from 'node:crypto';
 import { store } from './store.js';
+import { breakCues, breaksSupported } from './placement.js';
 import { readSecret } from './config.js';
-import { parsePostback, GRANTS_UNLOCK, getAdapter } from './providers/index.js';
+import { parsePostback, GRANTS_UNLOCK, getAdapter, devSimulatorFor } from './providers/index.js';
 import { availabilityFor, resolveCountry } from './geo.js';
 
 const ACCESS_SECRET = () => readSecret('ACCESS_TOKEN_SECRET');
@@ -157,6 +158,107 @@ export async function startUnlock({ assetId, userId, providerId, personalised = 
       // Told to the client so the modal can say which kind of ad this is. The
       // server does not trust it back.
       personalised,
+      // Present only outside production and only for the sandbox network, so the
+      // page can drive a simulated view and the whole loop stays testable without
+      // a commercial provider account. Absent — not `false` — in production.
+      devSimulator: devSimulatorFor(view.provider_id) || undefined,
+    },
+  };
+}
+
+/**
+ * A break inside a file that was already free to open.
+ *
+ * This is not a second door and it must never become one. The file's mode is
+ * `breaks`, which means the bytes were released before this call — the viewer is
+ * mid-playback, and what this asks for is permission for the PLAYER to move on,
+ * not permission to have the file. Nothing here can grant or withhold content: if
+ * the view never arrives, the person still has the file; they have simply stopped
+ * at a cue, which is a state they can leave by reloading.
+ *
+ * That is exactly why the mode is restricted to files whose door does not charge
+ * (migration 0038, decision 2): a break is enforced by the page, and a rule the
+ * page enforces must never be the thing between somebody and content they would
+ * otherwise have to pay for.
+ *
+ * One view per break, of the length the plan says. The count is the ladder's: the
+ * plan places `budget.ads` cues at most, so a file can never ask for more views
+ * through its breaks than the value ladder gave it.
+ */
+export async function startBreak({ assetId, userId, cueIndex, providerId, personalised = false }) {
+  const asset = await store.assetById(assetId);
+  if (!asset) return { ok: false, error: 'asset not found' };
+  if (asset.unlock_mode !== 'breaks') {
+    // A door file, a free file, a member's file, a paused file: none of them take
+    // a break, and saying which is not the client's business.
+    return { ok: false, error: 'this file does not carry breaks' };
+  }
+  if (asset.status !== 'live' || asset.moderation_state === 'removed') {
+    return { ok: false, error: 'this file is not live' };
+  }
+  if (!breaksSupported(await store.shapeOf(asset))) {
+    return { ok: false, error: 'this file has no player to stop' };
+  }
+
+  // The cue is an index into the plan and nothing else. `Number(null)` is 0 and
+  // `Number(false)` is 0, so a body that sends neither a number nor a numeric
+  // string must be refused rather than quietly read as "the first break".
+  if (cueIndex === null || cueIndex === undefined || typeof cueIndex === 'boolean') {
+    return { ok: false, error: 'no such break in this file' };
+  }
+  const wanted = Number(cueIndex);
+  if (!Number.isInteger(wanted) || wanted < 0) {
+    return { ok: false, error: 'no such break in this file' };
+  }
+
+  const plan = await store.adPlanFor(asset, { membersOnly: asset.unlock_mode === 'members' });
+  const cue = breakCues(plan).find((c) => c.index === wanted);
+  if (!cue) return { ok: false, error: 'no such break in this file' };
+
+  const connections = await store.connectionsOf(asset.channel_id);
+  const usable = connections.filter((c) => getAdapter(c.provider_id) && c.callback_secret);
+  const connection = (providerId && usable.find((c) => c.provider_id === providerId)) || usable[0] || null;
+  if (!connection) return { ok: false, error: 'this store has no verifiable ad connection' };
+
+  const adRef = await store.adRefFor(userId);
+  const view = await store.createPendingView({
+    nonce: crypto.randomBytes(16).toString('hex'),
+    asset_id: assetId,
+    channel_id: asset.channel_id,
+    user_id: userId,
+    connection_id: connection.id,
+    provider_id: connection.provider_id,
+    // One view, and this is not a parameter: a break is a single interruption, and
+    // the number of interruptions is the plan's.
+    required_ads: 1,
+    ad_min_seconds: plan.budget.seconds || 15,
+    break_index: cue.index,
+    // Snapshotted so a plan edited mid-watch cannot move the break under somebody
+    // who is already sitting through it.
+    break_at_sec: cue.atSec,
+  });
+
+  return {
+    ok: true,
+    break: true,
+    viewId: view.id,
+    breakIndex: cue.index,
+    position: cue.position,
+    total: breakCues(plan).length,
+    adConfig: {
+      providerId: connection.provider_id,
+      connectionId: connection.id,
+      // Same rule as the door, and it has to be stated here or the break becomes
+      // the way round the consent choice: the identifier is omitted entirely
+      // without it, so the network cannot tie this view to the last one.
+      userId: personalised ? adRef : undefined,
+      custom: view.id,
+      type: 'rewarded',
+      minSeconds: view.ad_min_seconds,
+      requiredViews: 1,
+      cueAtSec: cue.atSec,
+      personalised,
+      devSimulator: devSimulatorFor(view.provider_id) || undefined,
     },
   };
 }
@@ -180,6 +282,11 @@ export async function unlockStatus({ assetId, userId, viewId }) {
     viewsDone: Math.min(viewsDone, viewsRequired),
     viewsRequired,
     viewId: view?.id ?? null,
+    // The client needs to tell "the file opened" from "the player may move on".
+    // A break never unlocks anything, so `unlocked` alone would send the player
+    // looking for a grant that is never coming.
+    breakIndex: view?.break_index ?? null,
+    breakAtSec: view?.break_at_sec ?? null,
   };
 }
 
@@ -344,6 +451,28 @@ export async function handlePostback({ providerId, connectionId, ctx }) {
       return { ok: true, unlocked: false, state: event.state, reason: `state "${event.state}" does not grant` };
     }
 
+    /*
+     * (4b) A BREAK IS NOT A DOOR, and the two must not share a code path past this
+     * point. A break's delivery releases the playhead — the bytes were already the
+     * viewer's, because the file is one that opens free. Granting an unlock here
+     * would be meaningless at best (they hold one) and, on a mode that ever stopped
+     * being doorless, a way to release content with a client-side pause.
+     *
+     * So it completes and returns. No unlock row, no `adsCompleted`, no door.
+     */
+    if (view.break_index !== null && view.break_index !== undefined) {
+      const credited = await store.completedViewsForPendingView(view.id, client);
+      const required = Math.max(1, Number(attempt?.required_ads) || Number(view.required_ads) || 1);
+      if (credited < required) {
+        return { ok: true, unlocked: false, breakCredited: false, viewsDone: credited, viewsRequired: required };
+      }
+      await store.completePendingView(view.id, client);
+      return {
+        ok: true, unlocked: false, breakCredited: true, breakIndex: view.break_index,
+        viewsDone: credited, viewsRequired: required,
+      };
+    }
+
     // (5) the attempt's own ask, not the policy's — they are the same number at
     // the moment the attempt starts, and the attempt's is the one the page
     // printed. A seller raising the ask mid-watch must not change what this
@@ -394,7 +523,14 @@ export async function handlePostback({ providerId, connectionId, ctx }) {
     };
   });
 
-  if (result.unlocked) {
+  if (result.breakCredited) {
+    // The seller's evidence page reads these rows, and a break that ran and paid
+    // must not be logged as a refusal any more than a counted door view should be.
+    await store.audit('postback.break_credited', {
+      providerId, connectionId, viewId: view.id, assetId: view.asset_id,
+      breakIndex: result.breakIndex, viewsDone: result.viewsDone,
+    });
+  } else if (result.unlocked) {
     await store.audit(
       'unlock.granted',
       {
