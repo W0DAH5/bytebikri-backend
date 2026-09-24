@@ -226,3 +226,67 @@ test('assertProductionConfig returns rather than exits outside production', () =
   const report = assertProductionConfig({ NODE_ENV: 'development', DATABASE_URL: GOOD.DATABASE_URL });
   assert.equal(report.production, false);
 });
+
+// ---------------------------------------------------------------------------
+// The config file is a promise, and it has been broken twice
+// ---------------------------------------------------------------------------
+
+test('every variable .env.example sets is a variable the code reads', async () => {
+  // Two blocks in that file were lies of the same shape, both found this round:
+  //
+  //   * a whole storage section — `STORAGE_DRIVER=s3`, `STORAGE_BUCKET`,
+  //     `STORAGE_ENDPOINT`, the access keys — for a driver that does not exist.
+  //     A person deploying a container would set them, believe their files were in
+  //     a bucket, and lose every upload on the next deploy while the database kept
+  //     the unlocks pointing at them;
+  //   * `LOG_LEVEL` and `SENTRY_DSN` under "Observability", read by nothing —
+  //     the first two things anybody reaches for to quieten a noisy log or catch a
+  //     production 500.
+  //
+  // An unread variable in a config file is worse than a missing one, because it
+  // looks configured. This test reads the ACTIVE assignments (not the commented
+  // examples, which are documentation of alternatives — and one of them,
+  // `# EMAIL_DRIVER=resend`, is a real driver) and requires each name to appear in
+  // the source somewhere.
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const app = path.join(here, '..');
+  const repo = path.join(app, '..');
+
+  const example = fs.readFileSync(path.join(repo, '.env.example'), 'utf8');
+  const named = example
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('#'))
+    .map((line) => line.match(/^([A-Z][A-Z0-9_]*)=/))
+    .filter(Boolean)
+    .map((m) => m[1]);
+  assert.ok(named.length >= 10, `the file still names its variables (found ${named.length})`);
+
+  // The source, without the tests themselves — a variable read only by a test is
+  // still a variable that does nothing at runtime.
+  const files = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (/\.(js|mjs)$/.test(entry.name)) files.push(full);
+    }
+  };
+  walk(path.join(app, 'src'));
+  walk(path.join(app, 'scripts'));
+  walk(path.join(repo, 'ci'));
+  files.push(path.join(app, 'server.js'));
+
+  const source = files
+    .filter((f) => !f.includes(`${path.sep}test${path.sep}`))
+    .map((f) => fs.readFileSync(f, 'utf8'))
+    .join('\n');
+
+  const unread = named.filter((name) => !source.includes(name));
+  assert.deepEqual(unread, [],
+    `these variables are set in .env.example and read by nothing: ${unread.join(', ')} — `
+    + 'setting them looks like configuration and changes nothing');
+});
