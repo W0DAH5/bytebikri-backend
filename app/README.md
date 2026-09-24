@@ -1,44 +1,56 @@
 # ByteBikri app
 
-Storefronts + ad-gated content unlocks, on **PostgreSQL**.
+Storefronts, ad-gated unlocks, members, and the platform's own charges — on **PostgreSQL**.
 
 ```bash
 npm install
 npm run db:start     # real Postgres 18, local data dir (leave running)
 npm run db:migrate   # apply db/migrations
-npm start            # → http://localhost:3000
-npm test             # 41 tests; recreates a separate test database first
+npm start            # → http://localhost:3000, seeding a fresh database on first boot
+npm test             # 601 tests; recreates a separate test database first
 ```
 
 `db:start` runs a real server, not an emulator. It needs no credentials and no
 external services; `db:reset` drops and recreates, handy when experimenting.
 
 **Production:** point `DATABASE_URL` at any Postgres (Supabase is fine) and run
-`npm run db:migrate`. Nothing else changes.
+`npm run db:migrate`. Nothing else changes. See `../DEPLOY.md`.
 
 ## Try it
 
+The demo database has three stores and real sign-in. Boot the app, then:
+
+```bash
+node ../ci/demo-state.mjs     # from app/, puts the interesting states in place
+```
+
 | | |
 |---|---|
-| Storefront (POST-dialect provider) | `/s/alice` |
-| Locked asset | `/s/alice/a/devanagari-poster-kit` |
-| Storefront (GET-dialect provider) | `/s/bob` |
-| Locked asset | `/s/bob/a/kathmandu-street-set` |
-| Dashboard | `/dashboard/alice?as=alice@bytebikri.local` |
-| Marketplace | `/marketplace` |
-| Diagnose | `/health` |
+| Storefront | `/s/alice` (Store plan), `/s/nima-crafts` (memberships), `/s/bob` (Free) |
+| File pages | `/s/alice/a/devanagari-poster-kit` (ad-gated), `…/poster-kit-walkthrough` |
+| Dashboard | `/dashboard/alice` — sign in as `alice@bytebikri.local` / `bytebikri-demo` |
+| The person's premium | `/plus` — `alice` is wearing one, `carol` has a claim waiting |
+| Operator console | `/admin` — `ops@bytebikri.local` / `bytebikri-demo` |
+| Health / readiness | `/health`, `/readyz` |
 
-Two channels, two providers, two signature schemes — so connection routing is
-exercised, not just provider routing.
+`DATABASE_URL` decides which database all of this touches, and `npm run
+db:reset && npm run db:migrate && npm start` gets a clean one from nothing.
 
-There is no session store yet, so `?as=<email>` selects the acting user. Any email
-works; a new one is created on first use, which is the easiest way to watch the
-lock behave for a visitor who has never unlocked anything.
+## How this file's history reads
 
-Passing no `?as=` returns **401** rather than borrowing an identity, and each
-unrecognised email becomes its own new user. That was a bug: it previously fell
-back to a shared `guest` user, so everyone with an unrecognised email acted as the
-same person and one guest's unlock was visible to all of them.
+Everything below the line was written while the app was a prototype: it had no
+session store, no money model and no operator, and the sections that follow record
+the defects found in that shape — `?as=<email>` identity switching (replaced by real
+sign-in, sessions and `resolveSession`), two demo channels (now three stores with
+plans, members and a Plus subscriber), and 41 tests (now **601**, plus the browser
+harness in `../ci/eyes/`).
+
+They are kept because the reasoning is the useful part and it has aged well: a
+shared `guest` user that made one visitor's unlock visible to another, a
+verification scheme no real provider uses, an unlock that could be declared
+complete by the browser. Each was fixed, and each fix is narrated where it
+happened rather than tidied away. Read it as a record, not as a description of the
+current build.
 
 ## Provider adapters — `src/providers/`
 
@@ -123,8 +135,10 @@ The ad network also never learns who the user is. It receives a random UUID4
 | No identity (`?as=` absent) | `401`, never borrows a user |
 | No token / forged token | `403` on content |
 | No unlock | **zero** content links in the page |
-| Rent slot | rank 5 of 5 — never rank 1 |
-| Free-plan channel | 3 slots, rank 3 is rent |
+| Rent slot | the next rank below the store's own — never rank 1, one per page |
+| Free-plan channel | 2 positions: the store's at rank 1, ours at rank 2 |
+| Paid channel | 3 positions: the store's at ranks 1-2, ours at rank 3 (three is the ceiling) |
+| Channel with no position of its own | not taxed — `.length = 0`, no platform position either |
 | Disconnected channel | slots `reserved_empty`, height held (no reflow) |
 
 ## Layout
