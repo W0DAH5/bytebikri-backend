@@ -485,3 +485,37 @@
   }
 
 })();
+
+// ── Shape chips on a store page ─────────────────────────────────────────────
+//
+// The chips are anchors in the markup, so with no JavaScript they jump to the
+// section they name — the page still works, it just does not filter. This turns
+// them into a filter: one kind at a time, pressing the same chip again puts the
+// rest back. Nothing is removed from the document, so a filtered store page is
+// still a complete one for anything reading it (a crawler, a find-in-page, or
+// somebody who pasted the link).
+(() => {
+  const chips = [...document.querySelectorAll('[data-shape-chip]')];
+  const groups = [...document.querySelectorAll('[data-shape-section]')];
+  // One kind of thing is not a filter — and the server does not draw the row.
+  if (chips.length < 2 || groups.length < 2) return;
+
+  const clear = () => {
+    for (const group of groups) group.hidden = false;
+    for (const chip of chips) chip.setAttribute('aria-pressed', 'false');
+  };
+
+  for (const chip of chips) {
+    chip.addEventListener('click', (event) => {
+      const shape = chip.dataset.shapeChip;
+      const already = chip.getAttribute('aria-pressed') === 'true';
+      event.preventDefault();
+      if (already) { clear(); return; }
+      for (const group of groups) group.hidden = group.dataset.shapeSection !== shape;
+      for (const c of chips) c.setAttribute('aria-pressed', String(c === chip));
+      document.getElementById(`shape-${shape}`)?.scrollIntoView({ block: 'start' });
+    });
+  }
+
+  clear();
+})();

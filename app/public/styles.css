@@ -2133,6 +2133,28 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 .chip .chip-n { font-variant-numeric: tabular-nums; color: var(--text-faint); }
 .chip-on .chip-n { color: inherit; }
 
+/* A store that holds more than one kind of thing: the chips row and the heading
+   over each kind. The gap above a heading is the whole separation — a rule or a
+   card would make the page look like more sections than it has. */
+.shape-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-5); }
+.shape-group + .shape-group { margin-top: var(--space-5); }
+.shape-head {
+  display: flex; align-items: baseline; gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm); font-weight: 600; letter-spacing: 0.02em;
+  text-transform: uppercase; color: var(--text-muted);
+}
+.shape-head .chip-n { font-variant-numeric: tabular-nums; color: var(--text-faint); }
+/* The pressed state is written on the chip by the script that filters, and read
+   here — so the visual state and the state a screen reader announces cannot come
+   apart, which is what happens when a class is toggled by hand and the attribute
+   is forgotten. */
+.shape-chips .chip[aria-pressed="true"] {
+  background: var(--accent-soft); border-color: transparent;
+  color: var(--accent-text); font-weight: 600;
+}
+.shape-chips .chip[aria-pressed="true"] .chip-n { color: inherit; }
+
 .pick { width: 34px; }
 /* 24px box in a 44px target: the researched minimum for a finger, without the
    table growing a second row of chrome. */

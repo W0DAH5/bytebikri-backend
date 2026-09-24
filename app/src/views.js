@@ -25,6 +25,11 @@ import { calibrationRowState } from './earnings.js';
 // From `security.js`, which imports nothing: a view module must render without a
 // database, and importing the reset logic here made four test files need one.
 import { MIN_PASSWORD_LENGTH } from './security.js';
+// The shape's name on a card, and the order sections are listed in. The shape
+// itself is decided on the server, from the files (`media.js` → `assetShape`) —
+// this module only names it, so there is exactly one place that decides and no
+// second one that could disagree.
+import { shapeLabel, SHAPE_ORDER } from './media.js';
 // Dependency-free, so a view can call it directly: `planUsage` is the one
 // definition of "how full is this plan", used by the dashboard, the operator's
 // plans page and the message at the upload wall.
@@ -1120,7 +1125,7 @@ export function storefront({
       : membersOnly
         ? (unlocked ? 'Opens with your membership — no ad' : `${tierLabel} members open this — no ad`)
         : open ? 'No ad needed' : `${a.ads_required} ad${a.ads_required === 1 ? '' : 's'} to unlock`;
-    return `<a class="asset" href="/s/${esc(channel.slug)}/a/${esc(a.slug)}">
+    const card = `<a class="asset" href="/s/${esc(channel.slug)}/a/${esc(a.slug)}">
   <div style="position:relative">
     ${thumb({ title: a.title, coverUrl: a.cover_url })}
     <span class="thumb-badge">${badge}</span>
@@ -1129,12 +1134,44 @@ export function storefront({
     <h3>${esc(a.title)}</h3>
     <p class="asset-desc">${esc(a.description || 'No description yet.')}</p>
     <div class="asset-foot">
-      <span>${plural((a.files || []).length, 'file')}</span>
+      <span>${esc(shapeLabel(a.shape))} · ${plural((a.files || []).length, 'file')}</span>
       <span>${foot}</span>
     </div>
   </div>
 </a>`;
-  }).join('');
+    // The shape rides along with its card so the page can be grouped from the
+    // one list it already has, rather than from a second list that could end up
+    // disagreeing with what the card says. `a.shape` is set by the server; a
+    // caller that does not set one gets the honest default — a file handed over.
+    return { shape: a.shape || 'download', html: card };
+  });
+
+  // ── Sections, by shape ────────────────────────────────────────────────────
+  //
+  // A store with one kind of thing is laid out exactly as it was: one grid, no
+  // headings, no chips. A control that changes nothing is noise, and the first
+  // rule of progressive disclosure is that the initial display says what is
+  // important — here, the store's own content.
+  //
+  // Two or more kinds get a heading per kind, ordered by how much the store
+  // actually has of each (ties by the canonical order), and a chip row above
+  // them. The chips are anchors first: without JavaScript they jump to their
+  // section, which is why the markup works on its own.
+  const counts = new Map();
+  for (const c of cards) counts.set(c.shape, (counts.get(c.shape) || 0) + 1);
+  const shapes = [...counts.keys()].sort((x, y) => counts.get(y) - counts.get(x)
+    || SHAPE_ORDER.indexOf(x) - SHAPE_ORDER.indexOf(y));
+  const many = shapes.length > 1;
+
+  const chips = many
+    ? `<div class="shape-chips">${shapes.map((shape) => `<a class="chip" href="#shape-${esc(shape)}" data-shape-chip="${esc(shape)}" aria-pressed="false">${esc(shapeLabel(shape))} <span class="chip-n">${counts.get(shape)}</span></a>`).join('')}</div>`
+    : '';
+
+  const grouped = shapes.map((shape) => `
+  <div class="shape-group" id="shape-${esc(shape)}" data-shape-section="${esc(shape)}">
+    ${many ? `<h3 class="shape-head">${esc(shapeLabel(shape))} <span class="chip-n">${counts.get(shape)}</span></h3>` : ''}
+    <div class="grid-assets">${cards.filter((c) => c.shape === shape).map((c) => c.html).join('')}</div>
+  </div>`).join('');
 
   const placed = placeSlots(slots);
 
@@ -1185,7 +1222,7 @@ ${placed.head}
     <h2>Content</h2>
     <p>One ad each. The network pays the creator directly.</p>
   </div>
-  ${assets.length ? `<div class="grid-assets">${cards}</div>`
+  ${assets.length ? `${chips}${grouped}`
     : '<div class="empty">This store has not published anything yet.</div>'}
 </section>
 

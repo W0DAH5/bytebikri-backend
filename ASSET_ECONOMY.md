@@ -168,9 +168,11 @@ mark a zip as a video to dodge an ask.
 | **play** | zip containing `index.html`; HTML5/iframe build | sandboxed iframe | **rewarded** at failure states (continue, lives, hint) |
 | **stream** | live URL (HLS/RTMP-relay) | live player | **store-scheduled breaks only**; no automation, ever |
 
-Unknown media (an extension we do not recognise) is `download` — the honest default. A seller may
-**override down, never up**: a video can be published as a plain download (that is a choice about
-their own audience), but a zip cannot be published as a video.
+Unknown media (an extension we do not recognise) is `download` — the honest default. There is no box
+anywhere for a seller to type a shape, and there will not be one: the "publish this as a plain
+download instead" control (an override *down*, never up) arrives with slice 6, when there is a reader
+surface to override away from. Until there is somewhere to play or read a file, a chooser would be a
+choice about nothing.
 
 ### 5.2 The placement catalogue and the nine rules
 
@@ -244,12 +246,34 @@ Legs 1–5 (`REVENUE_ARCHITECTURE.md`) are unchanged: network→store ads, dues,
   network or a direct advertiser. The seam exists (`data-serving`, `data-adapter`); today it renders
   house copy and earns nothing. **This is the only leg where a third party pays bytebikri for
   attention, and it is the leg the membership channel feeds.**
-- **Leg 7 — share-back (proposed, deferred).** The industry norm is 50–70 % of ad revenue to the
-  creator (§3.1). Since the platform cannot move money out yet, the honest form is **credit against
-  the store's own bill** (plan or rent) — money they keep, not money we send — with free-plan stores
-  receiving visibility instead (a featured day) rather than cash. **Recommendation: do not build this
-  until leg 6 exists.** Sharing a stream that is not switched on is a promise with no number behind
-  it, and this repository does not ship those.
+- **Leg 7 — removed by decision.** There is no share-back. A store's ad spaces are the store's — a
+  network pays them directly and bytebikri is not a party to it, exactly as bytebikri is not a party
+  to dues. Our spaces are ours, wherever they sit in the app. No cross-subsidy, no revenue share, no
+  credit against a bill: two clean money paths instead of one shared one.
+
+**How our own inventory earns (the method this needs).** The slot is one box on every store page —
+banner-class inventory, which the research prices at **$0.15–1.50 CPM** against native's $3.00–5.40
+and rewarded's $12–35. At Nepal-class rates one slot-earns roughly **NPR 20 per 1,000 views**, so the
+method cannot be "sell more impressions". In the order that actually matters:
+
+1. **House-first, and the house has the best numbers.** The default creative sells bytebikri's own
+   paid products (Plus at NPR 149/month, store plans). One Plus signup is worth about **7,500 banner
+   impressions**; one plan upgrade is worth more than a year of them. The platform is its own
+   highest-paying advertiser until traffic is large, which is why the slot renders house copy rather
+   than nothing.
+2. **Native, never a flashing banner.** The slot renders a headline, a body and a link
+   (`creatives.js`), and sits in-content or sticky — the native shape, which is 3–10× a display unit
+   on the same page.
+3. **Sell the place, not the impression** — direct local deals (an ISP, a phone shop, a college) at a
+   flat monthly rate, priced by *surface* (every store page, or one category of store) rather than
+   per view. At these CPMs a direct deal beats programmatic by an order of magnitude.
+4. **Rotation, not another box.** Two advertisers share one position by share-of-voice. The density
+   cap is not a limit to sell around; it is the reason the position is worth selling.
+5. **Prove it before invoicing it.** Impressions per surface and per placement are counted in slice 5 —
+   the ledger is what makes a flat rate defensible, and it is also how we would know which house
+   message converts.
+6. **Never mix the two inventories.** A store's space is theirs to fill or sell; ours is ours. Nothing
+   in the code should ever need a rule about which is which.
 - **Plus is untouched.** Cosmetics, paid to bytebikri, no file opened, no ad removed. A store premium
   and a customer premium stay different products, as the brief restated.
 
@@ -257,8 +281,9 @@ Legs 1–5 (`REVENUE_ARCHITECTURE.md`) are unchanged: network→store ads, dues,
 
 - A store page renders **sections in the order the store actually has content**: the shape with the
   most files first, then by count. **Empty sections do not render** (§4).
-- A **chip row** (≤4) appears only when a store has two or more shapes, and it filters the same one
-  list — it is not a tab bar, and it never appears on a single-shape store.
+- A **chip row** appears only when a store has two or more shapes, and it lists every shape it has,
+  ordered by how much of each. It filters the same one list — it is not a tab bar, and it does not
+  exist on a single-shape store. The chips are anchors first, so the page works without JavaScript.
 - Every card carries a **shape chip and the ask** ("1 ad · 15 s", "2 ads · 30 s", "members") — the
   price is visible before the click, which is the rule the unlock already follows.
 - **One door per asset**: the ask is stated on the file page. A mid-roll or a between-chapter gate
@@ -316,14 +341,25 @@ Order: **1 → 2 → 3** first (they close a shipped lie, then make placement re
 then 7. Slices 4–6 are the ones the brief cares about most; slice 2 is first because "2 ads of 30
 seconds" is currently a sentence, not a gate.
 
-## 8. Four decisions this framework needs from you
+## 8. Decisions taken
 
-1. **The attention door** — go/no-go. My recommendation: yes, as a *second door onto the same tier*,
-   never as a replacement for dues, and never called payment.
-2. **Share-back (leg 7)** — defer until our own inventory is sold, or write the credit mechanic now
-   into the ledger? My recommendation: defer; show the numbers in slice 5 without promising a split.
-3. **Mid-rolls on openly-viewable video** (a file with `unlock_mode = 'open'`), or only on files behind
-   the unlock? My recommendation: allowed, store-controlled, and capped — an open file with a mid-roll
-   is a store's own choice about its own audience.
-4. **Slice order** — confirm 1 → 2 → 3, or pull the membership slices (4/5) forward because that is
-   the brief's centre of gravity.
+1. **The attention door: yes** — a second door onto the same tier, never a replacement for dues, and
+   never called payment. (Slice 4.)
+2. **Share-back: no. Leg 7 is removed.** A store's ad spaces are the store's; ours are ours, wherever
+   they sit in the app. The method for making our own inventory earn is in §5.5 — house-first, native
+   rather than banner, direct local deals priced by surface, rotation instead of another box, counted
+   before invoiced, and never mixed with a store's inventory.
+3. **Mid-rolls on openly viewable files: allowed**, store-controlled, under the nine rules of §5.2.
+4. **Slice order: 1 → 2 → 3**, then 4 → 5, then 6, then 7.
+
+## 9. Progress
+
+| Slice | State |
+|---|---|
+| 1 Shapes | **Built** — `assetShape` in `media.js`, sections and chips on the storefront, shape on every card, 12 tests (`media.test.js`, `shapes.test.js`). Suite 620/620/0 |
+| 2 Enforcement | Not started — `required_ads` is stored and displayed, still granted on one `complete` |
+| 3 Placement | Not started |
+| 4 Attention door | Not started |
+| 5 Ledger | Not started |
+| 6 Reader | Not started |
+| 7 Live | Not started |

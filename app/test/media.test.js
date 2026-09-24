@@ -357,3 +357,79 @@ test('a file that is not an image fails loudly, so the caller can fall back',
       'a corrupt upload must throw, not return garbage the caller serves as a JPEG',
     );
   });
+
+// ---------------------------------------------------------------------------
+// What kind of asset is it
+// ---------------------------------------------------------------------------
+//
+// The shape decides which section a card lands in, and (from slice 3) where an
+// ad may sit. Getting it wrong is quiet in the same way a wrong media kind is:
+// the page renders, the card looks fine, and a video is filed under Files. So
+// the cases below are the ones that actually arrive from an upload form, in the
+// order they arrive — including the ones where the browser could not type the
+// file and the extension had to answer.
+
+const at = (filename, mime_type = '') => ({ filename, mime_type });
+
+test('the shape of an asset comes from its files, and the vocabulary is closed', () => {
+  assert.deepEqual(media.ASSET_SHAPES, ['read', 'watch', 'listen', 'play', 'stream', 'download']);
+  for (const shape of media.ASSET_SHAPES) {
+    assert.match(media.shapeLabel(shape), /^[A-Z]/, `${shape} needs a word for the card`);
+  }
+  // An unknown shape — a row written by an older version, a typo in a fixture —
+  // is named as what it is in practice: a file handed over.
+  assert.equal(media.shapeLabel('hologram'), 'Download');
+  assert.equal(media.shapeLabel(undefined), 'Download');
+});
+
+test('video, audio and pages are told apart by what they are, not by order', () => {
+  assert.equal(media.assetShape([at('ep1.mp4', 'video/mp4')]), 'watch');
+  assert.equal(media.assetShape([at('track.mp3', 'audio/mpeg')]), 'listen');
+  assert.equal(media.assetShape([at('chapter1.jpg', 'image/jpeg'), at('chapter2.jpg', 'image/jpeg')]), 'read');
+  assert.equal(media.assetShape([at('book.pdf', 'application/pdf')]), 'read');
+  assert.equal(media.assetShape([at('volume.cbz', '')]), 'read');
+  assert.equal(media.assetShape([at('game.html', 'text/html')]), 'play');
+  assert.equal(media.assetShape([at('build.zip', 'application/zip')]), 'download');
+
+  // The poster-first case: a seller uploads the cover before the video, and the
+  // asset must still be a video. This is why the rules are set-based.
+  assert.equal(
+    media.assetShape([at('cover.jpg', 'image/jpeg'), at('film.mp4', 'video/mp4')]),
+    'watch',
+    'a cover image does not turn a video into a page-turner',
+  );
+  // And the other direction: two images beside an audio file is an album.
+  assert.equal(
+    media.assetShape([at('front.jpg', 'image/jpeg'), at('back.jpg', 'image/jpeg'), at('a.mp3', 'audio/mpeg')]),
+    'listen',
+  );
+});
+
+test('a file the browser could not type is still read correctly', () => {
+  // The case that actually happens: `application/octet-stream` for a good mp4.
+  assert.equal(media.assetShape([at('clip.mp4', 'application/octet-stream')]), 'watch');
+  assert.equal(media.assetShape([at('SONG.MP3', '')]), 'listen');
+  assert.equal(media.assetShape([at('pages.pdf', 'application/octet-stream')]), 'read');
+});
+
+test('one image is something to take away; two are pages to go through', () => {
+  assert.equal(media.assetShape([at('wallpaper.png', 'image/png')]), 'download');
+  assert.equal(media.assetShape([at('a.png', 'image/png'), at('b.png', 'image/png')]), 'read');
+});
+
+test('a shape cannot be claimed: an archive stays a download', () => {
+  // A zip that happens to contain a game is still a zip until the play surface
+  // exists to run it. Saying otherwise would be a promise the page cannot keep.
+  assert.equal(media.assetShape([at('game.zip', 'application/zip'), at('readme.txt', 'text/plain')]), 'download');
+  assert.equal(media.assetShape([]), 'download');
+  assert.equal(media.assetShape(null), 'download');
+});
+
+test('a live URL is the live shape, and nothing else is', () => {
+  assert.equal(media.assetShape([], { url: 'https://cdn.example/live/index.m3u8' }), 'stream');
+  assert.equal(media.assetShape([], { url: 'https://cdn.example/live/index.m3u8?token=1' }), 'stream');
+  assert.equal(media.assetShape([at('clip.mp4', 'video/mp4')], { url: 'https://example.com/watch.mp4' }), 'watch');
+  assert.equal(media.isLiveUrl('https://example.com/notes.m3u8'), true);
+  assert.equal(media.isLiveUrl('https://example.com/video.mp4'), false);
+  assert.equal(media.isLiveUrl(null), false);
+});

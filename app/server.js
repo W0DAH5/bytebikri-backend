@@ -88,7 +88,7 @@ import {
 import {
   mediaKind, isPlayable, isWatermarkable, hasImageMagick, watermarkImage,
   watermarkLabel, watermarkSvgDataUri, derivativeKey, cachedDerivative, cacheDerivative,
-  rangeFor,
+  rangeFor, assetShape,
 } from './src/media.js';
 import { selfTest as adapterSelfTest, advisories as adapterAdvisories, ADAPTERS } from './src/providers/index.js';
 import * as views from './src/views.js';
@@ -1476,11 +1476,18 @@ APP.get('/s/:slug', async (req, res, next) => {
     // applies where this visitor is standing.
     const listed = await withCountry(rawAssets, country);
     const assets = await Promise.all(
-      listed.filter((a) => seesEverything || a.availability.visible).map(async (a) => ({
-        ...a,
-        files: await store.filesOf(a.id),
-        ads_required: (await store.unlockPolicy(a.id))?.ads_required ?? 1,
-      })),
+      listed.filter((a) => seesEverything || a.availability.visible).map(async (a) => {
+        const files = await store.filesOf(a.id);
+        return {
+          ...a,
+          files,
+          ads_required: (await store.unlockPolicy(a.id))?.ads_required ?? 1,
+          // The shape, decided once, here, from the files themselves. The view
+          // names it on the card and groups the page by it; slice 3's placement
+          // planner will read the same value rather than deciding again.
+          shape: assetShape(files),
+        };
+      }),
     );
     if (country) countryDependent(res);
     const pageviews = await store.pageviews30d(channel.id);

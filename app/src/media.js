@@ -100,6 +100,83 @@ export function mediaKind(mimeType, filename = '') {
   return 'file';
 }
 
+// ---------------------------------------------------------------------------
+// What kind of ASSET is this?
+// ---------------------------------------------------------------------------
+//
+// Six shapes, and they are DERIVED — never typed by a seller. The reason is the
+// same one that put the unlock ask on a value ladder instead of two number boxes:
+// the person uploading knows what their file is, and everybody downstream (the
+// card, the section it sits in, and — in slice 3 — the placement planner) needs
+// the same answer. A shape a seller could type is a shape a seller could lie
+// about to dodge an ask, and a zip is not a video because its uploader says so.
+//
+// The rules are set-based rather than order-based on purpose: a seller who
+// uploads the poster before the video still has a video, and a store that puts a
+// cover image first must not turn its player into a page-turner.
+//
+// The one thing this cannot see is what is INSIDE an archive. A zip that happens
+// to contain a game is a download until the play surface can do something with
+// it — calling it "play" before there is a place to play it would be a promise
+// the page cannot keep.
+
+/** The closed vocabulary. Anything unknown is a download, which is what it is. */
+export const ASSET_SHAPES = ['read', 'watch', 'listen', 'play', 'stream', 'download'];
+
+/** Ordering for sections and chips when two shapes hold the same number of files. */
+export const SHAPE_ORDER = ['read', 'watch', 'listen', 'play', 'stream', 'download'];
+
+const SHAPE_LABELS = {
+  read: 'Read', watch: 'Watch', listen: 'Listen', play: 'Play', stream: 'Live', download: 'Download',
+};
+
+/** The word on the card. Never a sentence — the card has a title to fit too. */
+export const shapeLabel = (shape) => SHAPE_LABELS[shape] || SHAPE_LABELS.download;
+
+const DOC_EXT = new Set(['pdf', 'epub', 'cbz', 'cbr', 'cb7', 'mobi', 'azw', 'azw3', 'fb2', 'djvu']);
+const PLAY_EXT = new Set(['html', 'htm']);
+const READER_MIME = /^(application\/(pdf|epub\+zip|x-cbz|x-cbr)|image\/vnd\.comic-book)/;
+
+const extOf = (name) => path.extname(String(name || '')).slice(1).toLowerCase();
+
+/**
+ * Is this a live stream rather than a file?
+ *
+ * HLS is the only live protocol a browser plays without help, so it is the one
+ * this recognises. A storefront cannot produce one today — the publish form has
+ * no link field yet — and the shape exists here so that the day it does, no
+ * second rule has to be invented for it.
+ */
+export const isLiveUrl = (url) => /\.m3u8(\?|#|$)/i.test(String(url || '')) || /^rtmp/i.test(String(url || ''));
+
+/**
+ * The shape of an asset, from the files it actually carries.
+ *
+ * `files` arrive in the seller's order but the decision does not depend on it.
+ * Priority: video, then audio, then a single-file program, then something with
+ * pages, then everything else. That order is deliberate — a video with a trailer
+ * poster is a video, and a reader with a soundtrack is still a reader only when
+ * it has no video at all.
+ */
+export function assetShape(files = [], { url = null } = {}) {
+  if (isLiveUrl(url)) return 'stream';
+  const list = (Array.isArray(files) ? files : []).filter(Boolean);
+  if (!list.length) return 'download';
+
+  const kinds = list.map((f) => mediaKind(f.mime_type ?? f.mimeType, f.filename));
+  const exts = list.map((f) => extOf(f.filename));
+  const mimes = list.map((f) => String(f.mime_type ?? f.mimeType ?? '').toLowerCase());
+
+  if (kinds.includes('video')) return 'watch';
+  if (kinds.includes('audio')) return 'listen';
+  if (exts.some((e) => PLAY_EXT.has(e)) || mimes.some((m) => m.startsWith('text/html'))) return 'play';
+  if (exts.some((e) => DOC_EXT.has(e)) || mimes.some((m) => READER_MIME.test(m))) return 'read';
+  // One image is a picture to take away. Two are pages to go through, and the
+  // difference matters: only the second has anywhere sensible to put a break.
+  if (kinds.filter((k) => k === 'image').length >= 2) return 'read';
+  return 'download';
+}
+
 /** Can this be played rather than handed over? */
 export const isPlayable = (mimeType, filename) => ['video', 'audio'].includes(mediaKind(mimeType, filename));
 
