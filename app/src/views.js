@@ -4851,13 +4851,14 @@ ${flash ? `<div class="note note-${flash.kind}" role="status">${esc(flash.messag
   <div class="panel"><div class="panel-body">
     <p class="small" data-blocked-count="${num(blockedCount)}">${esc(blockedSellerNote(blockedCount, blockedHours))}</p>
     <p class="fine" style="margin-top:var(--space-3)">
-      There is no browser check and no user-agent sniffing anywhere in this product. Brave cannot be
-      detected reliably, reader mode cannot be detected at all, and a wall around a guess lands hardest
-      on visitors who were not blocking anything. So the ladder escalates on evidence the platform
-      actually has — a signed postback that never arrived — and its harsh end is that one file's unlock
-      stops being offered to that person for a few hours. Their account is not touched, the file stays
-      listed, and a membership opens everything with no ad at all.
+      The ladder escalates on the one piece of evidence this platform actually has — a signed postback
+      that never arrived — and its harshest end is that one file's unlock stops being offered to that
+      person for a few hours. Their account is not touched, the file stays listed, and a membership opens
+      the store's member-only files with no ad (it does not open an ad-gated file sooner).
     </p>
+    <ul class="fine never-do" style="margin-top:var(--space-3)">
+      ${NEVER_DO.map((line) => `<li>${esc(line)}</li>`).join('')}
+    </ul>
   </div></div>
 </section>
 

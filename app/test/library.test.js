@@ -156,10 +156,20 @@ test('a visit moves the line only for somebody who already follows', async () =>
       'and it writes no row at all');
 
     await store.followChannel(buyer.id, channel.id);
+    // The line is moved back to a known point rather than read immediately after the
+    // follow wrote it. `followChannel` and `markChannelSeen` are two database calls and
+    // can land inside the same clock tick, so a strict `after > before` measured between
+    // them is a test that fails on a fast machine — which is exactly what it did, once,
+    // in a full parallel run, and not in eight consecutive runs of this file alone. The
+    // claim being checked is that opening the store moves the line, and a line an hour
+    // old is the honest way to check it.
+    await query(`update follows set seen_at = now() - interval '1 hour' where profile_id = $1 and channel_id = $2`,
+      [buyer.id, channel.id]);
     const before = (await store.followState(buyer.id, channel.id)).seen_at;
     await store.markChannelSeen(buyer.id, channel.id);
     const after = (await store.followState(buyer.id, channel.id)).seen_at;
     assert.ok(after > before, 'following puts the store on the shelf; opening it moves the line');
+    assert.ok(Date.parse(after) > Date.now() - 60_000, 'and it moves it to now, not by a token amount');
 
     // Time is the only thing that makes a file "new", so the fixture moves the
     // line back rather than pretending a new file appeared.

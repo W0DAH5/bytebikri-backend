@@ -2718,3 +2718,12 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
    `aria-labelledby` does the association. */
 .field-label { display: block; font-size: var(--text-sm); font-weight: 600; color: var(--text-primary); }
 .plus-look { display: grid; gap: var(--space-5); }
+
+/* What the platform refuses to do, on the seller's ad-slots page beside the count of
+   unlocks that did not confirm. One statement per line and air between them, like
+   `.plus-not`: this is a list of promises, and a promise read as a paragraph is a
+   promise skimmed. It is the same list the tests assert over, rendered from
+   `NEVER_DO` rather than paraphrased here — the paragraph that used to sit in its
+   place had drifted into claiming membership opens any file with no ad. */
+.never-do { margin: 0; padding-inline-start: var(--space-5); display: grid; gap: var(--space-2); }
+.never-do li { font-size: var(--text-sm); line-height: var(--leading-normal); color: var(--text-secondary); }

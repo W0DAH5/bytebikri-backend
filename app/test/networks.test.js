@@ -153,6 +153,9 @@ test('a revoked connection says what it refuses, and the sandbox says it pays no
 // ---------------------------------------------------------------------------
 
 const { networksPage, slotsPage } = await import('../src/views.js');
+// The seller's page renders this list from the module that owns it, so the test reads
+// the same source rather than a copy of the sentences.
+const { NEVER_DO } = await import('../src/blocked.js');
 const CHANNEL = {
   id: '11111111-1111-4111-8111-111111111111', slug: 'alice', name: 'Alice Studio',
   tagline: 'Poster kits', listing_mode: 'storefront', ads_enabled: true, banner_url: null,
@@ -234,6 +237,29 @@ test('the slots page states the rule, the rent slot, and the web\'s real limit',
   // so the test looks for a price TAG rather than for the word.
   assert.ok(!/NPR\s?[\d,]+/.test(html), 'the store\'s own space is never given a price');
   assert.ok(/not\s+an ad slot for sale/.test(html), 'and it says so rather than leaving it implied');
+});
+
+test('the seller is shown what the platform refuses to do, from the one list that says it', () => {
+  // `NEVER_DO` was imported by the view layer and printed nowhere: the promises
+  // existed in a module and in tests, and the seller — the person who has to answer a
+  // visitor asking "why did it lock me out?" — could not read them. Rendering the list
+  // rather than paraphrasing it in prose matters for the same reason the rest of this
+  // repository keeps one copy of a sentence: the paragraph that used to sit here said
+  // membership "opens everything with no ad at all", which is false of an ad-gated file
+  // and was already corrected on the visitor's side of the same ladder.
+  const html = slotsPage({ channel: CHANNEL, user: null, flash: null, slots: [], blockedCount: 3, blockedHours: 6 });
+  // The page escapes what it prints, so the comparison is made against the same text
+  // with the entities put back — asserting on raw source against escaped output is how
+  // a test ends up checking the escaper instead of the sentence.
+  const text = html.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+  for (const line of NEVER_DO) {
+    assert.ok(text.includes(line), `the refusal is on the page: "${line.slice(0, 40)}…"`);
+  }
+  assert.ok(/data-blocked-count="3"/.test(html), 'and the count it belongs beside');
+  assert.match(html, /a blocker, a dropped connection, or a network that did not call back/,
+    'the seller is told what the platform does and does not know');
+  // The same over-promise the visitor-facing rungs had to be corrected for.
+  assert.doesNotMatch(html, /opens everything with no ad/);
 });
 
 // ---------------------------------------------------------------------------
