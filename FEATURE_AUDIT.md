@@ -2953,9 +2953,13 @@ which, and it does not penalise the person."*
   `profiles.nameplate` renders as nothing — a plain avatar in the header chip and a plain name on a
   review, while an active month wears the same row in teal with a halo); and the withheld rung of the
   ladder reads as the no-memberships shape on this store, because this store sells none.
-- Screenshots: `/home/user/round32/` — the plus page (pending and active), the ask panel in both states,
-  the storefront with its positions, the ladder's first rung and its last, the look worn and not worn,
-  the slots dashboard with the cap and the blocked count, and the operator queue with the third charge.
+- Screenshots: **`docs/evidence/round32/`** — checked into the repository, because the previous rounds'
+  evidence lived in `/tmp` and in the home directory and every workspace restore took it with it (this
+  session opened on a tree rolled back to the branch point, with these documents intact and the pictures
+  they described gone). The plus page pending and active, the "what this is not" list, the derived ask
+  panel, the storefront with its two ad boxes, the ladder's middle rung and its last, the Plus plate on a
+  storefront that is not its wearer's, the slots dashboard with the cap and the unconfirmed count, and
+  the operator queue with the third charge in it.
 - `ci/demo-state.mjs` (§4c) puts the person's premium into its **two states** the way it puts the store's
   two states there: one account wearing a look with a month running, one whose claim is waiting on the
   operator with the look stored and unworn. It also clears the signals on the ad-gated file and lays down
