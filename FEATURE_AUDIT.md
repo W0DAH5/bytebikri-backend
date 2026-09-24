@@ -2750,6 +2750,67 @@ pointing at the cheaper route (choose the plain effect) for anybody who only wan
 while. `/plus/join` also now enforces the same confirmed-address boundary the store money routes do,
 rather than relying on the view to have said so.
 
+### What the browser found that nothing else could
+
+The pass was not a formality. Five defects came out of looking at live pages, and every one of them
+would have passed the whole suite:
+
+1. **The asset page threw `policy is not defined`** — a variable that existed only inside one argument
+   list in a route composition, so every file page on the platform was a 500. The route was untested and
+   the view tests drove the view directly. A single page fetch found it in a second.
+2. **`resolveSession` did not carry the arrangement.** `plusWear()` refuses to dress anybody it cannot
+   prove, and `req.user` had no subscription columns — so the header chip and the arrangement panel both
+   said "nothing is being worn" to a person wearing a halo at that moment. The join moved into `plus.js`
+   and is now imported by `store.js`, `auth.js` and the roster queries: one copy, one answer.
+3. **Every file's ask was five seconds.** The platform's floor is 15 (a rewarded view shorter than that
+   is not a thing a network serves), and 0034's clamp only pulled *downward* — so the rows the old form
+   had defaulted to five seconds kept an ask the pipeline could never satisfy. The migration now raises
+   the floor as well, with the reasoning in the comment: no row gains a second ad, and `ad_band_npr` is
+   deliberately NOT filled in, because those asks were typed by hand before the ladder existed and a
+   calibration claim the row cannot support is worse than a null.
+4. **The withheld rung's only route forward was a lie.** Its button said "Open it by joining Alice's
+   Studio" — but membership opens the store's *member* files, not this ad-gated one, and in a store with
+   no tiers the anchor pointed at nothing at all. The view now renders the offer only when the store has
+   memberships (`hasMembers`, computed server-side), says what membership does *not* do, and in a store
+   without them says the honest thing instead: waiting is the way back here.
+5. **`askReason` lowercased a currency code** ("under npr 200") and a file with no value was described as
+   "valued at free". And with the two levels resolving to the same number, the panel drew a two-option
+   radio group where both options did the same thing; it now draws one, with a line saying why there is
+   nothing to choose yet.
+
+Also caught in the pass: `PLUS_NOT`'s third line rendered literal backticks around `ranking.js`, and the
+"Stop at the end of this month" button stopped the arrangement *that day*. The first is now a sentence;
+the second is now labelled "Stop it early", with a line saying the paid month does not come back — and
+pointing at the cheaper route (choose the plain effect) for anybody who only wanted to be quiet for a
+while. `/plus/join` also now enforces the same confirmed-address boundary the store money routes do,
+rather than relying on the view to have said so.
+
+### What a SECOND browser pass found, on a rebuilt workspace
+
+The first pass above was lost to a workspace restore, so it was repeated on the pushed tree before this
+round was called finished — and the repeat was worth it, because a checkout that *looks* current can
+still be lying:
+
+1. **"The ask is never typed" had three doors still open.** The publish form kept its "Minimum ad length"
+   box and `POST /assets` honored it; the demo seed called `setAdMinSeconds(..., 5)` three times "for
+   demo friendliness"; and `store.setAdMinSeconds` was a public setter with no policy in it. The file page
+   showed the result of all three at once — *"Now: 1 ad of 5 seconds"* printed directly above the ladder's
+   *"1 ad of 15 seconds"* — which is how it was found: not by a test, by reading one panel. Fixed in
+   `0035_ask_floor.sql` (bounds as CHECKs on both `asset_unlock_policy` and `pending_views`, so no future
+   writer can route around them), plus the deletion of the setter and the form field.
+2. **The panel called the value a "price"** in its own footnote, two lines under a field whose hint says
+   "not a price".
+3. **The ladder's middle rung over-promised membership** — "opens its files with no ad at all", on an
+   ad-gated file — which is the same half-truth the withheld rung had already been corrected for. Both
+   ends of the ladder now describe membership by what it opens and say what it does not do.
+
+The second pass also produced the measurements this round is judged on, and they are all read off live
+pages: `/s/alice` carries **two** ad boxes (the store's at y=607, ours last at y=4,356 of a 4,741px
+document), `#members` at Nima Crafts renders alice's name as `member-name member-name--aurora` — the
+teal palette a person paid NPR 149 for — the operator's queue shows Carol's claim with its reference,
+amount and both buttons, the withheld rung offers no button and no dead anchor, and no page in the set
+had a console error or a horizontal overflow.
+
 ### Still open, recorded rather than half-built
 
 - **A seller-paid ad-free experience for their members** (the fee the platform would charge to drop

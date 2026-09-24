@@ -27,6 +27,22 @@ why the harness is checked in rather than living in `/tmp`: it lived there for
 four rounds and was destroyed twice by a workspace restore, and a verification
 tool that vanishes whenever the environment is rebuilt stops verifying.
 
+## What the harness cannot see
+
+Two limits, both found the hard way, both worth knowing before a screenshot is read
+as evidence:
+
+- **There is no emoji font.** `fonts.tar` ships Open Sans and the container has
+  DejaVu, so ★ ☆ ✕ ✓ render and **🔒 does not** — it appears as a box. Any lock
+  glyph in a screenshot is the harness's gap, not a product defect. (It is also a
+  reason the product should not lean on an emoji for meaning; the tier list's lock
+  is `aria-hidden` decoration next to the file's title, so a box costs nothing.)
+- **A section shot can look clipped while the page is fine.** `element.screenshot()`
+  on an element narrower than the viewport crops to the element's own box, and a
+  panel with a fixed-position ancestor can appear cut at the left edge. When a
+  closeup raises a question, take a `fullPage` shot and a `clip` of the same band
+  before believing it — twice this round a "clip" turned out to be the capture.
+
 ## Run
 
 ```bash
