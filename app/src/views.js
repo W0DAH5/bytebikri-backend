@@ -5250,6 +5250,21 @@ export function billing({
     body: `
 ${pageHead(channel, 'billing', 'Billing', `Two things cost money here, and both are yours to pay.
       Nothing is taken from what your store earns.`)}
+${/* The page's own sentences.
+     *
+     * This view took a `flash` prop and never rendered it, and on the two pages in
+     * the product that take money that made six sentences unreachable: the two
+     * successes ("Reference received…", "Upgrade requested…") and the four refusals
+     * (?error=verify, nothing, reference, plan) whose copy was written for exactly
+     * the moments a seller is most likely to be confused — a reference typed two
+     * characters long, a submission with nothing waiting, an unconfirmed address.
+     *
+     * It was found by walking the upgrade in a browser: the redirect arrived, the
+     * page came back, and the sentence the route had chosen was simply absent. The
+     * view tests never caught it because they call `views.billing()` directly with
+     * the data they want to see, and the flash is data like any other — a view that
+     * ignores a prop it accepts is invisible to a test that hands it a different one. */''}
+${flashNote(flash)}
 
 <div class="section">
   <div class="cols-2">

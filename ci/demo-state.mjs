@@ -203,6 +203,50 @@ if (nima && OPERATOR) {
   }
 }
 
+// The upgrades a PREVIEW left behind.
+//
+// Same reasoning as the Plus queue's strays below, and the same lesson: walking the
+// money flow in a browser (which is how §33's silent-flash bug was found) leaves a
+// pending upgrade and a submitted reference on whatever store was walked. The next
+// person to open the preview then sees a state the seeder did not create and cannot
+// explain — and this seeder's own upgrade below is guarded by "only if the plan is
+// still free", so it would silently not run.
+//
+// Decided, not deleted, exactly like the Plus strays: a rejection is a real outcome
+// with a reason on it, and it is what an operator would have pressed.
+{
+  const MINE = 'DEMO-PLAN-0001';
+  const strays = await many(
+    // plan_payments hangs off the SUBSCRIPTION, not the channel: one store has one
+    // subscription and many payments against it.
+    `select pp.id, pp.txn_reference, c.slug from plan_payments pp
+       join subscriptions s on s.id = pp.subscription_id
+       join channels c on c.id = s.channel_id
+      where pp.status = 'submitted' and pp.txn_reference <> $1`,
+    [MINE],
+  );
+  for (const row of strays) {
+    if (OPERATOR?.id) {
+      await store.rejectPlanPayment({
+        paymentId: row.id, actorId: OPERATOR.id,
+        reason: 'Demo reset: not one of the seeded plan payments.',
+      });
+    }
+  }
+  // A pending request with no reference under it is a half-finished walk: the seller
+  // asked for the upgrade and closed the page. Clearing it is what "nothing is
+  // waiting" means on the billing page, and the state is one click from coming back.
+  const orphaned = await many(
+    `update subscriptions set pending_plan_code = null, pending_since = null
+      where pending_plan_code is not null
+        and channel_id not in (select channel_id from plan_payments where status = 'submitted')
+      returning channel_id`,
+  );
+  if (strays.length || orphaned.length) {
+    say('upgrades', `reset — decided ${strays.length} stray payment(s), cleared ${orphaned.length} orphaned request(s)`);
+  }
+}
+
 // Nima: the plan she would have to be on to ask, bought the way a seller buys it —
 // a request, a transfer reference, and an operator matching it by hand.
 if (nima && OPERATOR) {

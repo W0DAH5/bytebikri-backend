@@ -101,3 +101,60 @@ test('every outcome a route can name has a sentence of its own', () => {
     'the money flow keeps its three sentences');
   assert.ok(named.size >= 12, `the scan found the routes (${named.size} outcomes)`);
 });
+
+// ---------------------------------------------------------------------------
+// The other half: a view that takes the sentence and drops it
+// ---------------------------------------------------------------------------
+//
+// The dispatch bug above was "the sentence was never chosen". This is its twin,
+// found the same way and on the same walk: the `billing` view took a `flash` prop
+// and never rendered it, so on the two pages that take money — the plan upgrade and
+// the rent — six sentences were dead: two successes and four refusals whose copy was
+// written for exactly the moments a seller is most likely to be confused. A seller
+// who typed a two-character reference pressed submit and got the form back with no
+// word about why nothing was recorded.
+//
+// A view test cannot catch this by driving the view with the data it wants: the flash
+// is data like any other, and a view that ignores a prop it accepts looks correct to
+// every caller that passes a different one. What catches it is reading the source, so
+// that is what this does.
+
+test('every view that accepts a flash renders it', () => {
+  const views = readFileSync(path.join(here, '..', 'src', 'views.js'), 'utf8');
+  const starts = [...views.matchAll(/^export function (\w+)\(/gm)].map((m) => ({
+    name: m[1], idx: m.index, head: views.slice(m.index, views.indexOf(') {', m.index)).replace(/\s+/g, ' '),
+  }));
+  const silent = [];
+  for (let i = 0; i < starts.length; i++) {
+    const { name, head, idx } = starts[i];
+    if (!/[,(]\s*flash\s*[,=)]/.test(head)) continue;              // does not take one
+    const body = views.slice(idx, i + 1 < starts.length ? starts[i + 1].idx : views.length);
+    // Either of the two established ways to show one: `flashNote(flash)` for the
+    // standard strip, or reading `flash.message` / `flash ||` and rendering that.
+    if (/flashNote\(\s*flash\s*\)/.test(body)) continue;
+    if (/flash\s*(\?\.)?\.message/.test(body)) continue;
+    if (/flash\s*\|\|/.test(body) && /shown\.flash|esc\(flash\)/.test(body)) continue;
+    silent.push(name);
+  }
+  assert.deepEqual(silent, [], `views that take a flash and never show it: ${silent.join(', ')}`);
+});
+
+test('the money pages show what the route decided', async () => {
+  // Both halves at once, on the view that was wrong: hand it a flash and read it back.
+  const { billing } = await import('../src/views.js');
+  const channel = { id: 'c1', slug: 'alice', name: 'Alice Store', theme: null };
+  const html = billing({
+    channel, user: { id: 'u1', display_name: 'Alice', role: 'user' },
+    flash: { kind: 'danger', message: 'A reference of at least four characters is what an operator matches.' },
+    plan: { code: 'free', name: 'Free', priceNpr: 0, capabilities: {} },
+    nextPlanCode: 'store', benefits: [], invoice: null,
+    // The rent panel reads the estimate even when nothing is owed (the view falls
+    // back to it for the traffic line), so a fixture that passes null crashes before
+    // it can prove anything about the flash.
+    estimate: { pageviews30d: 0, total: 0, rent: 0, rentValueNpr: 0, monthlyNpr: 0 },
+    payments: [], subscription: null, pending: null, quote: null, upgrade: null,
+    paidTotal: 0, planUsage: null, rent: null, rentHistory: [], addressConfirmed: true,
+  });
+  assert.match(html, /at least four characters/, 'the refusal the route wrote reaches the seller');
+  assert.match(html, /role="status"/);
+});

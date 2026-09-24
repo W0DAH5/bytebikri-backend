@@ -3059,11 +3059,48 @@ member opening a members-only file meets no ad and **still sees the platform's r
 content** — the "we are still winning more" shape the brief asked for, measured rather than claimed; and
 the console totals count the third charge.
 
+### The same walk found the twin defect: the money pages rendered no flash at all
+
+Walking the *upgrade* — request it, submit a reference, read the page — came back with no sentence at
+all, where the Plus walk had come back with "Saved.". Different cause, same shape:
+
+**`views.billing()` accepted a `flash` prop and never rendered it.** So on the two pages that take
+money, six sentences were dead: the two successes (*"Reference received. An operator matches it against
+the bank or wallet statement by hand…"*, *"Upgrade requested. Send the amount to the account shown…"*)
+and the four refusals — `?error=verify`, `nothing`, `reference`, `plan` — whose copy was written for
+exactly the moments a seller is most likely to be confused. A seller who typed a two-character
+reference pressed submit and got the form back with **no word about why nothing was recorded**.
+
+It is the same blindness that hid the dispatch bug: every view test in this repository calls the view
+directly with the data it wants to see, and the flash is data like any other — a view that ignores a
+prop it accepts looks correct to every caller that passes a different one. So the guard is a source
+test (`test/flash.test.js`), which walks every exported view in `views.js`, finds the ones that accept a
+`flash`, and fails if any of them neither calls `flashNote(flash)` nor reads `flash.message`. On its
+first run it named `billing`, and the second name it reported — `verify` — turned out to be a false
+positive worth having: that view reads the prop and renders `shown.flash`, which the check now accepts.
+
+Verified live afterwards, in order, as a seller: the pending panel with the pay form and no reference
+("Waiting to be matched"), a two-character reference refused with *"Enter the transaction reference from
+your transfer — at least four characters."* (submitted with the browser's own `minlength` guard
+disabled, which is the stale-tab case the server rule exists for), then a real reference accepted with
+*"Reference received. An operator matches it against the bank or wallet statement by hand, and your plan
+changes when it clears."* Both the refusal and the acceptance were photographed.
+
+### The seeder now cleans up after a walk
+
+Walking a money flow leaves a pending upgrade and a submitted reference behind, and `ci/demo-state.mjs`
+would not clear them — its own upgrade is guarded by "only if the plan is still free", so the next
+person to open the preview would meet a state the seeder did not create and could not explain. It now
+decides stray plan payments the way it already decided stray Plus claims (a rejection with a reason on
+it, which is what an operator would have pressed) and clears a pending request with no reference under
+it. First run after the walks: *"reset — decided 2 stray payment(s), cleared 0 orphaned request(s)"*,
+then nothing on the second run.
+
 ### Still open
 
-- **Walking the store-plan and rent payments in the browser.** The address gate they share is now
-  satisfied in the demo, but only the Plus claim was walked end to end; the other two would each need a
-  pending request created first.
+- **Walking the rent payment in the browser.** Its refusal keys are now rendered (they share the fixed
+  view) but the rent invoice itself needs a page with three or more slots and traffic above the billing
+  floor before the flow can be walked end to end.
 - **Flat vs scaled pricing for the person's premium**, and **whether the platform's own row may
   disappear for a paying viewer** — both unchanged, both the user's call.
 - **A real ad-network integration** (unchanged, credential-gated).
