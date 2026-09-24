@@ -1988,6 +1988,12 @@ ${reportBlock({ channel, asset, user, alreadyReported, reported })}
       The unlock is not granted by this screen. It arrives from the provider's server,
       signed, and is verified on our side before your access appears.
     </p>
+    <!-- The polite half of the blocker policy, where a person is actually waiting for
+         an ad: the ladder's rungs explain a FAILED attempt, and in a blocked browser
+         that takes a minute and a half to happen. Empty until the frame opens; filled
+         by app.js. It names no browser and accuses nobody, because the platform cannot
+         tell a blocker from a bad connection and does not pretend to (src/blocked.js). -->
+    <p class="fine" id="ad-hint" style="margin-top:var(--space-2)"></p>
   </div>
 </div>`,
   });

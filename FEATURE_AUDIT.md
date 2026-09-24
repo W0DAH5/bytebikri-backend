@@ -3096,6 +3096,31 @@ it, which is what an operator would have pressed) and clears a pending request w
 it. First run after the walks: *"reset — decided 2 stray payment(s), cleared 0 orphaned request(s)"*,
 then nothing on the second run.
 
+### Clicking the unlock: the status lied for ninety seconds, and the polite request arrived too late
+
+The last unwalked path is the one a visitor actually touches. No real network is attached in the demo —
+the ad frame has nothing to load — so what the click exercises is precisely the failure the ladder was
+built for. Two defects, both visible, both found only by waiting it out:
+
+1. **The status said "Starting…" for the whole wait.** It is set when the button is pressed and was not
+   changed when starting finished, so it stayed on screen through the countdown *and* through the 90
+   seconds of polling for a postback — measured at 102 seconds, with the button disabled and no
+   explanation anywhere. A person cannot tell slow from broken, so the page now says which one it is:
+   *"Waiting for the ad network to confirm…"* from the moment the view is running.
+2. **The polite blocker request arrived 105 seconds too late.** The ladder's rungs explain a *failed*
+   attempt, and in a blocked browser that takes a minute and a half to become one. The useful sentence —
+   *"If nothing appears in a few seconds, an ad blocker is the usual reason. Allowing ads for this page is
+   what fixes it, and this button will still be here."* — belongs in the frame while somebody is staring
+   at it, and that is where it is now: a new `#ad-hint` element, filled by `app.js` whenever the frame
+   opens, naming no browser and accusing nobody (the platform still cannot tell a blocker from a bad
+   connection, which is the whole reason `src/blocked.js` refuses user-agent checks).
+
+The re-walk, in order: `t=2.5s` the frame open with "1 ad of 15 seconds", the countdown at 13 and the
+hint present; `t=19s` the countdown replaced by ✓ and the status reading "Waiting for the ad network to
+confirm…"; `t=114s` the failure's own sentence — "The network has not confirmed yet. This can take a
+moment — reload to check." — with the modal closed. The attempt was recorded as `no_postback`, which is
+what the whole ladder is built on: the platform counts what it could not confirm and says only that.
+
 ### Still open
 
 - **Walking the rent payment in the browser.** Its refusal keys are now rendered (they share the fixed

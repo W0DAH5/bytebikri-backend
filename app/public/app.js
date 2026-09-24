@@ -31,6 +31,8 @@
     const countEl = $('#ad-count');
     const progress = $('#ad-progress');
     const note = $('#ad-note');
+    // The blocker hint, shown from the moment the ad frame opens.
+    const hint = $('#ad-hint');
     const providerLine = $('#ad-provider');
     const statusEl = $('#unlock-status');
 
@@ -102,6 +104,13 @@
     const finish = async (viewId, assetId) => {
       clearInterval(ticker);
       if (countEl) countEl.textContent = '✓';
+      // The status has to change here. It said "Starting…" while a view was being
+      // started, and it went on saying it through the whole minute and a half of
+      // polling afterwards — a browser pass found the page still reporting "Starting…"
+      // 102 seconds after the click, with the button disabled and no explanation. A
+      // person cannot tell the difference between slow and broken, so the page says
+      // which one it is.
+      setStatus('Waiting for the ad network to confirm…');
       if (note) {
         note.textContent = 'Verified. Minting your download link…';
         note.style.color = 'var(--success-text)';
@@ -156,6 +165,15 @@
         note.textContent = 'The unlock is not granted by this screen. It arrives from the provider\'s '
           + 'server, signed, and is verified before the download link appears.';
         note.style.color = '';
+      }
+      // The first rung of the ladder, delivered where a person is actually waiting.
+      // The server's rungs explain a FAILED attempt, which in a blocked browser takes
+      // a minute and a half to become one; this says the useful thing in the meantime,
+      // politely, without naming a browser or accusing anybody — the platform still
+      // does not know why an ad did not appear, and it says so.
+      if (hint) {
+        hint.textContent = 'If nothing appears in a few seconds, an ad blocker is the usual reason. '
+          + 'Allowing ads for this page is what fixes it, and this button will still be here.';
       }
 
       // Countdown. Cosmetic only — see the file header.
