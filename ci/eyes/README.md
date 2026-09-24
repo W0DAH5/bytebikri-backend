@@ -96,6 +96,30 @@ appears to be painted across the first row of the table.
 dashboard, operator by default). Screenshots land in `/tmp/eyes/out/` whether or not
 a page is clean — useful when a finding is a judgement call rather than a rule.
 
+### The walks, and what they need first
+
+`walk-ads.mjs`, `break-walk.mjs`, `breaks-seller-walk.mjs` and `member-walk.mjs` drive
+real flows in a real browser. Two of them are a SEQUENCE from a known state, so they
+are run after the seeder rather than being self-contained:
+
+```bash
+node ci/demo-state.mjs              # the demo state, and the restore
+node ci/eyes/member-walk.mjs        # three sessions, the attention door, 11 shots
+```
+
+`member-walk.mjs` starts from zero standing and no membership — that state belongs to
+the seeder because it is also the state the preview should be found in — and it clears
+its own unlocks first (an unlock left behind by the last run hides the button the walk
+exists to press). It asserts on the copy as well as on behaviour: the point of that
+walk is that a buyer is told the arrangement BEFORE they press anything.
+
+Three capture lessons live in its history, all of them the CAPTURE and not the product:
+a `fullPage` shot taken while the page was still navigating composited two documents
+into one image and read as overlapping text; a storefront shot framed the cover image
+rather than the control under discussion, so the walk now scrolls its subject into
+view; and a member's own name is deliberately absent from their own card (the roster is
+the OTHER people), which is a sentence a walk has to read carefully before asserting.
+
 Sessions are cached in `/tmp/eyes/state-<account>-<port>.json` and **verified before
 being written**, because the sign-in limiter counts successful attempts too: a sweep
 that signed in per page (32 times) tripped a real product limit and then reported the
@@ -103,7 +127,10 @@ resulting 429s as page findings. The port is in the filename because a session f
 one instance is meaningless against another, and reusing it would look exactly like a
 refused sign-in. The verification URL is per account as well — an account's name is
 not always its store's slug (`nima` runs `nima-crafts`), and a 404 on the proof URL
-was being read as a failed login.
+was being read as a failed login. An account with no store at all (carol, the demo's
+buyer, whose whole purpose is to check what a PERSON sees) has no dashboard to prove
+itself against, so the proof falls back to `/plus` plus the sign-out control — the
+difference between "her page rendered" and "the sign-in page did".
 
 ## columns.mjs — the tables
 

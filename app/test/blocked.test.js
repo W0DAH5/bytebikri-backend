@@ -228,7 +228,12 @@ test('the withheld rung withholds the unlock and nothing else', () => {
   // A store WITH memberships: the route is offered, and the offer is honest about
   // what it does — membership opens the store's MEMBER files, not this ad-gated one.
   assert.match(withMembers, /#members/, 'the membership route is offered, not hidden');
-  assert.match(withMembers, /no ad at all/, 'and it says why that route has no ad');
+  assert.match(withMembers, /with no ad/, 'and it says what that route opens');
+  // The sentence carries the one arrangement that does NOT open a member file with no
+  // ad: a tier the seller set to keep the ordinary asks. Stating the promise without
+  // it would be the platform making it on a seller's behalf, which is how a buyer
+  // ends up holding a membership and an ad at the same time.
+  assert.match(withMembers, /unless the tier you pick keeps the ordinary\s+asks/);
   assert.match(withMembers, /does not open an ad-gated file sooner/, 'and what it does not do');
   // A store WITHOUT them: no dead anchor, and a sentence instead of a button.
   assert.doesNotMatch(withheld, /#members/, 'no anchor into a section that does not exist');

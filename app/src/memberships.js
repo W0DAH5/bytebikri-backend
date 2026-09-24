@@ -29,6 +29,10 @@
 // where an ad may sit are reading the same numbers instead of agreeing today.
 import { POLICY } from './slots.js';
 
+/** The same one-liner `reports.js` carries: this module imports nothing from the
+ *  view layer, and '4 verified views' has to read the same on every page. */
+const plural = (n, singular, many = `${singular}s`) => `${n} ${Number(n) === 1 ? singular : many}`;
+
 export const TIERS_MAX = 2;
 
 /** Offered periods, in months. A month is the default; a year is a discount the
@@ -36,6 +40,120 @@ export const TIERS_MAX = 2;
 export const PERIODS = [1, 3, 12];
 
 export const CLAIM_METHODS = ['esewa', 'khalti', 'imepay', 'bank', 'other'];
+
+/**
+ * ── THE TWO DOORS ONTO ONE TIER ─────────────────────────────────────────────
+ *
+ * `dues` is the door 0031 built: a claim, the creator's own statement, the
+ * creator's own confirmation. `attention` is the second one, and it exists because
+ * of a constraint the brief states plainly — money movement inside the app does
+ * not exist yet, and a membership that can only be bought is one most people in
+ * this market will never hold.
+ *
+ * What the attention door is NOT: it is not a payment, it is not a discount, and
+ * it is not the dues in instalments. Nothing in either direction is money. A
+ * person watches the same ads the store's door already asks for, the store earns
+ * from them exactly as it earns from any other visitor, and the belonging is the
+ * thing that changes hands.
+ */
+export const JOIN_MODES = ['dues', 'attention', 'both'];
+
+export const JOIN_MODE_LABEL = {
+  dues: 'Dues only',
+  attention: 'Watching only',
+  both: 'Either — dues or watching',
+};
+
+/** Which doors a tier has. Anything unrecognised falls back to the shipped one. */
+export function doorsOf(tier) {
+  const mode = JOIN_MODES.includes(String(tier?.join_mode)) ? String(tier.join_mode) : 'dues';
+  return { dues: mode !== 'attention', attention: mode !== 'dues' };
+}
+
+/**
+ * What a join by watching costs, in verified views — by the period, never by the
+ * seller's dues.
+ *
+ * THERE IS NO COLUMN FOR THIS, and that absence is the decision. The ask ladder
+ * (0034) exists because a seller who has never bought an ad in their life was being
+ * asked to price a stranger's attention with no information; pricing a stranger's
+ * *evening* has the same problem with worse numbers, because the instinct is to
+ * charge the dues' worth and no evening can be worth a month of watching. So the
+ * price is the platform's, it moves only with the term, and the ceiling is a
+ * promise to the person on the other side: no one watches a month of ads for a
+ * month of belonging.
+ *
+ * The numbers are small on purpose. Four views is a few minutes; twelve is under
+ * an evening. The store's lever is whether the door is open at all — not the price,
+ * and not the ads, which it cannot remove from this path any more than the ladder
+ * lets it remove them from the door.
+ */
+export const ATTENTION_VIEWS = { 1: 4, 3: 8, 12: 12 };
+
+/** Views a join costs for a period in months. Unknown periods get the month's. */
+export function attentionViews(periodMonths) {
+  return ATTENTION_VIEWS[Number(periodMonths)] ?? ATTENTION_VIEWS[1];
+}
+
+/**
+ * The balance, from the row that holds both halves.
+ *
+ * `earned` is written by a verified postback and `spent` by a join; the database
+ * checks `spent <= earned`, so this subtraction cannot go negative however the
+ * code changes later. A missing row is zero — nobody has watched anything yet.
+ */
+export function standingOf(row) {
+  return Math.max(0, (Number(row?.earned) || 0) - (Number(row?.spent) || 0));
+}
+
+/** Where somebody is toward the door, for the panel and for the refusal sentence. */
+export function attentionProgress({ tier, standing = 0 } = {}) {
+  const needed = attentionViews(tier?.period_months);
+  const have = Math.max(0, Number(standing) || 0);
+  return { needed, have, short: Math.max(0, needed - have), ready: have >= needed };
+}
+
+/**
+ * ── WHAT MEMBERSHIP DOES TO A MEMBERS-ONLY FILE ─────────────────────────────
+ *
+ * `ad_free` is the shipped promise and stays the default: a member file opens
+ * without an ad, because the dues (or the watching) already paid for it.
+ *
+ * `supporter` is the opposite trade, opt-in per tier: members keep the ordinary
+ * asks and gain the belonging — the plate, the roster, the member room. It exists
+ * because a store whose revenue is ads should be able to run a tier WITHOUT
+ * switching its own revenue off, and because the attention door especially must
+ * not be a way to remove ads by watching ads.
+ *
+ * The choice is snapshotted onto each membership when it is granted
+ * (`memberships.ad_mode`), so a seller changing their mind changes what the next
+ * join gets and never takes back what somebody already joined for.
+ */
+export const AD_MODES = ['ad_free', 'supporter'];
+
+/** The arrangement a tier currently promises. Anything unrecognised is ad-free. */
+export function adModeOf(tier) {
+  return AD_MODES.includes(String(tier?.ad_mode)) ? String(tier.ad_mode) : 'ad_free';
+}
+
+/**
+ * The one rule about who opens a members-only file, and what happens next.
+ *
+ *   covered  — their membership opens it, now, with no ad
+ *   ads      — they are a member of a `supporter` tier, so the file opens the
+ *              ordinary way: the same ask any other visitor gets on a file whose
+ *              door is an ad. Membership bought them the belonging, not the file
+ *   members  — not theirs: no membership, a lapsed one, or one below the tier the
+ *              file wants
+ *
+ * The membership's own snapshot is what is read here, never the tier's current
+ * setting — that is the whole reason the snapshot exists.
+ */
+export function doorFor({ membership, memberTier = 1, now = new Date() } = {}) {
+  if (!membershipCurrent(membership, now)) return 'members';
+  if ((Number(membership.tier_no) || 1) < (Number(memberTier) || 1)) return 'members';
+  return membership.ad_mode === 'supporter' ? 'ads' : 'covered';
+}
 
 /**
  * Eight palettes. `onDark` is the name colour on the night theme, `onLight` on
@@ -88,7 +206,7 @@ export const PLATE_COPY = {
  * Returns `{ ok, error, value }` rather than throwing, because every one of
  * these refusals is a sentence a seller is owed on a form they just filled in.
  */
-export function tierDraft({ name, duesNpr, periodMonths, perks, accent } = {}) {
+export function tierDraft({ name, duesNpr, periodMonths, perks, accent, joinMode, adMode } = {}) {
   const clean = String(name ?? '').trim().replace(/\s+/g, ' ').slice(0, 24);
   if (clean.length < 2) return { ok: false, error: 'tier-name' };
   const dues = Number(duesNpr);
@@ -97,10 +215,22 @@ export function tierDraft({ name, duesNpr, periodMonths, perks, accent } = {}) {
   if (!PERIODS.includes(months)) return { ok: false, error: 'tier-period' };
   const line = String(perks ?? '').trim().replace(/\s+/g, ' ').slice(0, 160);
   const accentKey = ACCENT_KEYS.includes(String(accent)) ? String(accent) : 'indigo';
+  /*
+   * The two doors and the ad arrangement travel with the rest of the draft, and both
+   * refuse an unknown value the same way the accent does — by falling back rather
+   * than by erroring. A seller's page always submits a value from its own select;
+   * anything else is a stale tab or a hand-made POST, and the safe answer to both is
+   * the arrangement that was already promised (or, on a first save, the shipped one).
+   */
+  const join = JOIN_MODES.includes(String(joinMode)) ? String(joinMode) : null;
+  const ads = AD_MODES.includes(String(adMode)) ? String(adMode) : null;
   return {
     ok: true,
     error: null,
-    value: { name: clean, duesNpr: Math.round(dues), periodMonths: months, perks: line || null, accent: accentKey },
+    value: {
+      name: clean, duesNpr: Math.round(dues), periodMonths: months,
+      perks: line || null, accent: accentKey, joinMode: join, adMode: ads,
+    },
   };
 }
 
@@ -301,6 +431,91 @@ export function revenueRows({ planName = 'Free', planPrice = 'free', slotCount =
     },
   ];
 }
+
+/**
+ * ── THE WORDS ───────────────────────────────────────────────────────────────
+ *
+ * Written here, once, for the same reason `MONEY_LINE` is: the member's join panel,
+ * the seller's tier editor and the tests all print the same sentences instead of
+ * three copies that agree today. Every one of them is a promise about somebody's
+ * time or somebody's money, and the two must never be confused for each other.
+ */
+
+/** What the attention door is, on the panel, in the shop window. */
+export const ATTENTION_LINE =
+  'The other way in: watch verified views on this store’s own files and the tier is yours for the period. '
+  + 'Nothing is charged, nothing is held, and there is no reference to paste because nobody sent anything.';
+
+/**
+ * The sentence that keeps the two doors apart. It says the same three things the
+ * dues side says — who gets the money, who does not touch it, and what the platform
+ * is not — with the amounts replaced by views.
+ */
+export const ATTENTION_MONEY_LINE =
+  'The views pay the creator exactly as any other visitor’s views do. bytebikri pays nobody for them, takes no '
+  + 'share of them, and there is no money anywhere in this door — not before it, not after it.';
+
+/** The price of one tier's attention door, with the term in it. */
+export function attentionLine(tier) {
+  const views = attentionViews(tier?.period_months);
+  const months = Number(tier?.period_months) || 1;
+  const per = months === 12 ? 'a year' : months === 3 ? 'three months' : 'a month';
+  return `${plural(views, 'verified view')} — ${per} of membership.`;
+}
+
+/** Where somebody is, said as a fact rather than as encouragement. */
+export function attentionStandingLine({ tier, standing = 0 } = {}) {
+  const { have, needed, ready } = attentionProgress({ tier, standing });
+  if (ready) return `You have ${have} verified view${have === 1 ? '' : 's'} here — enough to join.`;
+  return `You have watched ${have} of the ${needed} verified views this tier asks for.`;
+}
+
+/**
+ * The same number, told to somebody who is ALREADY in.
+ *
+ * "Enough to join" is the wrong sentence for a member: they are not joining, they
+ * are watching their next period into existence. Nobody banks a whole period in one
+ * sitting, so this line exists to make the counter useful at one view out of four
+ * rather than only at four — which is the difference between a door a member walks
+ * past and a door they use.
+ */
+export function attentionBankedLine({ tier, standing = 0 } = {}) {
+  const { have, needed, ready } = attentionProgress({ tier, standing });
+  if (ready) return `You have ${have} verified view${have === 1 ? '' : 's'} banked here — another period is ready.`;
+  return have
+    ? `You have ${have} of the ${needed} views for another period banked here.`
+    : `Nothing banked yet: ${needed} verified views is another period at this tier.`;
+}
+
+/**
+ * What a `supporter` tier promises, printed on the join panel BEFORE anybody
+ * joins. A trade somebody discovers after joining is not a trade, it is a
+ * surprise, and this is the one arrangement on this platform that deliberately
+ * does NOT switch the ads off.
+ */
+export const SUPPORTER_LINE =
+  'This tier keeps the ordinary asks. What membership buys here is the belonging — your name on the roster, the '
+  + 'member room, files listed for you — and the files themselves still ask for a view the way they ask every '
+  + 'other visitor. The creator chose that trade, and it is written here before you join rather than after.';
+
+/** The same trade, told to the seller who is deciding whether to offer it. */
+export const SUPPORTER_SELLER_LINE =
+  'Member files keep the ordinary asks: members get the belonging, and the ads you earn keep running. Switching '
+  + 'this changes what the NEXT join gets — members already in keep what they joined for until their period ends, '
+  + 'because that is what the join panel promised them.';
+
+/** Why the seller cannot type the attention price, said where they would try. */
+export const ATTENTION_SELLER_LINE =
+  'The price is the platform’s, not yours: four views for a month, eight for a quarter, twelve for a year. A '
+  + 'seller pricing this would be pricing a stranger’s evening with no information — the same reason you do not '
+  + 'type the ask on your files. Your decision is whether the door is open at all.';
+
+/** One line for the seller's decision about this door, beside the control. */
+export const ATTENTION_DOOR_LABEL = {
+  dues: 'Dues only',
+  attention: 'Watching only',
+  both: 'Both doors',
+};
 
 export function tierByNo(tiers = [], tierNo) {
   return tiers.find((t) => Number(t.tier_no) === Number(tierNo)) ?? null;

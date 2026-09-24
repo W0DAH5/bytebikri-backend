@@ -49,6 +49,13 @@ import { SIGNALS } from './blocked.js';
 // Imported for the same reason `HOLD_DAYS` is — the seller's settings page prints
 // the rule, so the rule lives once.
 import { themeOf, canTheme } from './themes.js';
+// The two doors onto a tier, what a join by watching costs, and what membership
+// does to a member file. Pure module: importing it is importing the rules, not a
+// second opinion about them.
+import {
+  doorsOf, adModeOf, attentionProgress, standingOf,
+  JOIN_MODES, AD_MODES, doorFor,
+} from './memberships.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -2499,21 +2506,239 @@ export const store = {
       'select * from membership_tiers where channel_id = $1 and tier_no = $2',
       [channelId, tierNo],
     );
+    /*
+     * The two arrangements that are promises rather than preferences, and how they
+     * are written.
+     *
+     * `join_mode` and `ad_mode` are coerced rather than trusted, and an
+     * unrecognised value falls back to what the row already says (or to the shipped
+     * default on a first save) instead of being stored. That is the same shape as
+     * `setUnlockPolicy`'s `coalesce($7, mode)`, and it matters more here: a
+     * hand-crafted POST must not be able to promise members an ad-free tier the
+     * seller never chose, or open a door onto a tier in a store that only sells dues.
+     */
+    const wantedJoin = JOIN_MODES.includes(String(value.joinMode)) ? String(value.joinMode) : null;
+    const wantedAds = AD_MODES.includes(String(value.adMode)) ? String(value.adMode) : null;
     const row = await one(
-      `insert into membership_tiers (channel_id, tier_no, name, dues_npr, period_months, perks, accent)
-       values ($1, $2, $3, $4, $5, $6, $7)
+      `insert into membership_tiers
+         (channel_id, tier_no, name, dues_npr, period_months, perks, accent, join_mode, ad_mode)
+       values ($1, $2, $3, $4, $5, $6, $7, coalesce($8, 'dues'), coalesce($9, 'ad_free'))
        on conflict (channel_id, tier_no) do update
          set name = excluded.name, dues_npr = excluded.dues_npr,
              period_months = excluded.period_months, perks = excluded.perks,
-             accent = excluded.accent, updated_at = now()
+             accent = excluded.accent,
+             join_mode = coalesce($8, membership_tiers.join_mode),
+             ad_mode = coalesce($9, membership_tiers.ad_mode),
+             updated_at = now()
        returning *`,
-      [channelId, tierNo, value.name, value.duesNpr, value.periodMonths, value.perks, value.accent],
+      [channelId, tierNo, value.name, value.duesNpr, value.periodMonths, value.perks, value.accent,
+        wantedJoin, wantedAds],
     );
     await this.audit('member.tier_set', {
       tierNo, name: row.name, duesNpr: row.dues_npr, periodMonths: row.period_months,
-      was: before ? { name: before.name, duesNpr: before.dues_npr, periodMonths: before.period_months } : null,
+      joinMode: row.join_mode, adMode: row.ad_mode,
+      was: before
+        ? {
+          name: before.name, duesNpr: before.dues_npr, periodMonths: before.period_months,
+          joinMode: before.join_mode, adMode: before.ad_mode,
+        }
+        : null,
     }, { actorId, subjectType: 'channel', subjectId: channelId });
     return row;
+  },
+
+  // ── standing: the attention door's balance ──────────────────────────────
+
+  /**
+   * Add one verified view to somebody's standing with one store.
+   *
+   * Called from `claimAdView` inside the postback's own transaction, and from
+   * nowhere else — that is what makes `earned` mean "views a network confirmed"
+   * rather than "views a page claimed". A view that the provider reports as
+   * screenout, pending or banned never reaches it, because `claimAdView` is given
+   * `completed: false` for those.
+   *
+   * `upsert` rather than "insert then update": the first view on a store a person
+   * has never watched before has no row, and inventing one in a second statement is
+   * how a counter ends up lost between two transactions.
+   */
+  async accrueStanding({ profileId, channelId, views = 1 }, client) {
+    if (!profileId || !channelId || views <= 0) return null;
+    const run = (client || { query }).query.bind(client || { query });
+    const { rows } = await run(
+      `insert into member_standing (profile_id, channel_id, earned)
+       values ($1, $2, $3)
+       on conflict (profile_id, channel_id) do update
+         set earned = member_standing.earned + excluded.earned, updated_at = now()
+       returning *`,
+      [profileId, channelId, views],
+    );
+    return rows[0] ?? null;
+  },
+
+  /** One person's balance with one store. A missing row is zero. */
+  async standingFor(profileId, channelId) {
+    if (!profileId || !channelId) return 0;
+    const row = await one(
+      'select earned, spent from member_standing where profile_id = $1 and channel_id = $2',
+      [profileId, channelId],
+    );
+    return standingOf(row);
+  },
+
+  /**
+   * Join by watching.
+   *
+   * Everything that can go wrong is decided inside one transaction with the
+   * standing row locked, because the decision is "is there enough left" and the
+   * answer must not change between reading it and spending it. Two clicks on a slow
+   * connection are the ordinary way that happens, and the second one must not buy a
+   * second month with the same views.
+   *
+   * What it deliberately does NOT do: touch a claim. An attention join writes no
+   * amount, no method and no reference, so it can never appear in the creator's
+   * queue — that queue is a list of things to check against a statement, and there
+   * is nothing here for anybody to check. Refusing while a claim is pending is the
+   * same rule from the other side: somebody is looking at that person's money, and
+   * this door must not race it.
+   */
+  async joinByAttention({ profileId, channelId, tierNo, tier = null, actorId = null }) {
+    const row = tier ?? await one(
+      'select * from membership_tiers where channel_id = $1 and tier_no = $2',
+      [channelId, tierNo],
+    );
+    if (!row) return { ok: false, reason: 'no-tier' };
+    if (!doorsOf(row).attention) return { ok: false, reason: 'door-closed' };
+
+    return this.withTransaction(async (client) => {
+      const locked = await client.query(
+        'select * from member_standing where profile_id = $1 and channel_id = $2 for update',
+        [profileId, channelId],
+      );
+      const have = standingOf(locked.rows[0]);
+
+      const existing = await client.query(
+        'select * from memberships where profile_id = $1 and channel_id = $2',
+        [profileId, channelId],
+      );
+      const held = existing.rows[0] ?? null;
+      if (held && held.status === 'pending') return { ok: false, reason: 'claim-waiting' };
+
+      /*
+       * A member with time left is not joining again — they are buying the NEXT
+       * period, which is the same thing the dues door does when somebody pays
+       * early, and the reason this is an extension rather than a refusal. What it
+       * is not is a way to change tier: the membership panel is one tier by
+       * design, and the dues door already refuses an active member's claim for a
+       * different one. Pressing another tier's door here is answered with the
+       * membership they hold rather than with a quiet switch.
+       */
+      const live = Boolean(held) && held.status === 'active' && held.period_end
+        && new Date(held.period_end) > new Date();
+      if (live && Number(held.tier_no) !== Number(row.tier_no)) {
+        return { ok: false, reason: 'already-in', membership: held };
+      }
+      const extending = live;
+
+      /*
+       * The price is asked AFTER the two questions about the membership, and the
+       * order is the sentence a person reads: somebody who is already in, pressing
+       * another tier's door, is owed "you are already a member" rather than a
+       * number of views for a door that is not theirs.
+       */
+      const price = attentionProgress({ tier: row, standing: have });
+      if (!price.ready) {
+        return { ok: false, reason: 'short', have: price.have, needed: price.needed };
+      }
+
+      /*
+       * The period is ADDED to whatever is left, exactly as a confirmed dues
+       * payment is (`confirmMembership`): somebody who watched their way in early,
+       * or whose last period has not quite run out, keeps the days they already
+       * have. Two doors onto one tier must not disagree about the calendar.
+       *
+       * The claim fields are cleared when a lapsed or rejected row becomes active
+       * this way: they describe money nobody is going to find, and leaving them on
+       * an active row is how a seller ends up looking for a transfer that was never
+       * the reason this person got in.
+       *
+       * An EXTENSION touches three columns and nothing else. The tier they hold, the
+       * way they got in, the arrangement they joined under and whether they are
+       * named on the roster are all that person's history, and spending four views
+       * on another month does not rewrite any of it — the audit entry and the views
+       * counter record what actually happened.
+       */
+      const joined = extending
+        ? await client.query(
+          `update memberships
+              set period_end = greatest(coalesce(period_end, now()), now())
+                               + make_interval(months => $3),
+                  standing_used = coalesce(standing_used, 0) + $4
+            where profile_id = $1 and channel_id = $2
+            returning *`,
+          [profileId, channelId, Number(row.period_months) || 1, price.needed],
+        )
+        : await client.query(
+          `insert into memberships
+             (profile_id, channel_id, tier_no, status, join_method, ad_mode, standing_used,
+              confirmed_at, period_end, publicly_listed)
+           values ($1, $2, $3, 'active', 'attention', $4, $5, now(),
+                   now() + make_interval(months => $6), true)
+           on conflict (profile_id, channel_id) do update
+             set tier_no = excluded.tier_no,
+                 status = 'active',
+                 join_method = 'attention',
+                 ad_mode = excluded.ad_mode,
+                 standing_used = excluded.standing_used,
+                 amount_npr = null, method = null, txn_reference = null,
+                 payer_name = null, payer_number = null, claimed_at = null,
+                 rejected_reason = null,
+                 confirmed_at = now(),
+                 confirmed_by = null,
+                 period_end = greatest(coalesce(memberships.period_end, now()), now())
+                              + make_interval(months => $6)
+           returning *`,
+          [profileId, channelId, row.tier_no, adModeOf(row), price.needed, Number(row.period_months) || 1],
+        );
+
+      await client.query(
+        `update member_standing
+            set spent = spent + $3, updated_at = now()
+          where profile_id = $1 and channel_id = $2`,
+        [profileId, channelId, price.needed],
+      );
+
+      return {
+        ok: true, extended: extending, membership: joined.rows[0],
+        spent: price.needed, standing: price.have,
+      };
+    }).then(async (result) => {
+      if (result.ok) {
+        await this.audit(result.extended ? 'member.extended_by_watching' : 'member.joined_by_watching', {
+          channelId, tierNo: result.membership.tier_no, viewsSpent: result.spent,
+          periodEnd: result.membership.period_end, adMode: result.membership.ad_mode,
+        }, { actorId: actorId ?? profileId, subjectType: 'channel', subjectId: channelId });
+      }
+      return result;
+    });
+  },
+
+  /**
+   * What a members-only file is, from one viewer's position: the rule in
+   * `memberships.js` applied to the rows that decide it.
+   *
+   * Returns the door AND the membership, because every caller needs both: the
+   * content route wants to know whether to release bytes, the asset page wants to
+   * say which of the three situations this person is in, and the door in
+   * `startUnlock` wants to know whether the ordinary ask is available to them.
+   */
+  async memberDoorFor({ profileId, channelId, asset }) {
+    if (!profileId || !asset || asset.unlock_mode !== 'members') return { door: 'none', membership: null };
+    const membership = await this.membershipFor(profileId, channelId);
+    return {
+      door: doorFor({ membership, memberTier: Number(asset.member_tier) || 1 }),
+      membership,
+    };
   },
 
   /**
@@ -2621,7 +2846,17 @@ export const store = {
    * person is not left in a state they cannot get out of — and a CONFIRMED one is
    * left alone, because dues already confirmed are not re-claimed by a form.
    */
-  async joinMembership({ profileId, channelId, tierNo, claim = {} }) {
+  async joinMembership({ profileId, channelId, tierNo, tier = null, claim = {} }) {
+    const heldTier = tier ?? await one(
+      'select * from membership_tiers where channel_id = $1 and tier_no = $2',
+      [channelId, tierNo],
+    );
+    // A tier sold only as "join by watching" has no dues door to claim at. The claim
+    // is refused rather than queued: a reference nobody will ever look for is worse
+    // than a sentence, and the sentence can say the other door is open. `null` is
+    // this method's answer for every refusal (the route checks the same door before
+    // it gets here, so the sentence the person reads names the right reason).
+    if (heldTier && !doorsOf(heldTier).dues) return null;
     const reference = String(claim.txnReference ?? '').trim().slice(0, 120);
     // A claim without a matchable reference is not a claim: it would sit in the
     // creator's queue asking them to find a payment by description, which is how
@@ -2632,8 +2867,8 @@ export const store = {
     const row = await one(
       `insert into memberships
          (profile_id, channel_id, tier_no, status, amount_npr, method, txn_reference,
-          payer_name, payer_number, claimed_at)
-       values ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, now())
+          payer_name, payer_number, claimed_at, join_method, ad_mode)
+       values ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, now(), 'dues', $9)
        on conflict (profile_id, channel_id) do update
          set tier_no = excluded.tier_no, status = 'pending',
              amount_npr = excluded.amount_npr, method = excluded.method,
@@ -2643,7 +2878,12 @@ export const store = {
        where memberships.status <> 'active'
        returning *`,
       [profileId, channelId, tierNo, claim.amountNpr ?? null, claim.method ?? null,
-        reference || null, claim.payerName ?? null, claim.payerNumber ?? null],
+        reference || null, claim.payerName ?? null, claim.payerNumber ?? null,
+        // The arrangement in force when they claimed. Written on a PENDING row on
+        // purpose: the promise belongs to the moment the join panel was read, and
+        // confirmation months later must not quietly downgrade it because the seller
+        // changed the tier in between.
+        adModeOf(heldTier)],
     );
     return row ?? null;
   },
@@ -2840,12 +3080,12 @@ export const store = {
    * the answer without writing anything (the asset page, the storefront).
    */
   async memberCoversAsset({ profileId, channelId, asset }) {
-    if (!profileId || !asset || asset.unlock_mode !== 'members') return null;
-    const m = await this.membershipFor(profileId, channelId);
-    if (!m || m.status !== 'active' || !m.period_end) return null;
-    if (new Date(m.period_end).getTime() <= Date.now()) return null;
-    if ((Number(m.tier_no) || 1) < (Number(asset.member_tier) || 1)) return null;
-    return m;
+    // Delegates, rather than restating the three conditions: whether a membership
+    // opens a file is one rule, and the `supporter` arrangement is the fourth case
+    // it now has to answer. A second copy of "status is active and the period has
+    // not run out" is how the two copies stop agreeing.
+    const { door, membership } = await this.memberDoorFor({ profileId, channelId, asset });
+    return door === 'covered' ? membership : null;
   },
 
   // ---- pending ad views (awaiting a signed postback) ----------------------
@@ -2954,6 +3194,20 @@ export const store = {
     );
     // No row returned means the unique index rejected it: already claimed.
     if (!rows.length) return { claimed: false };
+    /*
+     * The same transaction that records the view credits the person's standing with
+     * the store — for every completed view, whichever door it was asked at, because
+     * the two are the same act by the same person for the same shop.
+     *
+     * Here rather than in the postback handler, and deliberately: this is the one
+     * statement in the codebase that is allowed to say a view happened, so a
+     * counter that reads from anywhere else could count something a network never
+     * confirmed. A refused or partial state is passed in as `completed: false` and
+     * accrues nothing.
+     */
+    if (e.completed === true && e.user_id && e.channel_id) {
+      await this.accrueStanding({ profileId: e.user_id, channelId: e.channel_id }, client);
+    }
     return { claimed: true, event: rows[0] };
   },
 

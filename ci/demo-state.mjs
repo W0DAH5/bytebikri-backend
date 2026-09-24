@@ -571,6 +571,110 @@ if (memberStore) {
   }
 }
 
+// ── 4b-bis. The attention door (§33): a store where watching is a way in ─────
+//
+// Nima's store is the one that sells belonging with dues, and its two files are
+// deliberately still waiting for their first review — that is the operator's queue.
+// A file nobody can see cannot be watched, so the second door is demonstrated on
+// ALICE's store instead: it has a shop window full of live files, each of them one
+// short view away, and a plan that includes memberships.
+//
+// The state this section is responsible for:
+//
+//   * two tiers on one storefront, so the two doors are visible side by side and a
+//     person can compare them without reading a manual;
+//   * a live members-only file, approved the way an operator approves one, so the
+//     locked card and the member room have something real behind them;
+//   * and a standing count of ZERO for the two people the walk uses, because a
+//     counter that only ever grows turns its own verification into a demo of the
+//     number it happens to be showing.
+const doorStore = await one(`select id, slug, name, owner_id from channels where slug = 'alice'`);
+if (doorStore) {
+  // Doors read off `doorsOf`: tier 1 offers both ways in, tier 2 is dues only. Both
+  // promise a member file with no ad — that is the shipped promise, and the seller's
+  // opt-in `supporter` arrangement is demonstrated by the walk flipping the picker
+  // rather than by seeding a storefront that contradicts it.
+  const DOORS = [
+    { tierNo: 1, name: 'Friend', duesNpr: 150, periodMonths: 1, accent: 'teal', joinMode: 'both', adMode: 'ad_free',
+      perks: 'The source files behind every poster, and a note on what changed' },
+    { tierNo: 2, name: 'Elite', duesNpr: 600, periodMonths: 3, accent: 'violet', joinMode: 'dues', adMode: 'ad_free',
+      perks: 'Everything above, plus the client work I cannot post publicly' },
+  ];
+  for (const t of DOORS) {
+    await store.saveMembershipTier({
+      channelId: doorStore.id, tierNo: t.tierNo, actorId: doorStore.owner_id,
+      value: {
+        name: t.name, duesNpr: t.duesNpr, periodMonths: t.periodMonths,
+        perks: t.perks, accent: t.accent, joinMode: t.joinMode, adMode: t.adMode,
+      },
+    });
+  }
+
+  // Where the dues go, in the creator's own words — the same instruction a real
+  // seller writes, because a storefront whose join panel says "this store has not
+  // said where to send the dues yet" cannot demonstrate the dues door at all.
+  const doorNote = 'eSewa 9801111111 (Alice\'s Studio). Put your username in the remark so I can match it — '
+    + 'I check the statement every evening and confirm it the same day.';
+  if ((await one('select membership_note from channels where id = $1', [doorStore.id]))?.membership_note !== doorNote) {
+    await store.setMembershipNote({ channelId: doorStore.id, note: doorNote, actorId: doorStore.owner_id });
+  }
+
+  let doorFile = await one(
+    'select id, status, moderation_state from assets where channel_id = $1 and slug = $2',
+    [doorStore.id, 'studio-source-files'],
+  );
+  if (!doorFile) {
+    doorFile = await store.createAsset({
+      channelId: doorStore.id,
+      title: 'Studio source files',
+      slug: 'studio-source-files',
+      description: 'The layered files behind the last three poster sets. Members open them with no ad — '
+        + 'or watch a few things instead of paying.',
+      unlockMode: 'members',
+    });
+    const body = Buffer.from('ByteBikri demo file (Alice\'s Studio, members).\n');
+    await store.addFile({
+      assetId: doorFile.id, storageKey: await storage.put(body, 'studio-source-files.txt'),
+      filename: 'studio-source-files.txt', mimeType: 'text/plain', sizeBytes: body.length,
+      checksum: createHash('sha256').update(body).digest('hex'),
+    });
+    const cover = await fs.readFile(new URL('../app/public/img/demo/sample-pack.jpg', import.meta.url));
+    await store.updateAsset(doorFile.id, {
+      cover_url: `/media/${await storage.put(cover, 'studio-source-files-cover.jpg', { namespace: 'public' })}`,
+    });
+    say('members file', `created — ${doorFile.moderation_state}`);
+  }
+  if (OPERATOR) {
+    if (doorFile.moderation_state !== 'approved') {
+      await store.setAssetModeration({
+        assetId: doorFile.id, action: 'approve', state: 'approved', actorId: OPERATOR.id,
+        remedy: 'Demo seed: approved so the members-only card is visible on the storefront.',
+      });
+    }
+    await many(`update assets set member_tier = 1, unlock_mode = 'members', status = 'live' where id = $1`, [doorFile.id]);
+  }
+
+  // The restore. Bob and Carol are the two people the walk takes through the
+  // watching door: their memberships on this store are removed and their standing is
+  // zeroed, so a second run starts at the same sentence as the first and the count
+  // the walk reads is one it produced.
+  const walkers = await many(
+    `select id, email from profiles where email in ('bob@bytebikri.local', 'carol@bytebikri.local')`,
+  );
+  for (const who of walkers) {
+    await store.leaveMembership(who.id, doorStore.id);
+    await many('delete from member_standing where profile_id = $1 and channel_id = $2', [who.id, doorStore.id]);
+  }
+  const strayHere = await many(
+    `select profile_id from memberships where channel_id = $1 and not (profile_id = any($2::uuid[]))`,
+    [doorStore.id, walkers.map((w) => w.id)],
+  );
+  for (const row of strayHere) await store.leaveMembership(row.profile_id, doorStore.id);
+  if (strayHere.length) say('watching door', `reset — removed ${strayHere.length} membership(s) a preview session left behind`);
+  say('watching door', `Alice's tiers: Friend (dues or watching) and Elite (dues) · `
+    + `${walkers.length} walker(s) back to zero standing · members file live`);
+}
+
 // ── 4c-before. The addresses the money needs, confirmed the way a person ─────
 //             confirms them ──────────────────────────────────────────────────
 //

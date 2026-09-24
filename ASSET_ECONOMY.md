@@ -332,7 +332,7 @@ already printed on a page until the copy changes in the same commit.
 | 1 | **Shapes** | `media.js` shape detection (7 kinds); store sections; ≤4 chips; card chips; empty sections absent | classification table test; a 4-shape store renders 4 sections and a 1-shape store renders none; chips absent below 2 shapes | no placement logic, no reader |
 | 2 | **Enforcement** | server counts verified views against `required_ads` per unlock (not per connection); the client runs ad *n* only after postback *n−1*; the attempt is the promise and survives a reload — and an attempt past the sweep window is not resumed | 1 of 2 views → still locked; 2 of 2 → open; replayed postback does not count twice; a reload resumes the same attempt; an abandoned one is swept; "2 ads of 45 s" becomes true | no changes to the ask ladder |
 | 3 | **Placement** | Half built (planner + controls): `placement.js` derives the cue list from shape + measured runtime + the ladder's ask + the plan ceiling; `asset_unlock_policy.ad_plan` holds the seller's opt-outs; `assets.runtime_sec` is reported by the player; the seller's file page renders the plan and its checkboxes | 20 tests: never in the first 2:00 or last 1:30, never two within 4 min, never past the plan ceiling, a reader breaks only between chapters, a live file gets no automatic break at all, a hand-crafted POST cannot write a placement the shape lacks | **the player gate** — nothing stops playback at a cue yet, so no buyer-facing sentence is rendered; the ask is still the door |
-| 4 | **The attention door** | tier gains `join_mode` (`dues` / `attention` / both); verified views accrue standing; member room page | an attention join never creates a dues row; a member file stays ad-free in `dues` mode; `supporter` mode's ask equals the public ask | no money handling of any kind |
+| 4 | **The attention door** | tier gains `join_mode` (`dues` / `attention` / both) and `ad_mode`; verified views accrue standing per (person, store); a member room page; a member who keeps watching buys the NEXT period | an attention join writes no claim and no amount; a non-member is refused at a members-only file's own route; the price is the platform's (4 / 8 / 12 views for 1 / 3 / 12 months); `supporter` mode's ask equals the public ask and is snapshotted per membership | no money handling of any kind |
 | 5 | **The ledger** | `attention_events` + a store-facing page: views, seconds, per surface, per placement; the platform slot's own numbers separated from the store's | arithmetic test; the page states which side earned what; no payout field exists anywhere | share-back/credit (waits for leg 6) |
 | 6 | **Reader** | `read` surface: PDF/CBZ via range requests (PDF.js/folio-js class libraries, no vendoring until chosen); between-chapter gate; image-folder sets | pagination order; gate position never mid-page; resume position per viewer | no DRM, no per-page watermarking beyond what images already do |
 | 7 | **Live** | `stream` shape: store-scheduled break only, picture-by-picture, new-arrival entry trade | a platform-inserted break is impossible by construction (no code path) | everything about RTMP ingest — out of scope until the shape is real |
@@ -359,7 +359,7 @@ seconds" is currently a sentence, not a gate.
 | 1 Shapes | **Built** — `assetShape` in `media.js`, sections and chips on the storefront, shape on every card, 12 tests (`media.test.js`, `shapes.test.js`). Suite 620/620/0 |
 | 2 Enforcement | **Built** — the grant is `count(completed views) >= the attempt's own ask`; progress is reported, not guessed; an attempt survives a reload; 8 tests (`adviews.test.js`), 5 screenshots from a real two-ad walk (`docs/evidence/round35`, harness `ci/eyes/walk-ads.mjs`). Suite 628/628/0 |
 | 3 Placement | **Built** — planner, seller controls, measured runtime, seller panel, and the player gate. 33 tests (`placement.test.js`, `adplan.test.js`, `breakgate.test.js`), 12 screenshots from two real browser walks (`docs/evidence/round36`, harnesses `ci/eyes/break-walk.mjs` and `ci/eyes/breaks-seller-walk.mjs`). Suite 663/663/0 |
-| 4 Attention door | Not started |
+| 4 Attention door | **Built** — `join_mode`/`ad_mode` per tier, `member_standing`, `joinByAttention` (with the extension), `memberDoorFor` + the `unlocks.js` refusal, the member room at `/s/:slug/members`, the seller's two pickers, and one `watchingDoor()` control. 5 tests in `members.test.js` (21 in that file), 11 screenshots from a real three-session walk (`ci/eyes/member-walk.mjs`). Suite 668/668/0 |
 | 5 Ledger | Not started |
 | 6 Reader | Not started |
 | 7 Live | Not started |
@@ -418,3 +418,41 @@ errors: none. Screenshots 8–18 in `docs/evidence/round36`.
    comparing the description against the policy row rather than against what a
    visitor is asked for. On a free or members-only file that is zero, and on a
    breaks file it is the plan's cue count, and the sentence now says which.
+
+---
+
+## 11. The attention door — what it is, and the one number that is not a seller's
+
+Slice 4 answers the brief's hardest question with a door instead of a payment: a
+store can let somebody in by WATCHING, and the price is the platform's because a
+seller pricing a stranger's evening has no information to price it with.
+
+| Decision | Where it lives |
+|---|---|
+| Which ways in a tier offers | `membership_tiers.join_mode` — `dues`, `attention`, or both. Default `dues`: no store starts selling attention |
+| What a period costs in views | `ATTENTION_VIEWS` in `memberships.js` — 4 / 8 / 12 for 1 / 3 / 12 months. Not a column, not a form field, and a POST carrying one changes nothing |
+| What counts as a view | `claimAdView`, and only when `completed === true` — the single statement allowed to say a view happened. A pending, screenout or refused delivery banks nothing |
+| Where the count is kept | `member_standing(profile_id, channel_id, earned, spent)` — per STORE, with `spent <= earned` in the database rather than in a comment |
+| What a member file does | `ad_mode`: `ad_free` (the default, and the shipped promise) or `supporter` (the ordinary asks stay; the belonging is what membership buys). Snapshotted onto the membership at join, so a later change to the tier cannot downgrade somebody mid-period |
+| A member who keeps watching | the same door, read as the NEXT period: `joinByAttention` extends, and touches only `period_end` and `standing_used` — never the tier, the join method, the arrangement or the rota choice |
+
+**The four refusals, each with its own sentence:** `short` (with how many views are
+had and needed), `already-in` (a member pressing another tier's door — the
+membership panel is one tier, and an upgrade is a dues decision), `claim-waiting`
+(somebody is looking at that person's money; this door must not race it), and
+`door-closed` (the tier has no attention door).
+
+**The hole this slice closed.** Nothing checked `unlock_mode` in `unlocks.js`. The
+page hid the watch button on a members-only file and the page is not the boundary:
+a direct POST unlocked a members-only file with an ad. It now asks
+`memberDoorFor` and answers `covered` / `ads` / not theirs — the same rule the page
+renders, from one function.
+
+**Measured, in a browser.** `ci/eyes/member-walk.mjs` (run after
+`node ci/demo-state.mjs`) drives three sessions: a visitor reads the price and is
+refused at the members file; four short views on four different files walk the door
+from "4 more views to go" to "Join by watching"; the join lands back in the member
+room with the card naming the journey; the seller's roster says "by watching — 4
+views" and the dues queue stays empty; the seller flips the tier to `supporter` and
+the member is told why a membership is being asked for a view; and the member
+watches four more to buy the next period (30 days → 61). Console errors: none.

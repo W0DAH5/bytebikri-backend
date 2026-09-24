@@ -42,7 +42,11 @@ const views = await import('../src/views.js');
 const {
   membershipState, memberRefusal, tierDraft, duesLine, plateStyle, opensFor, revenueRows,
   MONEY_LINE, LAPSE_LINE, FREE_PLAN_LINE, MEMBER_AD_LINE, ADS_AROUND_LINE, ACCENTS,
+  // The attention door: the second way in, priced by the platform and paid in views.
+  doorsOf, attentionViews, attentionProgress, attentionLine, attentionStandingLine,
+  attentionBankedLine, adModeOf, doorFor, ATTENTION_MONEY_LINE, SUPPORTER_LINE,
 } = await import('../src/memberships.js');
+const { startUnlock } = await import('../src/unlocks.js');
 
 after(async () => { await close(); });
 
@@ -490,7 +494,19 @@ test('the tier editor refuses what it cannot deliver, and never deletes a held t
   assert.equal(tierDraft({ name: 'Friend', duesNpr: -1, periodMonths: 1 }).error, 'tier-dues');
   assert.equal(tierDraft({ name: 'Friend', duesNpr: 100, periodMonths: 2 }).error, 'tier-period');
   const good = tierDraft({ name: '  Friend  ', duesNpr: '150', periodMonths: '1', perks: ' notes ', accent: 'teal' });
-  assert.deepEqual(good.value, { name: 'Friend', duesNpr: 150, periodMonths: 1, perks: 'notes', accent: 'teal' });
+  assert.deepEqual(good.value, {
+    name: 'Friend', duesNpr: 150, periodMonths: 1, perks: 'notes', accent: 'teal',
+    // The two doors. Absent from the form, absent from the draft: `null` is "keep
+    // what the tier already has", which is what makes a picker that predates these
+    // fields harmless on an edit, and it is not the same as choosing the default.
+    joinMode: null, adMode: null,
+  });
+  assert.deepEqual(tierDraft({ name: 'Friend', duesNpr: 150, periodMonths: 1, joinMode: 'attention' }).value.joinMode, 'attention');
+  assert.deepEqual(tierDraft({ name: 'Friend', duesNpr: 150, periodMonths: 1, adMode: 'supporter' }).value.adMode, 'supporter');
+  assert.equal(tierDraft({ name: 'Friend', duesNpr: 150, periodMonths: 1, joinMode: 'both-doors' }).value.joinMode, null,
+    'a mode nobody defined falls back to what the tier has, not to a guess');
+  assert.equal(tierDraft({ name: 'Friend', duesNpr: 150, periodMonths: 1, adMode: 'no-ads-ever' }).value.adMode, null,
+    'and the same for the ad arrangement');
   assert.equal(tierDraft({ name: 'Friend', duesNpr: 1, periodMonths: 1, accent: '#ff00ff' }).value.accent, 'indigo',
     'a palette is chosen, not typed — free-form hex is how a readable page becomes an unreadable one');
   assert.equal(duesLine({ dues_npr: 150, period_months: 1 }), 'NPR 150 a month');
@@ -583,4 +599,238 @@ test('leaving is a delete, and it takes nothing else with it', async () => {
     assert.ok(audit.rows.some((r) => r.action === 'member.confirmed'));
     assert.ok(owner.id && tag);
   } finally { await cleanup(channel, owner, member); }
+});
+
+// ── 6. the attention door: the second way in, and it takes no money ──────────
+//
+// The framework this round settled on has one unusual claim at its centre: a store
+// may let somebody in by WATCHING — the ads it already shows — and the platform,
+// not the seller, decides what that costs. Four things have to stay true or the
+// claim becomes a lie in somebody's favour:
+//
+//   * a view only counts if a network confirmed it, and the counter is per STORE;
+//   * the price is the platform's — a seller has no column to type it into;
+//   * joining by watching writes no claim, so it can never appear in the dues queue
+//     as something the creator is asked to check against a statement;
+//   * and a member who watches further is buying the NEXT period, not joining again,
+//     and nothing about how they joined the first time is rewritten.
+
+test('the price of the second door is the platform\'s, and it is stated on both doors', async () => {
+  assert.deepEqual(attentionViews(1), 4);
+  assert.deepEqual(attentionViews(3), 8);
+  assert.deepEqual(attentionViews(12), 12);
+  assert.equal(attentionViews(7), 4, 'a period nobody defined costs a month — never free, never undefined');
+
+  // The seller's write path has no field for it: the tier is saved with the doors
+  // and the arrangement, and the price comes out of the table above.
+  const { owner, channel } = await fixture();
+  try {
+    await store.saveMembershipTier({
+      channelId: channel.id, tierNo: 1, actorId: owner.id,
+      value: {
+        name: 'Friend', duesNpr: 150, periodMonths: 1, perks: 'notes', accent: 'teal',
+        joinMode: 'both', adMode: 'ad_free',
+        // A seller trying to type a price. Nothing reads it, so it changes nothing.
+        attentionViews: 1,
+      },
+    });
+    const saved = (await store.membershipTiers(channel.id)).find((t) => Number(t.tier_no) === 1);
+    assert.deepEqual(doorsOf(saved), { dues: true, attention: true });
+    assert.equal(attentionViews(saved.period_months), 4);
+    assert.equal(adModeOf(saved), 'ad_free');
+    assert.equal(saved.attention_views, undefined, 'there is no such column to save it in');
+
+    const line = attentionLine(saved);
+    assert.match(line, /4 verified views/);
+    assert.match(ATTENTION_MONEY_LINE, /takes no share/);
+    assert.match(ATTENTION_MONEY_LINE, /no money anywhere in this door/);
+  } finally { await cleanup(channel, owner); }
+});
+
+test('views are earned one at a time, per store, and only a confirmed one counts', async () => {
+  const { owner, channel, member, tag } = await fixture();
+  const other = await store.userByEmailOrCreate(`walker-${tag}@test.local`);
+  try {
+    await store.saveMembershipTier({
+      channelId: channel.id, tierNo: 1, actorId: owner.id,
+      value: { name: 'Friend', duesNpr: 150, periodMonths: 1, perks: 'notes', accent: 'teal', joinMode: 'attention' },
+    });
+    const asset = await fileIn(channel.id, { tier: 1, tag });
+    await query(`update assets set unlock_mode = 'ad_gated', member_tier = 0 where id = $1`, [asset.id]);
+
+    assert.equal(await store.standingFor(member.id, channel.id), 0, 'a missing row is zero, not an error');
+
+    // A view the network did NOT confirm. The same statement that records a delivery
+    // is what credits the counter, and it is given completed: false here.
+    await store.claimAdView({
+      channel_id: channel.id, user_id: member.id, asset_id: asset.id,
+      connection_id: null, provider_id: 'house', external_id: `unconf-${tag}`,
+      kind: 'rewarded', state: 'pending', completed: false,
+    });
+    assert.equal(await store.standingFor(member.id, channel.id), 0, 'a pending view banks nothing');
+
+    for (let i = 0; i < 4; i += 1) {
+      await store.claimAdView({
+        channel_id: channel.id, user_id: member.id, asset_id: asset.id,
+        connection_id: null, provider_id: 'house', external_id: `conf-${tag}-${i}`,
+        kind: 'rewarded', state: 'complete', completed: true,
+      });
+    }
+    assert.equal(await store.standingFor(member.id, channel.id), 4);
+    assert.equal(await store.standingFor(other.id, channel.id), 0,
+      'and it is that store\'s counter — watching somewhere else banks nothing here');
+
+    const tier = (await store.membershipTiers(channel.id))[0];
+    assert.equal(attentionProgress({ tier, standing: 3 }).short, 1);
+    assert.equal(attentionProgress({ tier, standing: 3 }).ready, false);
+    assert.match(attentionStandingLine({ tier, standing: 1 }), /1 of the 4/);
+    assert.match(attentionBankedLine({ tier, standing: 1 }), /another period/);
+  } finally { await cleanup(channel, owner, member, other); }
+});
+
+test('joining by watching writes no claim, spends the views, and refuses when short', async () => {
+  const { owner, channel, member, tag } = await fixture();
+  try {
+    await store.saveMembershipTier({
+      channelId: channel.id, tierNo: 1, actorId: owner.id,
+      value: { name: 'Friend', duesNpr: 150, periodMonths: 3, perks: 'notes', accent: 'teal', joinMode: 'attention' },
+    });
+    const tier = (await store.membershipTiers(channel.id))[0];
+
+    const short = await store.joinByAttention({
+      profileId: member.id, channelId: channel.id, tierNo: 1, tier,
+    });
+    assert.equal(short.ok, false);
+    assert.equal(short.reason, 'short');
+    assert.equal(short.needed, 8, 'the refusal carries the price');
+    assert.equal(short.have, 0, 'and where they are against it');
+    assert.equal(await store.membershipFor(member.id, channel.id), null, 'nothing was written');
+
+    await store.accrueStanding({ profileId: member.id, channelId: channel.id, views: 8 });
+    const joined = await store.joinByAttention({
+      profileId: member.id, channelId: channel.id, tierNo: 1, tier, actorId: member.id,
+    });
+    assert.equal(joined.ok, true);
+    assert.equal(joined.extended, false);
+    const row = await store.membershipFor(member.id, channel.id);
+    assert.equal(row.status, 'active');
+    assert.equal(row.join_method, 'attention');
+    assert.equal(row.standing_used, 8);
+    assert.equal(await store.standingFor(member.id, channel.id), 0, 'the price was spent, not spent twice');
+    assert.equal(row.txn_reference, null, 'no reference: nobody sent anything to look up');
+    assert.equal(row.amount_npr, null);
+    assert.equal(row.method, null);
+    assert.equal(row.confirmed_by, null, 'and no creator confirmed it, because there was nothing to confirm');
+
+    // The creator's queue is a list of things to check against a statement. This
+    // join is not one of them, at any point.
+    const queue = await store.membersOfChannel(channel.id);
+    const mine = queue.find((r) => r.profile_id === member.id);
+    assert.equal(mine.txn_reference, null);
+    assert.ok(mine.period_end, 'the period is the thing that is real');
+    assert.match(SUPPORTER_LINE, /ordinary asks/);
+    assert.ok(owner && tag);
+  } finally { await cleanup(channel, owner, member); }
+});
+
+test('a member who keeps watching buys the NEXT period, and their history is left alone', async () => {
+  const { owner, channel, member } = await fixture();
+  try {
+    await store.saveMembershipTier({
+      channelId: channel.id, tierNo: 1, actorId: owner.id,
+      value: { name: 'Friend', duesNpr: 150, periodMonths: 1, perks: 'notes', accent: 'teal', joinMode: 'both' },
+    });
+    await store.saveMembershipTier({
+      channelId: channel.id, tierNo: 2, actorId: owner.id,
+      value: { name: 'Elite', duesNpr: 600, periodMonths: 3, perks: 'recordings', accent: 'violet', joinMode: 'both' },
+    });
+    // In with dues, and hidden from the roster by their own choice.
+    await store.joinMembership({ profileId: member.id, channelId: channel.id, tierNo: 1, claim: claim() });
+    await store.confirmMembership({ profileId: member.id, channelId: channel.id, ownerId: owner.id, actorId: owner.id });
+    await store.setMemberListed({ profileId: member.id, channelId: channel.id, listed: false });
+    const before = await store.membershipFor(member.id, channel.id);
+
+    await store.accrueStanding({ profileId: member.id, channelId: channel.id, views: 4 });
+    const tiers = await store.membershipTiers(channel.id);
+    const one = tiers.find((t) => Number(t.tier_no) === 1);
+    const two = tiers.find((t) => Number(t.tier_no) === 2);
+
+    const other = await store.joinByAttention({ profileId: member.id, channelId: channel.id, tierNo: 2, tier: two });
+    assert.equal(other.ok, false);
+    assert.equal(other.reason, 'already-in', 'another tier is not a watching decision — the membership panel is one tier');
+    assert.equal(await store.standingFor(member.id, channel.id), 4, 'and the refusal spent nothing');
+
+    const extended = await store.joinByAttention({
+      profileId: member.id, channelId: channel.id, tierNo: 1, tier: one, actorId: member.id,
+    });
+    assert.equal(extended.ok, true);
+    assert.equal(extended.extended, true);
+    const after = await store.membershipFor(member.id, channel.id);
+    assert.ok(new Date(after.period_end) > new Date(before.period_end), 'the new period was added');
+    const added = Math.round((new Date(after.period_end) - new Date(before.period_end)) / 86_400_000);
+    assert.ok(added >= 28 && added <= 31, `a month was added, not a second period in place of the first (${added} days)`);
+    assert.equal(after.join_method, 'dues', 'how they got in is their history, and four views do not rewrite it');
+    assert.equal(after.ad_mode, before.ad_mode, 'nor the arrangement they joined under');
+    assert.equal(after.publicly_listed, false, 'nor whether they are named');
+    assert.equal(after.standing_used, 4, 'the views spent are recorded');
+    assert.equal(await store.standingFor(member.id, channel.id), 0);
+
+    const audit = await query(
+      `select action from audit_logs where action = 'member.extended_by_watching' and subject_id = $1`,
+      [channel.id],
+    );
+    assert.equal(audit.rows.length, 1, 'the extension is in the record, where the history was not rewritten');
+  } finally { await cleanup(channel, owner, member); }
+});
+
+test('a members-only file refuses a non-member, opens for a member, and keeps the ask on a supporter tier', async () => {
+  const { owner, channel, member, tag } = await fixture();
+  const visitor = await store.userByEmailOrCreate(`visitor-${tag}@test.local`);
+  try {
+    await store.saveMembershipTier({
+      channelId: channel.id, tierNo: 1, actorId: owner.id,
+      value: { name: 'Friend', duesNpr: 150, periodMonths: 1, perks: 'notes', accent: 'teal', joinMode: 'both', adMode: 'ad_free' },
+    });
+    const tier = (await store.membershipTiers(channel.id))[0];
+    const asset = await fileIn(channel.id, { tier: 1, tag });
+
+    // The hole this round closed: the page hid the watch button for a members-only
+    // file, and the route did not check — so a non-member could watch an ad and get in.
+    const refused = await startUnlock({ assetId: asset.id, userId: visitor.id });
+    assert.equal(refused.ok, false);
+    assert.match(refused.error, /members/, 'the refusal says whose file it is');
+
+    // A member of an ad_free tier: covered, no ask at all.
+    await store.joinMembership({ profileId: member.id, channelId: channel.id, tierNo: 1, claim: claim() });
+    await store.confirmMembership({ profileId: member.id, channelId: channel.id, ownerId: owner.id, actorId: owner.id });
+    const covered = await store.memberDoorFor({ profileId: member.id, channelId: channel.id, asset });
+    assert.equal(covered.door, 'covered');
+    assert.ok(await store.memberCoversAsset({ profileId: member.id, channelId: channel.id, asset }));
+
+    // The opt-in arrangement, stated before the join and snapshotted onto it.
+    await store.saveMembershipTier({
+      channelId: channel.id, tierNo: 1, actorId: owner.id,
+      value: { name: 'Friend', duesNpr: 150, periodMonths: 1, perks: 'notes', accent: 'teal', joinMode: 'both', adMode: 'supporter' },
+    });
+    const snapshot = await store.membershipFor(member.id, channel.id);
+    assert.equal(adModeOf(snapshot), 'ad_free', 'changing the tier does not change a membership already in');
+    await store.accrueStanding({ profileId: visitor.id, channelId: channel.id, views: 4 });
+    const joined = await store.joinByAttention({
+      profileId: visitor.id, channelId: channel.id, tierNo: 1, tier: (await store.membershipTiers(channel.id))[0],
+    });
+    assert.equal(joined.ok, true);
+    assert.equal(joined.membership.ad_mode, 'supporter', 'the arrangement in force when they pressed the button');
+    const door = await store.memberDoorFor({ profileId: visitor.id, channelId: channel.id, asset });
+    assert.equal(door.door, 'ads', 'their membership keeps the ordinary ask');
+    assert.equal(await store.memberCoversAsset({ profileId: visitor.id, channelId: channel.id, asset }), null,
+      'so the page must not show it as open');
+    assert.equal(doorFor({ membership: joined.membership, memberTier: 1 }), 'ads');
+    // Three answers, and the door is named by who may walk through it: an unpaid
+    // claim is not a membership ('members' means "belongs to members"), and neither
+    // is a tier below the file's.
+    assert.equal(doorFor({ membership: { ...joined.membership, status: 'pending' }, memberTier: 1 }), 'members',
+      'a claim waiting is not a membership');
+    assert.equal(doorFor({ membership: joined.membership, memberTier: 2 }), 'members',
+      'a lower tier does not open a higher tier\'s file');
+  } finally { await cleanup(channel, owner, member, visitor); }
 });

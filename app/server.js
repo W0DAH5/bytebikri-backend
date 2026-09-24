@@ -69,6 +69,7 @@ import { earningsSummary, MONEY_MAP, payoutChecklist, periodStatus, calibrationV
 import {
   TIERS_MAX, PERIODS, CLAIM_METHODS, ACCENTS, ACCENT_KEYS, MONEY_LINE, FREE_PLAN_LINE,
   PLATE_COPY, tierDraft, paymentNoteDraft, membershipState, membershipCurrent, memberBadge,
+  doorsOf, adModeOf, attentionProgress, standingOf, attentionViews, JOIN_MODES, AD_MODES,
   duesLine, tierByNo,
 } from './src/memberships.js';
 // Storefront themes: curated palettes, and the plan capability that has been in
@@ -759,12 +760,20 @@ APP.post('/s/:slug/unfollow', limitWatch, async (req, res, next) => {
 /**
  * The join panel, as one redirect helper.
  *
- * `back` is always the storefront: the person came from there, the panel is
- * there, and the answer ("you are in, waiting for the creator") belongs where
- * they can see their own state.
+ * `back` is the storefront by default: the panel is there, and the answer ("you
+ * are in, waiting for the creator") belongs where the person can see their own
+ * state. Since §33 there is a second page with the same doors on it — the member
+ * room — and somebody who joined from there is sent back INTO the room rather than
+ * out of it, because being bounced to the shopfront after pressing a button inside
+ * the room is how a page with two doors starts feeling like two products. The
+ * fragment follows the same rule: `#members` exists on the storefront and nowhere
+ * else.
  */
-function memberBack(channel, extra = '') {
-  return `/s/${encodeURIComponent(channel.slug)}${extra}`;
+function memberBack(channel, extra = '', req = null) {
+  const storefront = `/s/${encodeURIComponent(channel.slug)}`;
+  const room = `${storefront}/members`;
+  if (extra && req?.get?.('referer')?.includes(room)) return `${room}${extra.replace('#members', '')}`;
+  return `${storefront}${extra}`;
 }
 
 APP.post('/s/:slug/join', limitWatch, async (req, res, next) => {
@@ -776,26 +785,33 @@ APP.post('/s/:slug/join', limitWatch, async (req, res, next) => {
     // Two refusals before anything is written, and both are sentences a person
     // is owed: you cannot join your own store (the dues would be a loop), and
     // you cannot join a store whose plan does not include members.
-    if (channel.owner_id === req.user.id) return res.redirect(memberBack(channel, '?error=member-own'));
+    if (channel.owner_id === req.user.id) return res.redirect(memberBack(channel, '?error=member-own', req));
     const plan = store.plan(channel);
-    if (plan.capabilities?.memberships !== true) return res.redirect(memberBack(channel, '?error=member-plan'));
+    if (plan.capabilities?.memberships !== true) return res.redirect(memberBack(channel, '?error=member-plan', req));
 
     const tiers = await store.membershipTiers(channel.id);
     const wanted = Number(req.body?.tier) || 1;
     const tier = tiers.find((t) => Number(t.tier_no) === wanted) ?? tiers[0] ?? null;
-    if (!tier) return res.redirect(memberBack(channel, '?error=member-no-tier'));
+    if (!tier) return res.redirect(memberBack(channel, '?error=member-no-tier', req));
+    // A tier sold only as "join by watching" has no dues door. Refused with the
+    // reason, because the person is standing on a panel that offers the other door.
+    if (!doorsOf(tier).dues) return res.redirect(memberBack(channel, '?error=member-watching-only', req));
 
     // A reference is the only thing that can be matched against a statement. The
     // form asks for it at the door rather than two screens later, because a
     // claim without one sits in the creator's queue until they give up on it.
     const method = CLAIM_METHODS.includes(String(req.body?.method)) ? String(req.body.method) : 'other';
     const reference = String(req.body?.reference || '').trim();
-    if (reference.length < 4) return res.redirect(memberBack(channel, '?error=member-reference'));
+    if (reference.length < 4) return res.redirect(memberBack(channel, '?error=member-reference', req));
 
     const row = await store.joinMembership({
       profileId: req.user.id,
       channelId: channel.id,
       tierNo: tier.tier_no,
+      // The tier travels with the claim: it is what decides the ad arrangement the
+      // claim is made under, and that promise is written when the claim is, not
+      // whenever the creator gets round to looking at their statement.
+      tier,
       claim: {
         amountNpr: Number(req.body?.amount) || null,
         method,
@@ -804,12 +820,100 @@ APP.post('/s/:slug/join', limitWatch, async (req, res, next) => {
         payerNumber: String(req.body?.payerNumber || '').trim().slice(0, 40) || null,
       },
     });
-    if (!row) return res.redirect(memberBack(channel, '?error=member-active'));
+    if (!row) return res.redirect(memberBack(channel, '?error=member-active', req));
     await store.audit('member.claimed', {
       channelId: channel.id, tierNo: tier.tier_no, amountNpr: row.amount_npr,
       txnReference: row.txn_reference, method: row.method,
     }, { actorId: req.user.id, subjectType: 'channel', subjectId: channel.id });
-    return res.redirect(memberBack(channel, '?joined=1#members'));
+    return res.redirect(memberBack(channel, '?joined=1#members', req));
+  } catch (err) { return next(err); }
+});
+
+/**
+ * The attention door: join the tier by watching.
+ *
+ * Deliberately a different route from `/join`, and deliberately not a variant of
+ * it with a flag. The two doors write different things — one a claim a human will
+ * read, the other a membership the platform has already verified — and the route
+ * is where that difference is visible. Nothing here asks for a reference, an
+ * amount or a method, because there is no money in this path for any of the three
+ * to describe; a form that asked would be teaching people that it is a payment.
+ *
+ * Refusals are sentences rather than errors: not enough views says how many are
+ * needed, a closed door says which door this store does sell, and a claim already
+ * waiting is left alone rather than raced.
+ */
+APP.post('/s/:slug/join/watching', limitWatch, async (req, res, next) => {
+  try {
+    const channel = await store.channelBySlug(req.params.slug);
+    if (!channel) return res.status(404).send(views.notFound({ user: req.user, requestedKind: 'store' }));
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    if (channel.owner_id === req.user.id) return res.redirect(memberBack(channel, '?error=member-own', req));
+    const plan = store.plan(channel);
+    if (plan.capabilities?.memberships !== true) return res.redirect(memberBack(channel, '?error=member-plan', req));
+
+    const tiers = await store.membershipTiers(channel.id);
+    const wanted = Number(req.body?.tier) || 1;
+    const tier = tiers.find((t) => Number(t.tier_no) === wanted) ?? tiers[0] ?? null;
+    if (!tier) return res.redirect(memberBack(channel, '?error=member-no-tier', req));
+
+    const result = await store.joinByAttention({
+      profileId: req.user.id, channelId: channel.id, tierNo: tier.tier_no, tier,
+      actorId: req.user.id,
+    });
+    if (!result.ok) return res.redirect(memberBack(channel, `?error=member-${result.reason}#members`, req));
+    // An extension (a member buying the NEXT period with views) gets its own
+    // sentence. "You are in" would be telling somebody who is already in something
+    // they cannot see the point of.
+    return res.redirect(memberBack(channel,
+      `?joined=${result.extended ? 'watching-more' : 'watching'}#members`, req));
+  } catch (err) { return next(err); }
+});
+
+/**
+ * The member room: one page behind the door, and nothing else.
+ *
+ * The researched shape rather than an invented one — Patreon's member feed, a
+ * Discord server's members channel, Twitch's subscriber-only chat: the belonging
+ * has to have a PLACE, or the tier is a badge on a list. It carries what the
+ * storefront already shows (the roster, the store's note) plus the two things a
+ * member needs in one place: every file their tier opens, and how long they hold
+ * it for.
+ *
+ * A non-member gets the same page with the files listed locked and the way in
+ * underneath. That is the shop window, and it is the same decision the storefront
+ * already made: what a membership is stays visible to everyone, because hiding it
+ * until somebody joins is how a tier sells nothing.
+ */
+APP.get('/s/:slug/members', limitWatch, async (req, res, next) => {
+  try {
+    const channel = await store.channelBySlug(req.params.slug);
+    if (!channel) return res.status(404).send(views.notFound({ user: req.user, requestedKind: 'store' }));
+    const plan = store.plan(channel);
+    const tiers = await store.membershipTiers(channel.id);
+    if (plan.capabilities?.memberships !== true || !tiers.length) {
+      return res.redirect(memberBack(channel));
+    }
+    const membership = req.user ? await store.membershipFor(req.user.id, channel.id) : null;
+    const standing = req.user ? await store.standingFor(req.user.id, channel.id) : 0;
+    /*
+     * The same two decisions the storefront makes, for the same reason. The PUBLIC
+     * list, because `assetsForOwner` includes paused files — it must, since that is
+     * how a seller finds their way back to one — and a room that listed a paused
+     * file would be showing a visitor a door with nothing behind it. And the file's
+     * own state plus any country rule, applied before anything is rendered, so a
+     * file withheld where this visitor is standing is not promised to them by the
+     * one page whose whole job is to be accurate about what opens.
+     */
+    const listed = (await withCountry(await store.assetsOf(channel.id), viewerCountry(req)))
+      .filter((a) => a.availability.visible);
+    res.send(views.memberRoom({
+      channel, user: req.user, consent: req.consent, tiers, membership, standing,
+      assets: listed,
+      roster: await store.publicRoster(channel.id, { limit: 24 }),
+      flash: flashFor(req.query),
+      membershipsOn: true,
+    }));
   } catch (err) { return next(err); }
 });
 
@@ -819,7 +923,7 @@ APP.post('/s/:slug/leave', limitWatch, async (req, res, next) => {
     if (!channel) return res.status(404).send(views.notFound({ user: req.user, requestedKind: 'store' }));
     if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
     const left = await store.leaveMembership(req.user.id, channel.id);
-    return res.redirect(memberBack(channel, left ? '?left=1#members' : '?error=member-none'));
+    return res.redirect(memberBack(channel, left ? '?left=1#members' : '?error=member-none', req));
   } catch (err) { return next(err); }
 });
 
@@ -832,7 +936,7 @@ APP.post('/s/:slug/members/listing', limitWatch, async (req, res, next) => {
     const listed = await store.setMemberListed({
       profileId: req.user.id, channelId: channel.id, listed: req.body?.listed === 'yes',
     });
-    return res.redirect(memberBack(channel, listed ? '?listed=1#members' : '?error=member-none'));
+    return res.redirect(memberBack(channel, listed ? '?listed=1#members' : '?error=member-none', req));
   } catch (err) { return next(err); }
 });
 
@@ -1519,7 +1623,10 @@ APP.get('/s/:slug', async (req, res, next) => {
     // join the same set the ad-unlocked files live in: one set, one meaning —
     // "you can open this right now" — rather than two flags the view would have
     // to combine and could get wrong.
-    if (tiers.length && membershipCurrent(membership)) {
+    // Only an `ad_free` membership puts a member file in that set. A `supporter`
+    // membership's files keep the ordinary asks, so showing them as already open
+    // would be the card promising something the file's own page refuses.
+    if (tiers.length && membershipCurrent(membership) && adModeOf(membership) === 'ad_free') {
       for (const row of await store.memberOpenAssetIds(channel.id, membership.tier_no)) {
         unlockedIds.add(row.id);
       }
@@ -1534,6 +1641,8 @@ APP.get('/s/:slug', async (req, res, next) => {
       // The join panel's whole state: the tiers, the viewer's own row, the named
       // members, and whether the feature is even on for this store.
       tiers, membership, membershipsOn,
+      // Where this person is toward the watching door, if the store has one.
+      standing: req.user ? await store.standingFor(req.user.id, channel.id) : 0,
       roster: tiers.length ? await store.publicRoster(channel.id) : [],
       memberFlash: flashFor(req.query),
       // The store's own look. Two custom properties rather than a class per theme,
@@ -1766,9 +1875,15 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
     // A membership is a third way in, and it is asked about the same way the
     // other two are: as a fact, before anything is minted. `memberCover` is the
     // row itself, so the page can say which tier opened it and how long is left.
-    const memberCover = req.user
-      ? await store.memberCoversAsset({ profileId: req.user.id, channelId: channel.id, asset })
-      : null;
+    //
+    // `memberDoor` is the same read one level up, and it exists because there are
+    // three answers rather than two: covered, `ads` (a member of a tier whose files
+    // keep the ordinary asks — `supporter`), or not a member at all. The page has to
+    // tell them apart; the content route only needs the first.
+    const memberDoor = req.user
+      ? await store.memberDoorFor({ profileId: req.user.id, channelId: channel.id, asset })
+      : { door: 'none', membership: null };
+    const memberCover = memberDoor.door === 'covered' ? memberDoor.membership : null;
     const unlocked = (['open', 'breaks'].includes(asset.unlock_mode) || holdsUnlock || Boolean(memberCover))
       && availability.unlockable;
 
@@ -1779,6 +1894,9 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
     // played, an image is watermarked and shown, a zip is downloaded, and only
     // the page decides how that reads. That keeps the decision in one place
     // instead of a filename suffix check inside a template string.
+    const memberTiersHere = asset.unlock_mode === 'members'
+      ? await store.membershipTiers(channel.id)
+      : [];
     const files = (await store.filesOf(asset.id)).map((f) => {
       const kind = mediaKind(f.mime_type, f.filename);
       // Images get a stream URL too: they are shown on the page through the
@@ -1880,11 +1998,18 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
       // Which tier the viewer holds, and what the file needs — the two facts the
       // refusal sentence is built from.
       memberCover,
+      memberDoor: memberDoor.door,
       plainFooter: store.plan(channel).capabilities?.remove_footer === true,
-      memberTiers: asset.unlock_mode === 'members' ? await store.membershipTiers(channel.id) : [],
+      memberTiers: asset.unlock_mode === 'members' ? memberTiersHere : [],
       memberTierName: asset.unlock_mode === 'members'
-        ? (await store.membershipTiers(channel.id)).find((t) => Number(t.tier_no) === (Number(asset.member_tier) || 1))?.name ?? null
+        ? memberTiersHere.find((t) => Number(t.tier_no) === (Number(asset.member_tier) || 1))?.name ?? null
         : null,
+      // What the FILE's tier currently promises, which is what a stranger reading
+      // the page needs to know: "no ad" and "the ordinary asks" are opposite
+      // promises, and only one of them is true of this tier.
+      memberTierAdMode: asset.unlock_mode === 'members'
+        ? adModeOf(memberTiersHere.find((t) => Number(t.tier_no) === (Number(asset.member_tier) || 1)))
+        : 'ad_free',
       refusal, ownerNotice,
       // A file the viewer can open because an operator allowed it back into a
       // country whose store-wide rule would otherwise refuse them.
@@ -3089,7 +3214,16 @@ const SUCCESS_FLASH = {
   // Memberships. Every one of these says what happens NEXT, because the whole
   // rail is manual: a claim waits for a person, and a confirmation is that person
   // saying they saw the money. "Done" would be a lie in three of the six.
-  joined: () => `Asked. The creator checks their own statement for your reference and confirms it — the platform never sees these dues, so it cannot confirm them for you. ${LAPSE_LINE}`,
+  joined: (v) => (String(v) === 'watching'
+    // The attention door's own success sentence. It says the two things that make
+    // the door what it is: nothing was paid, and the views are the whole of it.
+    // The counter starts again from zero, which the member can see on their own card.
+    ? 'You are in — the views you watched did it, and nothing was charged. Watch this store again and the next '
+      + 'period starts building itself.'
+    : String(v) === 'watching-more'
+      ? 'Another period added. Those views were the whole of it — nothing was charged, and the days you already had '
+        + 'are still yours.'
+      : `Asked. The creator checks their own statement for your reference and confirms it — the platform never sees these dues, so it cannot confirm them for you. ${LAPSE_LINE}`),
   left: () => 'You left. Nothing was deleted — your opens stay open until their own windows run out.',
   listed: () => 'You are on the list.',
   'member-confirmed': () => 'Confirmed. Their plate is on the storefront now, and the files behind that tier open for them without an ad.',
@@ -3127,6 +3261,15 @@ const ERROR_FLASH = {
   'plus-look-bad': 'Pick one of the eight palettes and one of the three effects. Nothing was changed.',
   'plus-none': 'There is no arrangement on this account to change. Nothing was sent.',
   'member-owner-only': 'Only the store owner can confirm dues. The platform never receives this money, so nobody here can check it.',
+  // The attention door's refusals. Each one names the way forward, because the
+  // person reading it is standing on the one panel where they are trying to get in:
+  // "not enough views" without the count is a wall, and "that door is closed"
+  // without the other one is a dead end.
+  'member-short': 'Not yet — the count is not there. Nothing was spent: keep watching this store\u2019s files and the door opens itself when the views are in.',
+  'member-watching-only': 'This tier is sold as “join by watching”, so there is no dues door to send to. Watch its files instead — the panel shows how many views it takes.',
+  'member-already-in': 'You are already in, so there is nothing to spend. Your views keep counting toward the next period.',
+  'member-claim-waiting': 'A claim of yours is already with the creator. Nothing to watch for it — and if it is not found, the watching door is still here.',
+  'member-door-closed': 'That door is closed on this tier. Nothing was spent.',
   'tier-name': 'A tier needs a name of at least two characters — it appears next to a member\'s name.',
   'tier-dues': 'Dues have to be a whole number of rupees between 0 and 100,000.',
   'tier-period': 'Pick a period: monthly, every three months, or yearly.',

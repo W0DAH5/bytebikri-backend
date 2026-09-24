@@ -59,7 +59,15 @@ import {
 } from './themes.js';
 // The ad arrangement and the seller's revenue rows: the membership's promise to the
 // member and the seller's own two-line model, written once in memberships.js.
-import { MEMBER_AD_LINE, ADS_AROUND_LINE, SELLER_DUES_LINE, revenueRows } from './memberships.js';
+import {
+  MEMBER_AD_LINE, ADS_AROUND_LINE, SELLER_DUES_LINE, revenueRows,
+  // The attention door: which doors a tier has, what a join by watching costs,
+  // where somebody is against that price, and the sentences both of them are told.
+  doorsOf, adModeOf, attentionProgress, attentionLine, attentionStandingLine,
+  ATTENTION_LINE, ATTENTION_MONEY_LINE, ATTENTION_SELLER_LINE, SUPPORTER_LINE,
+  SUPPORTER_SELLER_LINE, JOIN_MODE_LABEL, ATTENTION_DOOR_LABEL, standingOf,
+  attentionBankedLine, JOIN_MODES, AD_MODES,
+} from './memberships.js';
 import {
   ACCENTS, ACCENT_KEYS, PERIODS, CLAIM_METHODS, PLATE_COPY, MONEY_LINE, FREE_PLAN_LINE,
   CONFIRM_LINE, LAPSE_LINE, accentOf, plateStyle, tierByNo, duesLine, methodLabel,
@@ -861,7 +869,7 @@ function memberRoster(roster = []) {
  * never joined. Collapsing these into "your membership" is how a paid feature
  * turns into a support queue.
  */
-function myMembershipCard({ channel, membership, tiers, rosterSize = 0 }) {
+function myMembershipCard({ channel, membership, tiers, rosterSize = 0, standing = 0 }) {
   const state = membershipState(membership);
   const tier = tierByNo(tiers, membership?.tier_no);
   const accent = tier?.accent || 'indigo';
@@ -904,7 +912,13 @@ function myMembershipCard({ channel, membership, tiers, rosterSize = 0 }) {
       <div>
         <strong>${live ? `You are a member, ${esc(tier?.name || 'Member')}` : 'Your period has ended.'}</strong>
         <p class="small" style="margin:0">${live
-    ? `Files behind this tier open for you with no ad${left !== null ? `, for ${plural(left, 'more day')}` : ''}.`
+    // The arrangement is the MEMBERSHIP's, snapshotted when they joined, not the
+    // tier's current setting: a seller who changes the tier tomorrow does not
+    // change what this person was promised today.
+    ? (adModeOf(membership) === 'supporter'
+      ? `You hold the belonging at this tier${left !== null ? ` for ${plural(left, 'more day')}` : ''} — the files`
+        + ' keep their ordinary asks, and that was stated before you joined.'
+      : `Files behind this tier open for you with no ad${left !== null ? `, for ${plural(left, 'more day')}` : ''}.`)
     : `${esc(LAPSE_LINE)}`}</p>
       </div>
       ${live && left !== null ? `<span class="member-countdown">${plural(left, 'day')} left</span>` : ''}
@@ -919,11 +933,17 @@ function myMembershipCard({ channel, membership, tiers, rosterSize = 0 }) {
       </form>
       ${live ? '' : `<a class="btn btn-sm btn-primary" href="#join">Send this period's dues</a>`}
     </div>
+    ${live ? `<p class="fine">${membership.join_method === 'attention'
+    ? `You joined by watching — ${esc(plural(Number(membership.standing_used) || 0, 'verified view'))} did it, and nothing was charged.`
+    : 'You joined with dues paid straight to the creator.'}${standing > 0
+    ? ` Your ${esc(plural(standing, 'view'))} since then count${standing === 1 ? 's' : ''} toward the next period.`
+    : ''}
+      <a href="/s/${esc(channel.slug)}/members">The member room →</a></p>` : ''}
     <p class="fine">${listed
     ? 'You are named on this store’s member list. That is the perk, and it is the only place a plate is visible. Hiding it changes nothing else.'
     : 'You are hidden from the member list. Your files stay open either way.'}
       ${rosterSize ? ` ${plural(rosterSize, 'person', 'people')} are named here.` : ''}</p>
-    <p class="fine">${esc(MEMBER_AD_LINE)}</p>
+    <p class="fine">${esc(adModeOf(membership) === 'supporter' ? SUPPORTER_LINE : MEMBER_AD_LINE)}</p>
   </div>`;
 }
 
@@ -936,7 +956,7 @@ function myMembershipCard({ channel, membership, tiers, rosterSize = 0 }) {
  * payment form above the explanation asks somebody to trust a number with no
  * context, and the money line sits directly under the button, not in a footer.
  */
-function joinPanel({ channel, user, tiers, membership, assets = [], flash = null }) {
+function joinPanel({ channel, user, tiers, membership, assets = [], standing = 0, flash = null }) {
   const state = membershipState(membership);
   if (state === 'active' || state === 'pending') return '';
   // THE PREMIUM SHOWCASE, and it is the researched shape rather than a guessed one:
@@ -949,6 +969,18 @@ function joinPanel({ channel, user, tiers, membership, assets = [], flash = null
   );
   const cards = tiers.map((t) => {
     const plate = plateStyle(t.tier_no);
+    const doors = doorsOf(t);
+    const price = attentionProgress({ tier: t, standing });
+    /*
+     * The watching door, on the card it belongs to, with the two numbers that make
+     * it a door rather than a promise: what it costs and where this person is
+     * against it. A progress line that only appeared once somebody was close would
+     * be a door most people never notice — the researched rule for a feature nobody
+     * is told about is that it converts nobody.
+     */
+    const watching = doors.attention
+      ? watchingDoor({ channel, tier: t, standing, user, membership, price })
+      : '';
     return `<li class="tier-card${plate === 'gradient' ? ' tier-card--elite' : ''}" style="${plateStyleAttr(t.accent)}">
       <div class="tier-head">
         <span class="member-avatar${plate === 'gradient' ? ' member-avatar--shine' : ''}"
@@ -966,13 +998,17 @@ function joinPanel({ channel, user, tiers, membership, assets = [], flash = null
         something behind the door.</p>`;
     }
     return `<div class="tier-opens">
-      <span class="fine">${plural(opens.length, 'file')} open to this tier, with no ad:</span>
+      <span class="fine">${plural(opens.length, 'file')} open to this tier${adModeOf(t) === 'supporter'
+    ? ', on the same terms as everything else in this store:'
+    : ', with no ad:'}</span>
       <ul class="tier-file-list">
         ${opens.slice(0, 4).map((a) => `<li><span class="locked-glyph" aria-hidden="true">🔒</span><a href="/s/${esc(channel.slug)}/a/${esc(a.slug)}">${esc(a.title)}</a></li>`).join('')}
         ${opens.length > 4 ? `<li class="fine">and ${opens.length - 4} more</li>` : ''}
       </ul>
     </div>`;
   })()}
+      ${adModeOf(t) === 'supporter' ? `<p class="fine">${esc(SUPPORTER_LINE)}</p>` : ''}
+      ${watching}
       <p class="fine">${esc(PLATE_COPY[plate])}${plate === 'gradient' ? ' — and the top tier is the only one that wears it' : ''}</p>
       <div class="plate-sample" aria-label="${esc(PLATE_COPY[plate])}">
         <span class="member-avatar${plate === 'gradient' ? ' member-avatar--shine' : ''}"
@@ -1019,24 +1055,33 @@ function joinPanel({ channel, user, tiers, membership, assets = [], flash = null
   }
 
   const methodOptions = CLAIM_METHODS.map((m) => `<option value="${m}">${esc(methodLabel(m))}</option>`).join('');
-  const tierSelect = tiers.length > 1
+  // Only the tiers that actually sell dues. A tier sold as "join by watching" in
+  // this select would be a form that refuses on submit, which is the worst of both.
+  const duesTiers = tiers.filter((t) => doorsOf(t).dues);
+  const soleDoor = duesTiers.length === 1 && tiers.length === 1;
+  const tierSelect = duesTiers.length > 1
     ? `<div class="field">
         <label for="join-tier">Which tier</label>
         <select class="input" id="join-tier" name="tier">
-          ${tiers.map((t) => `<option value="${t.tier_no}"${Number(t.tier_no) === 1 ? ' selected' : ''}>${esc(t.name)} — ${esc(duesLine(t))}</option>`).join('')}
+          ${duesTiers.map((t) => `<option value="${t.tier_no}"${Number(t.tier_no) === 1 ? ' selected' : ''}>${esc(t.name)} — ${esc(duesLine(t))}</option>`).join('')}
         </select>
       </div>`
-    : `<input type="hidden" name="tier" value="${esc(String(tiers[0]?.tier_no ?? 1))}">`;
+    : `<input type="hidden" name="tier" value="${esc(String(duesTiers[0]?.tier_no ?? tiers[0]?.tier_no ?? 1))}">`;
+  const anyWatching = tiers.some((t) => doorsOf(t).attention);
+  const anyDues = duesTiers.length > 0;
 
   return `<div id="join" class="join-panel">
     <div class="section-head" style="margin-bottom:var(--space-4)">
       <h3>Join</h3>
-      <p>Dues go to the creator, not to bytebikri. You send it, you paste the reference, they confirm it.</p>
+      <p>${anyDues
+    ? 'Dues go to the creator, not to bytebikri. You send it, you paste the reference, they confirm it.'
+    : 'Nothing to pay here: this store opens its memberships by watching.'}</p>
+      ${anyWatching ? `<p class="fine">${esc(ATTENTION_LINE)}</p>` : ''}
       <p class="fine">${esc(ADS_AROUND_LINE)}</p>
     </div>
     ${cards ? `<ul class="tier-grid">${cards}</ul>` : ''}
-    ${paid}
-    <form method="post" action="/s/${esc(channel.slug)}/join" class="join-form">
+    ${anyDues ? paid : ''}
+    ${anyDues ? `
       ${tierSelect}
       <div class="row" style="gap:var(--space-4);align-items:flex-start">
         <div class="field" style="flex:1 1 150px">
@@ -1058,8 +1103,184 @@ function joinPanel({ channel, user, tiers, membership, assets = [], flash = null
       <button class="btn btn-primary" type="submit">Send the reference</button>
       <p class="fine" style="margin-top:var(--space-3)">Nothing is charged here and nothing is held.
         The creator confirms it against their own statement, and until they do, no file opens — that is the wait, not a bug.</p>
-    </form>
+    </form>` : `<p class="fine">There is no dues form on this store: every tier here is joined by watching, and the
+      button on the tier card is the whole of it.</p>`}
   </div>`;
+}
+
+/**
+ * The member room: the one page behind the door.
+ *
+ * The belonging needs a place or the tier is a badge — that is the researched
+ * shape, not an invention (Patreon's member feed, a Discord members channel,
+ * Twitch's subscriber chat). What this page is NOT is a feed: it is one page with
+ * three things on it, and none of them scroll.
+ *
+ *   1. what your tier opens — every file it opens, named, with the state of your
+ *      own period on each one;
+ *   2. the store's own note, in the creator's words, and who else is in;
+ *   3. the way to keep it — a line about the next period, from the door they used.
+ *
+ * A NON-member sees the same three things with the files locked and the way in
+ * underneath. That is deliberate and it is the same decision the storefront
+ * already made: what membership is stays visible, because a wall with no window is
+ * how a tier sells nothing.
+ */
+export function memberRoom({
+  channel, user, consent = null, tiers = [], membership = null, standing = 0,
+  assets = [], roster = [], flash = null, membershipsOn = false,
+}) {
+  const state = membershipState(membership);
+  const inRoom = state === 'active';
+  const myTier = Number(membership?.tier_no) || 0;
+  const named = roster.filter((m) => m.profile_id !== user?.id);
+  /*
+   * Every members-only file, each with one question answered about it: does THIS
+   * person's tier open it. Written once, as a predicate, because the wrong version
+   * of it is the bug this page invites — a visitor who is wrong on the generous side
+   * here is shown a list of files as theirs that the file page will refuse.
+   */
+  const memberFiles = assets.filter((a) => a.unlock_mode === 'members');
+  const opensFor = (a) => inRoom && (Number(a.member_tier) || 1) <= myTier;
+  const mine = memberFiles.filter(opensFor);
+  const locked = memberFiles.filter((a) => !opensFor(a));
+  // The tier this room is about: the one they hold, or the entry one they would.
+  const roomTier = tierByNo(tiers, myTier) ?? tiers[0] ?? null;
+  const price = roomTier ? attentionProgress({ tier: roomTier, standing }) : null;
+  const doors = roomTier ? doorsOf(roomTier) : { dues: false, attention: false };
+
+  const fileRow = (a, open) => `<li class="member-room-file">
+    <span class="locked-glyph" aria-hidden="true">${open ? '✓' : '🔒'}</span>
+    <a href="/s/${esc(channel.slug)}/a/${esc(a.slug)}">${esc(a.title)}</a>
+    <span class="fine">${open ? 'open to you' : `${esc(tierByNo(tiers, Number(a.member_tier) || 1)?.name || defaultTierName(Number(a.member_tier) || 1))} and above`}</span>
+  </li>`;
+
+  return layout({
+    title: `${channel.name} — the member room`, user, activeChannel: null, consent, current: null,
+    body: `
+<a class="back-link" href="/s/${esc(channel.slug)}">← ${esc(channel.name)}</a>
+
+<div class="section">
+  <div class="section-head">
+    <h1>The member room</h1>
+    <p>${inRoom
+    ? `You are a member of ${esc(channel.name)}. Everything your tier opens is on this page, and the way to keep it is at the bottom.`
+    : (user
+      ? `This is what membership of ${esc(channel.name)} opens. You are not a member yet — the way in is at the bottom of the page.`
+      : `This is what membership of ${esc(channel.name)} opens, and who is already in. Sign in to see where you stand, or find a way in at the bottom of the page.`)}</p>
+  </div>
+  ${flashNote(flash)}
+  ${inRoom ? '' : `<div class="note note-info" role="status">
+    <strong>Members-only files are listed, not hidden.</strong>
+    <p class="small" style="margin:var(--space-2) 0 0">${esc(ADS_AROUND_LINE)}</p>
+  </div>`}
+  ${user && state !== 'none'
+    // The same card the storefront shows, in the same colours, because it is the
+    // same fact about the same person. Rendering a second, prettier version of it
+    // here is how a member ends up reading two different sentences about one
+    // membership. `inRoom` drops the card's link back to this page.
+    ? `<div style="margin-top:var(--space-5)">${myMembershipCard({
+      channel, membership, tiers, rosterSize: roster.length, standing, inRoom: true,
+    })}</div>`
+    : ''}
+</div>
+
+<div class="section">
+  <div class="section-head">
+    <h2>${inRoom ? 'What this opens for you' : 'What membership opens'}</h2>
+    <p>${memberFiles.length
+    ? (inRoom
+      ? `Every file behind the door, and which of them your tier opens.`
+      : `Every file the store keeps for members. Which tier opens which is the store's decision, not the platform's.`)
+    : 'Nothing is behind the door yet — the store has not published a members-only file.'}</p>
+  </div>
+  ${memberFiles.length
+    ? `<ul class="member-room-files">${memberFiles.map((a) => fileRow(a, opensFor(a))).join('')}</ul>`
+    : `<div class="empty">A store with no members-only file cannot sell a membership, and this one has not set one yet.</div>`}
+  ${inRoom && !mine.length && locked.length ? `<p class="fine">None of these are open to your tier yet — the store sets which tier opens which file.</p>` : ''}
+</div>
+
+<div class="section">
+  <div class="section-head">
+    <h2>Who else is here</h2>
+    <p>${named.length ? `${plural(named.length, 'person', 'people')} are named on this store's list.` : 'Nobody is named yet.'}</p>
+  </div>
+  ${memberRoster(named) || `<div class="empty">The roster is empty. Being named is the perk, and it is each member&rsquo;s own choice.</div>`}
+</div>
+
+${channel.membership_note ? `<div class="section">
+  <div class="section-head"><h2>Where the dues go</h2>
+    <p>In the creator's own words. bytebikri is not in this path.</p></div>
+  <div class="note note-info"><p class="small" style="margin:0">${esc(channel.membership_note)}</p>
+    <p class="fine" style="margin-top:var(--space-2)">${esc(MONEY_LINE)}</p></div>
+</div>` : ''}
+
+<div class="section">
+  <div class="section-head">
+    <h2>${inRoom ? 'Keeping it' : 'Getting in'}</h2>
+    <p>${inRoom
+    ? `Your period ends ${membership?.period_end ? esc(longDay(membership.period_end)) : 'at the end of the period you have'}. `
+      + 'Watch anything on this store before then and the next period starts building itself — the counter below '
+      + `is that, not a joining fee. ${esc(LAPSE_LINE)}`
+    : 'Two doors, and only one of them is money. The first is dues sent straight to the creator; the second is '
+      + 'views on this store’s own files, and the price is the platform’s.'}</p>
+  </div>
+  ${inRoom ? '' : ''}
+  ${doors.dues && !inRoom ? `<p class="small"><strong>With dues.</strong> ${esc(MONEY_LINE)}
+    <a href="/s/${esc(channel.slug)}#join">Send the reference →</a></p>` : ''}
+  ${doors.attention ? `<p class="small"><strong>By watching.</strong> ${esc(attentionLine(roomTier))}</p>
+    ${user
+    ? `<p class="fine">${esc(attentionStandingLine({ tier: roomTier, standing }))}</p>`
+    : ''}
+    ${watchingDoor({ channel, tier: roomTier, standing, user, membership, price, wide: true })}` : ''}
+  ${membershipsOn ? '' : `<p class="fine">${esc(FREE_PLAN_LINE)}</p>`}
+</div>`,
+  });
+}
+
+/**
+ * The watching door, as one control, used by the storefront's tier cards and by the
+ * member room.
+ *
+ * One function because the three states it has to get right are exactly the states
+ * two copies would drift apart on:
+ *
+ *   * a visitor who is not signed in gets a way in that does not need a page of
+ *     explanation first;
+ *   * somebody with no membership reads where they stand against the price;
+ *   * and a MEMBER reads the same counter as a NEXT period rather than as a joining
+ *     fee — which is what the button does for them, because `joinByAttention`
+ *     extends an active membership instead of refusing it. A member's own tier is
+ *     the only door that renders for them: pressing a lower tier's door would be
+ *     answered with the membership they already hold, and an upgrade is a dues
+ *     decision, not a watching one.
+ */
+function watchingDoor({ channel, tier, standing = 0, user, membership = null, price = null, wide = false }) {
+  if (!tier) return '';
+  const cost = price ?? attentionProgress({ tier, standing });
+  const state = membershipState(membership);
+  const holds = state === 'active' && Number(membership.tier_no) === Number(tier.tier_no);
+  // A member of another tier does not see this door at all.
+  if (state === 'active' && !holds) return '';
+  const size = wide ? 'btn btn-primary btn-sm' : 'btn btn-sm';
+  const button = (label, disabled) => `<form method="post" action="/s/${esc(channel.slug)}/join/watching"${wide ? ' style="margin-top:var(--space-2)"' : ''}>
+    <input type="hidden" name="tier" value="${esc(String(tier.tier_no))}">
+    <button class="${size}${cost.ready ? ' btn-primary' : ''}" type="submit"${disabled ? ' disabled' : ''}>${label}</button>
+  </form>`;
+  return `
+      <div class="tier-watching">
+        <p class="small" style="margin:0"><strong>${holds ? 'Another period' : 'Or join by watching'}.</strong>
+          ${esc(attentionLine(tier))}</p>
+        ${user
+    ? `<p class="fine" style="margin-top:var(--space-2)">${esc(holds
+      ? attentionBankedLine({ tier, standing })
+      : attentionStandingLine({ tier, standing }))}</p>
+        ${cost.ready
+      ? button(holds ? 'Add another period by watching' : 'Join by watching', false)
+      : button(`${cost.short} more view${cost.short === 1 ? '' : 's'} to go`, true)}
+        <p class="fine" style="margin-top:var(--space-2)">${esc(ATTENTION_MONEY_LINE)}</p>`
+    : `<a class="btn btn-sm" href="/login?next=${encodeURIComponent(`/s/${channel.slug}#join`)}">Sign in to join by watching</a>`}
+      </div>`;
 }
 
 /**
@@ -1069,7 +1290,9 @@ function joinPanel({ channel, user, tiers, membership, assets = [], flash = null
  * in — a locked thing people can see is a shop window, and the researched lesson
  * from every paywall is that the teaser is never the thing behind the wall.
  */
-function membersSection({ channel, user, tiers, membership, roster, membershipsOn, assets = [], flash = null }) {
+function membersSection({
+  channel, user, tiers, membership, roster, membershipsOn, assets = [], standing = 0, flash = null,
+}) {
   if (!tiers.length) return '';
   const named = roster.filter((m) => m.profile_id !== user?.id);
   return `<section class="section" id="members">
@@ -1080,8 +1303,8 @@ function membersSection({ channel, user, tiers, membership, roster, membershipsO
   </div>
   ${flash ? `<div class="note note-${flash.kind === 'danger' ? 'warning' : 'success'}" role="status">${esc(flash.message)}</div>` : ''}
   ${memberRoster(named)}
-  ${membership ? myMembershipCard({ channel, membership, tiers, rosterSize: named.length }) : ''}
-  ${membershipsOn ? joinPanel({ channel, user, tiers, membership, assets }) : ''}
+  ${membership ? myMembershipCard({ channel, membership, tiers, rosterSize: named.length, standing }) : ''}
+  ${membershipsOn ? joinPanel({ channel, user, tiers, membership, assets, standing }) : ''}
 </section>`;
 }
 
@@ -1092,6 +1315,7 @@ export function storefront({
   // whether the plan includes the feature at all. Empty tiers means the section
   // is not rendered — a store that does not use this looks exactly as it did.
   tiers = [], membership = null, roster = [], membershipsOn = false, memberFlash = null,
+  standing = 0,
   // The store's chosen look. `themeStyle` is three custom properties rather than a
   // class per theme, so a new palette is one entry in `themes.js` and no stylesheet
   // change — and the band it paints sits behind text this module already colours,
@@ -1235,7 +1459,7 @@ ${placed.head}
 </section>
 
 
-${membersSection({ channel, user, tiers, membership, roster, membershipsOn, assets, flash: memberFlash })}
+${membersSection({ channel, user, tiers, membership, roster, membershipsOn, assets, standing, flash: memberFlash })}
 
 ${placed.mid}
 ${placed.foot}`,
@@ -1789,6 +2013,9 @@ export function assetPage({
   // the name of the tier this file wants. Passed in rather than looked up,
   // because a view renders synchronously and decides nothing about access.
   memberCover = null,
+  // 'covered' | 'ads' | 'members' | 'none', from `doorFor` in memberships.js.
+  memberDoor = 'none',
+  memberTierAdMode = 'ad_free',
   memberTiers = [],
   memberTierName = null,
   // One sentence for the owner when their file is not available to everyone.
@@ -1882,9 +2109,22 @@ export function assetPage({
   const membersOnly = asset.unlock_mode === 'members';
   const wantedTier = membersOnly ? (Number(asset.member_tier) || 1) : 0;
   const wantedName = memberTierName || defaultTierName(wantedTier);
+  /*
+   * A member of a `supporter` tier opening a members-only file.
+   *
+   * They are in — the file is theirs to open — but their tier deliberately kept the
+   * ordinary asks, so what opens it is the same ad any other visitor watches. The
+   * page says which of the two arrangements is in force rather than leaving them to
+   * work out why a membership is being asked for a view.
+   */
+  const memberPaysAds = membersOnly && memberDoor === 'ads';
   const memberGate = `<div class="member-gate">
     <p class="small"><strong>${esc(wantedName)} members open this.</strong>
-      ${esc(wantedTier === 2 ? 'It is the top tier’s file.' : 'Any member can open it — no ad, while the dues are current.')}</p>
+      ${esc(wantedTier === 2
+    ? 'It is the top tier’s file.'
+    : memberTierAdMode === 'supporter'
+      ? 'Any member can open it, and this tier keeps the ordinary asks — a membership here is the belonging.'
+      : 'Any member can open it — no ad, while the dues are current.')}</p>
     <a class="btn btn-primary btn-lg btn-block" href="/s/${esc(channel.slug)}#members">See what membership is</a>
     <p class="fine" style="margin-top:var(--space-3);text-align:center">${esc(MONEY_LINE)}</p>
   </div>`;
@@ -1918,8 +2158,9 @@ export function assetPage({
       See what membership is
     </a>
     <p class="fine" style="margin-top:var(--space-3);text-align:center">
-      Membership opens a store's member files with no ad at all, and the dues go straight to the creator —
-      bytebikri never receives them. It does not open an ad-gated file sooner.
+      Membership opens a store's member files — with no ad, unless the tier you pick keeps the ordinary
+      asks, which its own card says before you join. The dues go straight to the creator; bytebikri never
+      receives them. Membership does not open an ad-gated file sooner.
     </p>` : `
     <p class="fine" style="margin-top:var(--space-4);text-align:center">
       Waiting is the way back here: this store sells no memberships, and the pause lifts by itself.
@@ -1942,26 +2183,12 @@ export function assetPage({
   // the client fills this line in with the break's own position instead.
   const modalAsk = breaksMode ? null : ask;
 
-  const actionBlock = refusalBlock || (open
-    ? `<div class="note note-success">${breaksMode
-    ? 'Free to open. No ad before it starts.'
-    : 'Free — no ad needed.'}</div>${breakLine ? `<p class="small">${esc(breakLine)}</p>` : ''}
-       ${breaksMode ? `<div id="unlock-status" class="fine" role="status" aria-live="polite"
-            style="margin-top:var(--space-3);text-align:center"></div>` : ''}${filesPanel}`
-    : unlocked
-      ? `<div class="note note-success"><strong>Unlocked.</strong>
-           ${memberCover
-    ? `This file is open through your <strong>${esc(memberTierName || wantedName)}</strong> membership, for as long as the period you have paid for runs${memberCover.period_end ? ` — ${plural(Math.max(daysLeft(memberCover.period_end) ?? 0, 0), 'day')} left` : ''}.`
-    : accessExpiry(open ? null : accessUntil)}</div>${filesPanel}`
-      : membersOnly
-        ? `${memberGate}${filesPanel}`
-        : withheld
-          // No `filesPanel` here on purpose: an ad-gated file that is still locked
-          // never rendered its manifest, and the withheld rung must take away the
-          // button rather than change anything else about the page. The manifest
-          // arrives with the unlock, exactly as it does one rung earlier.
-          ? withheldBlock
-          : `${blockRung && blockRung.key !== 'quiet' ? `<div class="note note-warning" role="status">
+  /*
+   * The ordinary ask, as one block, so the two places that offer it cannot drift: a
+   * member of a `supporter` tier gets exactly what a visitor to an ad-gated file
+   * gets, and the only difference is one sentence above it saying why.
+   */
+  const watchBlock = `${blockRung && blockRung.key !== 'quiet' ? `<div class="note note-warning" role="status">
                <strong>${esc(blockRung.headline)}</strong>
                <p class="small" style="margin:var(--space-2) 0 0">${esc(blockRung.body)}</p>
              </div>` : ''}
@@ -1974,7 +2201,32 @@ export function assetPage({
            confirms server-to-server that the view completed.
          </p>
          <div id="unlock-status" class="fine" role="status" aria-live="polite"
-              style="margin-top:var(--space-3);text-align:center"></div>`);
+              style="margin-top:var(--space-3);text-align:center"></div>`;
+
+  const actionBlock = refusalBlock || (open
+    ? `<div class="note note-success">${breaksMode
+    ? 'Free to open. No ad before it starts.'
+    : 'Free — no ad needed.'}</div>${breakLine ? `<p class="small">${esc(breakLine)}</p>` : ''}
+       ${breaksMode ? `<div id="unlock-status" class="fine" role="status" aria-live="polite"
+            style="margin-top:var(--space-3);text-align:center"></div>` : ''}${filesPanel}`
+    : unlocked
+      ? `<div class="note note-success"><strong>Unlocked.</strong>
+           ${memberCover
+    ? `This file is open through your <strong>${esc(memberTierName || wantedName)}</strong> membership, for as long as the period you have paid for runs${memberCover.period_end ? ` — ${plural(Math.max(daysLeft(memberCover.period_end) ?? 0, 0), 'day')} left` : ''}.`
+    : accessExpiry(open ? null : accessUntil)}</div>${filesPanel}`
+      : memberPaysAds
+        ? `<div class="note note-info"><strong>Your membership.</strong> This tier keeps the ordinary asks, so the same
+             view opens this file as opens any other — the belonging is the roster, the member room, and the file being
+             listed for you.</div>${watchBlock}`
+        : membersOnly
+          ? `${memberGate}${filesPanel}`
+          : withheld
+            // No `filesPanel` here on purpose: an ad-gated file that is still locked
+            // never rendered its manifest, and the withheld rung must take away the
+            // button rather than change anything else about the page. The manifest
+            // arrives with the unlock, exactly as it does one rung earlier.
+            ? withheldBlock
+            : watchBlock);
 
   const kindLabel = { video: 'Video', audio: 'Audio', image: 'Image', file: 'File' }[previewFile?.kind] || null;
   const placed = placeSlots(slots);
@@ -1993,7 +2245,7 @@ export function assetPage({
       // The stage's own sentence. A members-only file behind an ad-shaped veil
       // reading "Unlocks after the ad" would be the page's one outright lie: no ad
       // opens this, and no amount of watching one will.
-      lockedReason: membersOnly ? `${wantedName} members open this — no ad` : null,
+      lockedReason: membersOnly && !memberPaysAds ? `${wantedName} members open this — no ad` : null,
       slug: channel.slug, assetSlug: asset.slug,
     })}
 
@@ -2001,7 +2253,8 @@ export function assetPage({
       <h1>${esc(asset.title)}</h1>
       ${open ? pill('Free', 'success')
     : unlocked ? pill(memberCover ? 'Members' : 'Unlocked', 'success')
-      : membersOnly ? pill('Members', 'accent') : pill('Ad-gated', 'locked')}
+      : membersOnly ? pill(memberPaysAds ? 'Members · watch to open' : 'Members', 'accent')
+        : pill('Ad-gated', 'locked')}
       ${user && user.id === channel.owner_id
     ? `<a class="btn btn-sm" href="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}">Edit this file</a>` : ''}
     </div>
@@ -2023,7 +2276,10 @@ export function assetPage({
           <dt>Files</dt><dd>${plural(files.length, 'file')}</dd>
           ${kindLabel ? `<dt>Format</dt><dd>${esc(kindLabel)}${media ? ' — plays in the page' : ''}</dd>` : ''}
           <dt>Access</dt><dd>${open ? 'Free'
-    : membersOnly ? (unlocked ? `Open to you as a ${esc(memberTierName || wantedName)}` : `${esc(wantedName)} members — no ad`)
+    : membersOnly
+      ? (unlocked ? `Open to you as a ${esc(memberTierName || wantedName)}`
+        : memberPaysAds ? `${esc(wantedName)} members — the ordinary ask`
+          : `${esc(wantedName)} members — no ad`)
       : unlocked ? 'Unlocked' : plural(policy?.ads_required || 1, 'rewarded ad')}</dd>
           <dt>${membersOnly ? 'Open while' : 'Unlock lasts'}</dt><dd>${membersOnly
     ? 'the dues you have paid for are current'
@@ -5861,6 +6117,11 @@ ${flashNote(flash)}
     // gives away, without opening five file pages. Read from the same list the
     // storefront reads, so the two cannot disagree about what is behind the door.
     const behind = files.filter((a) => a.unlock_mode === 'members' && (Number(a.member_tier) || 1) <= tierNo);
+    // Which door this tier currently has, read back out of the pure rule rather than
+    // off the column: the picker and the page can then never show different things.
+    const doors = doorsOf(t);
+    const joinModeNow = doors.dues && doors.attention ? 'both' : doors.attention ? 'attention' : 'dues';
+    const joinModeOptions = JOIN_MODES.map((m) => `<option value="${m}"${joinModeNow === m ? ' selected' : ''}>${esc(JOIN_MODE_LABEL[m])}</option>`).join('');
     const accentOptions = ACCENT_KEYS.map((k) => `<option value="${k}"${t.accent === k ? ' selected' : ''}>${esc(ACCENTS[k].label)}</option>`).join('');
     const periodOptions = PERIODS.map((p) => `<option value="${p}"${Number(t.period_months) === p ? ' selected' : ''}>${p === 1 ? 'a month' : p === 3 ? 'every three months' : 'a year'}</option>`).join('');
     return `<form class="tier-editor" method="post"
@@ -5890,6 +6151,26 @@ ${flashNote(flash)}
           <select class="input" id="t${tierNo}-accent" name="accent">${accentOptions}</select>
         </div>
       </div>
+      <div class="row" style="gap:var(--space-4);align-items:flex-start">
+        <div class="field" style="flex:1 1 200px">
+          <label for="t${tierNo}-doors">How people join</label>
+          <select class="input" id="t${tierNo}-doors" name="joinMode">
+            ${joinModeOptions}
+          </select>
+          <span class="hint">Watching opens the same tier to people who cannot pay, and every view is still
+            ad revenue you keep. ${esc(ATTENTION_SELLER_LINE)}</span>
+        </div>
+        <div class="field" style="flex:1 1 200px">
+          <label for="t${tierNo}-ads">What member files do</label>
+          <select class="input" id="t${tierNo}-ads" name="adMode">
+            ${AD_MODES.map((m) => `<option value="${m}"${adModeOf(t) === m ? ' selected' : ''}>${m === 'ad_free' ? 'Open with no ad — the default' : 'Keep the ordinary asks'}</option>`).join('')}
+          </select>
+          <span class="hint">${esc(SUPPORTER_SELLER_LINE)}</span>
+        </div>
+      </div>
+      ${adModeOf(t) === 'supporter' && holders ? `<p class="fine" style="color:var(--warning-text)">
+        ${plural(holders, 'member')} joined while this tier gave files with no ad. They keep that until their period ends;
+        this changes what the next join gets.</p>` : ''}
       <div class="field">
         <label for="t${tierNo}-perks">What they get, in one line</label>
         <input class="input" id="t${tierNo}-perks" name="perks" maxlength="160" value="${esc(t.perks || '')}"
@@ -5957,7 +6238,9 @@ ${flashNote(flash)}
       <td data-label="Joined">${m.joined_at ? longDay(m.joined_at) : '—'}</td>
       <td data-label="State"><span class="pill${state === 'active' ? ' pill-success' : state === 'pending' ? '' : ' pill-warning'}">${esc(label)}</span>
         ${state === 'active' && left !== null ? `<span class="fine">${plural(left, 'day')} left</span>` : ''}</td>
-      <td data-label="Confirmed">${m.confirmed_at ? longDay(m.confirmed_at) : 'not confirmed'}</td>
+      <td data-label="Confirmed">${m.join_method === 'attention'
+    ? `by watching — ${esc(plural(Number(m.standing_used) || 0, 'view'))}`
+    : m.confirmed_at ? longDay(m.confirmed_at) : 'not confirmed'}</td>
       <td class="fine" data-label="Listed">${m.publicly_listed ? 'named on the storefront' : 'hidden from the list'}</td>
     </tr>`;
   }).join('');
@@ -5972,7 +6255,8 @@ ${flashNote(flash)}
 <div class="section">
   <div class="section-head">
     <h2>Waiting on you</h2>
-    <p>Someone said they sent dues. Check your own statement for the reference, then confirm or say you did not find it.</p>
+    <p>Someone said they sent dues. Check your own statement for the reference, then confirm or say you did not find it.
+      A join by watching never appears here: the platform counted the views, so there is nothing for you to check.</p>
   </div>
   ${pending.length
     ? `<ul class="queue">${queue}</ul>`
@@ -6039,7 +6323,7 @@ ${flashNote(flash)}
   </div>
   ${members.length
     ? `<div class="table-scroll"><table class="table table-stacked">
-        <thead><tr><th>Member</th><th>Joined</th><th>State</th><th>Confirmed</th><th>Listed</th></tr></thead>
+        <thead><tr><th>Member</th><th>Joined</th><th>State</th><th>How they got in</th><th>Listed</th></tr></thead>
         <tbody>${roster}</tbody>
       </table></div>`
     : `<div class="empty">No members yet. A file set to "Members only" is the invitation that works — the store

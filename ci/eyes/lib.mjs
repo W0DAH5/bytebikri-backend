@@ -72,9 +72,24 @@ export async function sessionFor(browser, who, { dir = '/tmp/eyes', base = 'http
   // and a 404 there for a seller would look exactly like a refused sign-in. The
   // account name is not the store slug either — nima's store is nima-crafts, and
   // guessing `/dashboard/nima` proved nothing except that a 404 looks like a refusal.
-  const proofPath = who.startsWith('operator') ? '/admin' : `/dashboard/${STORE_SLUG[who.split('@')[0]] || who.split('@')[0]}`;
-  const proof = await p.goto(base + proofPath);
-  if (proof.status() !== 200) {
+  const accountName = who.split('@')[0];
+  const proofPath = who.startsWith('operator') ? '/admin' : `/dashboard/${STORE_SLUG[accountName] || accountName}`;
+  let proof = await p.goto(base + proofPath);
+  let took = proof.status() === 200;
+  if (!took) {
+    /*
+     * An account with no store of its own has no dashboard to prove itself against,
+     * and a 404 there is indistinguishable from a refused sign-in. `carol` is exactly
+     * that account — the demo's buyer, who exists to check what a PERSON sees — and
+     * this used to throw on her, which is a harness bug reported as a product one.
+     * `/plus` is the page every signed-in account owns, and the sign-out control is
+     * the difference between "her page rendered" and "the sign-in page did".
+     */
+    proof = await p.goto(`${base}/plus`);
+    took = proof.status() === 200
+      && (await p.locator('form[action="/logout"]').count()) > 0;
+  }
+  if (!took) {
     await ctx.close();
     throw new Error(`sign-in did not take (${proof.status()}) — rate limited? restart the web process and retry`);
   }

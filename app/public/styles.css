@@ -2604,6 +2604,42 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 .tier-file-list li { display: flex; gap: var(--space-2); align-items: baseline; }
 .tier-file-list .locked-glyph { font-size: var(--text-2xs); opacity: 0.8; }
 
+/* The watching door, inside the tier card it belongs to. Separated by a rule
+   rather than a box: it is a second way through the same door, not a second offer,
+   and a boxed panel beside the price reads as an upsell rather than as the same
+   membership. */
+.tier-watching {
+  display: grid; gap: var(--space-2);
+  margin-top: var(--space-1);
+  padding-top: var(--space-3);
+  border-top: 1px dashed var(--border-subtle);
+}
+.tier-watching p { margin: 0; }
+.tier-watching form { margin: 0; }
+
+/* The member room's file list. One column, always: a list of what you can open is
+   read, not scanned, and a file whose state is either open or closed wants its
+   sentence on the same line as its name. */
+.member-room-files {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; gap: var(--space-2);
+}
+.member-room-file {
+  display: flex; align-items: baseline; gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+.member-room-file a { font-weight: 600; overflow-wrap: anywhere; }
+.member-room-file .fine { margin-left: auto; white-space: nowrap; }
+.member-room-file .locked-glyph { font-size: var(--text-2xs); opacity: 0.8; }
+@media (max-width: 560px) {
+  /* Stacked, so a long file name and its state never fight for the same line. */
+  .member-room-file { flex-wrap: wrap; }
+  .member-room-file .fine { margin-left: calc(var(--text-2xs) + var(--space-3)); white-space: normal; }
+}
+
 @media (max-width: 560px) {
   .store-head { padding: var(--space-5) var(--space-4); }
   .store-head--themed::after { inset-inline: var(--space-4); }

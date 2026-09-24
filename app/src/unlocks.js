@@ -77,6 +77,34 @@ export async function startUnlock({ assetId, userId, providerId, personalised = 
     return { ok: true, alreadyUnlocked: true };
   }
 
+  /*
+   * A MEMBERS-ONLY FILE'S DOOR, which is not an ad door.
+   *
+   * Nothing used to check this here. The page hid the button and the page is not
+   * the boundary: a non-member who posted to this route directly could watch the
+   * ads, and the grant below would write an ordinary rewarded unlock row for a file
+   * whose whole point is that it opens for members. Found while building the second
+   * door onto the tier, which is the same question asked from the other direction.
+   *
+   * Three answers, from one rule (`doorFor` in `memberships.js`):
+   *
+   *   covered — their membership already opens it, so there is nothing to unlock;
+   *             the content path writes the membership unlock on first fetch.
+   *   ads     — a member of a `supporter` tier: the ordinary ask IS their door, and
+   *             membership bought them the belonging rather than the file.
+   *   members — not theirs. Refused, and the refusal does not say which tier, because
+   *             naming the tier is the store's job on the page that offers it.
+   */
+  if (asset.unlock_mode === 'members') {
+    const { door } = await store.memberDoorFor({
+      profileId: userId, channelId: asset.channel_id, asset,
+    });
+    if (door === 'covered') return { ok: true, alreadyUnlocked: true };
+    if (door !== 'ads') {
+      return { ok: false, error: 'this file opens for the store\u2019s members' };
+    }
+  }
+
   // Only connections whose provider has a postback adapter can be used: if we
   // cannot verify the network's callback we can never grant the unlock, and
   // showing a user an ad we will not honour is worse than showing none.
