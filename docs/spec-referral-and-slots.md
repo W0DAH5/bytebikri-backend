@@ -7,6 +7,26 @@
 Two mechanisms, roughly three days of work, that mean bytebikri earns from ad money at launch without
 touching a single rupee of anyone else's.
 
+> **Where this spec was overtaken by the build (added 2026-09-24).** The inventory split shipped; the
+> referral plumbing did NOT — `ad_connections` carries `referral_attributed` and
+> `referral_recorded_at` from migration 0001, nothing writes or reads either column, and no outbound
+> referral link exists. That is recorded here rather than quietly dropped, because a spec marked
+> "implementation-ready" whose Part A was never built is exactly the document a future reader trusts by
+> mistake.
+>
+> The numbers Part B shipped with are not the numbers proposed here, and each change has a reason in
+> `AD_ECONOMY.md`:
+>
+> | This spec | Shipped | Why |
+> |---|---|---|
+> | A page may carry 5–8 positions | **1–2 the store owns, plus at most one of ours; three is the ceiling** | Density past ~3 impressions is where ad fatigue starts, and the third position is worth less than the visitor it costs |
+> | "Under 3 slots, you take nothing" | **a page with no position of its own is never taxed** (`minTenantSlotsBeforeTax: 1`) | The old threshold became unreachable once the cap fell to three, which would have silently killed the rent leg |
+> | The tax is a share of the page's positions | **the platform's position is a separate position at the next rank down, never rank 1** | Converting one of the store's positions would have handed us a Free store's only slot, at rank 1 — the one rule this policy has never broken |
+>
+> The authority is `src/slots.js` (`POLICY`, `allocateSlots()`), and the reasoning is in
+> `AD_ECONOMY.md` §1 and `REVENUE_ARCHITECTURE.md` (revenue 2). Read this file for the mechanism; read
+> those for the numbers.
+
 ---
 
 # PART A — Referral plumbing

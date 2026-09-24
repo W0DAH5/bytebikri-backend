@@ -143,11 +143,52 @@ thing under the header) and the platform's as the **last element** of a 4,837px 
    a theme, a badge) rather than more boxes. The seller's panel still says what each charge is, and the
    price did not move.
 
+## Two questions that look alike, and are not
+
+Both get called "roster pricing". They are different decisions about different legs, and separating them
+is most of the answer:
+
+### 1. What a person pays for their own look (leg 5) — **settled: flat**
+
+One price, NPR 149 a month, everything included. There is nothing to scale: a palette and a gradient cost
+the platform nothing to render, and metering a cosmetic would be the per-item pricing every comparable
+shop has been punished for (`AD_ECONOMY.md` §4). If a store-scale capability ever joined this plan — a
+verified highlight, a profile page — the question would return, because then there *would* be something
+with a cost behind it. Until then, a flat price is not a simplification; it is the honest shape of a
+product whose marginal cost is zero.
+
+### 2. Whether a store with a big paying roster owes more rent (leg 4) — **charged on traffic, not on dues**
+
+The argument for scaling the rent with the roster is that a store with five hundred paying members is
+richer than one with five, so it should pay more. Two facts in the code say no, and one of them is
+decisive rather than a preference:
+
+- **The rent buys a position, and a roster creates no position.** The platform's ad slot is never placed
+  inside a member surface (that was settled when the member story was built: an ad may sit *around* a
+  premium surface, never inside the thing somebody paid for). So a store with five hundred members has
+  exactly the same number of rentable positions on exactly the same pages as a store with none. What the
+  network pays for a position is a function of the traffic that sees it — and `estimateRentSlotValue()`
+  prices it exactly that way: `pageviews × RPM ÷ positions`. **Traffic is already the scaling variable.**
+- **Scaling rent on dues would make bytebikri a party to a flow it is built not to touch.** Leg 2 is
+  member → creator, with the platform unable to confirm, refund or withhold a rupee of it; `MONEY_MAP`
+  says so in the seller's own panel, and `confirmMembership` is owner-only in SQL. A rent that rose with
+  the roster would be bytebikri charging for the size of a flow it claims not to be part of — a
+  percentage by another name. The one thing this money model refuses everywhere is exactly that.
+
+So the rent stays on traffic. What *is* open, and is a business call rather than an architecture one:
+
+- **Does a members-only store with low public traffic underpay?** Its rent can be near zero precisely
+  while its dues are healthy, because dues traffic is not public traffic. Today's answer is that this is
+  correct rather than a problem — the platform's inventory is public pages, and a store that earns from
+  dues is a store that proves the membership feature works. If that ever needs a floor, the honest
+  instrument is a **minimum rent on a paid plan**, charged flat to every paid store, and never a
+  percentage of anybody's dues.
+
 ## Still open (yours to call)
 
-1. **Member-paid ad-free, charged to the seller** — a capability, a price, and a rule about our rent.
-2. **Roster pricing for the person's premium** — flat (built: NPR 149/month) versus scaled with what a
-   member uses. Flat is what shipped, because there is nothing to scale: a palette costs the platform
-   nothing to render, and metering a cosmetic would be the per-item pricing the research refuses.
-2. **Does a big roster pay more rent?** Traffic prices the rent slot already, so a busy members store
-   pays more — but a 500-member store with flat traffic pays the same as one with none.
+1. **Member-paid ad-free, charged to the seller** — a capability, a price, and a rule about our rent. It
+   cannot be sold by withholding ad money (the networks pay the store directly), so it needs a
+   seller-side capability rather than a buyer-side promise.
+2. **A minimum rent floor on the paid plans**, if the question above ever stops being rhetorical. Flat,
+   charged the same to every paid store, published on the pricing page — the failure mode to avoid is a
+   floor that quietly scales with a store's success.
