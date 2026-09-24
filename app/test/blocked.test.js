@@ -92,6 +92,16 @@ test('the copy blames the view, never the visitor, and never names a browser', (
   // turns a wall into a wait.
   const last = LADDER[LADDER.length - 1];
   assert.match(last.body, /listed|still opens|membership|resets/i);
+
+  // The middle rung may name membership as a way forward, but not as a way through
+  // THIS door. Its first cut said a membership "opens its files with no ad at all",
+  // which on an ad-gated file is the same half-truth the last rung was corrected for:
+  // membership opens the store's member-only files, never the ad on the file you are
+  // looking at. A person who paid dues expecting this file to open would have been
+  // told by the product itself that it would.
+  const explained = LADDER.find((r) => r.key === 'explained');
+  assert.match(explained.body, /members only/, 'membership is described by what it does open');
+  assert.match(explained.body, /does not open this ad-gated file sooner/, 'and by what it does not');
 });
 
 test('what the platform refuses to do is written down with its reasons', () => {

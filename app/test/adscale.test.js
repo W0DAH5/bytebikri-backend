@@ -170,8 +170,10 @@ test('the ask is described in whole words wherever it is shown', () => {
   assert.match(askSentence({ ads: 2, seconds: 30, level: 'standard' }), /2 ads of 30 seconds of your time/);
   assert.match(askSentence({ ads: 1, seconds: 15, level: 'light' }), /chose the minimum/);
   // The input line names the mechanism, because a number that appears without an
-  // explanation is a number nobody trusts.
-  assert.match(ASK_INPUT_LINE, /price and your plan/);
+  // explanation is a number nobody trusts — and it must not call the value a "price",
+  // because the field two lines above it says in as many words that it is not one.
+  assert.match(ASK_INPUT_LINE, /worth and by your plan/);
+  assert.doesNotMatch(ASK_INPUT_LINE, /\bprice\b/, 'the panel does not contradict its own field label');
 });
 
 // ---------------------------------------------------------------------------
@@ -220,4 +222,70 @@ test('setUnlockPolicy derives the ask, and a hand-crafted POST cannot inflate it
   // the tighter of the two, and nothing the app writes can reach the schema's edge.
   assert.ok(forced.ads_required <= ASK_ABSOLUTE.ads);
   assert.ok(forced.ad_min_seconds <= ASK_ABSOLUTE.seconds);
+});
+
+// ---------------------------------------------------------------------------
+// The floor is not a convention — and the way it was broken is worth naming
+// ---------------------------------------------------------------------------
+
+test('no writer can put a file below the floor the product publishes', async () => {
+  // This test exists because a browser pass found the promise already broken in two
+  // places a unit test does not look: the PUBLISH form still carried a "Minimum ad
+  // length" box and its route still honored it, and this repository's own demo seed
+  // wrote five seconds "for demo friendliness". The file page then said "Now: 1 ad of
+  // 5 seconds" directly above the ladder's "1 ad of 15 seconds" — the product
+  // contradicting itself in one panel, on the very screen that explains the rule.
+  //
+  // The fix is a constraint, because the floor is the shortest view a rewarded network
+  // will serve and not a policy a plan or a price may move. What follows is the proof
+  // that it holds against a writer that goes around the store entirely — the shape any
+  // future seeder, script or admin tool would have.
+  const channel = await store.createChannel({
+    ownerId: (await store.userByEmailOrCreate(`ask-floor-${Date.now()}@test.local`)).id,
+    name: 'Floor Test Store', slug: `ask-floor-${Date.now()}`,
+  });
+  const asset = await store.createAsset({ channelId: channel.id, title: 'Floor probe', unlockMode: 'ad_gated' });
+
+  await assert.rejects(
+    () => query('update asset_unlock_policy set ad_min_seconds = 5 where asset_id = $1', [asset.id]),
+    /asset_unlock_policy_ask_bounds/,
+    'a five-second ask is refused by the database, not by a comment',
+  );
+  await assert.rejects(
+    () => query('update asset_unlock_policy set ad_min_seconds = 3000 where asset_id = $1', [asset.id]),
+    /asset_unlock_policy_ask_bounds/,
+    'and so is a fifty-minute one',
+  );
+
+  // The ask the store writes lands inside those bounds on every plan — the ladder is
+  // the tighter of the two, which is why the schema may be wider.
+  for (const code of Object.keys(PLANS)) {
+    const ask = resolveAsk({ valueNpr: 1_000_000, planCode: code, level: 'standard' });
+    assert.ok(ask.seconds >= 15 && ask.seconds <= 600, `${code}: inside the published bounds`);
+    assert.ok(ask.ads <= 10, `${code}: and inside the published count`);
+  }
+
+  // The dead setter stays dead. It was a public method that wrote any number into the
+  // column the pipeline reads; deleting it is what makes "the ask is never typed" a
+  // property rather than a description of the routes somebody happened to remember.
+  assert.equal(store.setAdMinSeconds, undefined, 'there is no setter for a typed ask');
+});
+
+test('the publish path does not accept a typed ask', async () => {
+  // The form and the route, read as source, because the defect this replaces was
+  // exactly a field that survived a rewrite of the logic behind it: `adscale.js` was
+  // written, the file page stopped asking for numbers, and the publish form kept its
+  // box for another round. A test that reads the two files is the only kind that
+  // catches a control nobody wired up yet.
+  const { readFileSync } = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const path = await import('node:path');
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const server = readFileSync(path.join(here, '..', 'server.js'), 'utf8');
+  const views = readFileSync(path.join(here, '..', 'src', 'views.js'), 'utf8');
+
+  assert.doesNotMatch(server, /setAdMinSeconds\(/, 'the publish route writes no typed ask');
+  assert.doesNotMatch(views, /name="adMinSeconds"/, 'and the publish form offers no box for one');
+  // The seed is the other writer that was found: it may not either.
+  assert.doesNotMatch(server, /setAdMinSeconds/);
 });

@@ -80,8 +80,9 @@ export const LADDER = [
     body:
       'This file is unlocked by an ad, and the ad pays the person who made it — ByteBikri never sees that '
       + 'money and cannot hand the file over without it. If your blocker is on, that is why. Two honest '
-      + 'ways forward: allow ads for this page, or join the store as a member, which opens its files with '
-      + 'no ad at all and pays the creator more than an ad does.',
+      + 'ways forward: allow ads for this page, or join the store — the dues go straight to the creator '
+      + 'and open the files that are set to members only. Membership does not open this ad-gated file '
+      + 'sooner, and nobody here will tell you otherwise.',
     offersUnlock: true,
   },
   {

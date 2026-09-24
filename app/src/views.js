@@ -4183,10 +4183,10 @@ ${(() => {
         </select>
       </div>
       <div class="field" style="flex:1 1 200px">
-        <label for="p-seconds">Minimum ad length</label>
-        <input class="input" id="p-seconds" name="adMinSeconds" type="number"
-               min="5" max="120" step="5" value="15">
-        <span class="hint">The network sets the real length. This is the floor you ask for.</span>
+        <span class="field-label">What unlocking will ask for</span>
+        <p class="small" style="margin:var(--space-2) 0 0">One rewarded view of 15 seconds — the floor
+        every file starts at. The ask rises with what the file is worth, and you change it afterwards on
+        the file's own page by choosing a rate, not by typing seconds.</p>
       </div>
     </div>
     <button class="btn btn-primary" type="submit" style="margin-top:var(--space-2)">Publish</button>

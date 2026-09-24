@@ -222,5 +222,9 @@ export const ASK_PROMISE =
  * derived, names the input, and hands back the only lever they have.
  */
 export const ASK_INPUT_LINE =
-  'What a file asks for is set by its price and your plan, not typed in by hand — you price the file, '
-  + 'and this page shows what that means for the person watching.';
+  // "value", not "price": the field directly above says in as many words that this is
+  // not a price, and the first cut of this line called it one — the panel contradicting
+  // itself two lines apart, on the screen that explains the rule. A browser pass caught
+  // it; the sentence and the field label now use the same word.
+  'What a file asks for is set by what you say it is worth and by your plan, not typed in by hand — '
+  + 'you set the value, and this page shows what that means for the person watching.';

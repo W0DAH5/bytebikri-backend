@@ -2014,12 +2014,13 @@ export const store = {
   async unlockPolicy(assetId) {
     return one('select * from asset_unlock_policy where asset_id = $1', [assetId]);
   },
-  async setAdMinSeconds(assetId, seconds) {
-    return one(
-      'update asset_unlock_policy set ad_min_seconds = $2 where asset_id = $1 returning *',
-      [assetId, seconds],
-    );
-  },
+  // `setAdMinSeconds` used to live here: a public setter that wrote any number at all
+  // into the column the unlock pipeline reads, with no policy in it. Three callers
+  // reached it (the publish route, the demo seed, and nothing else) and all three
+  // were writing an ask the product's own promise forbids. It is deleted rather than
+  // guarded, because a guarded setter is still a way to change a number that is not
+  // supposed to be typed: the ask comes from `src/adscale.js`, and the seller's lever
+  // is the level, not the seconds.
 
   async addFile({ assetId, storageKey, filename, mimeType, sizeBytes, checksum }) {
     return one(

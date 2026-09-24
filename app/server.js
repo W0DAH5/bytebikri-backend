@@ -3313,10 +3313,14 @@ APP.post('/dashboard/:slug/assets', upload.fields([
       checksum: crypto.createHash('sha256').update(media.buffer).digest('hex'),
     });
 
-    const seconds = Number(req.body.adMinSeconds);
-    if (Number.isFinite(seconds)) {
-      await store.setAdMinSeconds(asset.id, Math.min(Math.max(Math.round(seconds), 5), 120));
-    }
+    // No `adMinSeconds` is read here any more. The publish form used to carry a
+    // "Minimum ad length" box and this route used to honor it, clamped to 5–120 —
+    // which is how a file could be published asking for a five-second view, from the
+    // form that was supposed to have stopped asking. The ask is derived
+    // (`src/adscale.js`) from the file's value and the store's plan, `createAsset`
+    // writes the floor, and the seller changes it afterwards with a LEVEL on the
+    // file page, never a number. 0035 makes the floor a database constraint, so this
+    // route could not write a lower one even if somebody wired the field back up.
 
     await store.audit('asset.created', { assetId: asset.id, channelId: channel.id });
     res.redirect(`${back}?published=${encodeURIComponent(assetSlug)}`);
@@ -5643,8 +5647,12 @@ async function seed({ force = false } = {}) {
     sizeBytes: body.length,
     checksum: crypto.createHash('sha256').update(body).digest('hex'),
   });
-  // Demo-friendly: 5 seconds rather than the real 15.
-  await store.setAdMinSeconds(asset.id, 5);
+  // The ask is left alone deliberately. This seed used to set five seconds "for
+  // demo friendliness", which made the demo show a contradiction no test could see:
+  // the file page's summary line said "Now: 1 ad of 5 seconds" directly above the
+  // ladder's "1 ad of 15 seconds", and the unlock pipeline created pending views no
+  // network would serve. The demo shows the real product or it shows nothing.
+
 
   /**
    * A video asset, so the player has something to play.
@@ -5671,7 +5679,6 @@ async function seed({ force = false } = {}) {
       filename: 'store-walkthrough.mp4', mimeType: 'video/mp4', sizeBytes: clip.length,
       checksum: crypto.createHash('sha256').update(clip).digest('hex'),
     });
-    await store.setAdMinSeconds(videoAsset.id, 5);
     walkthrough = videoAsset;
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;
@@ -5723,8 +5730,6 @@ async function seed({ force = false } = {}) {
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;
   }
-  await store.setAdMinSeconds(bobAsset.id, 5);
-
   // Bob is deliberately near his ceiling: a free store at 17 of 20 files.
   //
   // The demo used to show every seller comfortably inside their allowance, which
