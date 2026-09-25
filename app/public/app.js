@@ -1086,3 +1086,232 @@
     if (!grid.contains(event.relatedTarget)) show(null, false);
   });
 })();
+
+/*
+ * ── THE LIVE SURFACE (§14) ────────────────────────────────────────────────
+ *
+ * A live file is the store's own stream: their host serves it, this browser fetches
+ * it from them, and nothing about it passes through us. Two things are ours to do.
+ *
+ * The first is playback. Safari plays HLS from a plain `src`; Chrome, Firefox, Edge
+ * and Android do not, so they get the vendored hls.js — loaded on demand, from our
+ * own origin, and never from a CDN (the CSP has no third-party script host, and the
+ * vendored copy is pinned by a test).
+ *
+ * The second is the break. The page is rendered with the one window this viewer has
+ * not been served, and this code asks the server every ~15 seconds whether a new one
+ * has been called. A break is NOT decided here and cannot be: no cue list, no timer,
+ * no invented interruption — the only thing that can produce an ask is a row the
+ * store's own POST created, which is what "the platform never inserts a break" means
+ * in practice.
+ *
+ * A break ends at the LIVE EDGE, not where the viewer was. A stream does not wait,
+ * and pretending otherwise would be the page lying about what it can give back.
+ */
+(() => {
+  'use strict';
+
+  const root = document.querySelector('[data-live]');
+  if (!root) return;
+
+  const video = root.querySelector('video');
+  const statusEl = root.querySelector('[data-live-status]');
+  const modal = document.querySelector('#ad-modal');
+  const assetId = root.dataset.assetId;
+  const url = root.dataset.url;
+  const stateUrl = root.dataset.stateUrl;
+  const viewUrl = root.dataset.viewUrl;
+  const pollSeconds = Math.max(5, Number(root.dataset.pollSeconds) || 15);
+  if (!video || !assetId || !url || !stateUrl || !viewUrl) return;
+
+  const say = (text, kind = '') => {
+    if (!statusEl) return;
+    statusEl.textContent = text;
+    statusEl.style.color = kind ? `var(--${kind}-text)` : '';
+  };
+
+  const api = async (target, options = {}) => {
+    const res = await fetch(target, {
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      ...options,
+    });
+    return { status: res.status, ...(await res.json().catch(() => ({ ok: false, error: 'unreadable response' }))) };
+  };
+
+  // ── playback ───────────────────────────────────────────────────────────────
+  //
+  // WHICH PLAYER, AND WHY NOT `canPlayType`. Chromium 153 answers `maybe` to
+  // `canPlayType('application/vnd.apple.mpegurl')` — it CLAIMS native HLS — and then
+  // fetches the playlist and plays nothing, because it has no HLS demuxer at all. A
+  // player chosen by that answer is a black rectangle in the browser most viewers use,
+  // which is the trap §14.2 was written about. The honest question is which media
+  // source the browser has: with MediaSource Extensions, hls.js plays the stream
+  // everywhere; on the one engine without them (Safari) `ManagedMediaSource` is how a
+  // modern Safari announces itself, and the plain `src` in the markup is the player.
+  const loadPlayer = () => new Promise((resolve, reject) => {
+    if (window.Hls) return resolve(window.Hls);
+    const script = document.createElement('script');
+    script.src = '/vendor/hls.min.js';
+    script.onload = () => (window.Hls ? resolve(window.Hls) : reject(new Error('no player')));
+    script.onerror = () => reject(new Error('no player'));
+    document.head.append(script);
+  });
+
+  const playNatively = typeof window.ManagedMediaSource !== 'undefined'
+    || typeof window.MediaSource === 'undefined';
+
+  if (!playNatively) {
+    // The `src` would be an unplayable address for the player we are about to attach,
+    // so it goes first — and comes back if the vendored file cannot be loaded, because
+    // an empty stage plus an explanation helps nobody.
+    video.removeAttribute('src');
+    loadPlayer().then((Hls) => {
+      if (!Hls.isSupported()) throw new Error('no MSE');
+      const player = new Hls({ liveSyncDurationCount: 3, enableWorker: true });
+      player.attachMedia(video);
+      player.on(Hls.Events.MEDIA_ATTACHED, () => player.loadSource(url));
+      player.on(Hls.Events.ERROR, (_event, data) => {
+        if (data?.fatal) say('The stream stopped. Reload to pick it up again at the live edge.', 'danger');
+      });
+    }).catch(() => {
+      video.setAttribute('src', url);
+      say('The vendored player did not load, so this page is using the browser\u2019s own HLS support — '
+        + 'which Safari has and Chrome does not.', 'warning');
+    });
+  }
+
+  // ── the break ──────────────────────────────────────────────────────────────
+  let gating = false;
+  let decline = null;
+  let declinedBreak = null;
+  let declared = null;
+  try { declared = root.dataset.stop ? JSON.parse(root.dataset.stop) : null; } catch { declared = null; }
+
+  document.querySelector('#ad-close')?.addEventListener('click', () => {
+    if (gating && decline) decline();
+  });
+
+  const seekToLiveEdge = () => {
+    try {
+      const { seekable } = video;
+      if (seekable && seekable.length) {
+        const edge = seekable.end(seekable.length - 1);
+        if (Number.isFinite(edge)) video.currentTime = Math.max(edge - 0.5, 0);
+      }
+    } catch { /* nothing buffered yet: there is no edge to seek to */ }
+  };
+
+  const waitForCredit = async (viewId) => {
+    const deadline = Date.now() + 90_000;
+    while (Date.now() < deadline) {
+      const s = await api(`/api/unlock/status?assetId=${encodeURIComponent(assetId)}`
+        + `&viewId=${encodeURIComponent(viewId)}`).catch(() => null);
+      if (s && Number(s.viewsDone) >= Number(s.viewsRequired)) return true;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    return false;
+  };
+
+  const runBreak = async (window_) => {
+    if (!window_ || gating) return;
+    gating = true;
+    video.pause();
+    const declined = new Promise((resolve) => { decline = () => resolve('declined'); });
+    try {
+      const start = await api(viewUrl, {
+        method: 'POST',
+        body: JSON.stringify({ assetId, breakId: window_.breakId }),
+      });
+      if (!start.ok) {
+        // A break that cannot start does not hold the stream hostage: the viewer keeps
+        // watching, and the store's own panel is where the miss is visible. The window
+        // is remembered as settled so the poller does not put the same modal back up
+        // fifteen seconds later, for ever.
+        declinedBreak = window_.breakId;
+        say(start.error || 'Could not start a view. Still watching at the live edge.', 'danger');
+        video.play().catch(() => {});
+        return;
+      }
+      const seconds = Number(start.adConfig?.minSeconds) || 15;
+      const titleEl = document.querySelector('#ad-title');
+      const askLine = document.querySelector('#ad-ask-tail');
+      const providerLine = document.querySelector('#ad-provider');
+      const note = document.querySelector('#ad-note');
+      const countEl = document.querySelector('#ad-count');
+      const progress = document.querySelector('#ad-progress');
+      const hint = document.querySelector('#ad-hint');
+      if (titleEl) titleEl.textContent = 'Your ad is playing';
+      if (askLine) askLine.textContent = 'The store called this break. The stream keeps going; you come back at the live edge.';
+      if (providerLine) providerLine.textContent = `${start.adConfig.providerId} · rewarded video`;
+      if (note) note.textContent = 'The stream moves on when the network confirms the view, not when this countdown ends.';
+      if (hint) hint.textContent = 'If nothing appears in a few seconds, an ad blocker is the usual reason.';
+      if (countEl) countEl.textContent = String(seconds);
+      if (progress) progress.style.width = '0%';
+      if (modal) modal.hidden = false;
+      let left = seconds;
+      const ticker = setInterval(() => {
+        left -= 1;
+        if (countEl) countEl.textContent = String(Math.max(left, 0));
+        if (progress) progress.style.width = `${Math.min(((seconds - left) / seconds) * 100, 100)}%`;
+        if (left <= 0) clearInterval(ticker);
+      }, 1000);
+
+      // The sandbox network, exactly as the door and the timed break drive it. A real
+      // integration never calls this: the network calls us.
+      if (start.adConfig?.devSimulator) {
+        api(`/dev/simulate-network/${encodeURIComponent(start.adConfig.providerId)}`, {
+          method: 'POST',
+          body: JSON.stringify({
+            viewId: start.viewId,
+            connectionId: start.adConfig.connectionId,
+            durationSec: seconds,
+          }),
+        }).catch(() => {});
+      }
+
+      const outcome = await Promise.race([waitForCredit(start.viewId), declined]);
+      clearInterval(ticker);
+      if (modal) modal.hidden = true;
+      if (outcome === 'declined') {
+        // Choosing not to watch is not evasion, and it is not a reason to hold the
+        // stream: the window is remembered as settled for this sitting, so the poller
+        // does not put the same modal back on screen fifteen seconds later.
+        declinedBreak = window_.breakId;
+        say('Break closed. You are back at the live edge — the stream kept going while it was up.');
+      } else if (outcome) {
+        say('View confirmed. Back at the live edge — the stream moved on while the break ran.');
+      } else {
+        say('The network has not confirmed the view yet. Still watching at the live edge.', 'warning');
+      }
+      seekToLiveEdge();
+      video.play().catch(() => {});
+    } finally {
+      gating = false;
+    }
+  };
+
+  // A break that is running when the page opens stops this viewer too — they arrive
+  // INTO it. One this viewer already settled is not asked twice.
+  if (declared && declared.breakId !== declinedBreak) runBreak(declared).catch(() => {});
+
+  const poll = async () => {
+    if (gating) return;
+    const state = await api(stateUrl).catch(() => null);
+    if (!state || state.ok !== true) return;
+    const stop = state.stop;
+    if (stop && stop.breakId !== declinedBreak) {
+      await runBreak(stop).catch(() => {});
+      return;
+    }
+    if (!stop && state.entry === 'covered' && state.cleanEntry) {
+      // Coverage can open while somebody is reading the page: say so rather than
+      // leaving the door's sentence stale.
+      const line = root.querySelector('.live-door');
+      if (line) line.textContent = state.cleanEntry;
+    }
+  };
+
+  poll().catch(() => {});
+  setInterval(() => { poll().catch(() => {}); }, pollSeconds * 1000);
+})();

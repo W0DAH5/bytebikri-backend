@@ -90,6 +90,9 @@ import {
   PLACEMENT_BOUNDS, PLACEMENTS, planFor, stamp, placementSentence, breakCues, breakSentence,
   betweenCues, breaksSupported,
 } from './placement.js';
+// The live panel's own words (§14). Imported from the module that owns the ratio, so
+// the sentence a seller reads and the arithmetic the door enforces are one thing.
+import { lengthWords } from './live.js';
 // The page model (§13): the reader's own words for a step, and where its gates fall.
 import { stepLabel, gateSentence } from './pages.js';
 // The person's own premium: what a name may wear, and the gate that decides whether
@@ -2113,6 +2116,46 @@ function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, 
   return `<div class="stage">${cover}</div>`;
 }
 
+/**
+ * The live player (§14).
+ *
+ * A stream is the one surface where the platform holds no bytes: the URL is the
+ * store's, the browser fetches it from the store's host, and nothing about it passes
+ * through here. The stage says that plainly, because the alternative — a player that
+ * looks like every other player — invites the assumption that we stand behind the
+ * stream the way we stand behind a file we store.
+ *
+ * The element ships with a plain `src`, so a browser that plays HLS natively (Safari,
+ * macOS and iOS) needs no script at all. The client attaches hls.js only where the
+ * browser cannot, which is Chrome, Firefox, Edge and Android — the vendored copy under
+ * `scriptSrc 'self'`, never a CDN.
+ *
+ * `data-stop` is the one break this viewer has not been served yet, straight from
+ * `liveState()`. It is a fact the server computed, not a decision the page makes: the
+ * page has no way to invent a break, which is the whole point of the shape.
+ */
+function liveStage({ url, state, cleanEntry, stateUrl, viewUrl, pollSeconds, markUri, coverUrl, title, assetId, storeName = '' }) {
+  const stop = state?.stop ? esc(JSON.stringify(state.stop)) : '';
+  return `
+    <div class="live" data-live data-asset-id="${esc(assetId)}" data-url="${esc(url || '')}"
+         data-state-url="${esc(stateUrl)}" data-view-url="${esc(viewUrl)}"
+         data-poll-seconds="${esc(String(pollSeconds || 15))}" data-stop="${stop}">
+      <figure class="stage stage-live" data-protect data-asset-id="${esc(assetId)}">
+        <video controls playsinline preload="metadata"${coverUrl ? ` poster="${esc(coverUrl)}"` : ''}
+               controlslist="nodownload noplaybackrate noremoteplayback"
+               disablepictureinpicture disableremoteplayback
+               src="${esc(url || '')}"></video>
+        <div class="stage-mark" style="background-image:url('${esc(markUri)}')" aria-hidden="true"></div>
+        <span class="live-badge">Live</span>
+      </figure>
+      <p class="small live-owner">${esc(title)} is being streamed by ${esc(storeName || 'the store')} from their own
+        host. Nothing about it is recorded here, and a break comes back at the live edge — a stream does not wait,
+        so there is no rewind past what you missed. Press play to join it, at the edge rather than at the start.</p>
+      ${cleanEntry ? `<p class="small live-door">${esc(cleanEntry)}</p>` : ''}
+      <p class="fine" data-live-status role="status" aria-live="polite"></p>
+    </div>`;
+}
+
 /** One line per file, saying what actually happens to it — no blanket promise. */
 function fileTreatment(f) {
   if (f.playable) return { action: 'Plays here', note: 'no download offered' };
@@ -2326,6 +2369,10 @@ export function assetPage({
   // Where this person stopped last time, so the page can offer "continue" rather than
   // making them find their place again. Private: it is only ever this person's.
   progress = null,
+  // The live surface (§14) for a `stream`: the store's URL, the state the server
+  // computed with `liveState()`, and the two endpoints the poller uses. Null for every
+  // other shape — a live player on a file we store would be a player nothing can play.
+  live = null,
   markUri = '', markLabel = '', accessUntil = null, consent = null,
   reviews = [], reviewStats = {}, canReview = false, myReview = null, reviewError = null,
   reported = null, alreadyReported = false, reportError = null,
@@ -2563,7 +2610,21 @@ export function assetPage({
          <div id="unlock-status" class="fine" role="status" aria-live="polite"
               style="margin-top:var(--space-3);text-align:center"></div>`;
 
-  const actionBlock = refusalBlock || (open
+  /*
+   * A live file's door, and the one case where the store opens it for a newcomer.
+   *
+   * `entry === 'covered'` means a break this store ran is paying for the door right
+   * now, so the page must NOT draw the unlock button beside a stream that is already
+   * playing — the two would contradict each other, and the contradiction would look
+   * like a fault in the file rather than the trade it is. The sentence names the trade
+   * (`cleanEntry`, computed from the same arithmetic the panel prints to the seller).
+   */
+  const liveCovered = Boolean(live && live.state?.entry === 'covered');
+  const liveOpen = Boolean(live && live.state?.entry !== 'ask');
+  const actionBlock = refusalBlock || (liveCovered
+    ? `<div class="note note-success"><strong>No ad at the door.</strong> ${esc(live.cleanEntry || '')} A break
+         buys clean entries for the people arriving after it, and this is your side of that trade.</div>`
+    : open
     ? `<div class="note note-success">${breaksMode
     ? 'Free to open. No ad before it starts.'
     : 'Free — no ad needed.'}</div>${breakLine ? `<p class="small">${esc(breakLine)}</p>` : ''}${readerBlock}
@@ -2599,7 +2660,11 @@ export function assetPage({
 
 <div class="asset-layout">
   <div class="stack stack-8">
-    ${mediaStage({
+    ${liveOpen ? liveStage({
+      url: live.url, state: live.state, cleanEntry: live.cleanEntry,
+      stateUrl: live.stateUrl, viewUrl: live.viewUrl, pollSeconds: live.pollSeconds,
+      markUri, coverUrl: asset.cover_url, title: asset.title, assetId: asset.id, storeName: channel.name,
+    }) : mediaStage({
       previewFile, markUri, coverUrl: asset.cover_url, title: asset.title, unlocked, needsAd, assetId: asset.id,
       gate,
       // The stage's own sentence. A members-only file behind an ad-shaped veil
@@ -2611,7 +2676,8 @@ export function assetPage({
 
     <div class="asset-head">
       <h1>${esc(asset.title)}</h1>
-      ${open ? pill('Free', 'success')
+      ${live ? pill('Live', 'accent')
+    : open ? pill('Free', 'success')
     : unlocked ? pill(memberCover ? 'Members' : 'Unlocked', 'success')
       : membersOnly ? pill(memberPaysAds ? 'Members · watch to open' : 'Members', 'accent')
         : pill('Ad-gated', 'locked')}
@@ -2626,6 +2692,9 @@ export function assetPage({
       <strong>This store is withheld where you are. This file is not.</strong> ${esc(carveOut)}
     </div>` : ''}
     ${markNote}
+    ${live && !liveOpen ? `<p class="small live-ask">This is the store's own live stream, and the breaks on it
+      are the store's to call. A break buys clean entries for the people arriving after it — and it stops everyone
+      watching while it runs; playback comes back at the live edge, because a stream does not wait.</p>` : ''}
 
     ${placed.head}
 
@@ -2634,7 +2703,8 @@ export function assetPage({
       <div class="panel-body">
         <dl class="kv">
           <dt>Files</dt><dd>${plural(files.length, 'file')}</dd>
-          ${kindLabel ? `<dt>Format</dt><dd>${esc(kindLabel)}${media ? ' — plays in the page' : ''}</dd>` : ''}
+          ${live ? '<dt>Format</dt><dd>Live — the store\u2019s host serves it, and nothing is copied here</dd>'
+    : kindLabel ? `<dt>Format</dt><dd>${esc(kindLabel)}${media ? ' — plays in the page' : ''}</dd>` : ''}
           <dt>Access</dt><dd>${open ? 'Free'
     : membersOnly
       ? (unlocked ? `Open to you as a ${esc(memberTierName || wantedName)}`
@@ -2657,7 +2727,7 @@ export function assetPage({
 
   <aside class="unlock-card">
     <div class="panel">
-      <div class="panel-head"><h2 style="font-size:var(--text-md)">${unlocked ? 'Your access'
+      <div class="panel-head"><h2 style="font-size:var(--text-md)">${unlocked || liveCovered ? 'Your access'
     : membersOnly ? 'Open to members' : 'Unlock this file'}</h2></div>
       <div class="panel-body">${actionBlock}</div>
     </div>
@@ -7424,6 +7494,10 @@ export function assetManage({
   // platform did. Two lists rather than one, because they are two different
   // standing — a creator can undo theirs and cannot undo ours.
   countryRules = [], platformRules = [],
+  // The live surface (§14) for a `stream`: the URL, the windows this file has run,
+  // which lengths are callable right now, and why the rest are not. Null for every
+  // other shape, because a break button on a video is a button nothing can honour.
+  live = null,
   // The newest operator decision about this file, if there is one. A store's
   // owner is told when their shop is restricted (see moderationNotice); before
   // this, a file's owner was told nothing at all — the file simply stopped
@@ -7621,6 +7695,108 @@ export function assetManage({
   // radio button.
   const readModeOf = (a) => (a?.read_mode === 'scroll' ? 'scroll' : 'page');
   const readDirectionOf = (a) => (a?.read_direction === 'rtl' ? 'rtl' : 'ltr');
+  /*
+   * THE LIVE PANEL (§14).
+   *
+   * Where the stream is, and the break the seller calls right now. There is no schedule
+   * field and no "in 30 minutes" row, because nothing on this platform may open a break
+   * by itself — the button IS the schedule (placement rule 4, §14.3).
+   *
+   * Every length is checked against the four caps BEFORE it is drawn, and the ones that
+   * cannot be called say why next to themselves. A button that bounces a seller to an
+   * error teaches them nothing about the four-minute gap; a greyed one with the reason
+   * and the wait teaches it once.
+   */
+  const livePanelHtml = live ? `
+  <section class="section">
+    <div class="section-head">
+      <h2>The live stream</h2>
+      <p>A live file is the store's own stream: your host serves it, the viewer's browser fetches it from you, and
+      nothing about it is copied, relayed or recorded here. Breaks are yours to call, and every one of them buys
+      clean entries for the people arriving after it — nothing on this page calls one by itself, and there is no
+      way to schedule one.</p>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Where the stream is</h2>
+        <span class="pill">${live.url ? 'Live' : 'Not set'}</span>
+      </div>
+      <div class="panel-body">
+        <form method="post" action="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}/live" class="stack">
+          <input type="hidden" name="action" value="set-url">
+          <div class="field">
+            <label for="live-url">Playlist address</label>
+            <input class="input" id="live-url" name="externalUrl" type="url" value="${esc(live.url || '')}"
+                   placeholder="https://stream.example.com/live.m3u8" autocomplete="off">
+            <span class="hint">An HLS playlist: <code>https://…/live.m3u8</code>. A page URL is a link, not a
+            stream, and <code>rtmp://</code> would need an ingest server this platform does not run. Saving an
+            empty box takes the stream down.</span>
+          </div>
+          <button class="btn" type="submit">Save the address</button>
+        </form>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:var(--space-5)">
+      <div class="panel-head">
+        <h2>Call a break</h2>
+        <span class="pill">${live.open ? 'Running' : 'None running'}</span>
+      </div>
+      <div class="panel-body">
+        ${live.open ? `<div class="note note-info">
+          <p>A break is running${live.open.note ? ` — “${esc(live.open.note)}”` : ''}. It ends at
+          ${esc(atTime(new Date(live.open.ends_at)))}.${live.cleanUntil ? ` Newcomers walk in without the door ask
+          until ${esc(atTime(new Date(live.cleanUntil)))}.` : ''}</p>
+          <form method="post" action="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}/live"
+                style="margin-top:var(--space-3)">
+            <input type="hidden" name="action" value="close-break">
+            <input type="hidden" name="breakId" value="${esc(live.open.id)}">
+            <button class="btn btn-sm" type="submit">End it now</button>
+          </form>
+        </div>` : ''}
+        <form method="post" action="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}/live" class="stack">
+          <input type="hidden" name="action" value="call-break">
+          <div class="field">
+            <span class="field-label" id="live-length-label">How long</span>
+            <div class="stack" role="radiogroup" aria-labelledby="live-length-label">
+              ${live.lengths.map((seconds) => `
+              <label class="choice">
+                <input type="radio" name="seconds" value="${seconds}" ${seconds === 30 ? 'checked' : ''}
+                  ${live.callable[seconds] ? 'disabled' : ''}>
+                <span>
+                  <strong>${esc(lengthWords(seconds))}</strong>
+                  <span class="fine">${esc(live.trade[seconds])}</span>
+                  ${live.callable[seconds] ? `<span class="fine">Not right now: ${esc(live.callable[seconds])}</span>` : ''}
+                </span>
+              </label>`).join('')}
+            </div>
+          </div>
+          <div class="field">
+            <label for="live-note">A note for yourself</label>
+            <input class="input" id="live-note" name="note" maxlength="140" autocomplete="off"
+                   placeholder="optional — viewers never see it">
+          </div>
+          <button class="btn btn-primary" type="submit">Call this break</button>
+        </form>
+        <p class="fine">Every viewer already watching is stopped for it, and a break buys clean entries for
+        newcomers — twenty seconds of covered entry per second of break, capped at an hour. After three in an hour
+        the panel waits, and the waiting is the rule rather than a fault.</p>
+      </div>
+    </div>
+    ${live.breaks.length ? `<div class="panel" style="margin-top:var(--space-5)">
+      <div class="panel-head"><h2>Breaks you have called</h2></div>
+      <div class="panel-body">
+        <ul class="dl-list">
+          ${live.breaks.slice(0, 5).map((b) => `<li class="dl-item">
+            <span class="dl-body">
+              <span class="dl-name">${esc(lengthWords(b.seconds))} · cue ${Number(b.cue_index)}</span>
+              <span class="dl-meta">${esc(atTime(new Date(b.started_at)))}${b.closed_at ? ' · ended early' : ''}</span>
+            </span>
+          </li>`).join('')}
+        </ul>
+      </div>
+    </div>` : ''}
+  </section>` : '';
+
   const readPanel = shape === 'read' && pages && pages.chapters > 1 ? `
       <div class="panel" style="margin-top:var(--space-5)">
         <div class="panel-head">
@@ -7893,6 +8069,7 @@ ${notice ? `
       ${askPanel}
       ${placementPanel}
       ${readPanel}
+      ${livePanelHtml}
       <div class="row" style="gap:var(--space-4);align-items:flex-start">
         <div class="field" style="flex:1 1 140px">
           <label for="a-hours">Access lasts</label>

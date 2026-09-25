@@ -21,6 +21,7 @@
 import crypto from 'node:crypto';
 import { store } from './store.js';
 import { breakCues, betweenCues, breaksSupported } from './placement.js';
+import { windowAcceptsViews } from './live.js';
 import { readSecret } from './config.js';
 import { parsePostback, GRANTS_UNLOCK, getAdapter, devSimulatorFor } from './providers/index.js';
 import { availabilityFor, resolveCountry } from './geo.js';
@@ -310,6 +311,102 @@ export async function startBreak({ assetId, userId, cueIndex, providerId, person
       minSeconds: view.ad_min_seconds,
       requiredViews: 1,
       cueAtSec: cue.atSec,
+      personalised,
+      devSimulator: devSimulatorFor(view.provider_id) || undefined,
+    },
+  };
+}
+
+/**
+ * A break the STORE called on a live stream (§14.3).
+ *
+ * This is deliberately not `startBreak`. That function reads its stop out of the
+ * placement plan, and the plan has no cue for a live file — rule 4 of the catalogue
+ * says a stream's breaks are absent from the table, not disabled in it. So there is no
+ * cue list here to consult and none to forge: the only thing that can produce an ask
+ * is a row in `live_breaks`, and the only writer of that table is the seller's own
+ * POST. That is what "a platform-inserted break is impossible by construction" means
+ * as a fact about the code rather than as a promise about our intentions.
+ *
+ * Everything else is the same discipline as a timed break: a verified view, one of
+ * them, at the length the file's policy says, credited only by the network's postback,
+ * recorded once. A viewer who has already sat through this window is refused — the
+ * ledger is the memory, and a second serving of the same view is exactly the thing
+ * this refusal exists to prevent.
+ *
+ * The window may have closed while this person was already stopped in front of it
+ * (`windowAcceptsViews` allows a few minutes of grace); a window that closed before
+ * they opened the page may not, because the ask has to be one they were present for.
+ */
+export async function startLiveView({ assetId, userId, breakId, providerId, personalised = false }) {
+  const asset = await store.assetById(assetId);
+  if (!asset) return { ok: false, error: 'asset not found' };
+  if (asset.status !== 'live' || asset.moderation_state === 'removed') {
+    return { ok: false, error: 'this file is not live' };
+  }
+  // The two modes that ask for views at all: `ad_gated` asks at the door and `breaks`
+  // asks inside the file. An `open` file has nothing to ask for and a `members` file is
+  // paid for with a subscription; neither takes a break here.
+  if (!['ad_gated', 'breaks'].includes(asset.unlock_mode)) {
+    return { ok: false, error: 'this file does not carry breaks' };
+  }
+  if (await store.shapeOf(asset) !== 'stream') {
+    return { ok: false, error: 'this file has no surface that can stop' };
+  }
+
+  const window_ = await store.liveBreakById(breakId);
+  if (!window_ || window_.asset_id !== assetId) return { ok: false, error: 'no such break right now' };
+  if (!windowAcceptsViews(window_)) return { ok: false, error: 'that break is over' };
+
+  const cleared = await store.clearedGates(userId, assetId);
+  if (cleared.includes(Number(window_.cue_index))) {
+    return { ok: false, error: 'this break is already cleared' };
+  }
+
+  const connections = await store.connectionsOf(asset.channel_id);
+  const usable = connections.filter((c) => getAdapter(c.provider_id) && c.callback_secret);
+  const connection = (providerId && usable.find((c) => c.provider_id === providerId)) || usable[0] || null;
+  if (!connection) return { ok: false, error: 'this store has no verifiable ad connection' };
+
+  const policy = await store.unlockPolicy(assetId);
+  const adRef = await store.adRefFor(userId);
+  const view = await store.createPendingView({
+    nonce: crypto.randomBytes(16).toString('hex'),
+    asset_id: assetId,
+    channel_id: asset.channel_id,
+    user_id: userId,
+    connection_id: connection.id,
+    provider_id: connection.provider_id,
+    required_ads: 1,
+    ad_min_seconds: Number(policy?.ad_min_seconds) || 15,
+    break_index: Number(window_.cue_index),
+    // A live break has no second to record: the window is the position, and the
+    // ledger's word for where this person was stopped is the placement below.
+    break_at_sec: null,
+    placement: 'live',
+    surface: 'asset',
+  });
+
+  return {
+    ok: true,
+    break: true,
+    live: true,
+    viewId: view.id,
+    breakIndex: Number(window_.cue_index),
+    breakId: window_.id,
+    position: Number(window_.cue_index),
+    // No total: how many breaks a stream will have is the store's future, and a number
+    // invented here would be a promise the next hour can break.
+    total: null,
+    adConfig: {
+      providerId: connection.provider_id,
+      connectionId: connection.id,
+      userId: personalised ? adRef : undefined,
+      custom: view.id,
+      type: 'rewarded',
+      minSeconds: view.ad_min_seconds,
+      requiredViews: 1,
+      cueAtSec: null,
       personalised,
       devSimulator: devSimulatorFor(view.provider_id) || undefined,
     },

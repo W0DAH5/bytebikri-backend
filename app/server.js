@@ -96,13 +96,13 @@ import { SIGNALS, BLOCKING_SIGNALS, signalFrom, rungFor, SIGNAL_WINDOW_HOURS } f
 import { SANDBOX_PROVIDER_IDS } from './src/providers/index.js';
 import { selectableProviders, providerById, payoutVerdict, loadRegistry } from './src/registry.js';
 import {
-  startUnlock, startBreak, unlockStatus, handlePostback, signHousePostback,
+  startUnlock, startBreak, startLiveView, unlockStatus, handlePostback, signHousePostback,
   verifyAccessToken, issueDownloadUrl, issueStreamUrl, issuePageUrl,
 } from './src/unlocks.js';
 import {
   mediaKind, isPlayable, isWatermarkable, hasImageMagick, watermarkImage,
   watermarkLabel, watermarkSvgDataUri, derivativeKey, cachedDerivative, cacheDerivative,
-  rangeFor, assetShape, measuredSeconds, MAX_RUNTIME_SEC,
+  rangeFor, assetShape, isLiveUrl, measuredSeconds, MAX_RUNTIME_SEC,
 } from './src/media.js';
 import { placementPanelShown, breakCues, betweenCues, breaksSupported } from './src/placement.js';
 // The page model (§13): what a read is once its pages are counted, and where the
@@ -113,6 +113,13 @@ import {
   readMode, readDirection, READ_MODES, READ_DIRECTIONS,
 } from './src/pages.js';
 import { readEntry } from './src/archive.js';
+// The live surface (§14): the two facts a stream has, and the arithmetic a break
+// buys. Imported as a module because the page, the poller, the seller's panel and
+// the tests must read the same answer.
+import {
+  liveState, liveBreakRefusal, nextCueIndex, tradeSentence, cleanEntrySentence,
+  cleanEntryUntil, windowIsOpen, windowEndsAt, LIVE_LENGTHS, LIVE_POLL_SECONDS,
+} from './src/live.js';
 import { selfTest as adapterSelfTest, advisories as adapterAdvisories, ADAPTERS } from './src/providers/index.js';
 import * as views from './src/views.js';
 import { REVEAL_BOOTSTRAP } from './src/views.js';
@@ -164,6 +171,15 @@ APP.use(helmet({
       // when component 6 does, and it must be an allowlist, never a wildcard.
       imgSrc: ["'self'", 'data:'],
       connectSrc: ["'self'"],
+      // hls.js plays HLS through MediaSource Extensions, and the MediaSource reaches
+      // the element as a `blob:` URL owned by this origin — which Chrome does NOT
+      // accept under `'self'` for media. It answers "Media load rejected by URL safety
+      // check", the console shows a CSP violation, and the viewer gets a black
+      // rectangle in the browser most of them use. The scheme is therefore named, and
+      // only the scheme: a blob URL can still only come from this origin's own script.
+      // The worker is the same story — hls.js transmuxes inside one when it can.
+      mediaSrc: ["'self'", 'blob:'],
+      workerSrc: ["'self'", 'blob:'],
       frameSrc: ["'none'"],
       objectSrc: ["'none'"],
       baseUri: ["'self'"],
@@ -187,6 +203,27 @@ APP.use(express.urlencoded({ extended: true, limit: '256kb' }));
 APP.use(cookieParser());
 APP.use(originCheck({ publicBaseUrl: `http://127.0.0.1:${PORT}` }));
 APP.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h', etag: true }));
+
+/*
+ * The demo live fixture, served by this app and reachable as itself.
+ *
+ * A real live file is the store's own URL on the store's own host: the viewer's
+ * browser fetches it from them, and this platform never proxies a byte of it. The
+ * demo has no such host, so the fixture built by `scripts/make-demo-live.mjs` is
+ * served here — publicly, because a stream the platform does not own is not
+ * something this app can put a door in front of, and pretending otherwise would be
+ * a demo of a product we do not ship.
+ *
+ * `.m3u8` gets its registered type rather than the static default, because Safari
+ * decides whether to hand a URL to its player on the strength of it.
+ */
+APP.use('/live-demo', express.static(path.join(__dirname, 'seed-assets/live-demo'), {
+  maxAge: '1h',
+  etag: true,
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.m3u8')) res.type('application/vnd.apple.mpegurl');
+  },
+}));
 APP.set('trust proxy', 1);   // behind Cloudflare/Vercel, so req.ip is the client
 
 // Rate limits. Named per purpose so a flood of one does not exhaust another.
@@ -2149,10 +2186,40 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
     const assetSlots = await slotsFor(channel, { viewer: req.user, surface: 'asset' });
     await countPositions(channel, 'asset', assetSlots);
 
+    /*
+     * THE LIVE SURFACE (§14).
+     *
+     * A live file is not bytes we hold: it is the store's own URL, and the page's job
+     * is to hand the browser that URL and to decide whether this person walks in now
+     * or is asked first. Three facts decide it — a break the store called that this
+     * viewer has not been served (`stop`), a break that ran recently and is paying for
+     * newcomers' entries (`covered`), or the ordinary door.
+     *
+     * Computed here AND served to the poller from `/api/live/:id/state`, both from
+     * `liveState()`. One composition, two readers: a page that draws one picture and a
+     * poller that acts on another is exactly how a viewer gets stopped by a break
+     * nobody mentioned, which is the complaint §2.3 recorded against the industry.
+     */
+    const liveBreaks = shape === 'stream' ? await store.liveBreaksOf(asset.id) : [];
+    let live = null;
+    if (shape === 'stream') {
+      const clearedLive = req.user ? await store.clearedGates(req.user.id, asset.id) : [];
+      const state = liveState({ breaks: liveBreaks, cleared: clearedLive, unlocked, now: new Date() });
+      live = {
+        url: asset.external_url,
+        stateUrl: `/api/live/${asset.id}/state`,
+        viewUrl: `/api/live/${asset.id}/view`,
+        pollSeconds: LIVE_POLL_SECONDS,
+        state,
+        cleanEntry: cleanEntrySentence(state.coverageUntil, new Date()),
+      };
+    }
+
     res.send(views.assetPage({
       channel, asset, files, unlocked, user: req.user, consent: req.consent,
       placement,
       gate,
+      live,
       // The page model, for a file a reader can open (§13). It is what the page's
       // counting words and its reader link are built from, and null for every other
       // shape — there is no page count for a video, and inventing one would be a
@@ -2630,6 +2697,64 @@ APP.post('/api/unlock/break', limitUnlock, async (req, res, next) => {
       // the consent question is the same one the door asks and it gets the same
       // answer. Passing it here is what keeps the break from being the quieter
       // route around a refusal.
+      personalised: req.consent?.ads === true,
+    }));
+  } catch (err) { next(err); }
+});
+
+/*
+ * ── The live state, as the player polls it (§14.3) ─────────────────────────
+ *
+ * Every ~15 seconds, and the answer is `liveState()` — the SAME composition the page
+ * was rendered from, so the page and the poller cannot draw two different pictures.
+ * Nothing here grants anything: it says whether a break is running, whether this
+ * viewer still owes a view for it, and whether the door is open because the store's
+ * own break is paying for newcomers. The view itself is started and credited exactly
+ * like every other view in this product.
+ */
+APP.get('/api/live/:assetId/state', async (req, res, next) => {
+  try {
+    if (!req.user) return res.status(401).json({ ok: false, error: 'sign in' });
+    const asset = await store.assetById(req.params.assetId);
+    if (!asset) return res.status(404).json({ ok: false, error: 'asset not found' });
+    if (await store.shapeOf(asset) !== 'stream') {
+      return res.status(404).json({ ok: false, error: 'this file is not a live stream' });
+    }
+    const breaks = await store.liveBreaksOf(asset.id);
+    const cleared = await store.clearedGates(req.user.id, asset.id);
+    // The same rule the page uses for the door. A member's file is decided by the
+    // page; this route only ever answers for a page that drew the live stage.
+    const unlocked = ['open', 'breaks'].includes(asset.unlock_mode)
+      || await store.isUnlocked(asset.id, req.user.id);
+    const state = liveState({ breaks, cleared, unlocked, now: new Date() });
+    res.json({
+      ok: true,
+      ...state,
+      cleanEntry: cleanEntrySentence(state.coverageUntil, new Date()),
+    });
+  } catch (err) { next(err); }
+});
+
+/*
+ * Start the view a break asks for.
+ *
+ * The body names a BREAK, not a cue index: there is no cue list for a live file to
+ * index into (rule 4 keeps one out of the catalogue), so the only thing that can
+ * produce an ask is a row the store's own POST created. A hand-crafted body naming a
+ * window that never existed is refused by `startLiveView`, and one naming a window
+ * this person already sat through is refused too — no second serving of the same view.
+ */
+APP.post('/api/live/:assetId/view', limitUnlock, async (req, res, next) => {
+  try {
+    if (!req.user) return requireUser(res);
+    if (!isUuid(req.body?.breakId)) {
+      return res.status(400).json({ ok: false, error: 'breakId must be a uuid' });
+    }
+    res.json(await startLiveView({
+      assetId: req.params.assetId,
+      userId: req.user.id,
+      breakId: req.body.breakId,
+      providerId: req.body?.providerId,
       personalised: req.consent?.ads === true,
     }));
   } catch (err) { next(err); }
@@ -3659,6 +3784,21 @@ const SUCCESS_FLASH = {
     + 'one continuous scroll, and the pages turn the way this language reads. Nothing about what the file asks '
     + 'changed: a stop still lands between pages, never inside one.',
 
+  // The live panel's two saves, said as the difference they make. A break is an event,
+  // not a setting: "Saved." would leave the seller unsure whether the break is RUNNING
+  // or merely remembered.
+  'live-url': () => 'Saved. This file is now the stream at that address — your host serves it, and nothing '
+    + 'about it is copied or kept here. Uncheck-then-save clears it.',
+  'live-break': () => 'Break called. It is running now, for the length you chose, and every viewer already '
+    + 'watching will be stopped by it. Newcomers walk in without the door ask until the coverage it bought runs out.',
+  // Ending one early is the opposite event with a number of its own: the coverage still
+  // runs for the length that was ANNOUNCED (ending early is not a way to buy the same
+  // hour without running the break), but it starts from this moment rather than from the
+  // end the seller picked. The sentence has to say the difference or the seller is left
+  // guessing which of the two the button just did.
+  'live-closed': () => 'Break ended. The window closes for everyone watching now, and the clean entries it '
+    + 'bought run from this moment — for the length you announced, not for whatever was left of it.',
+
   submitted: () => 'Reference received. An operator matches it against the bank or wallet statement by hand, and your plan changes when it clears.',
   // Rent's own sentence. It shared `submitted` with the plan flow above, which promised
   // a PLAN change — and rent is not a plan: the invoice is the platform's, and clearing
@@ -3750,6 +3890,18 @@ const SUCCESS_FLASH = {
 };
 
 const ERROR_FLASH = {
+  // The live panel's refusals. A break is the one place a seller can cost themselves
+  // viewers, so each refusal names the rule rather than saying the button did not work.
+  'live-url': 'A live file is an HLS playlist: an https:// address ending in .m3u8, or a same-origin path '
+    + 'to one. A plain page URL is a link, not a stream, and rtmp:// would need an ingest server this '
+    + 'platform does not have. Nothing was changed.',
+  'live-files': 'This file has uploaded files of its own, and a file cannot be both. Remove the uploads '
+    + 'first if it is really a stream — otherwise the uploads would become unreachable. Nothing was changed.',
+  'live-break': 'That break was not called. The panel shows why next to each length: breaks are 15 seconds '
+    + 'to 4 minutes, never two inside four minutes, and never more than three an hour. Nothing was changed.',
+  'live-shape': 'Breaks belong to a live stream. This file is not one — point it at its playlist first. '
+    + 'Nothing was changed.',
+  'live-action': 'That is not something this panel does. Nothing was changed.',
   // The reader's two choices, refused. The panel only renders them for a file a
   // reader opens, so this is reachable by a hand-crafted post — and a refusal that
   // names the rule is the difference between a bug report and a dead end.
@@ -5018,6 +5170,32 @@ APP.get('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
     // can clear their own rule and cannot clear the platform's.
     const allCountryRules = await store.assetCountryRules(asset.id);
     const membershipsOn = store.plan(channel).capabilities?.memberships === true;
+    /*
+     * The live panel's data (§14).
+     *
+     * Only for a file that IS a stream, because a live panel on a video would be a
+     * button that promises a break nothing can stop. `callable` is the honest part:
+     * every length the panel offers is checked against the four caps HERE, with the
+     * reason it is not available, so a seller sees why the 15-second button is grey
+     * instead of pressing it and being bounced.
+     */
+    const liveShape = await store.shapeOf(asset);
+    let livePanel = null;
+    if (liveShape === 'stream') {
+      const now = new Date();
+      const breaks = await store.liveBreaksOf(asset.id);
+      livePanel = {
+        url: asset.external_url,
+        breaks,
+        open: breaks.find((b) => windowIsOpen(b, now)) || null,
+        lengths: LIVE_LENGTHS,
+        callable: Object.fromEntries(LIVE_LENGTHS.map((seconds) => [
+          seconds, liveBreakRefusal({ seconds, breaks, now }),
+        ])),
+        trade: Object.fromEntries(LIVE_LENGTHS.map((seconds) => [seconds, tradeSentence(seconds)])),
+        cleanUntil: cleanEntryUntil(breaks, now),
+      };
+    }
     res.send(views.assetManage({
       channel, asset, user: req.user, consent: req.consent, flash: flashFor(req.query),
       // The two facts the access control needs: whether the plan includes members
@@ -5043,6 +5221,7 @@ APP.get('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
         : (await store.fileDecisionHistory(asset.id))[0] ?? null,
       countryRules: allCountryRules.filter((r) => r.source === 'creator'),
       platformRules: allCountryRules.filter((r) => r.source !== 'creator'),
+      live: livePanel,
     }));
   } catch (err) { return next(err); }
 });
@@ -5176,6 +5355,97 @@ APP.post('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
     // turns its pages a different way — and that is the whole of what changed.
     if (readChanged) return res.redirect(`${back}?saved=read-choices`);
     return res.redirect(`${back}?saved=1`);
+  } catch (err) { return next(err); }
+});
+
+/*
+ * The live panel's one write: where the stream is, and the break the store calls.
+ *
+ * One route with an action, because they are one decision — "this file is a stream, and
+ * this is the break I am running right now" — and because a second endpoint for the
+ * button would be a second place for the four caps to drift.
+ *
+ * WHAT IS NOT HERE, AND IT IS THE POINT: no schedule, no timer, no "break in 30
+ * minutes" row, nothing that opens a window by itself. A break exists only because
+ * the store's own request created it, which is what makes "the platform never inserts
+ * one" (placement rule 4, ASSET_ECONOMY §14.3) a property of this code rather than a
+ * promise about our intentions.
+ */
+APP.post('/dashboard/:slug/assets/:assetId/live', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    const asset = await store.assetById(req.params.assetId);
+    if (!asset || asset.channel_id !== channel.id) return res.status(404).send('Not found');
+    const back = `/dashboard/${encodeURIComponent(channel.slug)}/assets/${asset.id}`;
+    const action = String(req.body.action || '');
+    // The shape, computed the one way it is computed everywhere (media.js reads
+    // `external_url` first): a break belongs to a file whose bytes are somebody else's
+    // live stream. Without this the panel's own wording was the only thing keeping a
+    // hand-crafted POST from calling a break on a CBZ, and the server would have
+    // cheerfully created a window no player in the world would ever show.
+    const files = await store.filesOf(asset.id);
+    const shape = assetShape(files, { url: asset.external_url });
+
+    if (action === 'set-url') {
+      const url = String(req.body.externalUrl || '').trim();
+      if (!url) {
+        await store.setExternalUrl({ assetId: asset.id, url: null });
+        return res.redirect(`${back}?saved=live-url`);
+      }
+      // An HLS playlist, over https or same-origin. `isLiveUrl` is the shape's own
+      // predicate for what a playlist is; the scheme check is the promise §14.1 made —
+      // no ingest and no re-host, so no `rtmp://` and no plain http.
+      if (!isLiveUrl(url) || !(url.startsWith('https://') || url.startsWith('/'))) {
+        return res.redirect(`${back}?error=live-url`);
+      }
+      // A file with uploads cannot also be a stream: the shape code gives a live URL
+      // precedence, so the uploads would become unreachable the moment this saved.
+      // Refused rather than half-applied, and the sentence says which.
+      if (files.length) return res.redirect(`${back}?error=live-files`);
+      await store.setExternalUrl({ assetId: asset.id, url });
+      await store.audit('asset.live_url_set', { assetId: asset.id, channelId: channel.id });
+      return res.redirect(`${back}?saved=live-url`);
+    }
+
+    if (action === 'call-break') {
+      if (shape !== 'stream') return res.redirect(`${back}?error=live-shape`);
+      const seconds = Math.floor(Number(req.body.seconds) || 0);
+      const breaks = await store.liveBreaksOf(asset.id);
+      // The caps, checked in the module that owns them — the same call the panel made
+      // to grey the button, so a hand-crafted post cannot open a break the UI refused.
+      if (liveBreakRefusal({ seconds, breaks, now: new Date() })) {
+        return res.redirect(`${back}?error=live-break`);
+      }
+      // One clock for the whole window: the process that decided this break was
+      // being called stamps both ends, and everything downstream reads those two.
+      const startedAt = new Date();
+      try {
+        await store.createLiveBreak({
+          assetId: asset.id, channelId: channel.id, userId: req.user.id,
+          cueIndex: nextCueIndex(breaks), seconds,
+          startedAt, endsAt: windowEndsAt(seconds, startedAt),
+          note: String(req.body.note || '').trim().slice(0, 140) || null,
+        });
+      } catch (err) {
+        // Two presses at the same moment, or a race against the partial unique index:
+        // one open window per file is the rule, and losing that race is not a 500.
+        if (err?.code !== '23505') throw err;
+        return res.redirect(`${back}?error=live-break`);
+      }
+      await store.audit('asset.live_break_called', { assetId: asset.id, channelId: channel.id, seconds });
+      return res.redirect(`${back}?saved=live-break`);
+    }
+
+    if (action === 'close-break') {
+      if (shape !== 'stream') return res.redirect(`${back}?error=live-shape`);
+      const closed = await store.closeLiveBreak({ assetId: asset.id, breakId: req.body.breakId });
+      if (!closed) return res.redirect(`${back}?error=live-break`);
+      await store.audit('asset.live_break_closed', { assetId: asset.id, channelId: channel.id });
+      return res.redirect(`${back}?saved=live-closed`);
+    }
+
+    return res.redirect(`${back}?error=live-action`);
   } catch (err) { return next(err); }
 });
 
@@ -6636,6 +6906,36 @@ async function seed({ force = false } = {}) {
     if (err.code !== 'ENOENT') throw err;
   }
   void comic;
+
+  /**
+   * A live stream, so the live shape has something to be reviewed against.
+   *
+   * §14's surface is the one whose bytes are NOT ours: the demo's stream is the fixture
+   * `scripts/make-demo-live.mjs` built from the committed clip, served by this app at
+   * `/live-demo/` — which is the same-url shape a real store's stream has, minus the
+   * host they would run. Seeded in `ad_gated` mode, because that is the mode whose door
+   * a break can pay for: a newcomer arriving inside the coverage a break bought walks in
+   * without the ask, and one arriving outside it gets the ordinary door.
+   *
+   * Skipped silently if the fixture is missing, like the two above.
+   */
+  let liveDemo = null;
+  try {
+    const playlist = await fs.readFile(path.resolve(__dirname, 'seed-assets/live-demo/index.m3u8'), 'utf8');
+    if (!playlist.includes('#EXTM3U')) throw new Error('the demo playlist is not a playlist');
+    const liveAsset = await store.createAsset({
+      channelId: alice.id, title: 'Friday night stream — Kathmandu', slug: 'friday-night-stream',
+      moderationState: 'approved',
+      coverUrl: '/img/demo/kathmandu-street.jpg',
+      description: 'A live stream from the store\u2019s own host. Free to open while a break covers the door; '
+        + 'one view at the door otherwise, and the store calls every break itself.',
+    });
+    await store.setExternalUrl({ assetId: liveAsset.id, url: '/live-demo/index.m3u8' });
+    liveDemo = liveAsset;
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  void liveDemo;
 
   const sampleAsset = await store.createAsset({
     channelId: alice.id, title: 'Free sample pack', slug: 'free-sample-pack',

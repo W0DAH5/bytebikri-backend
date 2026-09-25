@@ -981,6 +981,29 @@ a.kpi:hover { border-color: var(--border-strong); text-decoration: none; box-sha
    it is the absence of picture, not a surface of ours. */
 .stage-audio { padding: var(--space-6); }
 
+/* ── the live surface (§14) ────────────────────────────────────────────────
+   A stream is the one stage whose picture comes from somebody else's host, so it
+   carries a badge and a sentence that say so. Both are load-bearing rather than
+   decorative: a viewer who believes we hold the bytes also believes we can replay
+   them, and this shape deliberately cannot. */
+.live { display: block; }
+.stage-live { position: relative; }
+.stage-live video { aspect-ratio: 16 / 9; }
+.live-badge {
+  position: absolute; z-index: 3; top: var(--space-3); left: var(--space-3);
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  padding: 0.15rem var(--space-3); border-radius: 999px;
+  background: var(--danger-text); color: #fff;
+  font-size: var(--text-xs); font-weight: 680; letter-spacing: 0.06em; text-transform: uppercase;
+}
+.live-owner { margin: var(--space-4) 0 0; }
+.live-ask {
+  margin-top: var(--space-4);
+  color: var(--text-muted);
+}
+
+.live-door { margin: var(--space-2) 0 0; }
+
 /* The on-screen watermark for video and audio. Not decoration: it is the only
    mark those two formats can carry without re-encoding every file, and it
    composites into any screenshot or recording of the page. `pointer-events:

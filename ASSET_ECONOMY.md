@@ -364,7 +364,7 @@ seconds" is currently a sentence, not a gate.
 | 4 Attention door | **Built** — `join_mode`/`ad_mode` per tier, `member_standing`, `joinByAttention` (with the extension), `memberDoorFor` + the `unlocks.js` refusal, the member room at `/s/:slug/members`, the seller's two pickers, and one `watchingDoor()` control. 5 tests in `members.test.js` (21 in that file), 11 screenshots from a real three-session walk (`ci/eyes/member-walk.mjs`). Suite 668/668/0 |
 | 5 Ledger | **Built** — `ad_view_events` gained `placement`/`surface` (written by the claim, from the attempt's own snapshot); `ad_position_daily` counts rendered positions by page, placement and side; `/dashboard/:slug/attention` prints the two blocks and never their sum. 4 tests (`attention.test.js`), 3 screenshots from a real browser walk (`ci/eyes/ledger-walk.mjs`, `docs/evidence/round37`). §12 is the design |
 | 6 Reader | **Built** — `archive.js` (a zip read through the central directory, both compression methods, caps that refuse a bomb rather than a big book: 8 tests) and `pages.js` (the page model: natural order, junk filtered, `ComicInfo.xml` not a page; the plan the reader turns, its segments, and the gate sentence: 11 tests). The reader itself is one page at a time or one continuous scroll, left to right or right to left, the store's choice per file; a stop lands **between** pages and the server refuses the bytes behind it (`403 a view is owed before this page`) rather than hiding them with a veil. The bookmark is the reader's own (`reading_progress`, PK (user, file)) and never shown to the store. 8 tests in `reader.test.js`, 8 screenshots from a real browser walk (`ci/eyes/reader-walk.mjs`, `docs/evidence/round38`) that also flips both seller choices and watches the reader obey. §13 is the design. Suite 763/763/0 |
-| 7 Live | **Designed** — §14 is the design: a live file is the store's own `https://…m3u8` (no ingest, no re-host, no recording), hls.js 1.7.3 vendored because Chrome and Firefox have no native HLS, and a break is a WINDOW only the store's own POST can open, which buys clean entries for newcomers at the ratio Twitch taught the industry. The code follows |
+| 7 Live | **Built** — §14 is the design: a live file is the store's own `https://…m3u8` (no ingest, no re-host, no recording), hls.js 1.7.3 vendored because Chrome and Firefox have no native HLS, and a break is a WINDOW only the store's own POST can open, which buys clean entries for newcomers at the ratio Twitch taught the industry. Built: `live.js` holds the arithmetic and the four caps, `live_breaks` holds the windows (one open per file, enforced by a partial unique index), and the seller's own POST is the only writer. 10 unit tests, 4 fixture tests, and `ci/eyes/live-walk.mjs` in a real browser (6 shots, `docs/evidence/round39`) — the stream plays, a break the seller calls stops it, the view is credited, playback resumes at the EDGE, and a newcomer inside the window walks in clean. Suite 782/782/0 |
 
 ---
 
@@ -634,9 +634,13 @@ second mechanic, and we do not automate the first one.
 
 A URL the store already runs — not something we host, transcode, record or relay.
 
-- `assets.live_url`, accepted only as `https://…m3u8`. A page URL is a `play` embed rather than a live
-  file, and an `rtmp://` URL is refused with a sentence: RTMP needs an ingest endpoint, and an ingest
-  endpoint is a broadcaster, which this platform is not;
+- `assets.external_url` — the column `assetShape()` has been reading since the shape vocabulary was
+  written, and the one place the shape code was ahead of the schema — accepted only as `https://…m3u8`,
+  or as a same-origin `/…m3u8` path for the demo fixture, which this app serves itself. (Not
+  `live_url`: the column means *the bytes are not ours*, which is the live case and the only case in
+  this slice.) A page URL is a `play` embed rather than a live file, and an `rtmp://` URL is refused
+  with a sentence: RTMP needs an ingest endpoint, and an ingest endpoint is a broadcaster, which this
+  platform is not;
 - no ingest, no re-hosting, no transcode, no recording. The card and the ledger say what the platform
   did — verified views — and a live surface that promised a stream quality would be promising something
   we never touched;
@@ -650,11 +654,21 @@ A URL the store already runs — not something we host, transcode, record or rel
 Native where the browser has it, hls.js where it does not, and nothing else.
 
 - Safari (macOS, iOS, iPadOS) plays HLS from the plain `src`; Chrome, Firefox, Edge and Android Chrome
-  have **no native HLS at all**. A paid surface that cannot be watched in Chrome is not a surface, so
+  have **no HLS demuxer at all**. A paid surface that cannot be watched in Chrome is not a surface, so
   one library is added: **hls.js 1.7.3, pinned and vendored** at `app/public/vendor/hls.min.js`
   (Apache-2.0; 619,692 bytes on disk, ≈70 KB gzipped) with its `LICENSE` beside it. It is MSE-based, it
   is what Twitch, Vimeo, Video.js and JW Player use in the same role, and it is served from our own
   origin under the existing CSP (`scriptSrc 'self'`);
+- **which player is chosen by `MediaSource`, never by `canPlayType`.** Measured, not assumed: Chromium
+  153 answers `maybe` to `canPlayType('application/vnd.apple.mpegurl')` — it *claims* native HLS — and
+  then fetches the playlist and plays nothing, a black rectangle with no error. The rule the code
+  follows is hls.js's own modern guidance: use the native player only where `ManagedMediaSource`
+  exists (Safari), and otherwise hls.js when MSE is present, with the markup's `src` as the last
+  resort;
+- **the CSP names `blob:` for media and workers.** A MediaSource reaches the element as a
+  `blob:` URL owned by this origin, and Chrome does not accept `blob:` under `'self'` for media: it
+  logs a CSP violation and the element fails with “Media load rejected by URL safety check”. Both
+  findings came from the browser walk, and `test/vendor.test.js` now holds them;
 - the vendored file is a decision, not a download: the version is written down here, the licence ships
   with it, and upgrading is a change with a reason. This is the one dependency the reader design
   refused to add, and the difference is the browsers — Node and the browser already ship zip and image
@@ -676,9 +690,15 @@ The store calls it. Concretely:
   the live edge**. The stream moved on while the break ran; we do not rewind, and the UI says so,
   because a viewer who thinks they missed something is a viewer who leaves;
 - **the entry trade, in the panel's own words**: a break buys clean entries for newcomers for
-  `ratio × seconds` of break (30 s → 10 minutes, 3 minutes → 1 hour). Inside the covered window a
-  newcomer's door opens with no ask; outside it the door is the ordinary one. That is the trade §2.3
-  said to state in the UI, and the storefront prints it before anybody presses anything.
+  `ratio × seconds` of break (30 s → 10 minutes, 3 minutes → 1 hour), capped at the hour so that
+  running longer buys nothing more than Twitch's own ceiling. Inside the covered window a newcomer's
+  door opens with no ask; outside it the door is the ordinary one. That is the trade §2.3 said to
+  state in the UI, and the storefront prints it before anybody presses anything;
+- **coverage runs from the moment the break ENDS, early or on time, and buys the length that was
+  ANNOUNCED.** A viewer who arrives while a break is running arrives *into* it — being stopped and
+  being given a clean door are different facts, and only one of them is true of them — so a running
+  window covers nobody. Ending a break early moves the coverage earlier, not away: it cannot be a way
+  to buy the announced hour without running the break.
 
 ### 14.4 What it refuses
 
@@ -697,12 +717,14 @@ The store calls it. Concretely:
 
 ### 14.5 What slice 7 builds
 
-- **Schema**: `assets.live_url` with its check, and `live_breaks` with its window ordering and its
+- **Schema**: `assets.external_url` with its check, and `live_breaks` with its window ordering and its
   one-open-window-per-file rule expressed in SQL rather than in a route;
-- **Store**: `liveState`, `openLiveBreak`, `closeLiveBreak`, `cleanEntryUntil`, and the per-viewer
-  question the player asks — has this person already been served this window?;
-- **Server**: the seller's panel and its POST, the live page, the state endpoint, and the entry trade in
-  the door: a covered window opens the door clean, an expired one does not;
+- **Store**: `liveState`, `createLiveBreak`, `closeLiveBreak`, `cleanEntryUntil`, `setExternalUrl`, and
+  the per-viewer question the player asks — has this person already been served this window? (answered
+  from the ledger the views already write, not from a second table);
+- **Server**: the seller's panel and its POST — which refuses a break on a file that is not a stream,
+  because the panel's wording is not an access rule — the state endpoint, the view endpoint, and the
+  entry trade in the door: a covered window opens the door clean, an expired one does not;
 - **Client**: the attach (native or hls.js), the ~15 s poller, the shared modal, and the resume at the
   live edge;
 - **Tests** for the arithmetic that is easy to get wrong: a closed window is not a break, two open

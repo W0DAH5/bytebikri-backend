@@ -113,6 +113,7 @@ node ci/eyes/rent-walk.mjs          # the seller's invoice, the reference, the o
 node ci/eyes/ledger-walk.mjs alice  # a storefront render, then the owner's attention ledger; 3 shots
 node ci/eyes/reset-unlock.mjs bob kathmandu-sketchbook   # clear one viewer's unlock ON the comic
 node ci/eyes/reader-walk.mjs alice kathmandu-sketchbook bob   # the reader: pages, the seam, the bookmark; 8 shots
+node ci/eyes/live-walk.mjs alice friday-night-stream bob      # the stream, the break, the clean entry; 6 shots
 ```
 
 `reader-walk.mjs` is the walk for the reader, and its subject is a file rather than a page: page one is

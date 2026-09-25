@@ -3558,3 +3558,58 @@ for `img.decode()` first. And a deliberate 403 is now CREDITED rather than count
 expected refusal on its own hand-made fetch, so "console errors: none" still means what it says.
 
 Suite **763/763/0**; the seller's panel and the save route are covered as tests and as a walk.
+
+## 43. The live surface (§14): the store calls the break, and the platform has no inserter
+
+**What it is.** A live file is an HLS playlist the store already runs — `assets.external_url`, the column
+the shape code had been reading since the vocabulary was written and the one place the code was ahead of
+the schema — accepted only as `https://…m3u8` or a same-origin `/…m3u8` path. We do not ingest, relay,
+transcode or record, and the page says so beside the player.
+
+**The break is the store's, and that is a property of the code.** `live_breaks` is a window, not a cue
+list: one open window per file (a partial unique index, so two presses cannot race into two breaks), 15
+seconds to 4 minutes long, none within four minutes of the last, and three an hour. Every cap lives in
+`live.js` — `liveBreakRefusal()` — and is read by the button that greys itself, by the POST that refuses,
+and by the tests, so the three cannot drift. There is no timer and no cron anywhere in the slice: the
+only writer is the seller's own POST, which makes placement rule 6 (*the platform never inserts one*) a
+fact about the code rather than a promise about our intentions. The route also refuses to call a break on
+a file that is not a stream (`?error=live-shape`), because the panel's wording is not an access rule.
+
+**The trade is Twitch's, at Twitch's ratio.** A break buys clean entries for newcomers at 20 × its length
+(30 s → 10 minutes), capped at an hour, so running longer buys nothing more than the industry's own
+ceiling. Coverage runs from the moment the break ENDS — early or on time — for the length that was
+ANNOUNCED: a viewer who arrives while a break is running arrives INTO it, so a running window covers
+nobody, and ending one early moves the coverage earlier rather than buying an hour without running the
+break. Those are the two rules a careless implementation gets wrong in the direction of a giveaway, and
+both are unit-tested.
+
+**What the browser proved.** `ci/eyes/live-walk.mjs`, six sections, six screenshots in
+`docs/evidence/round39`, console errors none. The door states the trade and renders NO stage; the door
+clears through the shared modal; the stage attaches hls.js from our own origin and plays — 640 px of
+decoded frames, not merely a `currentTime` that ticks; a break called from the seller's own dashboard
+stops a player that was already running; the shared modal says where the break came from; the view is
+credited and playback resumes at the buffer's END (4.85 s → 4.72 s of a five-second fixture, i.e. at the
+edge and not back where the viewer was); the seller's panel says *Break ended* — its own sentence,
+distinct from *Break called* — and records the window as ended early; and a NEWCOMER with no rows of
+their own walks in with no ask at all, with a door sentence that says why.
+
+**The walk's own discoveries, both real bugs.** ① Chromium 153 answers `maybe` to
+`canPlayType('application/vnd.apple.mpegurl')` — it *claims* native HLS — and then plays nothing: a black
+rectangle with no error. The player is now chosen by `ManagedMediaSource` (native, Safari) versus
+`MediaSource` (hls.js), which is hls.js's own modern guidance, and the first walk run failed exactly
+here. ② A MediaSource is attached as a `blob:` URL, and Chrome refuses `blob:` under CSP `'self'` for
+media — *“Media load rejected by URL safety check”*, again a black rectangle and nothing else. The CSP
+now names `blob:` for `media-src` and `worker-src`, and `test/vendor.test.js` holds that the way it holds
+the pinned version.
+
+**The fixture proved itself twice.** `scripts/make-demo-live.mjs` repackages the committed clip into
+three MPEG-TS segments and an EVENT playlist with no `#EXT-X-ENDLIST` — a stream that stopped growing,
+which is the honest shape for a demo nobody is pushing to. `test/live-fixture.test.js` (4 tests) checks
+what a player needs and what a hand-rolled muxer gets wrong: 188-byte packets, PAT/PMT CRCs computed
+bit-by-bit (deliberately unlike the generator's table), a PCR that advances, and a parameter-set + IDR
+group at the head of every segment — a player joining a live stream starts at a segment boundary, and a
+segment that opens without its SPS/PPS decodes as snow. It found one: the PPS was read two bytes late, so
+every segment carried four bytes of garbage where its PPS belonged. The fix is one offset plus three
+guards in the generator, and the walk above is the proof that the segments now decode.
+
+Suite **782/782/0**.

@@ -68,3 +68,18 @@ test('the CSP did not open for it', () => {
   assert.match(line, /'self'/, 'scripts are no longer allowed from our own origin');
   assert.ok(!/https?:\/\//.test(line), `an external script host entered the CSP: ${line.trim()}`);
 });
+
+test('the CSP lets a MediaSource reach the element', () => {
+  // hls.js does not hand the element a URL: it builds a MediaSource and attaches it as a
+  // `blob:` URL owned by this origin. Chrome does NOT accept `blob:` under `'self'` for
+  // media — it logs "Loading media from 'blob:…' violates the following Content Security
+  // Policy directive: default-src 'self'" and the element fails with "Media load rejected
+  // by URL safety check", which is a black rectangle with no other symptom. Found by
+  // walking the live surface in a real browser; this is the test that keeps it found.
+  const media = server.split('\n').find((l) => l.includes('mediaSrc:'));
+  const worker = server.split('\n').find((l) => l.includes('workerSrc:'));
+  assert.ok(media, 'no mediaSrc directive — a MediaSource would be refused');
+  assert.match(media, /'blob:'/, 'media-src does not name blob:, so hls.js cannot attach');
+  assert.ok(!/https?:\/\//.test(media), `an external media host entered the CSP: ${media.trim()}`);
+  assert.ok(worker && /'blob:'/.test(worker), 'worker-src does not name blob:, so hls.js cannot transmux in its worker');
+});

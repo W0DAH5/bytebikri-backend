@@ -2146,6 +2146,80 @@ export const store = {
       [assetId, mode, direction],
     );
   },
+  // ---- the live surface (§14) --------------------------------------------
+  /*
+   * Where the stream is, and the breaks the store called.
+   *
+   * Nothing in this section can open a break on its own: `createLiveBreak` is called
+   * from the seller's own POST and from nowhere else, and there is no timer, no job
+   * and no rule that decides a break is due. That absence is the design (§14.3), and
+   * it is why these four methods are all reads plus two writes the seller's request
+   * makes directly.
+   */
+
+  /** The breaks this file has, newest first. Windows, never a schedule. */
+  liveBreaksOf(assetId, limit = 20) {
+    return many(
+      `select id, asset_id, cue_index, seconds, started_at, ends_at, closed_at, note
+         from live_breaks where asset_id = $1 order by started_at desc limit $2`,
+      [assetId, Math.min(Math.max(Number(limit) || 20, 1), 100)],
+    );
+  },
+
+  liveBreakById(id) {
+    if (!UUID_RE.test(String(id || ''))) return null;
+    return one('select * from live_breaks where id = $1', [id]);
+  },
+
+  /**
+   * Open a window.
+   *
+   * Both stamps are handed in by the caller rather than computed here, and that is
+   * deliberate: the start and the end then come from ONE clock — the process that
+   * decided the break was being called — so the panel, the poller and the coverage
+   * arithmetic cannot disagree about when the window is over. (The first version asked
+   * Postgres for `now() + seconds`, which is the same clock in a single-node deployment
+   * and two different ones the moment the database is not on the same host.)
+   *
+   * The partial unique index (`uq_live_break_open`) is the one-open-at-a-time rule,
+   * enforced where it cannot be raced: two sellers pressing the button at the same
+   * moment get one window and one constraint error, not two overlapping breaks.
+   */
+  createLiveBreak({ assetId, channelId, userId, cueIndex, seconds, startedAt, endsAt, note = null }) {
+    return one(
+      `insert into live_breaks
+         (asset_id, channel_id, opened_by, cue_index, seconds, started_at, ends_at, note)
+       values ($1, $2, $3, $4, $5, $6, $7, $8)
+       returning *`,
+      [assetId, channelId, userId, cueIndex, Math.floor(Number(seconds) || 0), startedAt, endsAt, note],
+    );
+  },
+
+  /**
+   * Where the stream is — or, with `null`, that it is not a stream any more.
+   *
+   * Validated in the route (`isLiveUrl` plus the scheme), not here: this is the write,
+   * and the rule belongs in the one place the seller's POST and the seller's panel can
+   * both read it.
+   */
+  setExternalUrl({ assetId, url }) {
+    return one(
+      `update assets set external_url = $2, updated_at = now() where id = $1 returning *`,
+      [assetId, url || null],
+    );
+  },
+
+  /** End a window early. The store's call, like opening one. */
+  closeLiveBreak({ assetId, breakId }) {
+    if (!UUID_RE.test(String(breakId || ''))) return null;
+    return one(
+      `update live_breaks set closed_at = now()
+        where id = $1 and asset_id = $2 and closed_at is null
+        returning *`,
+      [breakId, assetId],
+    );
+  },
+
   async fileById(fid) {
     return one('select * from asset_files where id = $1', [fid]);
   },
