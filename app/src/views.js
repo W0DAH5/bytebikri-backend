@@ -92,6 +92,10 @@ import {
   PLUS_NAME, PLUS_NOT, PLUS_SEPARATION_LINE, EFFECTS, EFFECT_KEYS, effectOf, wearClass, composeName,
   WEAR_OWNER_LINE, CHIP_OWNER_LINE,
   plateOf, PLATE_KEYS, plusState, plusWear, plusDaysLeft, plusMoneyLine,
+  // Gifting: the four states a code can be in, said separately to the buyer and to
+  // whoever is holding the code, plus the two derived numbers for the second period.
+  GIFT_STATE_LINE, GIFT_BUYER_LINE, GIFT_NOT, plusYearPrice, plusYearNote,
+  plusConsoleRows,
 } from './plus.js';
 // The blocker ladder. One module, so the sentence the visitor reads and the
 // sentence the seller's dashboard prints cannot disagree about what was done.
@@ -1336,7 +1340,7 @@ export function memberRoom({
     <h2>Who else is here</h2>
     <p>${named.length ? `${plural(named.length, 'person', 'people')} are named on this store's list.` : 'Nobody is named yet.'}</p>
   </div>
-  ${memberRoster(named) || `<div class="empty">The roster is empty. Being named is the perk, and it is each member&rsquo;s own choice.</div>`}
+  ${memberRoster(named) || `<div class="empty">The roster is empty. Being named is each member&rsquo;s own choice — a store cannot put somebody on this list, and cannot take them off it.</div>`}
 </div>
 
 ${channel.membership_note ? `<div class="section">
@@ -6567,9 +6571,16 @@ export function plusPage({
   user, consent = null, flash = null, current = 'plus',
   plan = null, subscription = null, state = 'none',
   rails = [], railsReady = false, look = { nameplate: null, effect: null },
-  previewWear = null, wear = null, periods = [1, 3, 12],
+  previewWear = null, wear = null,
+  // The two periods a person may buy (0042). `yearPlan` is the same plan with a
+  // twelve-month period, so the second price is read from the table and the discount
+  // is derived rather than typed a second time.
+  yearPlan = null,
+  // What this person has bought for other people.
+  gifts = [],
 }) {
   const price = Number(plan?.price_npr) || 0;
+  const yearPrice = Number(yearPlan?.price_npr) || plusYearPrice(price);
   const name = user?.display_name || (user?.email || 'You').split('@')[0];
   const active = state === 'active';
   const pending = state === 'pending';
@@ -6687,31 +6698,67 @@ export function plusPage({
          <div class="fine">Set <span class="mono">${esc(r.env)}</span> on the server to show this.</div>`}
     </div>`).join('');
 
-  const payForm = `
-    <form method="post" action="/plus/join" class="pay-form">
+  /*
+   * WHICH PERIOD, WHICH IS THE RESEARCHED PRICING SHAPE AND NOT A SECOND PRODUCT.
+   *
+   * The report's own comparison table names the models — flat, tiered, one-time,
+   * annual discount — and the one that fits a single-plan cosmetic is the annual
+   * discount: the same product for twelve months at ten months' price. Discord's
+   * Nitro does exactly this, and it is a discount rather than a feature, which is
+   * why nothing in the picker below differs between the two choices but the price
+   * and the period.
+   */
+  const periodChoice = `
+      <div class="field">
+        <span class="field-label" id="plus-period-label">How long</span>
+        <div class="plus-periods" role="radiogroup" aria-labelledby="plus-period-label">
+          <label class="choice plus-period" data-period-key="plus">
+            <input type="radio" name="plan" value="${esc(plan?.code || 'plus')}" checked>
+            <span>
+              <strong>${npr(price)} <span class="fine">a month</span></strong>
+              <span class="fine">The month is the unit: nothing renews by itself, and stopping costs nothing but the days already paid for.</span>
+            </span>
+          </label>
+          <label class="choice plus-period" data-period-key="${esc(yearPlan?.code || 'plus-year')}">
+            <input type="radio" name="plan" value="${esc(yearPlan?.code || 'plus-year')}">
+            <span>
+              <strong>${npr(yearPrice)} <span class="fine">a year</span></strong>
+              <span class="fine">${esc(plusYearNote(price))}</span>
+            </span>
+          </label>
+        </div>
+      </div>`;
+
+  const payForm = (action, { gift = false } = {}) => `
+    <form method="post" action="${action}" class="${gift ? 'pay-form gift-form' : 'pay-form'}">
+      ${periodChoice}
       <div class="row" style="gap:var(--space-4);align-items:flex-start">
         <div class="field" style="flex:1 1 160px">
-          <label for="plus-method">Paid with</label>
-          <select class="input" id="plus-method" name="method">
+          <label for="${gift ? 'gift-method' : 'plus-method'}">Paid with</label>
+          <select class="input" id="${gift ? 'gift-method' : 'plus-method'}" name="method">
             ${railList.map((r) => `<option value="${esc(r.id)}">${esc(r.label)}</option>`).join('')}
             <option value="other">Something else</option>
           </select>
         </div>
         <div class="field" style="flex:2 1 220px">
-          <label for="plus-ref">Transaction reference</label>
-          <input class="input" id="plus-ref" name="txnReference" required minlength="4" maxlength="80"
+          <label for="${gift ? 'gift-ref' : 'plus-ref'}">Transaction reference</label>
+          <input class="input" id="${gift ? 'gift-ref' : 'plus-ref'}" name="txnReference" required minlength="4" maxlength="80"
                  autocomplete="off" placeholder="e.g. 8FJ2K19QW">
           <span class="hint">From the wallet receipt. An operator checks it against the platform's own
-          statement, and that is what starts your month.</span>
+          statement, and that is what ${gift ? 'makes the code work' : 'starts your month'}.</span>
         </div>
       </div>
       <div class="row" style="gap:var(--space-4);align-items:flex-start">
         <div class="field" style="flex:1 1 200px">
-          <label for="plus-payer">Name on the transfer <span class="muted">(optional)</span></label>
-          <input class="input" id="plus-payer" name="payerName" maxlength="80">
+          <label for="${gift ? 'gift-payer' : 'plus-payer'}">Name on the transfer <span class="muted">(optional)</span></label>
+          <input class="input" id="${gift ? 'gift-payer' : 'plus-payer'}" name="payerName" maxlength="80">
         </div>
+        ${gift ? `<div class="field" style="flex:1 1 200px">
+          <label for="gift-note">A note for them <span class="muted">(optional, they see it)</span></label>
+          <input class="input" id="gift-note" name="note" maxlength="120" placeholder="e.g. for my sister">
+        </div>` : ''}
         <div class="field" style="flex:0 0 auto;align-self:flex-end">
-          <button class="btn btn-primary" type="submit">I have sent ${npr(price)}</button>
+          <button class="btn btn-primary" type="submit">I have sent ${gift ? 'it' : npr(price)}</button>
         </div>
       </div>
     </form>`;
@@ -6758,13 +6805,101 @@ export function plusPage({
     : 'One plan, everything included, no second charge for anything — ever. The reasons are on the page below.'}</p>
         <p class="price-line" style="margin:var(--space-4) 0">${npr(price)} <span class="fine">a month</span></p>
         ${payTo ? `<div class="rail-grid">${payTo}</div>` : ''}
-        ${railsReady ? payForm : `<div class="note note-warning" role="status" style="margin-top:var(--space-4)">
+        ${railsReady ? payForm('/plus/join') : `<div class="note note-warning" role="status" style="margin-top:var(--space-4)">
           <strong>No payment rail is configured on this server.</strong> Set one of the
           <span class="mono">PAY_*</span> variables to show the accounts here. Rather than printing a
           placeholder account number, the page shows nothing to pay into.
         </div>`}
       </div>
     </div>`;
+
+  /*
+   * THE GIFT, AND WHY IT IS ON THIS PAGE RATHER THAN BEHIND A MENU.
+   *
+   * The researched record puts gifting in the same breath as the tiers themselves —
+   * Discord's Nitro gifts and its friend passes, Twitch's gifted subscriptions — and
+   * it is the one social feature of a cosmetics product that never drew a backlash.
+   * For THIS platform it is also the only acquisition channel that needs no card, no
+   * processor and no marketing spend: one person who likes their look buys a month for
+   * somebody who has never heard of us, and that person arrives with the product
+   * already switched on.
+   *
+   * Three parts, in the order a person meets them:
+   *
+   *   1. THE CODES THIS PERSON HAS BOUGHT, each with its state said plainly. A code
+   *      that is not live yet says so, in the same place the code is printed, because
+   *      a buyer's first instinct is to hand it over immediately.
+   *   2. THE CODE THEY ARE HOLDING — the one input in the product that is not about
+   *      the person typing it. Nothing is asked of them but a code: no reference, no
+   *      amount, no name. A gift is not a payment and the recipient should not have to
+   *      behave like a payer.
+   *   3. BUYING ONE, with the two periods and the same rail as their own.
+   */
+  const giftRows = gifts.map((g) => `
+    <li class="gift-row" data-gift-code="${esc(g.code)}" data-gift-status="${esc(g.status)}">
+      <div class="gift-code mono">${esc(g.code)}</div>
+      <div class="gift-body">
+        <span class="pill${g.status === 'funded' ? ' pill-success' : g.status === 'void' ? ' pill-warning' : ''}">${
+    g.status === 'reserved' ? 'waiting on the transfer' : g.status === 'funded' ? 'ready to give'
+      : g.status === 'redeemed' ? 'redeemed' : 'not found'}</span>
+        <span class="fine">${Number(g.months) === 12 ? 'A year' : 'A month'} · ${
+    esc(GIFT_BUYER_LINE[g.status] || GIFT_BUYER_LINE.reserved)}</span>
+        ${g.redeemed_by_name ? `<span class="fine">Redeemed by ${esc(g.redeemed_by_name)}.</span>` : ''}
+      </div>
+    </li>`).join('');
+
+  const giftPanel = `
+<section class="section" id="gift">
+  <div class="section-head"><h2>Give a month away</h2>
+    <p class="fine">One period, for one other person. The code is what carries it, so it works whether
+    they are next to you or on the other side of the country — and it works the moment an operator finds
+    your transfer, not before.</p>
+  </div>
+  <div class="cols-2">
+    <div class="panel"><div class="panel-head"><h2>Use a code</h2></div>
+      <div class="panel-body">
+        <p class="small">Somebody bought you a period. Type the code they gave you — it looks like
+        <span class="mono">BKP-XXXX-XXXX</span>, and the dashes do not matter.</p>
+        <form method="post" action="/plus/gift/redeem" class="row" style="gap:var(--space-3);align-items:flex-end;margin-top:var(--space-4)">
+          <div class="field" style="flex:1 1 200px">
+            <label for="gift-use-code">The code</label>
+            <input class="input mono" id="gift-use-code" name="code" required minlength="8" maxlength="20"
+                   autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="BKP-XXXX-XXXX">
+          </div>
+          <div class="field" style="flex:0 0 auto">
+            <button class="btn btn-primary" type="submit">Use it</button>
+          </div>
+        </form>
+        <p class="fine" style="margin-top:var(--space-3)">Nothing else is asked of you — no reference, no
+        amount, no statement. A gift is not a payment, and accepting one should not look like making one.</p>
+      </div>
+    </div>
+    <div class="panel"><div class="panel-head"><h2>${giftRows ? 'Codes you have bought' : 'What a gift is not'}</h2></div>
+      <div class="panel-body">
+        ${giftRows
+    ? `<ul class="gift-list">${giftRows}</ul>
+       <p class="fine" style="margin-top:var(--space-3)">A code is one period for one person and it is used
+       once. If a friend never used theirs, the period is still waiting on it — nothing expires and nothing
+       is lost.</p>`
+    : `<ul class="plus-not">${GIFT_NOT.map((line) => `<li>${esc(line)}</li>`).join('')}</ul>`}
+      </div>
+    </div>
+  </div>
+  <div class="panel" style="margin-top:var(--space-4)"><div class="panel-head"><h2>Buy one</h2></div>
+    <div class="panel-body">
+      <p class="small">Your own arrangement is not touched by this — buying a gift never extends your own
+      month, and never shortens it. What comes back is a code, printed on this page the moment you claim it,
+      with its state attached so you know whether it works yet.</p>
+      ${railsReady
+    ? payForm('/plus/gift', { gift: true })
+    : `<div class="note note-warning" role="status">
+        <strong>No payment rail is configured on this server.</strong> Set one of the
+        <span class="mono">PAY_*</span> variables to show the accounts here — rather than printing a
+        placeholder account number, this page shows nothing to pay into.
+      </div>`}
+    </div>
+  </div>
+</section>`;
 
   return layout({
     title: PLUS_NAME,
@@ -6809,6 +6944,8 @@ ${flashNote(flash)}
   <div class="section-head"><h2>The arrangement</h2></div>
   ${arrangement}
 </section>
+
+${giftPanel}
 
 <section class="section" id="not">
   <div class="section-head"><h2>What this is not</h2>
@@ -9044,6 +9181,14 @@ export function operatorBilling({
   // of a match is different: a store's plan turns capabilities on, a person's turns
   // a look on and opens nothing at all.
   plusPayments = [],
+  // The platform's own numbers for the third charge, from `platformMoney()`: how many
+  // arrangements are running, how many have run out, and where the gifts are. Passed
+  // in rather than counted here — the console's totals are the same arithmetic the
+  // payments queue shows, and two counts of the same thing is how a dashboard starts
+  // lying. Rendering them is `plusConsoleRows()`, which was written with the plan in
+  // 0033 and had no reader until this page: a KPI table nothing renders is a KPI
+  // nobody has.
+  money = null,
 }) {
   // `aging` defaults to the queue itself. The two are the same rows — aging just
   // carries the due date and the days late — so a caller that passes only
@@ -9069,11 +9214,25 @@ export function operatorBilling({
       </td>
     </tr>`).join('');
 
-  const plusRows = plusPayments.filter((p) => p.status === 'submitted').map((p) => `
+  /*
+   * A GIFT IN THIS QUEUE IS A DIFFERENT DECISION, and the operator has to see which
+   * one they are making before they press the button. Matching a gift FUNDS it: it
+   * does not start the payer's own month and does not touch the row they are already
+   * wearing. Without this line the two claims look identical, and an operator whose
+   * mental model is "match = start their month" would be wrong about half of them.
+   */
+  const plusRows = plusPayments.filter((p) => p.status === 'submitted').map((p) => {
+    const giftLine = p.gift_id
+      ? `<div class="fine"><span class="pill pill-accent">gift</span>
+          <span class="mono">${esc(p.gift_code || '')}</span> — for somebody else${
+        p.gift_note ? ` · “${esc(p.gift_note)}”` : ''}. Matching funds the code; the payer's own period is not touched.</div>`
+      : '';
+    return `
     <tr>
       <td>
         <strong>${esc(p.display_name || p.email)}</strong>
         <div class="fine">${esc(p.email)} · ${esc(p.plan_code)}</div>
+        ${giftLine}
       </td>
       <td class="mono" data-label="Reference">${esc(p.txn_reference)}</td>
       <td data-label="Method">${esc(p.method)}${p.payer_name ? `<div class="fine">${esc(p.payer_name)}</div>` : ''}</td>
@@ -9081,11 +9240,13 @@ export function operatorBilling({
       <td class="fine" data-label="When">${relTime(p.created_at)}</td>
       <td data-label="Actions">
         <form class="inline-form" method="post" action="/admin/payments/plus/${esc(p.id)}">
-          <button class="btn btn-sm btn-primary" name="action" value="match" type="submit">Match</button>
+          <button class="btn btn-sm btn-primary" name="action" value="match" type="submit">${
+    p.gift_id ? 'Fund the gift' : 'Match'}</button>
           <button class="btn btn-sm btn-danger" name="action" value="reject" type="submit">Reject</button>
         </form>
       </td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   const rentRows = invoices.map((i) => `
     <tr>
@@ -9146,6 +9307,30 @@ ${flashNote(flash)}
     this charge opens a file, removes an ad, or entitles anybody to a creator's work — if a claim ever
     looked like it would, that would be a bug rather than a feature.
   </p>
+  ${money ? `<div class="panel" style="margin-top:var(--space-5)"><div class="panel-head"><h2>Where the third charge stands</h2>
+      <span class="spacer"></span><span class="fine">read from the same tables as the queue above</span></div>
+    <div class="panel-body">
+      <dl class="kv">
+        ${plusConsoleRows({
+    active: money.plusActive ?? money.plus_active ?? 0,
+    pending: money.plusPending ?? money.plus_pending ?? 0,
+    lapsed: money.plusLapsed ?? money.plus_lapsed ?? 0,
+    paidThisMonth: money.plusThisMonthNpr ?? money.plus_this_month ?? 0,
+    price: money.plusPrice ?? 149,
+    giftsReserved: money.giftsReserved ?? money.gifts_reserved ?? 0,
+    giftsReady: money.giftsReady ?? money.gifts_ready ?? 0,
+    giftsRedeemed: money.giftsRedeemed ?? money.gifts_redeemed ?? 0,
+    giftsVoid: money.giftsVoid ?? money.gifts_void ?? 0,
+  }).map((r) => `<dt>${esc(r.term)}</dt><dd>${esc(r.text)}</dd>`).join('')}
+        <dt>Recurring</dt><dd>NPR ${Number((money.plusActive ?? money.plus_active ?? 0)
+    * (money.plusPrice ?? 149)).toLocaleString('en-IN')} a month if every running arrangement renews —
+        nothing renews by itself here, so this is a ceiling rather than a forecast.</dd>
+      </dl>
+      <p class="fine" style="margin-top:var(--space-3)">The two numbers the researched KPI list names for a
+      subscription product are on this row and they mean what the manual rail allows: <strong>active</strong>
+      is arrangements running now, <strong>lapsed</strong> is periods that ended of their own accord. Nothing
+      here is a card on file, and the ceiling is not a projection.</p>
+    </div></div>` : ''}
 </section>
 
 <section class="section">

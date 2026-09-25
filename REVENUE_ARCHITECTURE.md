@@ -18,7 +18,7 @@ memberships had turned false).
 | 2 | Membership dues | member → store owner (eSewa/Khalti/bank) | **not a party** — cannot confirm, refund, or take | `store.js` `confirmMembership` (owner-only in SQL), `memberships.js` `MONEY_LINE` |
 | 3 | **Store plan** | seller → bytebikri | **revenue 1** | `store.js` `PLANS.priceNpr` = 0 / 999 / 2,499; `billing.js` `upgradeExplanation` (pro-rated) |
 | 4 | **Annual rent** | seller → bytebikri | **revenue 2** | `slots.js` `POLICY` + `billing.js` `annualRentNpr` |
-| 5 | **ByteBikri Plus** | person → bytebikri | **revenue 3** | `plus.js` + `customer_plans.price_npr` = NPR 149/month; `store.js` `claimPlus` / `matchCustomerPlanPayment` |
+| 5 | **ByteBikri Plus** | person → bytebikri | **revenue 3** | `plus.js` + `customer_plans` = NPR 149/month, NPR 1,490/year (ten months' price); `store.js` `claimPlus` / `matchCustomerPlanPayment` / `claimPlusGift` |
 
 Five legs, and the shape of them is the point: **the platform earns from three places and is a party
 to only those three.** It touches nothing belonging to a creator — not their ad revenue, not their
@@ -76,8 +76,15 @@ panel and the allocation policy cannot drift.
 ## Revenue 3 — ByteBikri Plus, and why it is cosmetics only
 
 A person pays the platform NPR 149 a month for **how their own name looks**: one palette from eight,
-one effect from three (plain, a gradient edge, or a slow halo), on every surface that shows their name
-to somebody else — a store's roster, the seller's member queue, a review, the account chip.
+one effect from six (plain, an edge, a halo, a gradient, a neon bloom, or a moving prism band), on every
+surface that shows their name to somebody else — a store's roster, the seller's member queue, a review,
+the account chip. **A year is the same plan with a longer period at ten months' price** — NPR 1,490 for
+twelve — and it is a period, not a second product: `db/migrations/0042_plus_gifts.sql` seeds the row
+with a capabilities jsonb byte-identical to the month's, `plusYearPrice()` is the rule (asserted, and
+`plusYearNote()` prints the saving in rupees rather than in adjectives), and `PURCHASABLE_PLAN_CODES`
+in `plus.js` is the only list a route checks a submitted code against — a test asserts that list and the
+`customer_plans` table agree, because the first cut of the annual release had a plan key spelled in one
+file and read in another, and `/plus` answered 500 in a browser while every unit test passed.
 
 Three properties, each one a decision with a reason:
 
@@ -103,6 +110,68 @@ name three flows and omit ours), the operator's `/admin` totals count it
 (`platformMoney().plusThisMonthNpr`), the payments queue has its own section, the audit log has its own
 family (`plus.`), and `/plus` states the separation from both other premiums on the page that takes the
 money.
+
+## Gifts — the researched social pattern, on the rail that already exists
+
+Discord Nitro's gift links and Twitch's gifted subs were studied for this round, and one pattern was
+taken: **a period can be bought for somebody else, and what carries it is a code.** Built here on the
+manual rail, with no new money path:
+
+- `customer_plan_gifts` (migration `0042_plus_gifts.sql`) holds the code, the buyer, the note and the
+  state: `reserved → funded → redeemed`, or `reserved → void`. The CHECK makes `redeemed` require both
+  `redeemed_by` and `redeemed_at`, so a gift cannot be used up by nobody.
+- The code is minted **at claim time, not at match time**, because the buyer has to tell their friend
+  what to type before any operator has looked at anything. `BKP-XXXX-XXXX` over a 32-character alphabet
+  with I/O/0/1 removed — a code gets read aloud, and `randomInt` is the source.
+- **A reserved code does not work, and says so.** `redeemPlusGift` refuses by name — `gift-unknown`,
+  `gift-used`, `gift-void`, `gift-unfunded`, `gift-self` — and the buyer's page prints the state beside
+  the code, which is the sentence that stops somebody handing over a string that does nothing.
+- **The buyer's own arrangement is never touched.** `claimPlusGift` creates their subscription row only
+  if it does not exist and otherwise leaves it exactly as it was: a person with a month running who buys
+  a friend a month must not stop wearing their look. `matchCustomerPlanPayment` funds the GIFT
+  (`isGift: true`) when the payment carries a `gift_id` — never the payer's own period — and rejecting
+  such a payment voids the gift rather than cancelling the buyer.
+- **A gift payer has no arrangement to point at, and the ledger requires one.**
+  `customer_plan_payments.customer_subscription_id` is NOT NULL and the operator queue joins through
+  it, so `0043_subscription_none.sql` adds the one status that was missing: `'none'` — a row that says
+  *no arrangement*. It is not a lapse, and nothing can count it as one: the console derives a lapse
+  the way every clock here is derived — an **active** row whose `period_end` has passed — so a `'none'`
+  row, which is neither active nor dated, cannot appear in `platformMoney().plus_lapsed`.
+- **Days are never lost.** Both the match and the redemption extend from
+  `greatest(period_end, now()) + months`. The first cut of the match restarted the period, which
+  silently dropped the remaining days of anybody who paid early; a test asserts exactly +31 days.
+- The operator's queue renders a gift as a gift — a pill, the code, the buyer's note and a **"Fund the
+  gift"** button in place of "Match" — and the console's own panel reports
+  `gifts_{reserved,ready,redeemed,void}` beside the arrangements.
+
+Walked end to end across three accounts in `ci/eyes/premium-walk.mjs` §13 (buyer, recipient, operator):
+claim → the reserved code visible on the buyer's page → the recipient refused with a reason → the
+operator funds it → the recipient redeems → a second attempt refused → **the buyer's arrangement is
+unchanged**, which is the assertion the whole feature exists for. Shots 15–18 of
+`docs/evidence/round36`.
+
+## What the research added, and what it was told to leave
+
+The brief for the round was to take the research that fits this product and discard the rest. Recorded,
+so the discards are decisions rather than omissions:
+
+**Taken.** ① **Gifting** (above) — the summary's social pattern, rebuilt on the manual rail.
+② **A year at ten months' price** — the summary's "annual discounts", which needs no new capability and
+is one extra period on one plan. ③ **Entitlements as the source of truth** — already the shape here
+(`PLUS_SUBSCRIPTION_JOIN`, re-checked in `plusWear()`), so research confirmed rather than changed it.
+
+**Discarded, with the reason.** ① **Stripe, webhooks, PCI** — the rail is manual and matched by a
+person; there is no card, so there is no token, no webhook and no PCI surface. ② **Server boosts and
+platform-side currencies** — the platform does not take money from creators and does not pay users, and
+a boost is a flow in the wrong direction. ③ **Emoji, avatar and banner upload pipelines with a CDN** —
+an upload path is moderation, storage and cost, and the identity work already chose generated marks
+over uploads for the same reason. ④ **HD streaming, WebRTC, priority support** — there is no cost
+behind this plan (see "settled: flat" below), and a priority-support promise would be the first thing
+in the whole model with an operating cost attached and one operator to carry it. ⑤ **App-store IAP and
+taxes** — no store app sells anything yet, and Nepal-first prices are published in NPR by hand.
+⑥ **Feature-flag and A/B infrastructure** — with one operator and a manual rail, the experiment is a
+decision and a rollout is a page reload. ⑦ **An MRR/churn pipeline** — the console prints what the
+ledger holds (`platformMoney()`), which is the number somebody can act on at this size.
 
 **One SQL fact, one copy of it.** "Is this person's arrangement active right now" is decided by
 `PLUS_SUBSCRIPTION_JOIN` in `plus.js` — the entitlement is `status = 'active' and period_end > now()`,
@@ -150,7 +219,8 @@ is most of the answer:
 
 ### 1. What a person pays for their own look (leg 5) — **settled: flat**
 
-One price, NPR 149 a month, everything included. There is nothing to scale: a palette and a gradient cost
+One price — NPR 149 a month, or ten months' price for twelve, which is a period choice on the same
+plan and not a second product — everything included. There is nothing to scale: a palette and a gradient cost
 the platform nothing to render, and metering a cosmetic would be the per-item pricing every comparable
 shop has been punished for (`AD_ECONOMY.md` §4). If a store-scale capability ever joined this plan — a
 verified highlight, a profile page — the question would return, because then there *would* be something

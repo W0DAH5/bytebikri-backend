@@ -247,7 +247,7 @@ export function planBenefits(plan, { availableSlots = null } = {}) {
   // bullet that reads "memberships" would be the one line on the pricing page a
   // seller has to guess at.
   if (c.memberships) {
-    out.push('Members: a roster with your own plates, and files that open for them without an ad — dues go straight to you, bytebikri takes nothing');
+    out.push('Members: a roster wearing your own tier chips, and files that open for them without an ad — dues go straight to you, bytebikri takes nothing');
   }
   // -1 is "unlimited", the same convention as max_assets. Printing the -1 was
   // the kind of detail that makes a pricing page look unfinished.

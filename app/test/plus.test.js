@@ -28,6 +28,9 @@ const { close, query } = await import('../src/db.js');
 const {
   PLUS_CODE, PLUS_NAME, PLUS_NOT, PLUS_SEPARATION_LINE, EFFECTS, EFFECT_KEYS, PLATE_KEYS,
   effectOf, plateOf, plusState, plusWear, plusDaysLeft, plusMoneyLine, plusConsoleRows, plusPeriodEnd,
+  // The gift: the code, the four states, and the second period's price.
+  giftCode, normalizeGiftCode, GIFT_ALPHABET, GIFT_STATE_LINE, GIFT_BUYER_LINE, GIFT_NOT,
+  plusYearPrice, plusYearNote, PLUS_YEAR_CODE, PURCHASABLE_PLAN_CODES,
 } = await import('../src/plus.js');
 const views = await import('../src/views.js');
 const { railDetails } = await import('../src/billing.js');
@@ -356,4 +359,249 @@ test('an unrecognised palette is stored as nothing chosen, not as a look', async
   const real = await store.setPlusLook({ profileId: person.id, nameplate: 'teal', effect: 'halo' });
   assert.equal(real.nameplate, 'teal');
   assert.equal(real.plus_effect, 'halo');
+});
+
+// ---------------------------------------------------------------------------
+// Gifting — the researched social feature, and the bug it would have hidden
+// ---------------------------------------------------------------------------
+
+test('a gift code is unambiguous when it is read aloud', () => {
+  // The alphabet is the whole safety property of a bearer token that gets typed by
+  // somebody reading it off a phone screen: I, O, 0 and 1 are gone because they are
+  // the four characters that require handwriting to tell apart.
+  for (const bad of ['I', 'O', '0', '1']) {
+    assert.ok(!GIFT_ALPHABET.includes(bad), `${bad} cannot appear in a code — it is indistinguishable from its pair`);
+  }
+  const code = giftCode();
+  assert.match(code, /^BKP-[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+  assert.match(normalizeGiftCode(code.toLowerCase()), /^BKP-/,
+    'a code typed in lower case with no dashes is the same code');
+  assert.equal(normalizeGiftCode('bkp abcd efgh'), 'BKP-ABCD-EFGH');
+  assert.equal(normalizeGiftCode('not a code'), null);
+  assert.equal(normalizeGiftCode(''), null);
+  assert.equal(normalizeGiftCode('BKP-ABCD-EFG'), null, 'a short code is not a code');
+  // And it is drawn from the CSPRNG, not from Math.random: a guessable code is a free
+  // month for whoever guesses it.
+  const many = new Set(Array.from({ length: 200 }, () => giftCode()));
+  assert.equal(many.size, 200, 'two hundred codes, two hundred strings');
+});
+
+test('every state a gift can be in is said to both of the people looking at it', () => {
+  for (const key of ['reserved', 'funded', 'redeemed', 'void']) {
+    assert.ok(GIFT_STATE_LINE[key], `no sentence for a ${key} gift`);
+    assert.ok(GIFT_BUYER_LINE[key], `nothing to tell the buyer about a ${key} gift`);
+  }
+  // The distinction that matters most: a reserved code does NOT work yet, and both
+  // sentences have to say so — one to the buyer, one to whoever is holding it.
+  assert.match(GIFT_STATE_LINE.reserved, /does not work|not live|not work/);
+  assert.match(GIFT_BUYER_LINE.reserved, /starts working/);
+  assert.equal(GIFT_NOT.length, 4, 'four things a gift is not, and each one is a sentence');
+});
+
+test('a year is the same plan, and the discount is derived rather than typed', () => {
+  assert.equal(plusYearPrice(149), 1490, 'ten months for twelve — two months free');
+  assert.match(plusYearNote(149), /Two months free/);
+  assert.match(plusYearNote(149), /298/, 'and the saving in rupees, not in adjectives');
+  // A discount written a second time is a discount that drifts: the note is computed
+  // from the monthly price, so the two can never disagree.
+  assert.notEqual(plusYearNote(200), plusYearNote(149));
+});
+
+test('the annual plan is the monthly plan, byte for byte', async () => {
+  const month = await store.customerPlan(PLUS_CODE);
+  const year = await store.customerPlan(PLUS_YEAR_CODE);
+  assert.ok(year, 'migration 0042 seeds the second period');
+  assert.equal(year.period_months, 12);
+  assert.deepEqual(year.capabilities, month.capabilities,
+    'a perk difference between the two periods would make the annual plan a second product');
+  assert.equal(Number(year.price_npr), plusYearPrice(Number(month.price_npr)),
+    'and the price is the derived one, not a number somebody typed twice');
+});
+
+test('a gift never touches the buyer’s own arrangement, and its period lands on the redeemer', async () => {
+  const { owner, person } = await fixture();
+  const friend = await store.userByEmailOrCreate(`plus-friend-${Date.now()}@test.local`);
+
+  // The buyer has a month running. Buying a friend a month must not disturb it —
+  // `claimPlus` would have flipped this row to pending_payment and stopped the look.
+  const before = await store.claimPlus({
+    profileId: owner.id, planCode: PLUS_CODE, amountNpr: 149, txnReference: `GIFTBASE-${Date.now()}`,
+  });
+  assert.equal(before.ok, true);
+  const matchedBase = await store.matchCustomerPlanPayment({ paymentId: before.payment.id, actorId: null });
+  assert.ok(matchedBase, 'the buyer has an arrangement');
+
+  const claim = await store.claimPlusGift({
+    profileId: owner.id, planCode: PLUS_CODE, amountNpr: 149,
+    txnReference: `GIFT-${Date.now()}`, note: 'for a friend',
+  });
+  assert.equal(claim.ok, true, 'the gift is claimed');
+  assert.match(claim.gift.code, /^BKP-/);
+  assert.equal(claim.gift.status, 'reserved');
+
+  // The buyer's own row is untouched: still active, and its end date unmoved.
+  const mine = await store.customerSubscription(owner.id);
+  assert.equal(mine.status, 'active', 'buying a gift stopped the buyer’s own arrangement');
+  assert.equal(new Date(mine.period_end).getTime(), new Date(matchedBase.subscription.period_end).getTime(),
+    'buying a gift moved the buyer’s own renewal date');
+
+  // A reserved code does not work.
+  const early = await store.redeemPlusGift({ code: claim.gift.code, profileId: friend.id });
+  assert.deepEqual(early, { ok: false, code: 'gift-unfunded' });
+
+  // The match funds the GIFT rather than activating the payer.
+  const matched = await store.matchCustomerPlanPayment({ paymentId: claim.payment.id, actorId: null });
+  assert.equal(matched.isGift, true);
+  assert.equal(matched.gift.status, 'funded');
+  const stillMine = await store.customerSubscription(owner.id);
+  assert.equal(new Date(stillMine.period_end).getTime(), new Date(mine.period_end).getTime(),
+    'matching a gift stamped a period on the buyer');
+
+  // Nobody redeems their own gift.
+  const selfish = await store.redeemPlusGift({ code: claim.gift.code, profileId: owner.id });
+  assert.deepEqual(selfish, { ok: false, code: 'gift-self' });
+
+  // The friend redeems it, and the period lands on THEIR row.
+  const used = await store.redeemPlusGift({ code: claim.gift.code, profileId: friend.id });
+  assert.equal(used.ok, true);
+  assert.equal(used.months, 1);
+  const theirs = await store.customerSubscription(friend.id);
+  assert.equal(theirs.status, 'active');
+  assert.ok(new Date(theirs.period_end) > new Date(), 'the gift started a period for the redeemer');
+
+  // Once, and once only.
+  const again = await store.redeemPlusGift({ code: claim.gift.code, profileId: person.id });
+  assert.deepEqual(again, { ok: false, code: 'gift-used' });
+  // And an unknown code is refused by name rather than by silence.
+  const nothing = await store.redeemPlusGift({ code: 'BKP-ZZZZ-ZZZZ', profileId: person.id });
+  assert.deepEqual(nothing, { ok: false, code: 'gift-unknown' });
+});
+
+test('a gift received while a month is running extends it instead of replacing it', async () => {
+  const { owner } = await fixture();
+  const friend = await store.userByEmailOrCreate(`plus-extend-${Date.now()}@test.local`);
+  const first = await store.claimPlus({
+    profileId: friend.id, planCode: PLUS_CODE, amountNpr: 149, txnReference: `EXT1-${Date.now()}`,
+  });
+  await store.matchCustomerPlanPayment({ paymentId: first.payment.id, actorId: null });
+  const before = await store.customerSubscription(friend.id);
+
+  const claim = await store.claimPlusGift({
+    profileId: owner.id, planCode: PLUS_CODE, amountNpr: 149, txnReference: `EXT2-${Date.now()}`,
+  });
+  await store.matchCustomerPlanPayment({ paymentId: claim.payment.id, actorId: null });
+  const used = await store.redeemPlusGift({ code: claim.gift.code, profileId: friend.id });
+  assert.equal(used.ok, true);
+
+  const after = await store.customerSubscription(friend.id);
+  const grew = new Date(after.period_end).getTime() - new Date(before.period_end).getTime();
+  const month = 30 * 86400000;
+  assert.ok(Math.abs(grew - 31 * 86400000) < 3 * 86400000 || grew >= month,
+    `a gift replaced a running period instead of extending it (grew ${Math.round(grew / 86400000)} days)`);
+});
+
+test('paying early extends the period instead of throwing the days away', async () => {
+  // The defect this test exists for: `matchCustomerPlanPayment` used to write
+  // `period_end = now() + months`, so somebody with 20 days left who paid for the next
+  // month LOST those 20 days. A renewal that costs days is a renewal nobody makes twice.
+  const { owner } = await fixture();
+  const first = await store.claimPlus({
+    profileId: owner.id, planCode: PLUS_CODE, amountNpr: 149, txnReference: `EARLY1-${Date.now()}`,
+  });
+  const one = await store.matchCustomerPlanPayment({ paymentId: first.payment.id, actorId: null });
+  const end1 = new Date(one.subscription.period_end).getTime();
+
+  const second = await store.claimPlus({
+    profileId: owner.id, planCode: PLUS_CODE, amountNpr: 149, txnReference: `EARLY2-${Date.now()}`,
+  });
+  const two = await store.matchCustomerPlanPayment({ paymentId: second.payment.id, actorId: null });
+  const end2 = new Date(two.subscription.period_end).getTime();
+  const grew = Math.round((end2 - end1) / 86400000);
+  assert.equal(grew, 31, `paying early moved the end date by ${grew} days instead of adding a month`);
+
+  // And the row now says which period was matched, so a year bought after a month is
+  // not carried under a row that still says `plus`.
+  assert.equal(two.subscription.plan_code, PLUS_CODE);
+  const bought = await store.claimPlus({
+    profileId: owner.id, planCode: 'plus-year', amountNpr: 1490, txnReference: `EARLY3-${Date.now()}`,
+  });
+  const three = await store.matchCustomerPlanPayment({ paymentId: bought.payment.id, actorId: null });
+  assert.equal(three.subscription.plan_code, 'plus-year');
+  const grewTwelve = Math.round((new Date(three.subscription.period_end).getTime() - end2) / 86400000);
+  assert.ok(grewTwelve > 360, `a year added ${grewTwelve} days`);
+});
+
+test('the page says both periods, the codes somebody holds, and what a gift is not', () => {
+  const html = views.plusPage({
+    user: { id: 'p1', email: 'nima@test.local', display_name: 'Nima', email_verified_at: '2026-01-01' },
+    plan: { code: 'plus', name: 'ByteBikri Plus', price_npr: 149, period_months: 1 },
+    yearPlan: { code: 'plus-year', name: 'ByteBikri Plus — a year', price_npr: 1490, period_months: 12 },
+    state: 'none', rails: [{ id: 'esewa', label: 'eSewa', handle: '9800000001', ready: true }],
+    railsReady: true,
+    gifts: [{ code: 'BKP-ABCD-EFGH', status: 'funded', months: 1, plan_code: 'plus' }],
+  });
+  assert.match(html, /name="plan" value="plus"/, 'the month is offered');
+  assert.match(html, /name="plan" value="plus-year"/, 'and so is the year');
+  assert.match(html, /NPR 1,490/, 'at the derived price');
+  assert.match(html, /Two months free/);
+  assert.match(html, /action="\/plus\/gift"/, 'there is a way to buy one');
+  assert.match(html, /action="\/plus\/gift\/redeem"/, 'and a way to use one');
+  assert.match(html, /BKP-ABCD-EFGH/, 'the code the buyer has is on their own page');
+  assert.match(html, /data-gift-status="funded"/, 'with its state as data, not only as words');
+  assert.match(html, /ready to give/i);
+  // The recipient's half must ask for nothing but a code: a gift is not a payment.
+  const redeem = html.slice(html.indexOf('/plus/gift/redeem'));
+  assert.ok(!/txnReference/.test(redeem.slice(0, 1200)), 'using a gift asks for a transaction reference');
+});
+
+test('a page with no gifts yet states what a gift is not, before anybody buys one', () => {
+  const html = views.plusPage({
+    user: { id: 'p1', email: 'nima@test.local', display_name: 'Nima' },
+    plan: { code: 'plus', name: 'ByteBikri Plus', price_npr: 149, period_months: 1 },
+    state: 'none', gifts: [],
+  });
+  for (const line of GIFT_NOT) {
+    assert.ok(html.includes(line.slice(0, 40)), 'the page does not print what a gift is not');
+  }
+  assert.match(html, /What a gift is not/);
+});
+
+test('every code a route may accept names a plan that exists', async () => {
+  // The bug this test exists for: `plusContext` was written against a plan key that
+  // existed only in the file that used it, and NOTHING in the suite noticed, because
+  // the page is rendered directly in tests while the route is what read the key. The
+  // first request to `/plus` in a browser answered 500. A constant that a route reads
+  // is now asserted against the table the route reads it from.
+  assert.equal(PURCHASABLE_PLAN_CODES.length, 2, 'a month and a year, and no third thing');
+  assert.ok(PURCHASABLE_PLAN_CODES.includes(PLUS_CODE));
+  assert.ok(PURCHASABLE_PLAN_CODES.includes(PLUS_YEAR_CODE));
+  for (const code of PURCHASABLE_PLAN_CODES) {
+    const plan = await store.customerPlan(code);
+    assert.ok(plan, `the route offers ${code} and no such plan exists`);
+    assert.equal(plan.active, true, `${code} is offered to people and is not active`);
+    assert.equal(plan.capabilities.opens_content, false);
+    assert.equal(plan.capabilities.removes_ads, false);
+  }
+  // And the migration's own list is the same list: a third period added to the table
+  // without being offered, or offered without existing, both fail here.
+  const all = await store.customerPlans();
+  assert.deepEqual(all.map((p) => p.code).sort(), [...PURCHASABLE_PLAN_CODES].sort(),
+    'the plans table and the codes the routes accept have drifted apart');
+});
+
+test('the seller’s money map names both periods, at the table’s own numbers', async () => {
+  // The copy a seller reads when they ask "what is this charge on the statement?" — it
+  // used to name one price, and a year arrives as a different number. Both are read out
+  // of the plan rows rather than typed here, so a price change that misses this sentence
+  // fails this test instead of misleading a creator.
+  const { MONEY_MAP } = await import('../src/earnings.js');
+  const detail = MONEY_MAP.toPlatformFromPeople.detail;
+  const [month, year] = [await store.customerPlan(PLUS_CODE), await store.customerPlan(PLUS_YEAR_CODE)];
+  assert.ok(detail.includes(`NPR ${Number(month.price_npr).toLocaleString('en-IN')} a month`),
+    `the money map does not name ${month.price_npr} a month`);
+  assert.ok(detail.includes(`${Number(year.price_npr).toLocaleString('en-IN')} for a year`),
+    `the money map does not name ${year.price_npr} for a year`);
+  // And the answers the row exists for survive the numbers being added.
+  assert.match(detail, /opens no file, removes no ad/);
+  assert.match(detail, /takes nothing from what you earn/);
 });

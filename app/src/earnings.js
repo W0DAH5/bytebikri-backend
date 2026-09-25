@@ -187,6 +187,11 @@ export function gapVerdict({ counted = 0, reported = 0, estimateUsd = 0, gapPct 
  * is how a threshold ends up meaning different things on two pages that are
  * supposed to agree about the same traffic.
  */
+// The year's price is DERIVED, never typed twice: `plusYearPrice` is the rule (ten
+// months for twelve) and it is the same function the Plus page prices the year with.
+// A seller reading a statement with a 1,490 on it should find that number here.
+import { plusYearPrice } from './plus.js';
+
 export const CONSISTENT_BAND_PCT = 15;
 
 export function calibrationRowState(row) {
@@ -500,7 +505,11 @@ export const MONEY_MAP = {
     account: 'bytebikri',
     held: 'Nothing of yours',
     cut: 'One price, no share',
-    detail: 'NPR 149 a month, for a palette and an effect beside their own name. It opens no file, removes no ad, shortens no wait, and takes nothing from what you earn or from what your members pay you.',
+    // Both periods, because a creator or an operator reconciling the statement sees a
+    // 1,490 arrive as well as a 149, and a money map that names one number is a map with
+    // a question mark on it. The ways a person can buy are named too: a gift is the same
+    // charge, to the same account, and it changes nothing about the sentences after it.
+    detail: `NPR 149 a month, or ${plusYearPrice(149).toLocaleString('en-IN')} for a year — ten months' price for twelve. It buys a palette and an effect beside their own name, for themselves or as a code for somebody else. It opens no file, removes no ad, shortens no wait, and takes nothing from what you earn or from what your members pay you.`,
   },
 };
 

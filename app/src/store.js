@@ -15,7 +15,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { one, many, scalar, query, withTransaction, isUniqueViolation } from './db.js';
 // What an active arrangement means, as SQL — see src/plus.js.
-import { PLUS_SUBSCRIPTION_JOIN, PLATE_KEYS as PLUS_PLATE_KEYS, EFFECT_KEYS as PLUS_EFFECT_KEYS } from './plus.js';
+import {
+  PLUS_SUBSCRIPTION_JOIN, PLATE_KEYS as PLUS_PLATE_KEYS, EFFECT_KEYS as PLUS_EFFECT_KEYS,
+  giftCode,
+} from './plus.js';
 
 import { rentPeriod, annualRentNpr, rentWorking, RENT_TERMS } from './billing.js';
 
@@ -3006,7 +3009,13 @@ export const store = {
     );
   },
 
-  /** Being named on the storefront is the perk; being hidden is the member's call. */
+  /**
+   * Being named on the storefront is the MEMBER's own choice, made on their side and
+   * changeable by them. The store cannot name somebody or unname them: the roster is the
+   * list of people who said yes. (This comment used to read "being named is the perk",
+   * which handed the store a member's perk — the person's look is theirs, bought from
+   * bytebikri, and the store's own contribution is the tier chip.)
+   */
   async setMemberListed({ profileId, channelId, listed }) {
     const row = await one(
       `update memberships set publicly_listed = $3
@@ -3607,8 +3616,20 @@ export const store = {
          coalesce((select sum(amount_npr) from customer_plan_payments
                     where status = 'matched'
                       and matched_at >= date_trunc('month', now())), 0)::int as plus_this_month,
-         (select count(*)::int from customer_subscriptions where status = 'active') as plus_active,
-         (select count(*)::int from customer_subscriptions where status = 'pending_payment') as plus_pending`,
+         (select count(*)::int from customer_subscriptions
+           where status = 'active' and period_end > now()) as plus_active,
+         -- Lapsed is derived the way every clock in this codebase is derived: a row
+         -- that says active with a period in the past IS lapsed, and nothing sweeps it.
+         (select count(*)::int from customer_subscriptions
+           where status = 'active' and (period_end is null or period_end <= now())) as plus_lapsed,
+         (select count(*)::int from customer_subscriptions where status = 'pending_payment') as plus_pending,
+         -- The gifts, by the four states a gift has. Split rather than summed because
+         -- "waiting for an operator" and "waiting for a person to use it" are two
+         -- different jobs, and the console is where the first one is worked.
+         (select count(*)::int from customer_plan_gifts where status = 'reserved') as gifts_reserved,
+         (select count(*)::int from customer_plan_gifts where status = 'funded') as gifts_ready,
+         (select count(*)::int from customer_plan_gifts where status = 'redeemed') as gifts_redeemed,
+         (select count(*)::int from customer_plan_gifts where status = 'void') as gifts_void`,
       [OPEN_RENT_STATUSES],
     ).then((r) => ({
       matchedThisMonthNpr: Number(r?.matched_this_month || 0),
@@ -3621,7 +3642,12 @@ export const store = {
       activeSubs: Number(r?.active_subs || 0),
       plusThisMonthNpr: Number(r?.plus_this_month || 0),
       plusActive: Number(r?.plus_active || 0),
+      plusLapsed: Number(r?.plus_lapsed || 0),
       plusPending: Number(r?.plus_pending || 0),
+      giftsReserved: Number(r?.gifts_reserved || 0),
+      giftsReady: Number(r?.gifts_ready || 0),
+      giftsRedeemed: Number(r?.gifts_redeemed || 0),
+      giftsVoid: Number(r?.gifts_void || 0),
     }));
   },
 
@@ -3697,10 +3723,12 @@ export const store = {
 
   customerPlanPayments({ limit = 100 } = {}) {
     return many(
-      `select pp.*, p.display_name, p.email, cs.plan_code
+      `select pp.*, p.display_name, p.email, cs.plan_code,
+              g.code as gift_code, g.status as gift_status, g.note as gift_note
          from customer_plan_payments pp
          join profiles p on p.id = pp.customer_subscription_id
          join customer_subscriptions cs on cs.profile_id = pp.customer_subscription_id
+         left join customer_plan_gifts g on g.id = pp.gift_id
         order by pp.created_at desc limit $1`,
       [limit],
     );
@@ -3750,6 +3778,144 @@ export const store = {
   },
 
   /**
+   * A person says they have sent the money FOR SOMEBODY ELSE.
+   *
+   * The same rail as `claimPlus`, with three differences and each one matters:
+   *
+   *   1. THE BUYER'S OWN ROW IS NOT TOUCHED. `claimPlus` upserts their subscription to
+   *      `pending_payment` — correct for their own period, and wrong here: a person with
+   *      a month running who buys a friend a month would stop wearing their look the
+   *      moment they submitted the reference. The row is created if it does not exist
+   *      (`do nothing` on conflict) and otherwise left exactly as it was.
+   *   2. A CODE IS MINTED AT CLAIM TIME, not at match time, because the buyer needs to
+   *      tell their friend what to type. It is printed on their own page with its state
+   *      attached — "waiting on the transfer" — so nobody hands over a code believing
+   *      it works.
+   *   3. THE UNIQUE REFERENCE INDEX STILL GOVERNS. One transfer is one period, whether
+   *      that period is for the payer or for a friend.
+   */
+  claimPlusGift({
+    profileId, planCode = 'plus', amountNpr, txnReference, method = 'esewa',
+    payerName = null, note = null,
+  }) {
+    if (String(txnReference || '').trim().length < 4) return { ok: false, code: 'reference' };
+    return withTransaction(async (c) => {
+      const plan = (await c.query(
+        'select * from customer_plans where code = $1 and active',
+        [planCode],
+      )).rows[0];
+      if (!plan) return { ok: false, code: 'no-plan' };
+      // The row exists so the payment can point at it (the operator's queue reaches the
+      // payer through it), and it says `none` — no arrangement — because that is what
+      // is true: this money was spent on somebody else. `do nothing` on conflict is the
+      // whole of decision 1 in 0042's header: a buyer with a month running keeps it.
+      await c.query(
+        `insert into customer_subscriptions (profile_id, plan_code, status, updated_at)
+         values ($1, $2, 'none', now())
+         on conflict (profile_id) do nothing`,
+        [profileId, plan.code],
+      );
+      // A code is a credential, so a collision is retried rather than trusted to luck.
+      // Eight characters of a 32-letter alphabet will not collide in this decade, and
+      // the loop is here so that when it does, the person gets a code instead of an
+      // error page.
+      let gift = null;
+      for (let attempt = 0; attempt < 5 && !gift; attempt += 1) {
+        try {
+          gift = (await c.query(
+            `insert into customer_plan_gifts (code, plan_code, months, buyer_id, note)
+             values ($1, $2, $3, $4, $5)
+             returning *`,
+            [giftCode(), plan.code, Number(plan.period_months) || 1, profileId,
+              note ? String(note).trim().slice(0, 120) : null],
+          )).rows[0];
+        } catch (err) {
+          if (!isUniqueViolation(err)) throw err;
+        }
+      }
+      if (!gift) return { ok: false, code: 'code' };
+      const payment = (await c.query(
+        `insert into customer_plan_payments
+           (customer_subscription_id, amount_npr, txn_reference, method, payer_name, gift_id)
+         values ($1, $2, $3, $4, $5, $6)
+         returning *`,
+        [profileId, Number(amountNpr) || plan.price_npr, String(txnReference).trim().slice(0, 80),
+          method, payerName ? String(payerName).trim().slice(0, 80) : null, gift.id],
+      )).rows[0];
+      return { ok: true, payment, plan, gift };
+    }).catch((err) => {
+      if (isUniqueViolation(err)) return { ok: false, code: 'duplicate-reference' };
+      throw err;
+    });
+  },
+
+  /** The gifts one person has bought, newest first, for their own page. */
+  giftsGivenBy(profileId) {
+    return many(
+      `select g.*, cp.name as plan_name, cp.price_npr, r.display_name as redeemed_by_name
+         from customer_plan_gifts g
+         join customer_plans cp on cp.code = g.plan_code
+         left join profiles r on r.id = g.redeemed_by
+        where g.buyer_id = $1
+        order by g.created_at desc limit 20`,
+      [profileId],
+    );
+  },
+
+  /**
+   * Redeem a code. The period lands on the REDEEMER'S row and on nobody else's.
+   *
+   * Every refusal here is a sentence a person is owed, because the person holding a
+   * code is not the person who paid: "it did not work" with no reason sends them back
+   * to their friend with a complaint instead of an answer.
+   *
+   * The extension rule is the same as a match's: the months are added to whichever is
+   * later, the end they already have or now. A gift received while a month is running
+   * is two months, not a month that replaced one.
+   */
+  redeemPlusGift({ code, profileId }) {
+    return withTransaction(async (c) => {
+      const gift = (await c.query(
+        'select * from customer_plan_gifts where code = $1 for update',
+        [code],
+      )).rows[0];
+      if (!gift) return { ok: false, code: 'gift-unknown' };
+      if (gift.status === 'redeemed') return { ok: false, code: 'gift-used' };
+      if (gift.status === 'void') return { ok: false, code: 'gift-void' };
+      if (gift.status !== 'funded') return { ok: false, code: 'gift-unfunded' };
+      if (gift.buyer_id === profileId) return { ok: false, code: 'gift-self' };
+      const months = Number(gift.months) || 1;
+      const row = (await c.query(
+        `insert into customer_subscriptions
+           (profile_id, plan_code, status, period_start, period_end, updated_at)
+         values ($1, $2, 'active', now(), now() + ($3 || ' months')::interval, now())
+         on conflict (profile_id) do update
+           set status = 'active',
+               plan_code = excluded.plan_code,
+               period_start = coalesce(customer_subscriptions.period_start, now()),
+               period_end = greatest(coalesce(customer_subscriptions.period_end, now()), now())
+                            + ($3 || ' months')::interval,
+               cancelled_at = null,
+               updated_at = now()
+         returning *`,
+        [profileId, gift.plan_code, String(months)],
+      )).rows[0];
+      await c.query(
+        `update customer_plan_gifts
+            set status = 'redeemed', redeemed_by = $2, redeemed_at = now()
+          where id = $1`,
+        [gift.id, profileId],
+      );
+      return { ok: true, gift, months, subscription: row };
+    });
+  },
+
+  /** One gift by code, for a page that has to say what state it is in. */
+  giftByCode(code) {
+    return one('select * from customer_plan_gifts where code = $1', [code]);
+  },
+
+  /**
    * An operator found the money. The arrangement starts NOW, not at the date of the
    * transfer: the period is what the person gets for it, and back-dating a period
    * would quietly shorten what they paid for.
@@ -3768,23 +3934,65 @@ export const store = {
       if (!payment) return null;
       const plan = (await c.query('select * from customer_plans where code = $1', [payment.plan_code])).rows[0];
       const months = Number(plan?.period_months) || 1;
-      await c.query(
+      /*
+       * A MATCH ON A GIFT FUNDS THE GIFT. NOTHING ELSE.
+       *
+       * The whole feature is in this branch. The payer's own subscription row must not
+       * move: somebody with a month running who buys a friend a month would otherwise
+       * watch their own arrangement flip to `pending_payment` when they submitted the
+       * reference, and then have a fresh period stamped on their own row when the
+       * operator found the money — a gift that dresses the buyer and the recipient is
+       * two periods for one transfer, and it is exactly the shape of bug that a page
+       * cannot show you. `claimPlusGift` therefore never touches the row, and here the
+       * only thing that changes is the gift's own state.
+       */
+      if (payment.gift_id) {
+        const gift = (await c.query(
+          `update customer_plan_gifts
+              set status = 'funded', matched_at = now()
+            where id = $1 and status = 'reserved'
+            returning *`,
+          [payment.gift_id],
+        )).rows[0];
+        await c.query(
+          `update customer_plan_payments
+              set status = 'matched', matched_by = $2, matched_at = now()
+            where id = $1`,
+          [paymentId, actorId || null],
+        );
+        return { ...payment, months, gift: gift || null, isGift: true };
+      }
+      /*
+       * THE PERIOD EXTENDS; IT DOES NOT RESTART.
+       *
+       * This used to write `period_start = now(), period_end = now() + months`, which
+       * is correct for a lapsed person starting again and WRONG for anybody whose month
+       * is still running: the days they had left were silently dropped, so paying early
+       * cost money. The rule is the one the membership side already uses
+       * (`extendMembership`): add the months to whichever is later, the end they have or
+       * now — and, alongside it, record WHICH plan was matched, because a person moving
+       * from a month to a year would otherwise carry twelve months under a row that said
+       * `plus`.
+       */
+      const updated = (await c.query(
         `update customer_subscriptions
             set status = 'active',
-                period_start = now(),
-                period_end = now() + ($2 || ' months')::interval,
+                plan_code = $3,
+                period_start = coalesce(period_start, now()),
+                period_end = greatest(coalesce(period_end, now()), now()) + ($2 || ' months')::interval,
                 cancelled_at = null,
                 updated_at = now()
-          where profile_id = $1`,
-        [payment.customer_subscription_id, String(months)],
-      );
+          where profile_id = $1
+        returning *`,
+        [payment.customer_subscription_id, String(months), payment.plan_code],
+      )).rows[0];
       await c.query(
         `update customer_plan_payments
             set status = 'matched', matched_by = $2, matched_at = now()
           where id = $1`,
         [paymentId, actorId || null],
       );
-      return { ...payment, months };
+      return { ...payment, months, subscription: updated || null };
     });
   },
 
@@ -3807,6 +4015,18 @@ export const store = {
           where id = $1`,
         [paymentId, actorId || null, reason ? String(reason).trim().slice(0, 300) : null],
       );
+      if (payment.gift_id) {
+        // A gift whose money was not found becomes void rather than reserved: the code
+        // is out of the buyer's hands already (it is printed the moment they claim),
+        // and a code that might still work later is worse than one that says no.
+        await c.query(
+          `update customer_plan_gifts
+              set status = 'void', void_reason = $2
+            where id = $1 and status = 'reserved'`,
+          [payment.gift_id, reason ? String(reason).trim().slice(0, 300) : null],
+        );
+        return { ...payment, isGift: true };
+      }
       await c.query(
         `update customer_subscriptions
             set status = case when period_end is not null and period_end > now() then 'active' else 'cancelled' end,

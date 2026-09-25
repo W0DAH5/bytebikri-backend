@@ -49,9 +49,27 @@
  * subscription is active; this module decides what an active one looks like.
  */
 
+import { randomInt } from 'node:crypto';
+
 import { ACCENTS, ACCENT_KEYS, glyphOf } from './memberships.js';
 
 export const PLUS_CODE = 'plus';
+
+/**
+ * The second period, and the ONLY difference between the two plans.
+ *
+ * A year is the monthly plan with a twelve-month period at ten months' price
+ * (migration 0042), and the key lives here beside the monthly one for a reason that
+ * has bitten this codebase before: a plan code spelled in one file and read in another
+ * is a page that 500s the first time somebody mistypes it, and no unit test sees it
+ * because the view is rendered directly. Both keys are exported, both are asserted
+ * against the `customer_plans` table in `plus.test.js`, and the routes read them
+ * rather than typing them.
+ */
+export const PLUS_YEAR_CODE = 'plus-year';
+
+/** The periods a person may buy, in the order they are offered. */
+export const PURCHASABLE_PLAN_CODES = [PLUS_CODE, PLUS_YEAR_CODE];
 
 /** The plan's own name, spelled once. */
 export const PLUS_NAME = 'ByteBikri Plus';
@@ -313,12 +331,97 @@ export function plusMoneyLine(price = 149, months = 1) {
 }
 
 /** Rows for the console, so the platform's own revenue is visible in one place. */
-export function plusConsoleRows({ active = 0, pending = 0, paidThisMonth = 0, price = 0 } = {}) {
+export function plusConsoleRows({
+  active = 0, pending = 0, lapsed = 0, paidThisMonth = 0, price = 0,
+  giftsReserved = 0, giftsReady = 0, giftsRedeemed = 0, giftsVoid = 0,
+} = {}) {
   return [
-    { term: 'Price', text: `NPR ${Number(price).toLocaleString('en-IN')} a month, charged by bytebikri` },
-    { term: 'Arrangements', text: `${active} active, ${pending} waiting for a reference to be checked` },
+    { term: 'Price', text: `NPR ${Number(price).toLocaleString('en-IN')} a month, or NPR ${Number(plusYearPrice(price)).toLocaleString('en-IN')} a year — ten months' worth` },
+    { term: 'Arrangements', text: `${active} active, ${pending} waiting for a reference to be checked, ${lapsed} lapsed` },
+    { term: 'Gifts', text: `${giftsReady} ready to give, ${giftsReserved} waiting on a reference, ${giftsRedeemed} redeemed, ${giftsVoid} not found` },
     { term: 'Received this month', text: `NPR ${Number(paidThisMonth).toLocaleString('en-IN')} matched against the platform's own statement` },
   ];
+}
+
+/**
+ * GIFTING — the one social feature of every cosmetics tier that never drew a
+ * backlash, and the only acquisition channel this product can run with no processor.
+ *
+ * The researched shape is Discord's Nitro gift (and its "friend passes") and Twitch's
+ * gifted subscription: one person pays, somebody else gets the period. What this file
+ * owns is the part that has nothing to do with money — the code, what it may say, and
+ * what state a gift is in — so the store layer never invents a second vocabulary for
+ * the same four states.
+ */
+
+/**
+ * The alphabet a code is drawn from, and it is shorter than the alphabet on purpose.
+ * I, O, 0 and 1 are gone: this string is read aloud, written on paper and retyped by
+ * somebody who is not looking carefully, and the four characters that require
+ * handwriting to distinguish are the four that make a gift fail for a reason nobody
+ * can see. 32 characters over eight positions is 2^40 codes.
+ */
+export const GIFT_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+/** BKP-XXXX-XXXX. Minted with `randomInt`, which is a CSPRNG — a guessable code is a
+ *  free month for whoever guesses it, so this is a credential and not a label. */
+export function giftCode(rand = (n) => randomInt(n)) {
+  let out = '';
+  for (let i = 0; i < 8; i += 1) out += GIFT_ALPHABET[rand(GIFT_ALPHABET.length)];
+  return `BKP-${out.slice(0, 4)}-${out.slice(4)}`;
+}
+
+/** What somebody typed, made into what we minted — or into null if it is not one. */
+export function normalizeGiftCode(input) {
+  const raw = String(input ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (raw.length !== 11 || !raw.startsWith('BKP')) return null;
+  const body = raw.slice(3);
+  if (![...body].every((c) => GIFT_ALPHABET.includes(c))) return null;
+  return `BKP-${body.slice(0, 4)}-${body.slice(4)}`;
+}
+
+/** The four states, said to the person who is holding the code. */
+export const GIFT_STATE_LINE = {
+  reserved: 'Waiting on the transfer — an operator has not matched it against the platform’s statement yet, so the code does not work.',
+  funded: 'Ready. The code works, once, for whoever you give it to.',
+  redeemed: 'Used — the period is running on that person’s account.',
+  void: 'Not found. The transfer was not on the statement, so this code never works.',
+};
+
+/** The same four states, said to the BUYER, who is the one who can act on them. */
+export const GIFT_BUYER_LINE = {
+  reserved: 'Your reference is in the queue. Nothing is used up while it waits, and the code starts working the moment the transfer is found.',
+  funded: 'The transfer was found. Give the code to whoever you bought it for.',
+  redeemed: 'Redeemed. If you want to do this again, buy another — a code is one period, for one person.',
+  void: 'The transfer was not found. Nothing was taken from you, and the same money can be claimed again with the right reference.',
+};
+
+/**
+ * What a gift is NOT, printed on the page that sells it — the same discipline as
+ * `PLUS_NOT`, and for the same reason: the complaint that damages a cosmetics tier is
+ * never the price, it is what somebody assumed the price included.
+ */
+export const GIFT_NOT = [
+  'It is not a subscription for you. A gift is one period, for one other person — you cannot redeem your own code, and buying one never extends your own arrangement.',
+  'It does not stack. A code is used once: the second attempt is refused with a sentence rather than quietly doing nothing.',
+  'It opens nothing. A gift is the same look the plan always sells — no file, no ad removed, no wait shortened, for you or for them.',
+  'There is no refund path, because there is no processor to reverse. A code that was never redeemed is a period still waiting, not money the platform keeps.',
+];
+
+/** A year at ten months' price, derived so the page and the console cannot disagree. */
+export function plusYearPrice(monthly = 149) {
+  const m = Number(monthly) || 0;
+  // Ten months exactly. Derived rather than typed a second time: a discount written
+  // twice is a discount that drifts, and this one is stated in words on two pages.
+  return m * 10;
+}
+
+/** The saving, in words, for the page that offers both periods. */
+export function plusYearNote(monthly = 149) {
+  const m = Number(monthly) || 0;
+  const full = m * 12;
+  const saving = full - plusYearPrice(m);
+  return `Two months free — NPR ${Number(saving).toLocaleString('en-IN')} less than twelve months bought one at a time.`;
 }
 
 /** The date a claim is set for, when an operator matches it. */

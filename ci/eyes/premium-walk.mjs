@@ -725,12 +725,145 @@ await Promise.all([
 await nima.p.goto(`${BASE}/s/nima-crafts`);
 console.log('  put back      :', await nima.p.evaluate(() => document.querySelector('ul.member-roster .tier-glyph')?.dataset.glyph ?? null));
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 13. Gifting — one period, bought by one person, worn by another
+// ─────────────────────────────────────────────────────────────────────────────
+// The researched social feature, walked end to end across THREE accounts: the buyer
+// claims, the operator funds it against the statement, the recipient redeems. Every
+// step is a real form on a real page, and the three assertions that matter are the
+// ones a page cannot show you: the buyer's own arrangement is untouched, a reserved
+// code does NOT work, and the period lands on the redeemer.
+say(13, 'a gift codes its way from the buyer to the recipient, and the buyer’s own month is untouched');
+
+const bob = await openCtx({ scheme: 'dark', who: 'bob' });
+const carolG = await openCtx({ scheme: 'dark', who: 'carol' });
+const operator = await openCtx({ scheme: 'dark', who: 'operator' });
+
+// What bob's own arrangement is before he buys anything for anybody.
+await bob.p.goto(`${BASE}/plus`);
+await consent(bob.p);
+const bobBefore = await bob.p.evaluate(() => {
+  const dl = [...document.querySelectorAll('.panel .kv dt')].map((dt) => dt.textContent.trim());
+  return { url: location.pathname, hasArrangement: dl.includes('Runs until'), body: document.body.innerText.length };
+});
+
+// The reference is unique per run, because the unique index on `txn_reference` is a
+// real product rule: one transfer is one period, and a walk that reused a reference
+// would be testing the refusal rather than the flow.
+const ref = `GIFT-WALK-${Date.now()}`;
+await bob.p.locator('#gift-ref').fill(ref);
+await bob.p.locator('[name=note]').fill('walk');
+await Promise.all([bob.p.waitForNavigation(), bob.p.locator('.gift-form button[type=submit]').click()]);
+await consent(bob.p);
+const claimed = await bob.p.evaluate(() => {
+  const row = document.querySelector('.gift-row');
+  return {
+    code: row?.dataset.giftCode ?? null,
+    status: row?.dataset.giftStatus ?? null,
+    text: row?.innerText.replace(/\s+/g, ' ').trim().slice(0, 160) ?? null,
+    flash: document.querySelector('[role=status]')?.innerText.replace(/\s+/g, ' ').trim().slice(0, 120) ?? null,
+    hasArrangement: [...document.querySelectorAll('.panel .kv dt')].map((d) => d.textContent.trim()).includes('Runs until'),
+  };
+});
+console.log('  the claim     :', JSON.stringify(claimed));
+if (!claimed.code) throw new Error('buying a gift produced no code on the buyer’s own page');
+if (claimed.status !== 'reserved') throw new Error(`a claimed gift starts as ${claimed.status}`);
+if (!/not live|reserved|waiting/i.test(claimed.flash || '')) {
+  throw new Error('the buyer is not told the code is not live yet — the one sentence that stops a code being handed over early');
+}
+if (claimed.hasArrangement !== bobBefore.hasArrangement) {
+  throw new Error('claiming a gift changed whether the buyer has an arrangement of their own');
+}
+await shotOf(bob.p, '#gift', 'premium-15-gift-claimed');
+
+// A reserved code does not work. Carol types it and is told why, by name.
+await carolG.p.goto(`${BASE}/plus#gift`);
+await consent(carolG.p);
+await carolG.p.locator('#gift-use-code').fill(claimed.code);
+await Promise.all([carolG.p.waitForNavigation(), carolG.p.locator('form[action="/plus/gift/redeem"] button[type=submit]').click()]);
+const refused = await carolG.p.evaluate(() => document.querySelector('.note-warning, [role=status], .note')?.innerText.replace(/\s+/g, ' ').trim().slice(0, 160) ?? null);
+console.log('  reserved      :', JSON.stringify(refused));
+if (!/not live yet|not found on the statement/i.test(refused || '')) {
+  throw new Error(`a reserved code was not refused with a reason: ${refused}`);
+}
+
+// The operator funds it — the button says what it is doing, which is the whole reason
+// the queue distinguishes a gift from a personal claim.
+await operator.p.goto(`${BASE}/admin/payments`);
+await consent(operator.p);
+const giftRow = operator.p.locator('tr', { hasText: claimed.code });
+if (!(await giftRow.count())) throw new Error('the operator queue does not show the gift claim');
+const queueText = (await giftRow.first().innerText()).replace(/\s+/g, ' ').trim();
+console.log('  the queue     :', JSON.stringify(queueText.slice(0, 150)));
+if (!/gift/i.test(queueText)) throw new Error('the queue does not say this claim is a gift');
+await shotOf(operator.p, 'table', 'premium-16-gift-queue');
+await Promise.all([
+  operator.p.waitForNavigation(),
+  giftRow.first().locator('button[value=match]').click(),
+]);
+
+// Funded, and now it works — for carol, and only once.
+await carolG.p.goto(`${BASE}/plus`);
+await consent(carolG.p);
+const carolBefore = await carolG.p.evaluate(() => [...document.querySelectorAll('.panel .kv dt, .panel .kv dd')].map((d) => d.textContent.trim()).join(' | '));
+await carolG.p.locator('#gift-use-code').fill(claimed.code);
+await Promise.all([carolG.p.waitForNavigation(), carolG.p.locator('form[action="/plus/gift/redeem"] button[type=submit]').click()]);
+const redeemed = await carolG.p.evaluate(() => ({
+  flash: document.querySelector('[role=status], .note')?.innerText.replace(/\s+/g, ' ').trim().slice(0, 140) ?? null,
+  kv: [...document.querySelectorAll('.panel .kv dt, .panel .kv dd')].map((d) => d.textContent.trim()).join(' | '),
+  wore: document.querySelector('.who-name')?.className ?? null,
+}));
+console.log('  redeemed      :', JSON.stringify(redeemed));
+if (!/Redeemed/i.test(redeemed.flash || '')) throw new Error(`redeeming a funded gift did not work: ${redeemed.flash}`);
+if (!/Runs until/.test(redeemed.kv)) throw new Error('the redeemer has no arrangement after redeeming');
+if (redeemed.kv === carolBefore) throw new Error('redeeming changed nothing on the recipient’s page');
+await shotOf(carolG.p, '#gift', 'premium-17-gift-redeemed');
+
+// Once. The second attempt is refused by name rather than doing nothing.
+await carolG.p.locator('#gift-use-code').fill(claimed.code);
+await Promise.all([carolG.p.waitForNavigation(), carolG.p.locator('form[action="/plus/gift/redeem"] button[type=submit]').click()]);
+const twice = await carolG.p.evaluate(() => document.querySelector('.note-warning, [role=status], .note')?.innerText.replace(/\s+/g, ' ').trim().slice(0, 140) ?? null);
+console.log('  a second time :', JSON.stringify(twice));
+if (!/already been used/i.test(twice || '')) throw new Error(`a spent code was not refused: ${twice}`);
+
+// And bob's own arrangement, after all of it, is exactly where it was.
+await bob.p.goto(`${BASE}/plus`);
+await consent(bob.p);
+const bobAfter = await bob.p.evaluate(() => ({
+  hasArrangement: [...document.querySelectorAll('.panel .kv dt')].map((d) => d.textContent.trim()).includes('Runs until'),
+  status: document.querySelector('.gift-row')?.dataset.giftStatus ?? null,
+}));
+console.log('  the buyer     :', JSON.stringify(bobAfter));
+if (bobAfter.hasArrangement !== bobBefore.hasArrangement) {
+  throw new Error('the buyer’s own arrangement moved because they bought somebody else a month');
+}
+if (bobAfter.status !== 'redeemed') throw new Error(`the buyer’s list still says ${bobAfter.status} after the code was used`);
+await shotOf(bob.p, '#gift', 'premium-18-gift-redeemed-buyer');
+
+// The console's own numbers for the third charge: read from the ledger, and shown.
+await operator.p.goto(`${BASE}/admin/payments`);
+await consent(operator.p);
+const tally = await operator.p.evaluate(() => {
+  const dl = document.querySelector('#plus ~ *, .panel .kv');
+  const text = document.body.innerText.replace(/\s+/g, ' ');
+  return {
+    hasRows: /Arrangements/.test(text) && /Gifts/.test(text),
+    ceiling: /Recurring/.test(text),
+    snippet: (text.match(/Arrangements[^|]{0,120}/) || [''])[0],
+  };
+});
+console.log('  the console   :', JSON.stringify(tally));
+if (!tally.hasRows) throw new Error('the console does not report the third charge’s own numbers');
+if (!tally.ceiling) throw new Error('the console does not say what the recurring figure is a ceiling of');
+
 const errors = [...dark.p.errors, ...light.p.errors, ...calm.p.errors,
-  ...alice.p.errors, ...calmAlice.p.errors, ...nima.p.errors];
+  ...alice.p.errors, ...calmAlice.p.errors, ...nima.p.errors,
+  ...bob.p.errors, ...carolG.p.errors, ...operator.p.errors];
 console.log('\nconsole errors:', errors.length ? JSON.stringify(errors, null, 1) : 'none');
 if (errors.length) throw new Error(`${errors.length} console error(s)`);
 
 await dark.ctx.close(); await light.ctx.close(); await calm.ctx.close();
 await alice.ctx.close(); await calmAlice.ctx.close(); await nima.ctx.close();
+await bob.ctx.close(); await carolG.ctx.close(); await operator.ctx.close();
 await browser.close();
-console.log(`\nwalk complete — 14 screenshots in ${OUT}`);
+console.log(`\nwalk complete — 18 screenshots in ${OUT}`);

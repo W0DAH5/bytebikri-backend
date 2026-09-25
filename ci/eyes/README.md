@@ -105,7 +105,7 @@ are run after the seeder rather than being self-contained:
 ```bash
 node ci/demo-state.mjs              # the demo state, and the restore
 node ci/eyes/member-walk.mjs        # three sessions, the attention door, 11 shots
-node ci/eyes/premium-walk.mjs       # two payers, two schemes, motion on intent, 14 shots
+node ci/eyes/premium-walk.mjs       # two payers, two schemes, motion on intent; 18 shots (14 design, 4 gifting)
 ```
 
 `premium-walk.mjs` is the one walk whose subject is a DESIGN rather than a flow, and
@@ -136,6 +136,16 @@ no second colour to check. It then chooses a different shape in the seller's own
 picker, saves it, and reads it back off the storefront's roster, because a picker that
 cannot round-trip is a picker that lies. The demo is put back the way it was found.
 
+Section 13 is a FLOW rather than a design check, and it is in this walk because the
+feature is about a look arriving on somebody else's name: a gift is bought by one
+person, funded by an operator and redeemed by another, so the walk needs three
+accounts at once (bob buys, carol receives, the operator funds) and asserts the three
+things a page cannot show you — the buyer's own arrangement is untouched, a RESERVED
+code is refused with a reason, and the period lands on the redeemer. It reads the
+reference it will use out of the page and stamps it with the clock, because the unique
+index on a reference is a real product rule and a walk that reused one would be testing
+the refusal instead of the flow.
+
 Three lessons it paid for on its first runs, all worth reusing:
 
 - **`Element.getAnimations()` does not return pseudo-element animations.** The ring's
@@ -156,6 +166,12 @@ Three lessons it paid for on its first runs, all worth reusing:
   ink.** The star's polygon hand-written from geometry measures 14×13 while the hexagon's
   measures 11×17 against a 1em box; assert on the ORDER of the sizes, never on the pixels
   of a hand-written shape.
+- **The walk writes its screenshots relative to its CURRENT DIRECTORY.** The harness runs
+  from `/tmp/eyes` (that is where the browser and the copied scripts live), so the four
+  gifting shots landed in `/tmp/eyes/docs/evidence/round36/` while the repository kept the
+  previous round's fourteen and they were nearly committed as this round's evidence. Copy
+  them across before reading a shot as proof of a change — a stale screenshot is worse
+  than no screenshot, because it looks like evidence.
 
 `member-walk.mjs` starts from zero standing and no membership — that state belongs to
 the seeder because it is also the state the preview should be found in — and it clears

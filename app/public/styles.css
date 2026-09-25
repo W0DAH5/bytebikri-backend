@@ -3209,6 +3209,34 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 .plus-avatar { box-shadow: 0 0 0 2px color-mix(in srgb, var(--plate-a, var(--indigo-600)) 45%, transparent); }
 .who-link { display: flex; align-items: center; gap: var(--space-2); text-decoration: none; }
 .who-link:hover .who-name { text-decoration: underline; }
+/* ── the two periods ─────────────────────────────────────────────────────────
+   The researched pricing shape for a single-plan cosmetic: the same product for
+   twelve months at ten months' price. Nothing in the picker below the price differs
+   between the two — that is the point, and it is why this is a pair of radio cards
+   rather than two plans' worth of features. */
+.plus-periods { display: grid; gap: var(--space-3); margin-top: var(--space-2); }
+@media (min-width: 560px) { .plus-periods { grid-template-columns: 1fr 1fr; } }
+.plus-period strong { display: block; font-size: var(--text-md); }
+
+/* ── gifts ───────────────────────────────────────────────────────────────────
+   A code is a credential somebody reads aloud and types on a phone, so it gets the
+   monospace face and letter-spacing that make an ambiguous character obvious. The
+   state pill sits beside it because a code that is not live yet must SAY so where
+   it is printed: the buyer's first instinct is to hand it over immediately. */
+.gift-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-4); }
+.gift-row {
+  display: grid; gap: var(--space-2);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.gift-row:last-child { border-bottom: none; }
+.gift-code {
+  font-size: var(--text-md); font-weight: 700; letter-spacing: 0.14em;
+  color: var(--text-primary);
+}
+.gift-body { display: grid; gap: var(--space-2); justify-items: start; }
+.gift-form .field { margin-bottom: 0; }
+
 .plus-not { margin: 0; padding-inline-start: var(--space-5); display: grid; gap: var(--space-3); }
 .plus-not li { font-size: var(--text-sm); line-height: var(--leading-normal); }
 .price-line { font-size: var(--text-xl); font-weight: 700; }

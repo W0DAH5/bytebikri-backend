@@ -3130,3 +3130,60 @@ what the whole ladder is built on: the platform counts what it could not confirm
   disappear for a paying viewer** — both unchanged, both the user's call.
 - **A real ad-network integration** (unchanged, credential-gated).
 
+## §34 — Two researched features, and the two ways a seeder can undo them
+
+The round's brief was to take the research summary, apply what fits this product and discard the rest.
+Applied: **gifting** (a period bought for somebody else, carried by a code) and **a year at ten months'
+price** (the same plan with a longer period, not a second product). Both are built, tested and — for the
+gift — walked end to end in `ci/eyes/premium-walk.mjs` §13 across three accounts. The shape of the
+feature and the reasons for the discards are written down in `REVENUE_ARCHITECTURE.md`; what belongs
+here is what went wrong.
+
+### 1. The seeder rejected its own gift, on the second run
+
+`ci/demo-state.mjs` resets the queue by **deciding** any claim a preview left waiting that is not one of
+its own references — a rejection is a real outcome with a reason on it, and it is what an operator would
+have pressed. The gift claim the seeder had just created was not in that list of its own references, so
+the second run of the seeder rejected it: the buyer's page went from *"waiting on the transfer"* to
+**NOT FOUND** on a code nobody had touched, and the operator's queue lost the row the demo is about.
+
+The reference is now named once (`GIFT_DEMO_REF`) and read in both places, and the seeded gift is found
+**by reference** rather than by "bob's newest gift" — which had also made the seeder's own report name a
+walk's code as the fixture. A reference that was already decided is cleared before re-minting, so a
+seeder that runs five times leaves one reserved gift, not five rows of archaeology.
+
+### 2. The seeder handed Alice another month every time it ran
+
+A match extends the period from `greatest(period_end, now())` — the right rule, and one the first cut of
+this slice got wrong by restarting the period, silently dropping the remaining days of anybody who paid
+early (`test/plus.test.js` now asserts exactly +31 days on a pay-early claim). Cancelling does not move
+`period_end`, though, so **every run of the seeder stacked another month on her**: four runs and the
+preview said her month ended in January, which is a demo that lies about the product's own arithmetic.
+A period that ended is a state the product already has, so the seeder ends her previous period
+(`lapsed`) before claiming again; the printed date is now stable across runs.
+
+### 3. What the suite could not see
+
+- **`/plus` answered 500 in a browser while every unit test passed.** `plusContext` read a plan key that
+  existed only in the file that used it; the views are rendered directly in tests, so nothing ever asked
+  the route for the page. The keys now live in `plus.js` (`PLUS_YEAR_CODE`,
+  `PURCHASABLE_PLAN_CODES`), the routes read them instead of typing them, and a test asserts the list and
+  the `customer_plans` table agree — a third plan added to one side only fails.
+- **The seller's money map named one price.** A creator reconciling the statement now sees 1,490 as well
+  as 149, so `MONEY_MAP.toPlatformFromPeople.detail` names both periods and derives the year through
+  `plusYearPrice()`; a test reads both numbers out of the plan rows and fails if either is missing.
+- **A flash key with no sentence is a test failure, and it did its job.** `flash.test.js` reads the real
+  vocabulary out of `server.js` and found the two new outcomes (`gift-claimed`, `gift-redeemed`) before
+  a browser could print nothing at the moment a person hands over a code.
+- **The copy that handed a store a member's perk.** The roster's empty state still said *"Being named is
+  the perk"* — the same conflation the premium-look round was built to fix — and the seller's pricing
+  bullet called the store's own chips "your own plates". Both now say whose thing it is: the chip is the
+  store's, the look is the person's, and a store cannot name somebody or unname them.
+
+### Still open (unchanged this round)
+
+- **Walking the rent payment in the browser** — needs a store with the slots and traffic the invoice
+  requires.
+- **Flat vs scaled pricing for the person's premium**, and **whether the platform's own ad row may
+  disappear for a paying viewer** — both the user's call.
+- **Bob's Free-plan panel copy**, checked against the plans the table actually holds.

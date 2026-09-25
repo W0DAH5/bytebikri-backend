@@ -78,7 +78,17 @@ import { THEMES, THEME_KEYS, THEME_NOTE, THEME_FREE_LINE, NO_THEME, canTheme, th
 // The person's own premium, and the ladder for a rewarded ad that never arrives.
 // Both pure modules, so the route layer decides nothing they have not already
 // written down in one place.
-import { plusState, plusWear, PLATE_KEYS, EFFECT_KEYS, PLUS_NAME } from './src/plus.js';
+import {
+  plusState, plusWear, PLATE_KEYS, EFFECT_KEYS, PLUS_NAME, PLUS_CODE, PLUS_YEAR_CODE,
+  // The codes a person may actually buy, from the module that owns the plan keys —
+  // the routes check a submitted code against THIS list rather than against strings
+  // typed into the handler.
+  PURCHASABLE_PLAN_CODES,
+  // Gifting: the code somebody types, the two periods a person may buy, and the
+  // four states a gift can be in — all of them written in the module that owns the
+  // vocabulary rather than spelled again here.
+  normalizeGiftCode,
+} from './src/plus.js';
 import { SIGNALS, BLOCKING_SIGNALS, signalFrom, rungFor, SIGNAL_WINDOW_HOURS } from './src/blocked.js';
 import { SANDBOX_PROVIDER_IDS } from './src/providers/index.js';
 import { selectableProviders, providerById, payoutVerdict, loadRegistry } from './src/registry.js';
@@ -1114,6 +1124,17 @@ const limitForgot = rateLimit({
 // one the store plans use, and it exists for the same reason: on a manual rail,
 // the person who receives the money is the only one who can honestly confirm it.
 
+/**
+ * The periods a person may buy, in the order they are offered.
+ *
+ * `plus-year` (0042) is the same plan with a twelve-month period at ten months' price.
+ * The list is here so the routes can check a submitted code against the product rather
+ * than against a string they typed, and so adding a third period is one line in one
+ * place. `PLUS_CODE` is imported rather than restated, because the module that owns the
+ * plan's name also owns its key.
+ */
+const PURCHASABLE_PLANS = PURCHASABLE_PLAN_CODES;
+
 /** One place that decides what the page should say the arrangement IS. */
 async function plusContext(req) {
   // `req.user` already carries the arrangement (the session join in src/auth.js), but
@@ -1122,13 +1143,21 @@ async function plusContext(req) {
   // instead of believing the page that sent the form.
   const me = req.user ? await store.userById(req.user.id) : null;
   const subscription = me ? await store.customerSubscription(me.id) : null;
-  const plan = await store.customerPlan('plus');
+  const plan = await store.customerPlan(PLUS_CODE);
+  // Both periods, read from the plan table rather than typed on the page: a year is
+  // the same plan with a twelve-month period, so the second price cannot drift from
+  // the first one and the discount is a derived number (`plusYearPrice`).
+  const yearPlan = await store.customerPlan(PLUS_YEAR_CODE);
   return {
     plan,
+    yearPlan,
     subscription,
     state: plusState({ status: subscription?.status, period_end: subscription?.period_end }),
     look: { nameplate: me?.nameplate ?? null, effect: me?.plus_effect ?? null },
     wear: plusWear(me),
+    // What this person has bought for other people. Read here rather than on the view
+    // so the page a buyer reloads is the page the database says.
+    gifts: me ? await store.giftsGivenBy(me.id) : [],
     rails: railDetails(),
     railsReady: railsReady(),
   };
@@ -1152,10 +1181,15 @@ APP.post('/plus/join', limitUnlock, async (req, res, next) => {
     // cannot put a name or a receipt to is a claim it cannot verify against its own
     // statement. Nothing about the look changes if this is hit; nothing was sent.
     if (!req.user.email_verified_at) return res.redirect('/plus?error=plus-verify');
+    // Which period the person chose, checked against the plan table rather than
+    // trusted from the form — the same allowlist discipline the look's palette uses.
+    // An unknown code falls back to the monthly plan, which is the product's default.
+    const wanted = await store.customerPlan(String(req.body.plan || ''));
+    const chosen = wanted && wanted.active ? wanted : await store.customerPlan(PURCHASABLE_PLANS[0]);
     const result = await store.claimPlus({
       profileId: req.user.id,
-      planCode: 'plus',
-      amountNpr: (await store.customerPlan('plus'))?.price_npr ?? 0,
+      planCode: chosen?.code || PLUS_CODE,
+      amountNpr: chosen?.price_npr ?? 0,
       txnReference: req.body.txnReference,
       method: PAY_METHODS.includes(req.body.method) ? req.body.method : 'other',
       payerName: req.body.payerName,
@@ -1166,6 +1200,65 @@ APP.post('/plus/join', limitUnlock, async (req, res, next) => {
     }
     await store.audit('plus.claimed', { profileId: req.user.id, paymentId: result.payment.id });
     return res.redirect('/plus?saved=plus-claimed');
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Buying a period for somebody else.
+ *
+ * Same rail, same rules as `/plus/join` — a reference, an operator, a statement — and
+ * deliberately the same wording, because a person buying a gift is doing the same
+ * thing with a different destination. What comes back is a CODE, printed on the page
+ * with its state attached: it is minted here rather than at match time so the buyer
+ * can tell their friend what to type, and it says "waiting on the transfer" until an
+ * operator has found the money.
+ */
+APP.post('/plus/gift', limitUnlock, async (req, res, next) => {
+  try {
+    if (!req.user) return res.redirect('/login?next=%2Fplus');
+    if (!req.user.email_verified_at) return res.redirect('/plus?error=plus-verify');
+    const wanted = await store.customerPlan(String(req.body.plan || ''));
+    const chosen = wanted && wanted.active ? wanted : await store.customerPlan(PURCHASABLE_PLANS[0]);
+    const result = await store.claimPlusGift({
+      profileId: req.user.id,
+      planCode: chosen?.code || PLUS_CODE,
+      amountNpr: chosen?.price_npr ?? 0,
+      txnReference: req.body.txnReference,
+      method: PAY_METHODS.includes(req.body.method) ? req.body.method : 'other',
+      payerName: req.body.payerName,
+      note: req.body.note,
+    });
+    if (!result.ok) {
+      const code = { reference: 'gift-reference', 'duplicate-reference': 'gift-duplicate' }[result.code] || 'gift-reference';
+      return res.redirect(`/plus?error=${code}#gift`);
+    }
+    await store.audit('plus.gift_claimed', {
+      profileId: req.user.id, giftId: result.gift.id, code: result.gift.code, planCode: result.gift.plan_code,
+    });
+    return res.redirect(`/plus?saved=gift-claimed#gift`);
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Using a code.
+ *
+ * Nothing is asked of the recipient except that they are signed in: a code is the
+ * claim, and demanding that somebody finish our paperwork before they may accept a
+ * present would be a rule with no purpose. Every refusal is a named sentence, because
+ * the person reading it is not the person who paid and "it did not work" sends them
+ * back to their friend with a complaint instead of an answer.
+ */
+APP.post('/plus/gift/redeem', limitUnlock, async (req, res, next) => {
+  try {
+    if (!req.user) return res.redirect('/login?next=%2Fplus');
+    const code = normalizeGiftCode(req.body.code);
+    if (!code) return res.redirect('/plus?error=gift-unknown#gift');
+    const result = await store.redeemPlusGift({ code, profileId: req.user.id });
+    if (!result.ok) return res.redirect(`/plus?error=${result.code}#gift`);
+    await store.audit('plus.gift_redeemed', {
+      profileId: req.user.id, giftId: result.gift.id, months: result.months, buyerId: result.gift.buyer_id,
+    });
+    return res.redirect('/plus?saved=gift-redeemed#gift');
   } catch (err) { return next(err); }
 });
 
@@ -3240,6 +3333,11 @@ const SUCCESS_FLASH = {
   'plus-look': () => 'Saved. Your name wears this wherever the platform shows it to somebody else, for as long as the arrangement is running.',
   'plus-stopped': () => 'Stopped early. Your look stays saved and nothing was deleted — but the month was already paid, and stopping does not return it. If you only wanted to look plain for a while, saving the plain effect does that without giving up the month.',
   'plus-matched': () => 'Matched against the statement. That person\'s month has started and their look is on.',
+  // Gifting. The claim sentence says the code is NOT live yet, because a buyer's first
+  // instinct is to hand it over immediately — and a code handed over early is a friend
+  // typing a string that does nothing.
+  'gift-claimed': () => 'Sent. The code above is reserved, not live: an operator checks that reference against the platform\'s own statement, and the code starts working when the transfer is found. Nothing is taken twice, and your own arrangement is untouched.',
+  'gift-redeemed': () => 'Redeemed. That period is yours now and your look is on — the person who paid for it is not named to you, and nothing about them changed.',
   'plus-rejected': () => 'Marked as not found. Their arrangement did not start, and any look they had stopped being worn.',
   theme: (v) => (v === 'plain'
     ? 'Back to the default look. Nothing else about your store changed.'
@@ -3263,6 +3361,16 @@ const ERROR_FLASH = {
   'plus-missing': 'That claim is not waiting any more — either it was already decided or it was withdrawn. Reload the page to see what is there now.',
   'plus-look-bad': 'Pick one of the eight palettes and one of the three effects. Nothing was changed.',
   'plus-none': 'There is no arrangement on this account to change. Nothing was sent.',
+  // Gifting refusals. The person reading these is often the RECIPIENT and not the
+  // buyer, so each one says what happened and what to do next — "it did not work"
+  // sends somebody back to their friend with a complaint instead of an answer.
+  'gift-reference': 'A reference of at least four characters is what the operator matches against the statement. Without one there is nothing to look up, so nothing was sent.',
+  'gift-duplicate': 'That reference is already on a claim. One transfer is one period — check the receipt, because if this is a second gift you bought, it has its own code and its own reference.',
+  'gift-unknown': 'That code is not a ByteBikri gift code. They look like BKP-XXXX-XXXX.',
+  'gift-used': 'That code has already been used. A code is one period for one person, and it cannot be reused — a second gift needs a second code.',
+  'gift-void': 'That code was voided: the transfer behind it was never found on the platform\'s statement. Nothing is taken from you either way, and whoever bought it can see this on their own page.',
+  'gift-unfunded': 'That code is not live yet. Whoever bought it submitted a reference, and an operator has not found the transfer on the statement — the period starts the moment they do, and the code will work then.',
+  'gift-self': 'That is your own code. A gift is one period for somebody else — your own arrangement is extended by buying one for yourself on this page, and it costs the same.',
   'member-owner-only': 'Only the store owner can confirm dues. The platform never receives this money, so nobody here can check it.',
   // The attention door's refusals. Each one names the way forward, because the
   // person reading it is standing on the one panel where they are trying to get in:
@@ -4016,6 +4124,9 @@ APP.get('/admin/payments', async (req, res, next) => {
       // different (a look turns on, nothing opens), and an operator deciding about a
       // person's rupees should be able to see which product they bought.
       plusPayments: await store.customerPlanPayments({ limit: 50 }),
+      // The console rows for the third charge, read from the ledger rather than
+      // accumulated on the page.
+      money: { ...(await store.platformMoney()), plusPrice: (await store.customerPlan(PLUS_CODE))?.price_npr ?? 149 },
       invoices: await store.openRentInvoices(),
       aging: await store.rentAging(),
       byMonth: await store.rentByMonth({ months: 12 }),

@@ -39,6 +39,15 @@ const { store, storage } = await import('../app/src/store.js');
 const { createHash } = await import('node:crypto');
 const fs = await import('node:fs/promises');
 
+/**
+ * The reference the seeded gift is claimed under, named once.
+ *
+ * It is read in two places — the reset that decides what counts as a stray claim, and
+ * the seeding itself — and both of them have to agree with each other, so the string
+ * lives here rather than being typed twice.
+ */
+const GIFT_DEMO_REF = 'GIFT-DEMO-0001';
+
 const say = (label, value) => console.log(`  ${label.padEnd(28)} ${value}`);
 
 // ── 1. The country rule ──────────────────────────────────────────────────────
@@ -778,6 +787,13 @@ if (doorStore) {
     const MINE = ['PLUS-RUNNING-4517', 'PLUS-WAITING-8823'];
     await query(`delete from customer_plan_payments where txn_reference = any($1::text[])`, [MINE]);
 
+    // The gift's claim is seeded and deliberately left waiting, so it is not a stray —
+    // it is the state the demo is FOR. Without it in this list the reset rejects the
+    // gift's own payment on the second run (it did: the buyer's page read NOT FOUND on
+    // a code nobody had touched), which is why the reference is named here and again
+    // when the gift is seeded below.
+    const NOT_A_STRAY = [...MINE, GIFT_DEMO_REF];
+
     // Any other claim still waiting in the queue was left there by somebody clicking
     // through the preview, and a queue with three claims in it demonstrates the same
     // thing as a queue with one — worse, in fact, because the operator's page is meant
@@ -785,7 +801,7 @@ if (doorStore) {
     // real outcome with a reason on it, and it is what an operator would have pressed.
     const strays = await many(
       `select id from customer_plan_payments where status = 'submitted' and txn_reference <> all($1::text[])`,
-      [MINE],
+      [NOT_A_STRAY],
     );
     for (const row of strays) {
       if (operator?.id) {
@@ -800,6 +816,15 @@ if (doorStore) {
     // Alice's arrangement: a real claim, and a real match by the operator account —
     // the same two steps a person and an operator actually take.
     await store.cancelPlus(alicePerson.owner_id);
+    // …and her previous PERIOD is ended, for a reason worth writing down. A match extends
+    // from `greatest(period_end, now())`, which is the right rule for a person — paying
+    // early must never cost you the days you already paid for — and it makes cancelling
+    // alone useless to a seeder: the cancelled row keeps its `period_end`, so every run
+    // stacked another month on Alice. Four runs and the preview said her month ended in
+    // January. A period that ended is a state the product already has (`lapsed`), so the
+    // seeder ends it rather than keeping days nobody was granted.
+    await query(`update customer_subscriptions set status = 'lapsed', period_end = now()
+                  where profile_id = $1 and status = 'cancelled'`, [alicePerson.owner_id]);
     const claim = await store.claimPlus({
       profileId: alicePerson.owner_id, planCode: 'plus', amountNpr: plan.price_npr,
       txnReference: MINE[0], method: 'esewa', payerName: 'Alice',
@@ -964,12 +989,68 @@ console.log('  identity:',
       : c.document_destroyed_at ? ' · the copy handed over was destroyed' : '';
     return `${c.name} ${c.status}${c.method && c.status !== 'pending' ? ` (${c.method})` : ''}${when}${doc}${l && l.level !== 'current' && !c.notice_sent_at && l.level !== 'lapsed' ? ' (nobody told yet)' : ''}`;
   }).join(', ') || 'none');
+// ── 4f. A gift, claimed and not yet funded ───────────────────────────────────
+//
+// The researched social feature, in the state that shows both halves of it at once:
+// the buyer's own page lists the code WITH its state ("waiting on the transfer"), and
+// the operator's queue holds a claim marked as a gift. The claim is deliberately left
+// reserved rather than funded — a code that already works cannot demonstrate that a
+// code is not live yet, and that sentence is the one that stops a buyer handing over a
+// string that does nothing.
+//
+// It is seeded every run with the same reference, so a second run is idempotent: the
+// unique index on `txn_reference` means the claim below either creates the row or
+// leaves the one from last time alone.
+const gifter = await one(`select id, display_name from profiles where email = 'bob@bytebikri.local'`);
+if (gifter) {
+  // Found by REFERENCE, not by "bob's newest gift": a walk buys gifts too, and reading
+  // the newest one made this line report somebody else's code as the seeded fixture.
+  const existing = await one(
+    `select g.id, g.code, g.status, cp.status as payment_status
+       from customer_plan_gifts g
+       join customer_plan_payments cp on cp.gift_id = g.id
+      where cp.txn_reference = $1`,
+    [GIFT_DEMO_REF],
+  );
+  if (existing && existing.status !== 'void') {
+    say('plus gift', `${existing.code} — ${existing.status} (bought by ${gifter.display_name})`);
+  } else {
+    // A reference that was already decided is cleared, so the same fixture can be minted
+    // again: a rejected payment points at a gift that was voided with it, and the product
+    // itself says the same money can be claimed again with the right reference. Only a
+    // voided gift is ever removed — a reserved, funded or redeemed one is state somebody
+    // reached, and this line leaves all three alone.
+    await query(`delete from customer_plan_payments where txn_reference = $1`, [GIFT_DEMO_REF]);
+    if (existing) await query(`delete from customer_plan_gifts where id = $1`, [existing.id]);
+    const claim = await store.claimPlusGift({
+      profileId: gifter.id,
+      planCode: 'plus',
+      amountNpr: 149,
+      txnReference: GIFT_DEMO_REF,
+      method: 'esewa',
+      payerName: gifter.display_name,
+      note: 'for a friend',
+    });
+    say('plus gift', claim.ok
+      ? `${claim.gift.code} — reserved, waiting for the operator to find the transfer (bought by ${gifter.display_name})`
+      : `not seeded: ${claim.code}`);
+  }
+}
+
 // `claimed_at`, not `created_at`: the table records when a claim was made and when a
 // period started, and has no row-creation timestamp of its own.
 const plusNow = await many(`select p.display_name, cs.status, cs.period_end
                                from customer_subscriptions cs join profiles p on p.id = cs.profile_id
                               order by cs.claimed_at`);
 const plusQueue = await scalar(`select count(*)::int from customer_plan_payments where status = 'submitted'`);
+const giftsNow = await one(`select
+    count(*) filter (where status = 'reserved')::int as reserved,
+    count(*) filter (where status = 'funded')::int as funded,
+    count(*) filter (where status = 'redeemed')::int as redeemed,
+    count(*) filter (where status = 'void')::int as void
+  from customer_plan_gifts`);
+console.log('  gifts:', `${giftsNow.reserved} reserved, ${giftsNow.funded} ready, `
+  + `${giftsNow.redeemed} redeemed, ${giftsNow.void} void`);
 console.log('  plus:',
   plusNow.filter((r) => r.status !== 'cancelled')
     .map((r) => `${r.display_name} ${r.status === 'active' ? `wearing a look to ${String(r.period_end).slice(0, 10)}` : r.status}`)
