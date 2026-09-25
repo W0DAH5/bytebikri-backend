@@ -254,6 +254,15 @@ So the rent stays on traffic. What *is* open, and is a business call rather than
   instrument is a **minimum rent on a paid plan**, charged flat to every paid store, and never a
   percentage of anybody's dues.
 
+## How this document is held to the code
+
+The numbers in it are not prose, they are the product's prices and rules, and a document that states a
+price the product no longer charges is worse than no document at all: it is confidently wrong. So
+`test/billing.test.js` reads this file the way `config.test.js` reads `DEPLOY.md`, and fails if it drifts
+— every plan's price, both Plus period prices against `customer_plans` (the table the routes sell from),
+the year's "ten months' price" relation, and the rent policy's three rules as `POLICY` states them: one
+platform position per page, a cap of three, and the last rank, never the first.
+
 ## Still open (yours to call)
 
 1. **Member-paid ad-free, charged to the seller** — a capability, a price, and a rule about our rent. It

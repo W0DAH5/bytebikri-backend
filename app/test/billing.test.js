@@ -27,6 +27,8 @@ process.env.DATABASE_URL ||= 'postgres://postgres:postgres@127.0.0.1:55432/byteb
 const { store, PLANS, nextPlan } = await import('../src/store.js');
 const { close, query, scalar } = await import('../src/db.js');
 const { annualRentNpr, rentPeriod, upgradeExplanation, planBenefits, planDrift, RENT_TERMS, NOT_CHARGED } = await import('../src/billing.js');
+const { POLICY } = await import('../src/slots.js');
+const { plusYearPrice } = await import('../src/plus.js');
 
 after(async () => { await close(); });
 
@@ -452,6 +454,40 @@ test('the upgrade explanation shows its arithmetic rather than one number', () =
     'a renewal date that does not exist is promised to a store with no period');
   assert.ok(fresh.lines.some((l) => /Nothing renews by itself/.test(l)),
     'the sentence that replaces it has to say what actually happens');
+});
+
+test('the revenue document and the code it describes have not drifted', async () => {
+  // `REVENUE_ARCHITECTURE.md` is the file an operator quotes prices out of, and a
+  // document that states a price the product no longer charges is worse than no
+  // document at all: it is confidently wrong. Every number in it that the code can
+  // check, this checks — the three plan prices, the two Plus period prices against the
+  // table the routes actually sell from, and the rent policy's three rules, which the
+  // doc states in words and `POLICY` states in code.
+  const doc = readFileSync(new URL('../../REVENUE_ARCHITECTURE.md', import.meta.url), 'utf8');
+
+  for (const plan of Object.values(PLANS)) {
+    assert.ok(doc.includes(`NPR ${plan.priceNpr.toLocaleString('en-IN')}`),
+      `the doc does not state ${plan.code}'s price the way the code does`);
+  }
+
+  const plans = await store.customerPlans();
+  const month = plans.find((p) => p.code === 'plus');
+  const year = plans.find((p) => p.code === 'plus-year');
+  assert.ok(month && year, 'both Plus periods have to be in the table for this to check anything');
+  for (const [plan, name] of [[month, 'the month'], [year, 'the year']]) {
+    assert.ok(doc.includes(`NPR ${Number(plan.price_npr).toLocaleString('en-IN')}`),
+      `the doc does not state ${name}'s price`);
+  }
+  assert.equal(plusYearPrice(month.price_npr), year.price_npr,
+    'the doc calls the year ten months\u2019 price and the table does not hold ten months');
+  assert.ok(/ten months' price/.test(doc), 'the doc stopped saying why the year costs what it costs');
+
+  assert.equal(POLICY.platformSlotsPerPage, 1, 'the platform takes more than one position');
+  assert.ok(doc.includes('ONE ad position'), 'the doc no longer says the platform takes one position');
+  assert.equal(POLICY.maxTotalSlots, 3, 'the density cap moved');
+  assert.ok(doc.includes('from 8 positions to 3'), 'the doc no longer records the density cap');
+  assert.equal(POLICY.platformTakesRank, 'last', 'the platform stopped taking the last position');
+  assert.ok(doc.includes('never rank 1'), 'the doc no longer states the one rule that never changes');
 });
 
 test('a plan with one position offers a slot, not slots', () => {
