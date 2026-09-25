@@ -870,7 +870,15 @@
     const avatarEl = stage.querySelector('[data-look-avatar]');
     const ringTile = checked('ring')?.closest('[data-demo-key]')?.querySelector('.look-avatar');
     if (avatarEl && ringTile) {
-      const keep = [...avatarEl.classList].filter((c) => !/^(wear-ring|ring-(none|hairline|double))$/.test(c));
+      // The classes a ring can be are `wear-ring` (the ring this product has always
+      // drawn, and what "orbit" and "no choice" both mean) plus one `ring-<key>` for
+      // everything else. This used to enumerate the keys of the day — `ring-(none|
+      // hairline|double)` — so when the vocabulary grew, the outgoing treatment was no
+      // longer stripped and the avatar accumulated both: choosing Split right after
+      // Orbit painted `ring-split` beside a live `wear-ring`, and switching rings left
+      // the previous one on. A pattern that is derived from the naming rule cannot fall
+      // behind it.
+      const keep = [...avatarEl.classList].filter((c) => !/^wear-ring$|^ring-[\w-]+$/.test(c));
       avatarEl.className = [...keep, ...[...ringTile.classList].filter((c) => c !== 'look-avatar')].join(' ');
     }
     const frameTile = checked('frame')?.closest('[data-demo-key]')?.querySelector('.look-frame');

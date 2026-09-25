@@ -354,12 +354,23 @@ if (!/wear-/.test(previewWear || '')) throw new Error(`the wearer’s own look i
 if (!previewLive?.some((a) => a.playState === 'running')) {
   throw new Error('the Plus preview is not moving — the one place the motion is the product');
 }
+// WHETHER THIS RING MOVES is read from the control the person chose, not guessed from
+// the class name. The first version of this asserted that `wear-ring` turns and anything
+// else does not — true while `orbit` was the only moving ring, and false the moment a
+// second one existed. The tiles carry `data-demo-moves` for exactly this reason; the
+// walk's assumptions about which treatments move were its own, not the product's.
+const moves = await alice.p.evaluate(() => {
+  const label = document.querySelector('[data-look-stage]')?.closest('.plus-look') ?? document;
+  return label.querySelector('input[name="ring"]:checked')?.closest('[data-demo-moves]')?.dataset.demoMoves ?? null;
+});
 const spins = (ringLive || []).some((a) => /wear-spin/.test(a.name) && a.playState === 'running');
-if (/wear-ring/.test(ringClass || '') && !spins) {
-  throw new Error(`the orbiting ring is not turning in the preview: ${JSON.stringify(ringLive)}`);
+console.log('  the chosen ring moves:', moves, '· turning now:', spins);
+if (moves === null) throw new Error('the picker does not say whether the chosen ring moves');
+if (moves === 'yes' && !spins) {
+  throw new Error(`a ring that turns is standing still in the preview: ${JSON.stringify(ringLive)}`);
 }
-if (!/wear-ring/.test(ringClass || '') && spins) {
-  throw new Error(`a still ring is turning in the preview: ${ringClass}`);
+if (moves === 'no' && spins) {
+  throw new Error(`a ring that never moves is turning in the preview: ${ringClass}`);
 }
 await shotOf(alice.p, '.plus-preview', 'premium-4-plus-preview-live');
 
@@ -380,17 +391,29 @@ const ringAtRest = await animationsOn(alice.p, '.who .avatar');
 console.log('  the header    :', headerChip, '·', headerName, '· ring:', JSON.stringify(ringAtRest));
 // The same rule as the preview: the chip wears the ring the person chose, and it is
 // still until somebody touches it. Which ring that is, is read off the class.
-const headerRing = ['wear-ring', 'ring-hairline', 'ring-double'].find((c) => (headerChip || '').includes(c));
+const headerRing = (headerChip || '').split(' ').find((c) => /^(wear-ring|ring-)/.test(c));
+const headerRingMoves = await alice.p.evaluate((cls) => {
+  const key = cls === 'wear-ring' ? 'orbit' : cls.replace('ring-', '');
+  const tile = document.querySelector(`[data-demo-key="${key}"]`);
+  return tile?.dataset.demoMoves ?? null;
+}, headerRing);
 if (!headerRing) throw new Error(`the account chip in the header wears no ring: ${headerChip}`);
-if (headerRing !== (ringClass || '').match(/wear-ring|ring-hairline|ring-double/)?.[0]) {
+if (headerRing !== (ringClass || '').match(/wear-ring|ring-[\w-]+/)?.[0]) {
+  // `ringClass` is the class read off the preview's avatar a few sections up, so this
+  // says the header and the preview show the same ring — one saved choice, two pages.
   throw new Error(`the header and the preview wear different rings: ${headerChip} vs ${ringClass}`);
 }
 if (!/wear-/.test(headerName || '')) throw new Error('the account name in the header wears nothing');
-if (/wear-ring/.test(headerChip || '') && ringAtRest?.some((a) => a.playState === 'running')) {
+// Motion on intent, and which treatments have motion comes from the picker's own answer
+// rather than from the class name — the page is the authority on both.
+if (ringAtRest?.some((a) => a.playState === 'running')) {
   throw new Error('the header ring is turning before anybody touched it — motion is on intent');
 }
-if (!/wear-ring/.test(headerChip || '') && ringAtRest?.length) {
-  throw new Error(`a still ring animates in the header: ${JSON.stringify(ringAtRest)}`);
+if (headerRingMoves === 'no' && ringAtRest?.length) {
+  throw new Error(`a ring that never moves declares an animation in the header: ${JSON.stringify(ringAtRest)}`);
+}
+if (headerRingMoves === 'yes' && !ringAtRest?.length) {
+  throw new Error(`a ring that turns declares nothing to turn: ${headerChip}`);
 }
 await shotOf(alice.p, '.who', 'premium-9-worn-everywhere');
 
@@ -1046,17 +1069,44 @@ if (!startOuter.ring || !startOuter.frame) {
 }
 // Four rings and four edges, each drawn with the class the product renders — the tile
 // for the checked value IS an initial wearing it.
-const outerTiles = await outer.p.evaluate(() => ({
-  rings: document.querySelectorAll('[aria-labelledby="plus-ring-label"] .plus-effect-choice .look-avatar').length,
-  frames: document.querySelectorAll('[aria-labelledby="plus-frame-label"] .plus-effect-choice .look-frame').length,
-}));
+const outerTiles = await outer.p.evaluate(() => {
+  const group = (slot) => {
+    const tiles = [...document.querySelectorAll(`[aria-labelledby="plus-${slot}-label"] .plus-effect-choice`)];
+    return {
+      values: tiles.map((t) => t.querySelector('input')?.value ?? null),
+      drawn: tiles.filter((t) => t.querySelector('.look-avatar, .look-frame')).length,
+      // Each tile's little demo must wear the class the product renders for that value:
+      // a picker tile that shows the wrong thing is a promise the product does not keep.
+      classes: tiles.map((t) => t.querySelector('.look-avatar, .look-frame')?.className ?? null),
+    };
+  };
+  return { rings: group('ring'), frames: group('frame') };
+});
 console.log('  the two groups:', JSON.stringify(outerTiles));
-if (outerTiles.rings !== 4 || outerTiles.frames !== 4) {
-  throw new Error(`the outer layers are not drawn: ${JSON.stringify(outerTiles)}`);
+if (outerTiles.rings.drawn !== outerTiles.rings.values.length
+  || outerTiles.frames.drawn !== outerTiles.frames.values.length) {
+  throw new Error(`an outer control is not drawn: ${JSON.stringify(outerTiles)}`);
+}
+if (outerTiles.rings.values.length < 6 || outerTiles.frames.values.length < 6) {
+  throw new Error(`the outer slots lost treatments: ${JSON.stringify(outerTiles)}`);
+}
+for (const [slot, group] of Object.entries(outerTiles)) {
+  group.values.forEach((value, i) => {
+    const cls = group.classes[i] || '';
+    const want = value === 'none' ? null : `${slot === 'rings' ? 'ring' : 'frame'}-${value}`;
+    if (want && value !== 'orbit' && !cls.split(' ').includes(want)) {
+      throw new Error(`the ${slot} control for ${value} is not drawn as ${want}: ${cls}`);
+    }
+  });
+  if (new Set(group.classes).size < group.values.length - 1) {
+    throw new Error(`two ${slot} controls are drawn identically: ${JSON.stringify(group.classes)}`);
+  }
 }
 
-await outer.p.locator('input[name="ring"][value="double"]').check();
-await outer.p.locator('input[name="frame"][value="glow"]').check();
+// The two NEW treatments on each slot, chosen here so that the walk covers what this
+// round added rather than only what the last round left behind.
+await outer.p.locator('input[name="ring"][value="split"]').check();
+await outer.p.locator('input[name="frame"][value="aurora"]').check();
 await outer.p.waitForTimeout(200);
 const chosenOuter = await outer.p.evaluate(() => ({
   url: location.pathname,
@@ -1065,8 +1115,39 @@ const chosenOuter = await outer.p.evaluate(() => ({
 }));
 console.log('  after choosing:', JSON.stringify(chosenOuter));
 if (chosenOuter.url !== '/plus') throw new Error('choosing a ring navigated — the stage should be live');
-if (!/\bring-double\b/.test(chosenOuter.avatar)) throw new Error(`the chosen ring did not reach the avatar: ${chosenOuter.avatar}`);
-if (!/\bframe-glow\b/.test(chosenOuter.stage)) throw new Error(`the chosen frame did not reach the card: ${chosenOuter.stage}`);
+if (!/\bring-split\b/.test(chosenOuter.avatar)) throw new Error(`the chosen ring did not reach the avatar: ${chosenOuter.avatar}`);
+if (!/\bframe-aurora\b/.test(chosenOuter.stage)) throw new Error(`the chosen frame did not reach the card: ${chosenOuter.stage}`);
+// The turn of the split ring is on INTENT, like every other moving treatment here: the
+// stage is the one place it runs by itself (that is what is being sold), so the check is
+// that the animation exists on the ring's pseudo-element at all.
+const splitTurn = await outer.p.evaluate(() => {
+  const el = document.querySelector('[data-look-avatar]');
+  return el ? el.getAnimations({ subtree: true }).map((a) => a.animationName) : [];
+});
+console.log('  the split     :', JSON.stringify(splitTurn));
+if (!splitTurn.includes('wear-spin')) throw new Error('the split ring declares no turn on the stage');
+// ONE treatment at a time. The stage copies the class off the chosen tile, and it used
+// to strip the outgoing one by listing the keys that existed when it was written — so
+// when the vocabulary grew, switching rings left both on the avatar (`ring-split
+// ring-split`, and Split beside a live Orbit before that). Switching rings twice is what
+// turns that into a failure rather than a slightly odd class list.
+const switchRing = async (value) => {
+  await outer.p.locator(`input[name="ring"][value="${value}"]`).check();
+  await outer.p.waitForTimeout(120);
+  return outer.p.evaluate(() => document.querySelector('[data-look-avatar]')?.className ?? '');
+};
+const afterBeaded = await switchRing('beaded');
+const backToSplit = await switchRing('split');
+console.log('  switching     :', afterBeaded, '→', backToSplit);
+for (const cls of [afterBeaded, backToSplit]) {
+  const parts = cls.split(' ').filter(Boolean);
+  const rings = parts.filter((c) => /^(wear-ring|ring-.*)$/.test(c));
+  if (rings.length !== 1) throw new Error(`the stage avatar wears ${rings.length} rings at once: ${cls}`);
+  if (new Set(parts).size !== parts.length) throw new Error(`the stage avatar repeats a class: ${cls}`);
+}
+if (!/\bring-beaded\b/.test(afterBeaded) || /wear-ring/.test(afterBeaded)) {
+  throw new Error(`the previous ring was not taken off: ${afterBeaded}`);
+}
 await shotOf(outer.p, '[data-look-stage]', 'premium-21-look-outer');
 
 // Saved, and worn: the account chip beside the name at the top of the product, which is
@@ -1074,13 +1155,13 @@ await shotOf(outer.p, '[data-look-stage]', 'premium-21-look-outer');
 await outer.p.locator('form.plus-look button[type=submit]').click();
 await outer.p.waitForLoadState('domcontentloaded');
 const worn = await outer.p.evaluate(() => ({
-  ringChecked: document.querySelector('input[name="ring"][value="double"]')?.checked ?? false,
-  frameChecked: document.querySelector('input[name="frame"][value="glow"]')?.checked ?? false,
+  ringChecked: document.querySelector('input[name="ring"][value="split"]')?.checked ?? false,
+  frameChecked: document.querySelector('input[name="frame"][value="aurora"]')?.checked ?? false,
   chip: document.querySelector('.who-link .plus-avatar')?.className ?? '',
 }));
 console.log('  after saving  :', JSON.stringify(worn));
 if (!worn.ringChecked || !worn.frameChecked) throw new Error('the saved look did not come back on the picker');
-if (!/\bring-double\b/.test(worn.chip)) throw new Error(`the account chip is not wearing the saved ring: ${worn.chip}`);
+if (!/\bring-split\b/.test(worn.chip)) throw new Error(`the account chip is not wearing the saved ring: ${worn.chip}`);
 await shotOf(outer.p, '.who-link', 'premium-22-account-ring');
 
 // A store's roster draws the person's card — and this is the view of SOMEBODY ELSE.
@@ -1104,8 +1185,58 @@ const rosterCard = await witness.p.evaluate((who) => {
 }, 'alice');
 console.log('  as carol sees :', JSON.stringify(rosterCard));
 if (!rosterCard) throw new Error('alice is not on nima’s roster — the demo state changed');
-if (!/\bframe-glow\b/.test(rosterCard.cls)) throw new Error(`the frame did not travel to the roster card: ${rosterCard.cls}`);
-if (!/\bring-double\b/.test(rosterCard.ring)) throw new Error(`the ring did not travel to the roster avatar: ${rosterCard.ring}`);
+if (!/\bframe-aurora\b/.test(rosterCard.cls)) throw new Error(`the frame did not travel to the roster card: ${rosterCard.cls}`);
+if (!/\bring-split\b/.test(rosterCard.ring)) throw new Error(`the ring did not travel to the roster avatar: ${rosterCard.ring}`);
+// WHOSE COLOURS THE RING IS. The tile on a store's roster is the two-owner element: the
+// store's tier accent fills it (and the store's top-tier glint is drawn from that same
+// property), and the person's ring sits on it. Read as PAINT, because a class list says
+// nothing about colour: the ring must be the member's teal while the tile stays the
+// creator's violet. This was wrong — a teal member of a violet store wore a violet ring —
+// and a screenshot cannot tell you which of two palettes a 2px circle is using.
+const ringPalette = await witness.p.evaluate(() => {
+  const card = [...document.querySelectorAll('.member')]
+    .find((li) => li.querySelector('.member-name')?.textContent.trim().toLowerCase().includes('alice'));
+  if (!card) return null;
+  const tile = card.querySelector('.member-avatar');
+  const ts = getComputedStyle(tile);
+  const wear = ts.getPropertyValue('--wear-a').trim();
+  return {
+    ring: getComputedStyle(tile, '::after').backgroundImage,
+    tilePlate: ts.getPropertyValue('--plate-a').trim(),
+    wearA: wear || null,
+    namePlate: getComputedStyle(card.querySelector('.member-name')).getPropertyValue('--plate-a').trim(),
+  };
+});
+console.log('  the ring’s colours:', JSON.stringify(ringPalette));
+if (!ringPalette?.ring || ringPalette.ring === 'none') {
+  throw new Error('the ring is not painted on the roster at all');
+}
+// The palette the page itself paints the NAME in, in the space the browser reports the
+// gradient in (computed colours come back as `rgb(...)`, and comparing a hex to it — which
+// is how this assertion first failed, on a ring that was already correct — proves nothing).
+const hexToRgb = (hex) => {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  return `rgb(${r}, ${g}, ${b})`;
+};
+const teal = ringPalette.namePlate.startsWith('#') ? hexToRgb(ringPalette.namePlate) : ringPalette.namePlate;
+if (!ringPalette.ring.includes(teal)) {
+  throw new Error(`the ring is not painted in the member’s own palette (${teal}): ${ringPalette.ring}`);
+}
+if (ringPalette.wearA && ringPalette.wearA !== ringPalette.namePlate) {
+  throw new Error(`the wearer’s pair is ${ringPalette.wearA} and their name is ${ringPalette.namePlate}`);
+}
+if (ringPalette.tilePlate === ringPalette.namePlate) {
+  throw new Error('the store’s own tile colour was overwritten by the member’s — that is the store’s, not theirs');
+}
+// And on somebody else's page a moving edge is AT REST: the walk's most-repeated rule,
+// asserted on this round's new treatment.
+const rosterAurora = await witness.p.evaluate(() => {
+  const card = [...document.querySelectorAll('.member')]
+    .find((li) => li.querySelector('.member-name')?.textContent.trim().toLowerCase().includes('alice'));
+  return card ? card.getAnimations({ subtree: true }).filter((a) => a.playState === 'running').length : null;
+});
+console.log('  the aurora at rest on a store page:', rosterAurora);
+if (rosterAurora) throw new Error('the new frame is moving on a page nobody pointed at');
 if (!rosterCard.chip) throw new Error('the person’s frame took the store’s chip away');
 // The store's own layer on the same avatar is untouched: the top tier still glints, and
 // it is the store's, drawn whether or not the person chose a ring.

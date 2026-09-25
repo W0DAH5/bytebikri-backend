@@ -305,6 +305,15 @@ test('the roster hands the renderer the palette the look is painted from', async
     });
     assert.match(html, /<li class="member[^"]*frame-glow"[^>]*style="[^"]*--plate-a:#0f766e/,
       'the roster card is edged in something other than the member’s own palette');
+    // The tile is the two-owner element: the STORE's palette fills it (the tier's accent,
+    // and the store's top-tier glint is drawn from it) and the PERSON's pair rides beside
+    // it for the ring. Asserted as a whole string, because that is the shape the bug had:
+    // the two pairs glued together by a missing semicolon, and the browser dropped both.
+    assert.match(html,
+      /class="member-avatar member-avatar--shine ring-double"\s*style="--plate-ink:#a78bfa;--plate-ink-light:#6d28d9;--plate-a:#7c3aed;--plate-b:#5b21b6;--wear-a:#0f766e;--wear-b:#115e59"/,
+      'the tile does not carry the store’s palette AND the wearer’s');
+    assert.doesNotMatch(html, /--wear-a:(?!.*;)/,
+      'the wearer’s pair is glued onto the store’s — an unwritten variable is a ring in the wrong colour');
     assert.match(html, /member-avatar--shine[^"]*ring-double|ring-double[^"]*member-avatar--shine/,
       'the ring and the store’s top-tier light do not share the avatar');
     assert.match(html, /class="store-chip/, 'the store’s own chip left the card');

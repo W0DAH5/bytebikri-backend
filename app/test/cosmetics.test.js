@@ -200,19 +200,29 @@ test('no choice is not the same as choosing nothing, for either outer layer', ()
   assert.equal(ringClass(undefined), 'wear-ring');
   assert.equal(ringClass('none'), 'ring-none');
   assert.equal(ringClass('hairline'), 'ring-hairline');
+  assert.equal(ringClass('beaded'), 'ring-beaded');
   assert.equal(ringClass('orbit'), 'wear-ring', 'orbit IS the ring the product already draws');
+  assert.equal(ringClass('split'), 'ring-split');
   assert.equal(ringClass('double'), 'ring-double');
   assert.equal(new Set(RING_KEYS.map(ringClass)).size, RING_KEYS.length,
-    'two ring values render identically — four choices must be four rings');
+    'two ring values render identically — six choices must be six rings');
+  // Every ring a person can pick must be DRAWN, except `none` — whose class exists to
+  // take a ring away. A catalog value with no rule is a control that changes nothing.
+  const ringCss = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  for (const key of RING_KEYS) {
+    if (key === 'none') continue;
+    assert.match(ringCss, new RegExp(`\\.${ringClass(key)}\\b`),
+      `the ${key} ring has no rule in the stylesheet — picking it would change nothing`);
+  }
 
   // A frame has no such history: every card already has an edge, so "not chosen" and
-  // "none" are the same rendering, and only the three decorated values have a class.
+  // "none" are the same rendering, and the decorated values each get a class derived
+  // from their key — never a list to maintain beside the vocabulary.
   assert.equal(frameClass(null), '');
   assert.equal(frameClass('none'), '');
-  for (const key of ['hairline', 'double', 'glow']) {
-    assert.equal(frameClass(key), `frame-${key}`);
-  }
-  assert.equal(new Set(['hairline', 'double', 'glow'].map(frameClass)).size, 3);
+  const decorated = FRAME_KEYS.filter((k) => k !== 'none');
+  for (const key of decorated) assert.equal(frameClass(key), `frame-${key}`);
+  assert.equal(new Set(decorated.map(frameClass)).size, decorated.length);
 });
 
 test('a frame decorates an edge and can never repaint the card', () => {
@@ -221,21 +231,64 @@ test('a frame decorates an edge and can never repaint the card', () => {
   // the ink sits on — and the contrast arithmetic that governs every name on this
   // platform would no longer describe the page. Read as source, because that is the
   // only place a CSS declaration can be checked without rendering.
+  //
+  // The `aurora` frame is the reason this test has a second half. It IS a gradient, and
+  // a gradient edge is only an edge while the masks subtract the content box: if they
+  // union instead, the paint covers the surface. So a frame rule that sets a background
+  // is allowed exactly when it also confines it — masks declared, composite declared —
+  // and lives inside `@supports (mask-composite: exclude)`, where a browser that cannot
+  // subtract renders the card's own edge rather than a repainted card.
   const css = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const frameSel = new RegExp(`\\.(${FRAME_KEYS.filter((k) => k !== 'none').map((k) => `frame-${k}`).join('|')})\\b`);
   const rules = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)]
-    .filter(([, selector]) => /\.frame-(hairline|double|glow)\b/.test(selector));
-  assert.ok(rules.length >= 4, 'the frame rules went missing');
+    .filter(([, selector]) => frameSel.test(selector));
+  assert.ok(rules.length >= FRAME_KEYS.length, 'the frame rules went missing');
   for (const [, selector, body] of rules) {
-    assert.ok(!/\bbackground(-color|-image)?\s*:/.test(body),
-      `${selector.trim()} sets a background — the frame is an edge, not a surface`);
     assert.ok(!/(^|[;{\s])color\s*:/.test(body),
       `${selector.trim()} sets a text colour — the frame is an edge, not a surface`);
+    if (/\bbackground(-color|-image)?\s*:/.test(body)) {
+      assert.ok(/\bmask(-composite)?\s*:|-webkit-mask(-composite)?\s*:/.test(body),
+        `${selector.trim()} paints a background without masking it to the edge — that is a surface, not a frame`);
+      assert.ok(/mask-composite\s*:\s*exclude/.test(body),
+        `${selector.trim()} does not SUBTRACT the content box, so the paint would cover the card`);
+      const at = css.lastIndexOf('@supports', css.indexOf(`.frame-aurora::after`));
+      assert.ok(at > -1 && /@supports \(mask-composite: exclude\)/.test(css.slice(at, at + 40)),
+        'the masked frame is not behind a support query — a browser that cannot subtract would repaint the card');
+    }
   }
   // And the frame classes are on the person's card, not on a store's surface: the store
   // band's own block must not have learned about frames.
   const bandStart = css.indexOf('.own-band--themed');
   const bandEnd = css.indexOf('@keyframes', bandStart);
   assert.ok(!/frame-/.test(css.slice(bandStart, bandEnd)), 'the store’s own band grew a frame');
+});
+
+test('a ring is painted in the WEARER’s colours, on an element that carries a store’s', () => {
+  // The bug this pins, found by reading computed paint off a live roster: the avatar on a
+  // store's roster carries the STORE's palette (the tier's accent fills the tile, and the
+  // store's top-tier glint is drawn from the same property), and it also carries the
+  // PERSON's ring. A ring painted from `--plate-a` therefore came out in the creator's
+  // colour — a teal member of a violet store wore a violet ring, while their name beside
+  // it was teal. Two owners, one element, so the ring reads its own pair with the plate
+  // pair as the fallback: on the roster `memberPlate()` writes `--wear-a/--wear-b` beside
+  // the store's plate, and everywhere the palette already IS the person's (their Plus
+  // page, the account chip, their own preview) the fallback is that palette.
+  const css = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const ringClasses = ['wear-ring', ...RING_KEYS.filter((k) => k !== 'none' && k !== 'orbit').map((k) => `ring-${k}`)];
+  const rules = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+    .filter(([, selector]) => ringClasses.some((c) => new RegExp(`\\.${c}(::(after|before))?\\b`).test(selector))
+      || new RegExp(`\\.(${ringClasses.join('|')})::(after|before)`).test(selector));
+  assert.ok(rules.length >= RING_KEYS.length, 'the ring rules went missing');
+  let painted = 0;
+  for (const [, selector, body] of rules) {
+    if (!/--plate-[ab]/.test(body)) continue;
+    painted += 1;
+    assert.ok(/--wear-[ab]/.test(body),
+      `${selector.trim()} paints from the plate pair only — on a store's roster that is the STORE's colour`);
+    assert.ok(/var\(--wear-[ab],\s*var\(--plate-[ab]/.test(body),
+      `${selector.trim()} does not fall back to the plate pair, so the Plus page would paint nothing`);
+  }
+  assert.ok(painted >= 4, 'no ring rule paints at all — the treatment would be invisible');
 });
 
 test('a slot item is looked up by its own keys, and an unknown key is nothing', () => {

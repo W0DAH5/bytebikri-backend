@@ -155,8 +155,8 @@ Decorative animation: 1–2 cycles at most, then stop.
 
 ## 5. What each payer gets
 
-**A person with Plus** — a palette (8), one name effect (6), and a ring on their
-avatar wherever an avatar is drawn.
+**A person with Plus** — a palette (8), one name effect (6), a ring on their avatar
+wherever an avatar is drawn (6), and the edge of their own card, wherever that card is drawn (6).
 
 | Effect | Look | Motion |
 |---|---|---|
@@ -609,9 +609,11 @@ What makes it an engine rather than a table is that nothing else keeps a second 
 * the **route** validates against the catalog — `/plus/look` refuses a submission whose values are not
   that slot's own;
 * the **tests** hold all four ends together: the catalog against the database's own check constraints
-  (`profiles.plus_effect`, `membership_tiers.glyph`) read out of Postgres, against the picker's markup,
-  against the write path's SQL, and against the schema — every person slot's column must live on
-  `profiles`, and no store slot's column may.
+  (`profiles.plus_effect`, `profiles.plus_ring`, `profiles.plus_frame`, `membership_tiers.glyph`) read
+  out of Postgres, against the picker's markup, against the write path's SQL, and against the schema —
+  every person slot's column must live on `profiles`, and no store slot's column may. They also refuse a
+  value whose class has no rule in the stylesheet: a control that changes nothing is worse than a missing
+  one.
 
 A new slot therefore costs: one entry in `SLOTS`, one column with its check, one renderer branch — and
 `test/cosmetics.test.js` fails until the database, the picker and the write path all agree. That is the

@@ -3353,3 +3353,51 @@ theme's white-on-white 1:1). The selector names the element now (`NAME_WEAR`, on
 every section), §1 asserts that what it read IS the name, and §16 walks the two surfaces above in a real
 browser: the seller's queue (alice dressed in her own teal, bob plain) and a review read by a stranger.
 Two consecutive runs are green, which is the property the old file did not have.
+
+---
+
+## §39 — Two more treatments on each outer layer, and the colour they were wearing
+
+The review that asked for a cosmetics engine came back with the same card twice, and the second time the
+words were "*grand*". §37's ring and edge were four values each, and half of each vocabulary was
+"nothing": one ring and one edge were variations on a hairline. A slot that offers `none`, a line, the
+line seen slightly differently, and a line with a second line is a slot, not a choice.
+
+**The ring is six now** — `none`, `hairline`, `beaded` (the ring drawn as a line of dots), `orbit` (the
+one the product has always drawn, and what "not chosen" means), `split` (two arcs, one per palette
+colour, turning) and `double`. **The edge is six too** — `none`, `hairline`, `bevel` (four one-pixel
+insets: two colours across four sides, so the card reads as an object rather than an outline), `double`,
+`glow`, `aurora` (both colours travelling the edge). Migration `0045` widens both check constraints;
+`test/cosmetics.test.js` fails until the two vocabularies, the two columns, the picker and the
+stylesheets agree, and it additionally refuses a ring value whose class has no rule at all — a control
+that changes nothing is worse than a missing one.
+
+**The aurora is an edge only if the masks subtract.** A gradient confined to a border band is an edge;
+the same gradient with its masks unioned is a repainted surface, which would make every contrast claim
+about the name on that card describe a page that no longer exists. So the rule lives inside
+`@supports (mask-composite: exclude)` — a browser that cannot subtract gets the card's own edge rather
+than a recoloured card — and the statement test now allows a frame rule to paint a background only when
+it also masks it, subtracts the content box, and sits behind that support query. The default is
+"no decoration", never "repainted card".
+
+**And the ring was in the wrong colour.** Reading the computed paint off a live roster rather than
+looking at a screenshot: the avatar on a store's roster carries the STORE's palette (the tier accent
+fills the tile, and the store's top-tier glint is drawn from that same `--plate-a`), and it also carries
+the PERSON's ring. A ring painted from the plate pair therefore came out in the creator's colour — a
+teal member of a violet store wore a violet ring, next to a teal name, and a 2px circle is not something
+a screenshot settles. Two owners, one element, so the ring reads `--wear-a/--wear-b` and falls back to
+the plate pair: `memberPlate()` writes the wearer's pair beside the store's plate, and everywhere the
+palette already IS the person's (their Plus page, the account chip, their own preview) the fallback is
+that palette. The store's tile keeps the store's colours; `members.test.js` asserts the whole style
+attribute — including the `;` that a first cut left out, which glued the two pairs together and made the
+browser drop all four values. `test/ui.test.js`'s token hygiene caught the undeclared pair.
+
+**Two walk defects, same root as §38's.** The walk's sections 4 and 4b asserted that `wear-ring` turns
+and anything else does not, and that a ring which is not `wear-ring` declares no animation — true while
+`orbit` was the only moving ring, and false the moment `split` existed. Which treatments move is the
+picker's own answer, so the tiles now carry `data-demo-moves` and the walk reads it instead of guessing
+from a class name. Its live stage also stripped the outgoing ring by listing the keys of the day, so
+choosing Split right after Orbit painted both (`ring-split ring-split`, and both classes at once before
+that) — the pattern is derived from the naming rule now, and the walk switches rings twice and requires
+exactly one ring class on the avatar. Runs are green from the seeded state (`orbit`, the second-run
+condition that used to fail) and from the walk's own output.

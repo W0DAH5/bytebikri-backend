@@ -73,6 +73,14 @@
   --plate-b: var(--indigo-700);
   --plate-ink: var(--indigo-400);
   --plate-ink-light: var(--indigo-700);
+  /* The WEARER's pair, for the parts of somebody else's card that are theirs. On a
+     store's roster the tile carries the store's palette (the tier's accent, and the
+     store's top-tier glint) and the person's ring at the same time; the ring reads
+     these and falls back to the plate pair, which is why the defaults are the same
+     colours. Declared here for the reason above: an undefined custom property is
+     dropped in silence. */
+  --wear-a: var(--plate-a);
+  --wear-b: var(--plate-b);
 
   /* Storefront themes, as the default palette. The same rule as the plates above:
      `.store-head--themed` reads these three, and an undefined custom property is
@@ -3027,11 +3035,11 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   border-radius: inherit;
   padding: 2px;
   background: conic-gradient(from var(--wear-angle),
-    var(--plate-a, var(--indigo-600)) 0turn,
-    var(--plate-b, var(--indigo-700)) 0.35turn,
-    color-mix(in srgb, var(--plate-a, var(--indigo-600)) 55%, white) 0.6turn,
-    var(--plate-b, var(--indigo-700)) 0.85turn,
-    var(--plate-a, var(--indigo-600)) 1turn);
+    var(--wear-a, var(--plate-a, var(--indigo-600))) 0turn,
+    var(--wear-b, var(--plate-b, var(--indigo-700))) 0.35turn,
+    color-mix(in srgb, var(--wear-a, var(--plate-a, var(--indigo-600))) 55%, white) 0.6turn,
+    var(--wear-b, var(--plate-b, var(--indigo-700))) 0.85turn,
+    var(--wear-a, var(--plate-a, var(--indigo-600))) 1turn);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
@@ -3048,6 +3056,18 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 }
 
 /* ── THE RING SLOT ───────────────────────────────────────────────────────────
+   WHOSE COLOURS A RING IS PAINTED IN, and why there are two variable pairs.
+
+   On a store's roster the avatar's fill and its top-tier light are the STORE's —
+   the tile is painted in the tier's accent, and the store's own glint sits on the
+   same element. The ring on it is the PERSON's. Two owners, one element, so the
+   ring reads `--wear-a/--wear-b` and falls back to the plate pair: on the roster
+   `memberPlate()` writes the wearer's own pair on the tile beside the store's
+   plate, and everywhere the palette already IS the person's (their Plus page, the
+   account chip in the header, their own preview) the fallback is the palette.
+   Without this, a teal member of a violet store wore a VIOLET ring — found by
+   reading the computed paint off a real roster, not by looking at a screenshot.
+
    Four ways to ring an initial. `wear-ring` is the orbiting conic the product has
    always drawn and stays what "no choice" and "orbit" both mean, so nobody's avatar
    moves because a slot was added. The other three are new, and they draw on the
@@ -3063,7 +3083,7 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 .ring-hairline::after {
   content: '';
   position: absolute; inset: -3px;
-  border: 2px solid color-mix(in srgb, var(--plate-a, var(--indigo-600)) 45%, transparent);
+  border: 2px solid color-mix(in srgb, var(--wear-a, var(--plate-a, var(--indigo-600))) 45%, transparent);
   border-radius: inherit;
   pointer-events: none;
 }
@@ -3072,20 +3092,59 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 .ring-double::after {
   content: '';
   position: absolute; inset: -5px;
-  border: 1px solid color-mix(in srgb, var(--plate-a, var(--indigo-600)) 55%, transparent);
+  border: 1px solid color-mix(in srgb, var(--wear-a, var(--plate-a, var(--indigo-600))) 55%, transparent);
   border-radius: inherit;
   pointer-events: none;
 }
 .ring-double::before {
   content: '';
   position: absolute; inset: -2px;
-  border: 1px solid color-mix(in srgb, var(--plate-b, var(--indigo-700)) 55%, transparent);
+  border: 1px solid color-mix(in srgb, var(--wear-b, var(--plate-b, var(--indigo-700))) 55%, transparent);
   border-radius: inherit;
   pointer-events: none;
 }
-/* The account chip keeps its flat ring for the default and for orbit; for the two
-   rings drawn by hand it stands down, because the class IS the ring. */
-.plus-avatar.ring-hairline, .plus-avatar.ring-double, .plus-avatar.ring-none { box-shadow: none; }
+/* Beaded: the same ring drawn as dots. Texture rather than a width difference, which
+   is the only kind of difference that survives being drawn at 24 pixels. */
+.ring-beaded { position: relative; }
+.ring-beaded::after {
+  content: '';
+  position: absolute; inset: -4px;
+  border: 2px dotted color-mix(in srgb, var(--wear-a, var(--plate-a, var(--indigo-600))) 70%, transparent);
+  border-radius: inherit;
+  pointer-events: none;
+}
+/* Split: two arcs, one in each of the palette's two colours, turning together. Painted
+   on the ring band with the same two-mask subtraction the orbit ring uses, so it is a
+   true ring and the initial inside keeps its own edges. */
+.ring-split { position: relative; }
+.ring-split::after {
+  content: '';
+  position: absolute; inset: -4px;
+  border-radius: inherit;
+  padding: 2px;
+  background: conic-gradient(from 0deg,
+    var(--wear-a, var(--plate-a, var(--indigo-600))) 0deg 150deg,
+    transparent 150deg 180deg,
+    var(--wear-b, var(--plate-b, var(--indigo-700))) 180deg 330deg,
+    transparent 330deg 360deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+/* The account chip keeps its flat ring for the default and for orbit; for the rings
+   drawn by hand it stands down, because the class IS the ring. */
+.plus-avatar.ring-hairline, .plus-avatar.ring-double, .plus-avatar.ring-none,
+.plus-avatar.ring-beaded, .plus-avatar.ring-split { box-shadow: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .ring-split::after { animation: wear-spin 16s linear infinite paused; }
+  .ring-split:hover::after, .ring-split:focus-within::after, .ring-split.is-live::after,
+  .is-live .ring-split::after { animation-play-state: running; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ring-split::after, .is-live .ring-split::after { animation: none; }
+}
 
 /* ── THE FRAME SLOT ──────────────────────────────────────────────────────────
    The edge of the person's own card, wherever that card is drawn. An edge and ONLY
@@ -3108,6 +3167,52 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--plate-a, var(--indigo-600)) 35%, transparent),
     0 8px 20px -12px color-mix(in srgb, var(--plate-b, var(--indigo-700)) 65%, transparent);
+}
+/* Bevel: a lit edge. Four one-pixel inset rules — one colour along the top and left,
+   the other along the bottom and right — so the card reads as a solid object rather
+   than an outline. Inset shadows only: no background, no colour, nothing that could
+   repaint the surface the words sit on. */
+.frame-bevel {
+  box-shadow:
+    inset 0 1px 0 0 color-mix(in srgb, var(--plate-a, var(--indigo-600)) 70%, transparent),
+    inset 1px 0 0 0 color-mix(in srgb, var(--plate-a, var(--indigo-600)) 45%, transparent),
+    inset 0 -1px 0 0 color-mix(in srgb, var(--plate-b, var(--indigo-700)) 70%, transparent),
+    inset -1px 0 0 0 color-mix(in srgb, var(--plate-b, var(--indigo-700)) 45%, transparent);
+}
+/* Aurora: both of the person's colours travelling along the edge. A gradient confined
+   to the border band by the same two-mask subtraction the orbit ring uses — and that
+   confinement is the whole safety property, because if the masks union instead of
+   subtract the gradient would cover the SURFACE and every contrast claim about the
+   name on it would describe a page that no longer exists. So it is inside a support
+   query: a browser that cannot subtract the masks gets the card's own edge, and the
+   fallback is "no decoration" rather than "repainted card". */
+.frame-aurora { position: relative; }
+@supports (mask-composite: exclude) {
+  .frame-aurora::after {
+    content: '';
+    position: absolute; inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: conic-gradient(from var(--wear-angle, 0deg),
+      var(--plate-a, var(--indigo-600)) 0turn,
+      var(--plate-b, var(--indigo-700)) 0.4turn,
+      color-mix(in srgb, var(--plate-a, var(--indigo-600)) 55%, white) 0.7turn,
+      var(--plate-b, var(--indigo-700)) 0.9turn,
+      var(--plate-a, var(--indigo-600)) 1turn);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .frame-aurora::after { animation: wear-spin 18s linear infinite paused; }
+    .frame-aurora:hover::after, .frame-aurora:focus-within::after, .frame-aurora.is-live::after,
+    .is-live .frame-aurora::after { animation-play-state: running; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .frame-aurora::after, .is-live .frame-aurora::after { animation: none; }
+  }
 }
 
 /* ── The two new picker tiles ────────────────────────────────────────────────

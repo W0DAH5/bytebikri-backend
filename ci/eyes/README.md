@@ -129,13 +129,26 @@ head is unchanged, and repeats the whole thing under `prefers-reduced-motion: re
 where the band must keep its colour and its mesh and lose only the drift.
 
 Section 15 is the other two slots of the person's own look — the ring around the
-initial and the edge of their card. It reads both groups of tiles, chooses a coin ring
-and a glow, and checks the three places a choice has to arrive without a round trip and
-then with one: the stage's avatar and the stage itself, the account chip in the header
-after the save, and — seen through carol's session, because the roster does not name the
-reader's own row — the person's card on a store's roster, where the store's chip and the
-store's own top-tier light must both still be there beside the person's ring and edge.
-It puts back exactly what it found, so the walk is re-runnable against its own output.
+initial and the edge of their card, six treatments each. It reads both groups of tiles,
+checks that every control is drawn with the class the product renders for that value, and
+chooses the round's two new treatments (a split ring and an aurora edge). Then the three
+places a choice has to arrive without a round trip and then with one: the stage's avatar
+and the stage itself, the account chip in the header after the save, and — seen through
+carol's session, because the roster does not name the reader's own row — the person's card
+on a store's roster, where the store's chip and the store's own top-tier light must both
+still be there beside the person's ring and edge.
+
+Two things that section learned the hard way. **Whose colours the ring is:** the tile on a
+store's roster carries the store's palette (the tier accent, and the glint drawn from it)
+AND the person's ring, so the walk reads the computed PAINT and requires the ring in the
+member's own colour while the tile stays the creator's — a screenshot cannot tell you which
+of two palettes a two-pixel circle is using, and the answer was wrong until it was read
+this way. **Which treatments move:** the walk used to infer that from the class name
+(`wear-ring` turns, everything else does not), which stopped being true when a second
+moving ring existed; the tiles carry `data-demo-moves` now and the walk reads that, and it
+switches rings twice to prove the stage wears exactly one at a time. It puts back exactly
+what it found, so the walk is re-runnable against its own output — and it is run both from
+the seeded state and from its own output, because those were different runs for a while.
 
 Section 16 is the two surfaces where a STRANGER reads a person's look, and both of them
 were broken in the same way — a query that did not select the field the renderer reads:

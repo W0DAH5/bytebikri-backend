@@ -163,17 +163,29 @@ export const RINGS = {
     moves: false,
     hint: 'A flat ring in your palette, two pixels wide. Completely still, on every device.',
   },
+  beaded: {
+    key: 'beaded',
+    label: 'Beaded',
+    moves: false,
+    hint: 'The same ring drawn as a line of dots instead of a line. Texture rather than colour, so it reads on a small avatar where a width difference does not.',
+  },
   orbit: {
     key: 'orbit',
     label: 'Orbit',
     moves: true,
     hint: 'The same ring, with a slow sweep of your palette turning around it while you hover over your own card. Still, for anyone whose device asks for less motion.',
   },
+  split: {
+    key: 'split',
+    label: 'Split',
+    moves: true,
+    hint: 'Two arcs, one in each of your palette’s colours, turning slowly while you hover over your card — the grandest of the six.',
+  },
   double: {
     key: 'double',
     label: 'Double',
     moves: false,
-    hint: 'Two rings with a gap between them — reads as a coin, and stays legible at the size the account chip draws it.',
+    hint: 'Two rings with a gap between them — a coin. The most formal of the six, and completely still.',
   },
 };
 
@@ -205,6 +217,12 @@ export const FRAMES = {
     moves: false,
     hint: 'A one-pixel edge in your palette, all the way round.',
   },
+  bevel: {
+    key: 'bevel',
+    label: 'Bevel',
+    moves: false,
+    hint: 'A lit edge: the top and left in one of your colours, the bottom and right in the other. Reads as a solid object rather than an outline, and it is completely still.',
+  },
   double: {
     key: 'double',
     label: 'Double rule',
@@ -216,6 +234,12 @@ export const FRAMES = {
     label: 'Glow',
     moves: false,
     hint: 'A soft light in your palette behind the card’s edge. It does not pulse — a glow that breathes on a page full of cards is a page that will not settle.',
+  },
+  aurora: {
+    key: 'aurora',
+    label: 'Aurora',
+    moves: true,
+    hint: 'Both of your colours travelling along the card’s edge, slowly, while you hover over it. A browser too old to confine a gradient to the edge simply gets no edge rather than a repainted card.',
   },
 };
 
@@ -234,19 +258,19 @@ export function ringClass(ringKey) {
   return {
     none: 'ring-none',
     hairline: 'ring-hairline',
+    beaded: 'ring-beaded',
     orbit: 'wear-ring',
+    split: 'ring-split',
     double: 'ring-double',
   }[ringKey] ?? 'wear-ring';
 }
 
 /** The classes a frame adds to the card, or '' for the card's own edge. */
 export function frameClass(frameKey) {
-  return {
-    none: '',
-    hairline: 'frame-hairline',
-    double: 'frame-double',
-    glow: 'frame-glow',
-  }[frameKey] ?? '';
+  // Every decorated frame is `frame-<key>`, which is what the catalog test asserts — a
+  // new frame value costs one word here and one rule in the stylesheet, and nothing that
+  // can drift: the class is derived from the vocabulary rather than listed beside it.
+  return frameKey && frameKey !== 'none' ? `frame-${frameKey}` : '';
 }
 
 /**

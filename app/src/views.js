@@ -862,6 +862,20 @@ function plateStyleAttr(accentKey) {
 }
 
 /**
+ * The wearer's own pair of colours, for the parts of somebody else's card that are theirs.
+ *
+ * The roster's avatar carries the STORE's paint — the tier's accent fills the tile and the
+ * store's top-tier glint sits on it — and it also carries the person's ring. One element,
+ * two owners, so the ring is painted from `--wear-a/--wear-b` while everything the store
+ * owns keeps reading the plate pair. Without this a teal member of a violet store wore a
+ * violet ring: the ring took the tile's inherited palette, which is the creator's.
+ */
+function wearStyleAttr(accentKey) {
+  const a = accentOf(accentKey);
+  return `--wear-a:${a.from};--wear-b:${a.to}`;
+}
+
+/**
  * One member: a ring, a name, and what they hold.
  *
  * The initial is drawn from the display name rather than an avatar image, because
@@ -904,10 +918,17 @@ function memberPlate({
   // person layers and forget the others.
   const frame = cardFrame({ frame: layers.frame?.key ?? null, plate: namePalette });
   const ring = avatarRing({ ring: layers.ring?.key ?? null });
+  // The tile's palette is the store's; the RING's is the person's. Only written when the
+  // person actually wears a ring — a member with no look keeps the tile exactly as it is,
+  // so this changes nothing for anybody who has not bought one. The leading `;` matters:
+  // `plateStyleAttr()` does not end in one, so a space here would glue the new pair onto
+  // the last declaration and the browser would drop all three — which is exactly how this
+  // shipped for one probe run (`--plate-b:#5b21b6 --wear-a:#0f766e` is one broken value).
+  const ringPalette = ring ? `;${wearStyleAttr(namePalette)}` : '';
   return `<li class="member${me ? ' member--me' : ''}${top ? ' member--top' : ''}${frame.cls ? ` ${frame.cls}` : ''}"
     ${frame.style ? `style="${frame.style}"` : ''}>
   <span class="member-avatar${top ? ' member-avatar--shine' : ''}${ring ? ` ${ring}` : ''}"
-        style="${plateStyleAttr(accent)}" aria-hidden="true">${esc(initial)}</span>
+        style="${plateStyleAttr(accent)}${ringPalette}" aria-hidden="true">${esc(initial)}</span>
   <span class="member-body">
     <span class="${nameClass}" style="${plateStyleAttr(namePalette)}">${esc(label)}</span>
     ${layers.chip ? tierChip({
@@ -6833,7 +6854,8 @@ export function plusPage({
         ${head}
         <div class="plus-effects" role="radiogroup" aria-labelledby="plus-${esc(slot.key)}-label">
           ${slot.values.map((v) => `
-            <label class="choice plus-effect-choice" data-demo-key="${esc(v.key)}" data-demo-label="${esc(v.label)}">
+            <label class="choice plus-effect-choice" data-demo-key="${esc(v.key)}" data-demo-label="${esc(v.label)}"
+                   data-demo-moves="${v.moves ? 'yes' : 'no'}">
               <input type="radio" name="${esc(slot.key)}" value="${esc(v.key)}" ${current === v.key ? 'checked' : ''}>
               <span>
                 <strong>${esc(v.label)}</strong>
