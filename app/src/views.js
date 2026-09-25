@@ -6210,7 +6210,7 @@ ${flashNote(flash)}
         <dt>Address</dt><dd class="mono">/s/${esc(channel.slug)}</dd>
         <dt>Identity</dt><dd>${verifiedBadge(verification, { withSentence: true }) || '<span class="fine">No check on file. Nothing on your store says otherwise — a store nobody has checked looks exactly like a new one.</span>'}</dd>
         <dt>Listed</dt><dd>${channel.listing_mode === 'marketplace' ? 'In Explore' : 'Own address only'}</dd>
-        <dt>Plan</dt><dd>${esc(plan.name)}${subscription?.period_end ? ` · renews ${day(subscription.period_end)}` : ''}</dd>
+        <dt>Plan</dt><dd>${esc(plan.name)}${subscription?.period_end ? ` · runs until ${day(subscription.period_end)}` : ''}</dd>
         <dt>Reviews</dt><dd>${stats.count
     ? `${Number(stats.average).toFixed(1)} from ${plural(stats.count, 'review')}`
     : 'None yet'}</dd>

@@ -132,6 +132,27 @@ test('an unthemed store still gets a mark — identity is not what the plan buys
   assert.match(rule, /color:\s*var\(--text-secondary\)/);
 });
 
+test('a store’s plan says when it runs to, and no page promises a renewal on a date', () => {
+  // The product's own claim, on its own pages, is that nothing here renews by itself:
+  // a period is bought on the manual rail and it ends when it ends. The seller's
+  // settings panel said "renews <date>" while two other pages said the opposite, so
+  // the panel was the page that was wrong.
+  const settings = views.storeSettings({
+    channel: { ...CHANNEL }, user: { id: 'p1', display_name: 'Alice' },
+    plan: { code: 'store', name: 'Store', capabilities: { can_theme: true, memberships: true } },
+    themes: Object.values(THEMES), canTheme: true, stats: {},
+    subscription: { plan_code: 'store', period_end: '2026-10-25T00:00:00.000Z' },
+    capabilities: { can_theme: true, memberships: true },
+  });
+  assert.match(settings, /runs until 25 Oct 2026/, 'the panel does not say when the period runs to');
+  assert.ok(!/renews/.test(settings), 'the panel promises a renewal the product does not do');
+
+  // And the same claim holds across the whole template file, not just the one page:
+  // no string may put a date straight after the word.
+  const src = readFileSync(new URL('../src/views.js', import.meta.url), 'utf8');
+  assert.ok(!/renews \$\{/.test(src), 'a page promises a period renewing on a date');
+});
+
 test('the seller’s stage lets the band paint the mark, so a hover repaints both', () => {
   const settings = views.storeSettings({
     channel: { ...CHANNEL, theme: 'everest' }, user: { id: 'p1', display_name: 'Alice' },

@@ -937,7 +937,11 @@ APP.post('/s/:slug/leave', limitWatch, async (req, res, next) => {
   } catch (err) { return next(err); }
 });
 
-/** Being named on the storefront is the perk, and it is the member's call. */
+/**
+ * Whether a member is named on a storefront is the member's own call. The store cannot
+ * put somebody on the list and cannot take them off it, and nothing about the person's
+ * own look rides on it — a store has no say in that either.
+ */
 APP.post('/s/:slug/members/listing', limitWatch, async (req, res, next) => {
   try {
     const channel = await store.channelBySlug(req.params.slug);
