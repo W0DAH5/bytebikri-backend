@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "ByteBikri \u2014 storefronts, ad-gated content unlocks, ad slot allocation",
+  "description": "ByteBikri — storefronts, ad-gated content unlocks, ad slot allocation",
   "main": "server.js",
   "scripts": {
     "start": "node scripts/boot.mjs",
@@ -30,6 +30,7 @@
   "devDependencies": {
     "@sparticuz/chromium": "^131.0.1",
     "embedded-postgres": "^18.4.0-beta.17",
+    "h264-mp4-encoder": "^1.0.12",
     "puppeteer-core": "^23.11.1"
   }
 }

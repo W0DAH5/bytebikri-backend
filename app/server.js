@@ -120,6 +120,16 @@ import {
   liveState, liveBreakRefusal, nextCueIndex, tradeSentence, cleanEntrySentence,
   cleanEntryUntil, windowIsOpen, windowEndsAt, LIVE_LENGTHS, LIVE_POLL_SECONDS,
 } from './src/live.js';
+// The series (§15): the store's own order, what counts as finished, which episode a
+// person should be handed, and the refusals. One module, because the storefront's card,
+// the episode strip, the series page, the seller's panel and the tests must agree about
+// all four — and because a second opinion about "the next episode" is exactly how a
+// viewer gets handed the episode they just finished.
+import {
+  SERIES_SHAPES, SERIES_MODE_KEYS, SERIES_REFUSALS, WATCH_MAX_SECONDS,
+  episodeOrder, landingEpisode, nextEpisode, previousEpisode, freeEpisodeNo,
+  seriesSlug, seriesRefusalCode,
+} from './src/series.js';
 import { selfTest as adapterSelfTest, advisories as adapterAdvisories, ADAPTERS } from './src/providers/index.js';
 import * as views from './src/views.js';
 import { REVEAL_BOOTSTRAP } from './src/views.js';
@@ -1719,6 +1729,91 @@ APP.post('/logout', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/*
+ * ── THE SERIES (§15) — three helpers, shared by four routes ────────────────
+ *
+ * A series is a grouping of a store's own files, so everything about it is a read of
+ * rows that already existed plus one column pair on `assets`. These three functions keep
+ * the storefront, the file page and the series page from each assembling their own
+ * version of "which series is this, and what comes next".
+ */
+
+/**
+ * Attach each file's series to it, in one read.
+ *
+ * The storefront draws one card per series and needs to know which files belong
+ * together; the file page needs the same fact for its strip. `seriesForAssets` answers
+ * for a whole page at once, so a storefront with forty files is one query rather than
+ * forty — and neither page has to know that `assets.series_id` exists.
+ */
+async function withSeries(assets) {
+  const rows = assets.length ? await store.seriesForAssets(assets.map((a) => a.id)) : [];
+  if (!rows.length) return assets;
+  const byAsset = new Map(rows.map((r) => [String(r.asset_id), r]));
+  return assets.map((asset) => {
+    const row = byAsset.get(String(asset.id));
+    return row ? {
+      ...asset,
+      series: {
+        id: row.series_id,
+        slug: row.series_slug,
+        title: row.series_title,
+        blurb: row.series_blurb,
+        mode: row.series_mode,
+      },
+    } : asset;
+  });
+}
+
+/** Where this viewer is in these files, by asset id. The one reader of `watch_progress`. */
+function positionsOf(user, assetIds) {
+  return user ? store.watchProgressFor(user.id, assetIds) : Promise.resolve({});
+}
+
+/**
+ * Every id this person can open right now: an unlock that is still good, plus the files
+ * a current ad-free membership covers.
+ *
+ * ONE set with ONE meaning — "you can open this as you are" — because the storefront's
+ * card, the episode strip and the file's own page all read it. Two flags combined in
+ * three places is how a card ends up saying "locked" about the page it links to.
+ */
+async function openSetFor(user, assetIds, { channelId, membership = null, tiers = [] } = {}) {
+  const ids = new Set(await store.openUnlockIds(user?.id, assetIds));
+  if (channelId && tiers.length && membershipCurrent(membership) && adModeOf(membership) === 'ad_free') {
+    for (const row of await store.memberOpenAssetIds(channelId, membership.tier_no)) ids.add(row.id);
+  }
+  return ids;
+}
+
+/**
+ * The series an episode belongs to, as its own page's strip needs it.
+ *
+ * Which episodes are listed follows the file's own visibility rule rather than a second
+ * one: a paused episode is not advertised to strangers, but it stays in the strip of
+ * somebody who holds an unlock for it (hiding a file is a decision about the storefront,
+ * not a way to take back what somebody already paid for with their attention), and the
+ * owner and an operator always see the whole series.
+ */
+async function seriesForFile({ channel, asset, user, maySeeEverything, membership = null, tiers = [] }) {
+  const series = await store.seriesById(asset.series_id, channel.id);
+  if (!series) return null;
+  const all = (await store.episodesForSeries([series.id])).filter((e) => e.status !== 'removed');
+  const openIds = new Set(await store.openUnlockIds(user?.id, all.map((e) => e.id)));
+  const episodes = all.filter((e) => String(e.id) === String(asset.id)
+    || maySeeEverything
+    || openIds.has(String(e.id))
+    || (e.status === 'live' && isAssetPublic(e.moderation_state)));
+  const ordered = episodeOrder(episodes, series.mode);
+  return {
+    series,
+    episodes,
+    positions: await positionsOf(user, ordered.map((e) => e.id)),
+    previous: previousEpisode({ episodes: ordered, currentId: asset.id, mode: series.mode }),
+    next: nextEpisode({ episodes: ordered, currentId: asset.id, mode: series.mode }),
+  };
+}
+
 APP.get('/s/:slug', async (req, res, next) => {
   try {
     const channel = await store.channelBySlug(req.params.slug);
@@ -1769,7 +1864,7 @@ APP.get('/s/:slug', async (req, res, next) => {
     // (a removed file is not on the public web) and the country rule that
     // applies where this visitor is standing.
     const listed = await withCountry(rawAssets, country);
-    const assets = await Promise.all(
+    const assets = await withSeries(await Promise.all(
       listed.filter((a) => seesEverything || a.availability.visible).map(async (a) => {
         const files = await store.filesOf(a.id);
         return {
@@ -1782,32 +1877,29 @@ APP.get('/s/:slug', async (req, res, next) => {
           shape: assetShape(files),
         };
       }),
-    );
+    ));
     if (country) countryDependent(res);
     const pageviews = await store.pageviews30d(channel.id);
     // The rent estimate is what the CREATOR pays for traffic — billing detail.
     // It feeds the dashboard, not the shop window, so it is not passed here.
     const estimate = estimateRentSlotValue({ pageviews30d: pageviews, slots });
 
-    // Which of these the viewer has already unlocked, in ONE query rather than
-    // one per card. The view layer cannot ask; it renders synchronously.
-    const unlockedIds = req.user
-      ? new Set((await many(
-          `select asset_id from unlocks
-            where user_id = $1 and revoked_at is null
-              and (expires_at is null or expires_at > now())
-              and asset_id = any($2)`,
-          [req.user.id, rawAssets.map((a) => a.id)],
-        )).map((r) => r.asset_id))
-      : new Set();
-
-    // Membership, in four reads: what this store offers, what the viewer holds,
-    // who is named on it, and whether the plan even includes the feature. All
-    // four are skipped for the many stores that do not use it — the tiers query
-    // returns nothing and the panel is not drawn.
+    // Membership, read ONCE: what this store offers and what the viewer holds. The same
+    // two answers decide what is already open to this person and what the panel says, and
+    // asking twice could only ever produce a page whose two halves disagree. The other two
+    // reads the panel needs — who is named on a plan, and whether the feature is on for
+    // this store — are below, and all four are skipped for the many stores that do not use
+    // membership at all: the tiers query returns nothing and the panel is not drawn.
     const tiers = await store.membershipTiers(channel.id);
     const membership = req.user ? await store.membershipFor(req.user.id, channel.id) : null;
     const membershipsOn = store.plan(channel).capabilities?.memberships === true;
+
+    // Which of these the viewer has already unlocked, in ONE query rather than one per
+    // card, plus whatever a current membership covers. The view layer cannot ask; it
+    // renders synchronously.
+    const unlockedIds = await openSetFor(req.user, rawAssets.map((a) => a.id), {
+      channelId: channel.id, tiers, membership,
+    });
     // A current membership opens the files behind its tier with no ad, so they
     // join the same set the ad-unlocked files live in: one set, one meaning —
     // "you can open this right now" — rather than two flags the view would have
@@ -1843,6 +1935,10 @@ APP.get('/s/:slug', async (req, res, next) => {
       // the band, and only the band, is what those two properties paint.
       theme: channel.theme ?? null,
       themeStyle: themeStyle(channel.theme),
+      // Where this person left off, by asset id — what a series card reads to say which
+      // episode is theirs to play next. Empty for a store with no series, and for a
+      // signed-out visitor (a position belongs to a person).
+      positions: await positionsOf(req.user, assets.map((a) => a.id)),
       // The paid plans may take bytebikri's name off their own shop window. Read from
       // the same `capabilities` row the pricing page reads, so a plan cannot sell this
       // and fail to deliver it (which is what `remove_footer` did for eight migrations:
@@ -1870,6 +1966,74 @@ APP.get('/s/:slug', async (req, res, next) => {
           }).why,
         }
         : null,
+    }));
+  } catch (err) { next(err); }
+});
+
+/**
+ * A series' own page (§15).
+ *
+ * One level down from the storefront, and the only page that holds the whole order. Its
+ * visibility rules are the storefront's, resolved the same way and in the same order —
+ * the store is public, then the country decision — because a series is a part of a store
+ * and must not be a way around a decision made about one.
+ *
+ * The order, the landing episode and the "is there a next" answer all come from
+ * `series.js`; this route only decides WHICH episodes this visitor may be shown, and
+ * that decision is the file page's own rule applied to a list.
+ */
+APP.get('/s/:slug/series/:seriesSlug', async (req, res, next) => {
+  try {
+    const channel = await store.channelBySlug(req.params.slug);
+    if (!channel) return notFoundPage(req, res, 'store');
+    const owner = Boolean(req.user) && req.user.id === channel.owner_id;
+    if (!isPublicChannel(channel) && !maySeeHidden(req, channel)) return notFoundPage(req, res, 'store');
+
+    const country = viewerCountry(req);
+    const seesEverything = Boolean(req.user)
+      && (req.user.id === channel.owner_id || req.user.role === 'admin');
+    const channelBlock = await store.channelCountryBlock(channel.id, country);
+    if (channelBlock && !seesEverything) {
+      const rules = await store.policyRules();
+      const resolved = resolveCountry({ channelBlock });
+      countryDependent(res);
+      return res.status(blockStatus(resolved)).send(views.countryBlocked({
+        user: req.user, consent: null, country, store: channel,
+        sentence: blockSentence({
+          resolved, rule: ruleFor(rules, channelBlock.rule_code), store: channel.name, country,
+        }),
+      }));
+    }
+
+    const series = await store.seriesBySlug(channel.id, req.params.seriesSlug);
+    if (!series) return notFoundPage(req, res, 'series');
+
+    if (isPublicChannel(channel)) await store.bumpPageView(channel.id);
+    if (req.user) await store.markChannelSeen(req.user.id, channel.id);
+    if (country) countryDependent(res);
+
+    // The store's own files, and then the visitor's own door: the country rule first,
+    // exactly as the storefront applies it to a list of the same rows.
+    const all = (await store.episodesForSeries([series.id])).filter((e) => e.status !== 'removed');
+    const listed = await withCountry(all, country);
+    const episodes = listed.filter((e) => seesEverything || e.availability.visible);
+
+    const tiers = await store.membershipTiers(channel.id);
+    const membership = req.user ? await store.membershipFor(req.user.id, channel.id) : null;
+    const unlockedIds = await openSetFor(req.user, episodes.map((e) => e.id), {
+      channelId: channel.id, tiers, membership,
+    });
+
+    res.send(views.seriesPage({
+      channel, series, episodes, user: req.user, consent: req.consent,
+      unlockedIds,
+      // Where this person left off in these episodes: the landing episode is decided
+      // from it, which is why a series page can say "back to episode 4" rather than
+      // starting somebody at the beginning every time.
+      positions: await positionsOf(req.user, episodes.map((e) => e.id)),
+      tiers,
+      slots: (await slotsFor(channel, { viewer: req.user, surface: 'storefront' })).filter((sl) => sl.creative),
+      plainFooter: store.plan(channel).capabilities?.remove_footer === true,
     }));
   } catch (err) { next(err); }
 });
@@ -2215,8 +2379,35 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
       };
     }
 
+    /*
+     * THE EPISODE STRIP (§15), and the position it resumes from.
+     *
+     * `?restart=1` is what "start from the beginning" is made of: the page is rendered
+     * without the resume, so the control works with no script at all. The client honours
+     * the same link as a seek when the script is running, and reports 0 so the saved
+     * position follows the viewer rather than the button.
+     */
+    const seriesHere = asset.series_id
+      ? await seriesForFile({
+        channel, asset, user: req.user, maySeeEverything,
+        membership: memberCover, tiers: memberTiersHere,
+      })
+      : null;
+    const restart = req.query.restart === '1';
+    const watchPosition = req.user && !restart && ['watch', 'listen'].includes(shape)
+      ? await store.watchProgress(req.user.id, asset.id)
+      : null;
+    const stripUnlocked = seriesHere
+      ? await openSetFor(req.user, seriesHere.episodes.map((e) => e.id), {
+        channelId: channel.id, tiers: memberTiersHere, membership: memberCover,
+      })
+      : new Set();
+
     res.send(views.assetPage({
       channel, asset, files, unlocked, user: req.user, consent: req.consent,
+      series: seriesHere,
+      watchPosition,
+      unlockedIds: stripUnlocked,
       placement,
       gate,
       live,
@@ -2513,6 +2704,159 @@ APP.post('/dashboard/:slug/slots/clear', async (req, res, next) => {
     await store.clearCreative({ channelId: channel.id, slotKey: req.body?.slotKey });
     await store.audit('creative.cleared', { channelId: channel.id, slotKey: req.body?.slotKey });
     res.redirect(`/dashboard/${channel.slug}/slots?saved_slot=1`);
+  } catch (err) { next(err); }
+});
+
+/*
+ * ── THE SELLER'S SERIES PANEL (§15) ────────────────────────────────────────
+ *
+ * The store's own edit and nobody else's: the platform cannot create a series, reorder
+ * one, or insert into one. Every route below checks the series belongs to the channel
+ * asking, and the shape rule is checked with `assetShape` — the one place a shape is
+ * decided — rather than by trusting a form's own opinion of what it sent.
+ */
+APP.get('/dashboard/:slug/series', async (req, res, next) => {
+  try {
+    const channel = await requireOwnChannel(req, res);
+    if (!channel) return;
+    const list = await store.seriesOf(channel.id);
+    const episodes = (await store.episodesForSeries(list.map((s) => s.id)))
+      .filter((e) => e.status !== 'removed');
+    const bySeries = {};
+    for (const episode of episodes) (bySeries[String(episode.series_id)] ||= []).push(episode);
+
+    // What may still join a series. Shapes come from the files (`media.js`), and a file
+    // already in a series is not offered again: moving one is a decision, not a side
+    // effect of picking it from a list.
+    const owned = (await store.assetsForOwner(channel.id)).filter((a) => a.status === 'live');
+    const files = await store.filesForAssets(owned.map((a) => a.id));
+    const taken = new Set(episodes.map((e) => String(e.id)));
+    const candidates = owned
+      .filter((a) => !taken.has(String(a.id)))
+      .map((a) => ({ ...a, shape: assetShape(files[String(a.id)] || [], { url: a.external_url }) }))
+      .filter((a) => SERIES_SHAPES.includes(a.shape))
+      .map((a) => ({ id: a.id, title: a.title, shape: a.shape }));
+
+    res.send(views.seriesPanel({
+      channel, user: req.user, consent: req.consent,
+      flash: flashFor(req.query),
+      series: list.map((s) => ({ ...s, episodes: bySeries[String(s.id)] || [] })),
+      candidates,
+      plainFooter: store.plan(channel).capabilities?.remove_footer === true,
+    }));
+  } catch (err) { next(err); }
+});
+
+/** Start a series. The slug is derived from the title and counts up inside the store. */
+APP.post('/dashboard/:slug/series', async (req, res, next) => {
+  try {
+    const channel = await requireOwnChannel(req, res);
+    if (!channel) return;
+    if (refuseWrite(req, res, channel)) return;
+    const title = String(req.body?.title || '').trim().slice(0, 140);
+    const blurb = String(req.body?.blurb || '').trim().slice(0, 400) || null;
+    const mode = String(req.body?.mode || '');
+    if (!title) return res.redirect(`/dashboard/${encodeURIComponent(channel.slug)}/series?error=series-title`);
+    if (!SERIES_MODE_KEYS.includes(mode)) {
+      return res.redirect(`/dashboard/${encodeURIComponent(channel.slug)}/series?error=series-mode`);
+    }
+    const taken = (await store.seriesOf(channel.id)).map((s) => s.slug);
+    const created = await store.createSeries({
+      channelId: channel.id, slug: seriesSlug(title, taken), title, blurb, mode,
+    });
+    await store.audit('series.created', { channelId: channel.id, seriesId: created.id, mode });
+    res.redirect(`/dashboard/${encodeURIComponent(channel.slug)}/series?saved=series-created`);
+  } catch (err) { next(err); }
+});
+
+/** Rename a series, change its blurb, or change its mode. The address never moves. */
+APP.post('/dashboard/:slug/series/:seriesId', async (req, res, next) => {
+  try {
+    const channel = await requireOwnChannel(req, res);
+    if (!channel) return;
+    if (refuseWrite(req, res, channel)) return;
+    const series = await store.seriesById(req.params.seriesId, channel.id);
+    if (!series) return res.redirect(`/dashboard/${encodeURIComponent(channel.slug)}/series?error=series-owned`);
+    const title = String(req.body?.title || '').trim().slice(0, 140);
+    const blurb = String(req.body?.blurb || '').trim().slice(0, 400) || null;
+    const mode = String(req.body?.mode || '');
+    if (!title) return res.redirect(`/dashboard/${encodeURIComponent(channel.slug)}/series?error=series-title`);
+    if (!SERIES_MODE_KEYS.includes(mode)) {
+      return res.redirect(`/dashboard/${encodeURIComponent(channel.slug)}/series?error=series-mode`);
+    }
+    await store.updateSeries({ seriesId: series.id, title, blurb, mode });
+    await store.audit('series.updated', { channelId: channel.id, seriesId: series.id, mode });
+    res.redirect(`/dashboard/${encodeURIComponent(channel.slug)}/series?saved=series-saved`);
+  } catch (err) { next(err); }
+});
+
+/**
+ * Put a file in a series at a number, or renumber one already in it.
+ *
+ * The refusal is the module's (`seriesRefusalCode`), mapped to a flash code by the
+ * helper below, so the sentence a seller reads after a redirect and the sentence beside
+ * the form cannot be two different rules.
+ */
+APP.post('/dashboard/:slug/series/:seriesId/episode', async (req, res, next) => {
+  try {
+    const channel = await requireOwnChannel(req, res);
+    if (!channel) return;
+    if (refuseWrite(req, res, channel)) return;
+    const back = `/dashboard/${encodeURIComponent(channel.slug)}/series`;
+    const series = await store.seriesById(req.params.seriesId, channel.id);
+    if (!series) return res.redirect(`${back}?error=series-owned`);
+    const asset = await store.assetById(req.body?.assetId);
+    const episodes = (await store.episodesForSeries([series.id])).filter((e) => e.status !== 'removed');
+    const raw = req.body?.episodeNo;
+    const wanted = raw === '' || raw === null || raw === undefined ? null : Number(raw);
+    const code = seriesRefusalCode({
+      asset, shape: asset ? await store.shapeOf(asset) : null, channelId: channel.id, series, episodes, episodeNo: wanted,
+    });
+    if (code) return res.redirect(`${back}?error=${seriesError(code)}`);
+    await store.setEpisode({
+      assetId: asset.id,
+      seriesId: series.id,
+      episodeNo: wanted ?? freeEpisodeNo(episodes.filter((e) => String(e.id) !== String(asset.id))),
+    });
+    await store.audit('series.episode_set', {
+      channelId: channel.id, seriesId: series.id, assetId: asset.id, episodeNo: wanted,
+    });
+    res.redirect(`${back}?saved=episode-set`);
+  } catch (err) { next(err); }
+});
+
+/** Take a file out of a series. The file is untouched, and nothing is renumbered. */
+APP.post('/dashboard/:slug/series/:seriesId/episode/remove', async (req, res, next) => {
+  try {
+    const channel = await requireOwnChannel(req, res);
+    if (!channel) return;
+    if (refuseWrite(req, res, channel)) return;
+    const back = `/dashboard/${encodeURIComponent(channel.slug)}/series`;
+    const series = await store.seriesById(req.params.seriesId, channel.id);
+    const asset = series ? await store.assetById(req.body?.assetId) : null;
+    if (!series || !asset
+      || String(asset.channel_id) !== String(channel.id)
+      || String(asset.series_id) !== String(series.id)) {
+      return res.redirect(`${back}?error=series-owned`);
+    }
+    await store.setEpisode({ assetId: asset.id, seriesId: null, episodeNo: null });
+    await store.audit('series.episode_removed', { channelId: channel.id, seriesId: series.id, assetId: asset.id });
+    res.redirect(`${back}?saved=episode-removed`);
+  } catch (err) { next(err); }
+});
+
+/** Delete a grouping. Its episodes stay published, and the trigger clears the numbers. */
+APP.post('/dashboard/:slug/series/:seriesId/delete', async (req, res, next) => {
+  try {
+    const channel = await requireOwnChannel(req, res);
+    if (!channel) return;
+    if (refuseWrite(req, res, channel)) return;
+    const back = `/dashboard/${encodeURIComponent(channel.slug)}/series`;
+    const series = await store.seriesById(req.params.seriesId, channel.id);
+    if (!series) return res.redirect(`${back}?error=series-owned`);
+    await store.deleteSeries(series.id);
+    await store.audit('series.deleted', { channelId: channel.id, seriesId: series.id, title: series.title });
+    res.redirect(`${back}?saved=series-deleted`);
   } catch (err) { next(err); }
 });
 
@@ -3391,6 +3735,41 @@ APP.get('/s/:slug/a/:assetSlug/read', async (req, res, next) => {
  * wired to the page's identity rather than to its load event. The answer is what was
  * stored, so a client cannot believe it moved something it did not.
  */
+/**
+ * Where the player is, reported by the player.
+ *
+ * The reader's position in the shape video needs (§15.2), and it carries the same three
+ * promises: the store is never shown it (no seller query reads `watch_progress`), no
+ * accounting path reads it (a credited view comes from the network's signed postback,
+ * and a client claiming a position cannot move a ledger row), and writing the same
+ * position twice writes nothing — "where they are" and "when a request arrived" are
+ * different questions, and only the first is worth an answer.
+ *
+ * Only a file with a playhead takes one: a position on an image set or a download would
+ * be a number with nothing behind it.
+ */
+APP.post('/api/watch/progress', limitWatch, async (req, res, next) => {
+  try {
+    if (!req.user) return requireUser(res);
+    const assetId = req.body?.assetId;
+    if (!isUuid(assetId)) return res.status(400).json({ ok: false, error: 'assetId must be a uuid' });
+    const asset = await store.assetById(assetId);
+    if (!asset) return res.status(404).json({ ok: false, error: 'file not found' });
+    const shape = await store.shapeOf(asset);
+    if (!SERIES_SHAPES.includes(shape)) {
+      return res.status(400).json({ ok: false, error: 'that file has no playhead' });
+    }
+    const seconds = Math.floor(Number(req.body?.seconds));
+    if (!Number.isFinite(seconds) || seconds < 0 || seconds > WATCH_MAX_SECONDS) {
+      return res.status(400).json({ ok: false, error: `seconds must be between 0 and ${WATCH_MAX_SECONDS}` });
+    }
+    const saved = await store.saveWatchProgress({ userId: req.user.id, assetId, seconds });
+    // `saved` is null when the position did not move, which is not a failure: it is the
+    // write that correctly did nothing, the way the reader's own page change does.
+    return res.json({ ok: true, seconds: saved ? Number(saved.position_sec) : seconds, changed: Boolean(saved) });
+  } catch (err) { return next(err); }
+});
+
 APP.post('/api/reading/progress', async (req, res, next) => {
   try {
     if (!req.user) return requireUser(res);
@@ -3756,6 +4135,27 @@ const REVIEW_ERRORS = {
  */
 const filesN = (n) => `${Number(n) || 0} file${Number(n) === 1 ? '' : 's'}`;
 
+/**
+ * The flash code for a refusal from `series.js`.
+ *
+ * Two of the module's codes are one answer to a seller — "that series is not yours" and
+ * "that series is not there" are the same sentence on a page they have already left —
+ * and the rest map straight across. The mapping lives here rather than in the module so
+ * that the words a SELLER reads stay with every other sentence a redirect carries.
+ */
+const SERIES_ERROR_CODES = {
+  missing: 'series-missing',
+  'no-series': 'series-owned',
+  store: 'series-owned',
+  'not-yours': 'series-owned',
+  shape: 'series-shape',
+  elsewhere: 'series-elsewhere',
+  number: 'series-number',
+  taken: 'series-taken',
+  full: 'series-full',
+};
+const seriesError = (code) => SERIES_ERROR_CODES[code] || 'series-owned';
+
 const SUCCESS_FLASH = {
   // `${action}:${applied}:${skipped}` — assembled in the bulk route from counts.
   // The skipped number is in the sentence because a bulk action that quietly did
@@ -3884,12 +4284,33 @@ const SUCCESS_FLASH = {
   'gift-claimed': () => 'Sent. The code above is reserved, not live: an operator checks that reference against the platform\'s own statement, and the code starts working when the transfer is found. Nothing is taken twice, and your own arrangement is untouched.',
   'gift-redeemed': () => 'Redeemed. That period is yours now and your look is on — the person who paid for it is not named to you, and nothing about them changed.',
   'plus-rejected': () => 'Marked as not found. Their arrangement did not start, and any look they had stopped being worn.',
+  // The series panel (§15). A series changes what a storefront LOOKS like without
+  // changing a single file's door, and every sentence here says so — the fear this panel
+  // has to answer is "will this move or re-price my files", and the answer is no.
+  'series-created': () => 'Created. It has no episodes yet, so your storefront looks exactly as it did until you add the first one.',
+  'series-saved': () => 'Saved. The mode decides the listing order and whether an episode offers a next; the files themselves are untouched.',
+  'episode-set': () => 'Saved. That file is in the series at that number now — its own door, its own ads and its own page are unchanged.',
+  'episode-removed': () => 'Taken out. The file is still published, and the rest keep their numbers — nothing was renumbered behind your back.',
+  'series-deleted': () => 'Deleted. The grouping and the numbers went with it; every file is still published as it was.',
   theme: (v) => (v === 'plain'
     ? 'Back to the default look. Nothing else about your store changed.'
     : `Saved — ${String(v || 'that')} is on your storefront now. It paints the band behind your name and nothing else, and it is checked for readability in both light and dark before it can be offered.`),
 };
 
 const ERROR_FLASH = {
+  // The series panel (§15). Each refusal that the module writes is the module's own
+  // sentence, read from `SERIES_REFUSALS` — so the seller who reads it after a redirect
+  // and the seller who reads it beside the form are reading one rule, not two copies of
+  // one. The three codes with no module sentence are the ones only a route can know.
+  'series-title': 'A series needs a title — it is what the page and the card say. Nothing was created.',
+  'series-mode': 'Pick how the series is meant to be watched: in order (a serial) or any order (a collection). Nothing was changed.',
+  'series-owned': 'That series is not one of yours, so nothing was changed. A series belongs to the store that made it.',
+  'series-missing': SERIES_REFUSALS.missing,
+  'series-shape': SERIES_REFUSALS.shape,
+  'series-elsewhere': SERIES_REFUSALS.elsewhere,
+  'series-number': SERIES_REFUSALS.number,
+  'series-taken': SERIES_REFUSALS['taken-plain'],
+  'series-full': SERIES_REFUSALS.full,
   // The live panel's refusals. A break is the one place a seller can cost themselves
   // viewers, so each refusal names the rule rather than saying the button did not work.
   'live-url': 'A live file is an HLS playlist: an https:// address ending in .m3u8, or a same-origin path '
@@ -6868,6 +7289,55 @@ async function seed({ force = false } = {}) {
       checksum: crypto.createHash('sha256').update(clip).digest('hex'),
     });
     walkthrough = videoAsset;
+
+    /*
+     * A SERIES, so §15's pages have something real behind them.
+     *
+     * Two episodes of two clips, and neither of them is the walkthrough above: that file
+     * has `break-walk.mjs` and the live fixture pointing at its own URL, and a series must
+     * not change what an existing page looks like.
+     *
+     * PART ONE IS LONG ON PURPOSE. `series.js` refuses to call anything under five seconds
+     * a resume, and a five-second file has nowhere to leave off that is not its own end —
+     * so a walk that has to *pause in the middle, come back, and find the resume waiting*
+     * needs a file worth pausing. Part two is short: it exists to be the next one.
+     *
+     * Episode numbers are the STORE's, and the seed stands in for the store here: part one
+     * is 1 and part two is 2, visibly not by publish order.
+     */
+    if (!await store.seriesBySlug(alice.id, 'poster-kit')) {
+      const series = await store.createSeries({
+        channelId: alice.id, slug: 'poster-kit', title: 'The Poster Kit',
+        blurb: 'Two short parts — put together in the order they were made.',
+        mode: 'serial',
+      });
+      const partOne = await store.createAsset({
+        channelId: alice.id, title: 'The Poster Kit — part one', slug: 'poster-kit-part-one',
+        moderationState: 'approved', coverUrl: '/img/demo/devanagari-poster-kit.jpg',
+        // The first part is free and the second is not: each episode keeps its own door,
+        // which is §15.1's whole architecture and the thing a series most easily hides.
+        unlockMode: 'open',
+        description: 'Layers, type pairings and how to export for print. 45 seconds, no ads.',
+      });
+      const longClip = await fs.readFile(path.resolve(__dirname, 'seed-assets/poster-kit-part-one.mp4'));
+      await store.addFile({
+        assetId: partOne.id, storageKey: await storage.put(longClip, 'poster-kit-part-one.mp4'),
+        filename: 'poster-kit-part-one.mp4', mimeType: 'video/mp4', sizeBytes: longClip.length,
+        checksum: crypto.createHash('sha256').update(longClip).digest('hex'),
+      });
+      const partTwo = await store.createAsset({
+        channelId: alice.id, title: 'The Poster Kit — part two', slug: 'poster-kit-part-two',
+        moderationState: 'approved', coverUrl: '/img/demo/devanagari-poster-kit.jpg',
+        description: 'Paper, ink, and the export settings that survive a print shop.',
+      });
+      await store.addFile({
+        assetId: partTwo.id, storageKey: await storage.put(clip, 'store-walkthrough.mp4'),
+        filename: 'store-walkthrough.mp4', mimeType: 'video/mp4', sizeBytes: clip.length,
+        checksum: crypto.createHash('sha256').update(clip).digest('hex'),
+      });
+      await store.setEpisode({ assetId: partOne.id, seriesId: series.id, episodeNo: 1 });
+      await store.setEpisode({ assetId: partTwo.id, seriesId: series.id, episodeNo: 2 });
+    }
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;
   }

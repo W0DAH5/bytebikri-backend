@@ -25,8 +25,6 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const OUT = path.resolve(__dirname, '../seed-assets/store-walkthrough.mp4');
-
 const require = createRequire(import.meta.url);
 let HME;
 try {
@@ -39,7 +37,21 @@ try {
 const W = 640;
 const H = 360;
 const FPS = 12;
-const SECONDS = 5;
+/*
+ * Five seconds is enough to prove a player plays — that is what the store's own
+ * walkthrough clip is for. It is NOT enough to prove a RESUME, which is the one thing a
+ * series needs a walk to show: `series.js` refuses to call anything under
+ * `RESUME_MIN_SECONDS` (5) a resume, and a five-second file has nowhere to leave off
+ * that is not its own end. So the series episodes are longer, and the extra seconds cost
+ * a few hundred kilobytes.
+ *
+ *   node scripts/make-demo-media.mjs                 # the 5 s walkthrough clip
+ *   node scripts/make-demo-media.mjs 45 <out.mp4>    # a series episode
+ */
+const SECONDS = Number(process.argv[2]) || 5;
+const OUT = process.argv[3]
+  ? path.resolve(process.cwd(), process.argv[3])
+  : path.resolve(__dirname, '../seed-assets/store-walkthrough.mp4');
 
 const enc = await HME.createH264MP4Encoder();
 enc.width = W;

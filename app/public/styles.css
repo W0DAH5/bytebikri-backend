@@ -3624,3 +3624,117 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 .reader-stage[data-direction="rtl"] { direction: rtl; }
 .reader-gate { margin-top: var(--space-5); }
 .reader-offer { margin: var(--space-5) 0; padding: var(--space-5); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); background: var(--surface-raised); }
+
+/* ── THE SERIES (§15) ────────────────────────────────────────────────────────
+ *
+ * One card on the storefront, one strip on an episode's own page, one page for the
+ * order, and the seller's panel. The look is deliberately the quietest thing here:
+ * a series is a store's own edit of its own files, and the pages it adds must read
+ * as the same product as the cards and pages that were already there — the same
+ * surfaces, the same two type sizes, the same one accent.
+ *
+ * The one thing the strip is allowed to be loud about is WHERE YOU ARE: the row you
+ * are on carries the accent, because that is the question the strip exists to answer.
+ */
+
+/* The storefront card: the same card as any other, with the series' own foot line. */
+.asset-series .asset-desc {
+  /* A blurb is a sentence, not a paragraph: two lines, then it is the page's job. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.series-head h1 { margin: 0; }
+
+.ep-strip {
+  margin-top: var(--space-5);
+  padding: var(--space-4) var(--space-5);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+.ep-where { margin: 0; font-size: var(--text-sm); color: var(--text-muted); }
+.ep-where strong { color: var(--text-primary); }
+.ep-mode { color: var(--text-faint); }
+.ep-resume { margin: var(--space-2) 0 0; }
+.ep-restart { white-space: nowrap; }
+.ep-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+/* The control that appears when a serial episode ends. A link, hidden until then. */
+.ep-next {
+  margin-top: var(--space-5);
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+}
+.ep-next p { margin: 0 0 var(--space-3); }
+
+.ep-list { list-style: none; margin: 0; padding: 0; }
+.ep {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ep:first-child { border-top: 1px solid var(--border-subtle); }
+.ep-on { background: var(--surface-raised); box-shadow: inset 3px 0 0 var(--accent); }
+.ep-no {
+  flex: none;
+  min-width: 7rem;
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.ep-body { flex: 1 1 auto; min-width: 0; }
+.ep-title { font-weight: 550; }
+.ep-said { margin: var(--space-1) 0 0; font-size: var(--text-sm); color: var(--text-muted); }
+.ep-on-badge {
+  flex: none;
+  font-size: var(--text-xs);
+  color: var(--accent-text);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* The seller's panel: one row per episode, each its own tiny form. */
+.series-card-panel { margin-top: var(--space-5); }
+.ep-edit { margin-top: var(--space-4); }
+.ep-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ep-row .ep-no { min-width: 6rem; }
+.ep-row .ep-title { flex: 1 1 12rem; min-width: 0; }
+.ep-row .input-sm { width: 6.5rem; }
+.ep-add {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+.ep-add .field { margin-bottom: 0; flex: 1 1 14rem; }
+.ep-add .input-sm { width: 8rem; }
+
+@media (max-width: 620px) {
+  .ep { flex-wrap: wrap; }
+  .ep-no { min-width: 0; }
+  .ep-row .ep-no { min-width: 0; }
+}

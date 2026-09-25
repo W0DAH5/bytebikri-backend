@@ -2117,6 +2117,230 @@ export const store = {
     );
   },
 
+  /*
+   * ── THE SERIES (§15) ──────────────────────────────────────────────────────
+   *
+   * A series is the store's own grouping of the store's own files, and these five
+   * methods are the whole of its storage. An episode stays an ordinary file: it has
+   * its own unlock mode, its own ask, its own ledger row, and its own page. What
+   * lives here is the ORDER and the membership — plus the viewer's position, which
+   * is the one thing in this block that is not the store's.
+   */
+
+  /** Every series this store has, newest first, with how many episodes each holds. */
+  seriesOf(channelId) {
+    return many(
+      `select s.*, count(a.id)::int as episodes
+         from series s
+         left join assets a on a.series_id = s.id
+        where s.channel_id = $1
+        group by s.id
+        order by s.created_at desc`,
+      [channelId],
+    );
+  },
+
+  /** One series by id, scoped to its channel when one is given. */
+  seriesById(id, channelId = null) {
+    if (!id) return Promise.resolve(null);
+    return one(
+      `select * from series where id = $1${channelId ? ' and channel_id = $2' : ''}`,
+      channelId ? [id, channelId] : [id],
+    );
+  },
+
+  /** One series by its address inside a store — the public page's lookup. */
+  seriesBySlug(channelId, slug) {
+    return one('select * from series where channel_id = $1 and slug = $2', [channelId, slug]);
+  },
+
+  /**
+   * The episodes of a series, as the files they are.
+   *
+   * Ordered in SQL by the number because the page needs a stable list before the
+   * module sorts it by MODE; the module is still what decides the final order, so
+   * this clause is a convenience and not a second opinion. `runtime_sec` comes along
+   * because `isFinished` measures the last thirty seconds against it — the player
+   * reported that number, and the alternative is guessing how long an episode is.
+   */
+  episodesOf(seriesId) {
+    if (!seriesId) return Promise.resolve([]);
+    return many(
+      `select id, slug, title, description, cover_url, unlock_mode,
+              member_tier, episode_no, runtime_sec, status, created_at
+         from assets
+        where series_id = $1
+        order by episode_no asc nulls last`,
+      [seriesId],
+    );
+  },
+
+  /**
+   * Every episode of every one of these series, in one query.
+   *
+   * The storefront draws ONE card per series, and that card counts the series' episodes
+   * and picks the one to play next — so it needs the whole list, not the slice that
+   * happens to be on the page. One query with an array parameter, because a store with
+   * six series is not six round trips.
+   */
+  episodesForSeries(seriesIds = []) {
+    if (!seriesIds.length) return Promise.resolve([]);
+    return many(
+      `select id, series_id, episode_no, slug, title, description, cover_url, unlock_mode,
+              member_tier, runtime_sec, status, moderation_state, created_at
+         from assets
+        where series_id = any($1::uuid[])
+        order by series_id, episode_no asc nulls last`,
+      [seriesIds],
+    );
+  },
+
+  /**
+   * Which series each of these files belongs to, by asset id.
+   *
+   * The storefront needs this for the cards it is about to draw and the episode's own
+   * page needs it for the strip; one query with an array parameter rather than one
+   * query per card, because a storefront with forty files is not forty round trips.
+   *
+   * The series columns are aliased rather than selected with `s.*`: both tables have an
+   * `id`, a `slug` and a `created_at`, and a row where `id` means one table in one place
+   * and the other table in the next is how a card starts linking to the wrong store.
+   */
+  seriesForAssets(assetIds = []) {
+    if (!assetIds.length) return Promise.resolve([]);
+    return many(
+      `select a.id as asset_id, a.episode_no,
+              s.id as series_id, s.slug as series_slug, s.title as series_title,
+              s.blurb as series_blurb, s.mode as series_mode, s.created_at as series_created_at
+         from assets a
+         join series s on s.id = a.series_id
+        where a.id = any($1::uuid[])`,
+      [assetIds],
+    );
+  },
+
+  /**
+   * The files of many assets at once, for the one caller that needs a SHAPE for a list:
+   * the seller's series page, which shows the files a series may hold and refuses the
+   * others. Shapes are derived from files (`media.js` → `assetShape`), so a page that
+   * drew that list without them would be guessing at the rule it enforces.
+   */
+  async filesForAssets(assetIds = []) {
+    if (!assetIds.length) return {};
+    const rows = await many(
+      `select * from asset_files
+        where asset_id = any($1::uuid[])
+        order by sort_order, created_at, id`,
+      [assetIds],
+    );
+    const out = {};
+    for (const row of rows) {
+      const key = String(row.asset_id);
+      (out[key] ||= []).push(row);
+    }
+    return out;
+  },
+
+  /** Start a series. The slug is unique inside the store, and the caller makes it so. */
+  createSeries({ channelId, slug, title, blurb = null, mode = 'collection' }) {
+    return one(
+      `insert into series (channel_id, slug, title, blurb, mode)
+       values ($1, $2, $3, $4, $5)
+       returning *`,
+      [channelId, slug, String(title).slice(0, 140), blurb ? String(blurb).slice(0, 400) : null, mode],
+    );
+  },
+
+  updateSeries({ seriesId, title, blurb, mode }) {
+    return one(
+      `update series
+          set title = coalesce($2, title),
+              blurb = $3,
+              mode = coalesce($4, mode),
+              updated_at = now()
+        where id = $1
+        returning *`,
+      [seriesId, title ? String(title).slice(0, 140) : null, blurb ? String(blurb).slice(0, 400) : null, mode ?? null],
+    );
+  },
+
+  /**
+   * Put a file in a series at a number — or take it out.
+   *
+   * `episodeNo = null` is the removal, and it clears BOTH columns in the same
+   * statement: the check constraint requires a number with a series and nothing
+   * without one, so a half-applied removal is not a state this code can reach.
+   */
+  setEpisode({ assetId, seriesId, episodeNo }) {
+    return one(
+      `update assets
+          set series_id = $2, episode_no = $3, updated_at = now()
+        where id = $1
+        returning id, series_id, episode_no`,
+      [assetId, seriesId ?? null, episodeNo ?? null],
+    );
+  },
+
+  /** Renumber one episode, in place. The unique index is what refuses a collision. */
+  setEpisodeNo({ assetId, episodeNo }) {
+    return one(
+      'update assets set episode_no = $2, updated_at = now() where id = $1 returning id, episode_no',
+      [assetId, episodeNo],
+    );
+  },
+
+  /** A series leaves; its episodes stay, as ordinary files. Nothing is deleted. */
+  deleteSeries(seriesId) {
+    return one('delete from series where id = $1 returning id, title', [seriesId]);
+  },
+
+  /*
+   * THE VIEWER'S OWN POSITION.
+   *
+   * Written by the player, read to resume. Three properties, and each is a decision
+   * rather than an implementation detail:
+   *
+   *   · the store is never shown it — there is no seller query in this file that
+   *     reads `watch_progress`, and none may be added;
+   *   · nothing in accounting reads it. A credited view comes from the network's
+   *     signed postback; a client claiming a position cannot move a ledger row,
+   *     and this table is not joined by any earnings or attention query;
+   *   · the same position written twice writes nothing, the way the reader's page
+   *     number does — "when did they last move" and "when did a request arrive" are
+   *     different questions, and only the first is worth an answer.
+   */
+  watchProgress(userId, assetId) {
+    if (!userId) return null;
+    return one('select position_sec, updated_at from watch_progress where user_id = $1 and asset_id = $2',
+      [userId, assetId]);
+  },
+
+  /** The positions this person holds across a set of episodes, keyed by asset id. */
+  async watchProgressFor(userId, assetIds = []) {
+    if (!userId || !assetIds.length) return {};
+    const rows = await many(
+      `select asset_id, position_sec, updated_at
+         from watch_progress
+        where user_id = $1 and asset_id = any($2::uuid[])`,
+      [userId, assetIds],
+    );
+    return Object.fromEntries(rows.map((r) => [String(r.asset_id), r]));
+  },
+
+  saveWatchProgress({ userId, assetId, seconds }) {
+    const at = Math.floor(Number(seconds));
+    if (!userId || !Number.isFinite(at) || at < 0) return null;
+    return one(
+      `insert into watch_progress (user_id, asset_id, position_sec, updated_at)
+       values ($1, $2, $3, now())
+       on conflict (user_id, asset_id) do update
+         set position_sec = excluded.position_sec, updated_at = now()
+       where watch_progress.position_sec <> excluded.position_sec
+       returning *`,
+      [userId, assetId, Math.min(at, 86_400)],
+    );
+  },
+
   /**
    * The gate seams this person has already cleared on this file.
    *
@@ -2472,6 +2696,26 @@ export const store = {
       [assetId, userId],
     );
   },
+  /**
+   * Which of these files this person has open, as ids.
+   *
+   * One read for a whole page: the storefront draws forty cards from it and an episode
+   * strip draws every episode of a series. The conditions are the same three the
+   * single-file check uses — not revoked, and not expired — so a card and the file's own
+   * page cannot disagree about whether something is open.
+   */
+  async openUnlockIds(userId, assetIds = []) {
+    if (!userId || !assetIds.length) return [];
+    const rows = await many(
+      `select asset_id from unlocks
+        where user_id = $1 and revoked_at is null
+          and (expires_at is null or expires_at > now())
+          and asset_id = any($2::uuid[])`,
+      [userId, assetIds],
+    );
+    return rows.map((r) => String(r.asset_id));
+  },
+
   async isUnlocked(assetId, userId) {
     // An id that cannot be a uuid cannot be unlocked. Checking here rather than
     // letting Postgres reject the cast keeps a malformed query string a 400-ish

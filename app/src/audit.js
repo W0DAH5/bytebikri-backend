@@ -97,7 +97,10 @@ export const AUDIT_FAMILIES = [
     key: 'stores',
     label: 'Stores & files',
     note: 'Sellers publishing, editing and connecting networks. High volume, low drama — and the only place a dispute about "when did that change" gets settled.',
-    prefixes: ['asset.', 'channel.', 'creative.', 'ad_connection.', 'review.', 'unlock.', 'content.'],
+    // `series.` is here rather than in a family of its own: a series is a store's own
+    // grouping of its own files, so "when did that change, and who changed it" is the
+    // same question this family already answers for an edit to a file.
+    prefixes: ['asset.', 'channel.', 'creative.', 'ad_connection.', 'review.', 'unlock.', 'content.', 'series.'],
     decisions: false,
   },
   {

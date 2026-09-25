@@ -338,10 +338,12 @@ already printed on a page until the copy changes in the same commit.
 | 5 | **The ledger** | `attention_events` + a store-facing page: views, seconds, per surface, per placement; the platform slot's own numbers separated from the store's | arithmetic test; the page states which side earned what; no payout field exists anywhere | share-back/credit (waits for leg 6) |
 | 6 | **Reader** | `read` surface: PDF/CBZ via range requests (PDF.js/folio-js class libraries, no vendoring until chosen); between-chapter gate; image-folder sets | pagination order; gate position never mid-page; resume position per viewer | no DRM, no per-page watermarking beyond what images already do |
 | 7 | **Live** | `stream` shape: store-scheduled break only, picture-by-picture, new-arrival entry trade | a platform-inserted break is impossible by construction (no code path) | everything about RTMP ingest — out of scope until the shape is real |
+| 8 | **Series** | the playlist form of `watch`/`listen`: a store-owned grouping with a store-set order, one card on the storefront instead of twelve, a landing episode decided by the server, a resume position that is the person's own, and an explicit *Next episode* — no autoplay, ever | the order flips with the mode; a finished episode is not "continue"; a hand-made POST cannot add a download or somebody else's file; nothing in accounting reads a position | seasons, bundles, series prices, cross-store borrowing, and an algorithmic next |
 
 Order: **1 → 2 → 3** first (they close a shipped lie, then make placement real), then 4 → 5, then 6,
-then 7. Slices 4–6 are the ones the brief cares about most; slice 2 is first because "2 ads of 30
-seconds" is currently a sentence, not a gate.
+then 7, then 8. Slices 4–6 are the ones the brief cares about most; slice 2 is first because "2 ads of 30
+seconds" is currently a sentence, not a gate. Slice 8 is last because it is the only one whose object
+(the playlist) the brief names and no earlier slice needed.
 
 ## 8. Decisions taken
 
@@ -365,6 +367,7 @@ seconds" is currently a sentence, not a gate.
 | 5 Ledger | **Built** — `ad_view_events` gained `placement`/`surface` (written by the claim, from the attempt's own snapshot); `ad_position_daily` counts rendered positions by page, placement and side; `/dashboard/:slug/attention` prints the two blocks and never their sum. 4 tests (`attention.test.js`), 3 screenshots from a real browser walk (`ci/eyes/ledger-walk.mjs`, `docs/evidence/round37`). §12 is the design |
 | 6 Reader | **Built** — `archive.js` (a zip read through the central directory, both compression methods, caps that refuse a bomb rather than a big book: 8 tests) and `pages.js` (the page model: natural order, junk filtered, `ComicInfo.xml` not a page; the plan the reader turns, its segments, and the gate sentence: 11 tests). The reader itself is one page at a time or one continuous scroll, left to right or right to left, the store's choice per file; a stop lands **between** pages and the server refuses the bytes behind it (`403 a view is owed before this page`) rather than hiding them with a veil. The bookmark is the reader's own (`reading_progress`, PK (user, file)) and never shown to the store. 8 tests in `reader.test.js`, 8 screenshots from a real browser walk (`ci/eyes/reader-walk.mjs`, `docs/evidence/round38`) that also flips both seller choices and watches the reader obey. §13 is the design. Suite 763/763/0 |
 | 7 Live | **Built** — §14 is the design: a live file is the store's own `https://…m3u8` (no ingest, no re-host, no recording), hls.js 1.7.3 vendored because Chrome and Firefox have no native HLS, and a break is a WINDOW only the store's own POST can open, which buys clean entries for newcomers at the ratio Twitch taught the industry. Built: `live.js` holds the arithmetic and the four caps, `live_breaks` holds the windows (one open per file, enforced by a partial unique index), and the seller's own POST is the only writer. 10 unit tests, 4 fixture tests, and `ci/eyes/live-walk.mjs` in a real browser (6 shots, `docs/evidence/round39`) — the stream plays, a break the seller calls stops it, the view is credited, playback resumes at the EDGE, and a newcomer inside the window walks in clean. Suite 782/782/0 |
+| 8 Series | **Built** — §15 is the design: `series` (a slug and a closed `mode` per store), `assets.series_id`/`episode_no` with the pair checked as one thing, and `watch_progress` as the person's own bookmark (`0049_series.sql`). `src/series.js` is pure and decides the order, the landing episode, the next one, and *finished* from one place; the storefront collapses a series into one card, the series page lists the store's order, and an episode's page carries the strip, the resume, and a **Next episode** link that appears only when the episode ends — no timer, no autoplay. 14 tests in `series.test.js` and `ci/eyes/series-walk.mjs` in a real browser (`docs/evidence/round41`, 6 shots). Suite 801/801/0 |
 
 ---
 
@@ -734,3 +737,131 @@ The store calls it. Concretely:
   (`currentTime` moves), the door asks once, a break called from the *seller's* page stops the viewer,
   the network credits it, the viewer resumes at the live edge, a newcomer inside the covered window
   walks in clean, and the seller's ledger shows the row.
+
+## 15. The series — a playlist of episodes, and the one place we do NOT take the wheel
+
+Slice 1's shape table has said `watch` means "video, **one file or a playlist**" since the beginning, and the
+brief's own list of asset types names "playlist videos". This is the design for it: what a series is, who owns
+its order, where the buyer starts, and the one thing every streaming product does here that this one will not.
+
+The evidence, all of it 2025–2026 and all of it about the same three decisions:
+
+- **A series is a creator's edit, not a sort.** YouTube shipped Shows in 2026: a playlist becomes a show with
+  seasons and numbered episodes, and the episode numbering comes from **the creator's manual order** — the
+  publish date is only the fallback. Its own research paper on serial content is the caution underneath:
+  identifying "the next episode" from behaviour misses, and the video such a system recommends next is
+  routinely *unrelated to the series being watched*. Order is authored here, or it is wrong.
+- **Serial and non-serial are different products.** YouTube's own split: a **serial** show is "intended to be
+  watched in sequential order and is listed oldest to newest"; a **non-serial** show can be watched in any
+  order and is listed newest to oldest, and non-serial is what a converted playlist defaults to. Both are
+  legitimate; only the store knows which it made.
+- **Autoplay is the thing to refuse, and this is where the numbers are.** An experimental study of Netflix
+  viewers (2026) found **62 % of participants who had autoplay ENABLED said they disliked automatic content
+  continuation**; turning it off cut **21 minutes of watching per day** and produced longer gaps between
+  episodes, which the participants themselves described as *better*: "it made me more conscientious of how many
+  episodes I was watching". The same literature calls autoplay the design pattern that "undermines the agency
+  of users' experience". Netflix's own answer to the mess is a prompt — *"Are you still watching?"* — whose
+  stated purpose is **not to lose your place**. Both of those exist because the player took the wheel. This
+  product's player does not, so neither the inflation nor the prompt is needed.
+
+### 15.1 What a series is
+
+**A store's own grouping of the store's own files.** Not a new asset type, and that is the whole architecture:
+
+- `series(id, channel_id, slug, title, blurb, mode, …)` and two columns on `assets` — `series_id`,
+  `episode_no`. An episode is an ordinary file: its own cover, its own unlock mode, its own ask, its own
+  ledger row, its own page. The series adds **order** and **one place to see it**, and nothing else;
+- **the store owns the order.** bytebikri cannot create a series, reorder one, or insert into one — the same
+  rule as the store's band and its member tiers. There is no platform-created series and no "recommended for
+  you" row;
+- **`mode` is the store's, and it changes one thing**: `serial` lists episodes oldest-number-first and carries
+  a *Next episode* control; `collection` lists newest-number-first and carries **none**, because in a
+  collection there is no next — any order is fine, which is exactly what the store said by choosing it;
+- **one series is one kind of thing.** Only files that PLAY can join (`watch`, `listen`). A reader is already
+  a container — its chapters live inside one archive, and §13's step is its episode — and a download has no
+  player to be next in. Adding a `download` to a series is refused with that sentence, not silently allowed.
+
+### 15.2 What the buyer gets
+
+- **One card on the storefront, not twelve.** §4's rule (two-level chunking beats one long list; progressive
+  disclosure) applied to the shape it was written for: the storefront shows the series as a single card in its
+  shape's section, saying how many episodes it has and **which one is yours to play next**. The episodes are one
+  level down, on the series page, in the store's order, each with its own state — free, ad-gated, locked,
+  unlocked, members — so nothing is hidden and nothing is flattened;
+- **the landing episode is decided by the server, not by guessing**: the person's own most recent unfinished
+  episode if there is one, otherwise the first of a serial series (or the newest of a collection). The card and
+  the page both say which one and why;
+- **the position is the person's own.** `watch_progress(user_id, asset_id, seconds)` is the reader's bookmark in
+  the shape video needs — written by the player, read to resume, **never shown to the store** (there is no
+  seller surface for it, and no column on the seller's side), and **never evidence for accounting**: a view is
+  credited by the network's signed postback exactly as it was, and a client claiming a position cannot move a
+  number in the ledger. The reader made this promise first; a series is where a viewer would most expect us to
+  break it, so it is restated here;
+- **resume, and a way back to the start.** Opening an episode with a saved position seeks there and says so;
+  the stage always offers *start from the beginning*, which is the reader's own "Start reading" in the other
+  shape.
+
+### 15.3 What it refuses
+
+- **Autoplay, a countdown, and "are you still watching".** The first two are the agency cost measured above,
+  and the third is only needed because of them — nothing here takes the wheel, so there is no place to lose.
+  What exists instead is an explicit control with the next episode's title on it, which is also the only version
+  that can carry a *door* honestly: our asks sit at the door of each episode, and an autoplayed episode is an
+  autoplayed ad;
+- **an algorithmic next.** The order is the store's or there is no series;
+- **seasons.** YouTube drops every converted playlist into "Season 1" for a reason: a season is a third level of
+  disclosure, and §4's finding is that more than two causes navigation confusion. One level: a series, and its
+  episodes. A store with two seasons publishes two series, and the words on the page say so;
+- **a series-level unlock, bundle or price.** Each episode asks its own door. Bundling is pricing, pricing is
+  money movement, and money movement is a later feature;
+- **crossing stores.** A series belongs to one channel; an episode may not be borrowed into one. Two
+  sentences, because they are two questions — *is this series yours* (`store`) and *is this file yours*
+  (`not-yours`) — and the second exists because the test in §15.4 tried it: the route scoped the series to
+  the owner's channel and never asked the same question of the file it was handed, so a hand-made POST
+  naming somebody else's file would have written that file into the poster's series, where the series page
+  lists what a series holds without asking again who owns each row.
+
+### 15.4 What slice 8 builds
+
+- **Schema**: `series` with its own slug per store and a closed `mode` vocabulary, plus `assets.series_id` /
+  `assets.episode_no` with a per-series unique number and a check that the number exists only with a series;
+- **`src/series.js`** (pure, no database, no clock): the listing order for a mode, what counts as *finished*,
+  which episode a person should land on, what the next one is, and the refusals — one module, because the
+  card, the page, the seller's panel and the tests must agree about all four;
+- **Store**: the series rows, the episode list, the ordering writes, and the position rows;
+- **Server**: the public series page, the episode strip on a file's own page (previous / next, in the store's
+  order), the seller's panel where episodes are added, numbered and removed, and the storefront's one card;
+- **Client**: the position report (throttled, on pause and on a timer), the resume, *start from the beginning*,
+  and the **Next episode** control that appears when a serial episode ends — never a timer;
+- **Tests**: the order flips with the mode; a finished episode does not come back as "continue"; a hand-crafted
+  POST cannot put a download in a series or a foreign file into somebody's series; the position is never read by
+  any accounting path; and a browser walk (`ci/eyes/series-walk.mjs`) that watches one episode end, takes the
+  next control, and finds the resume line waiting on the one it left.
+
+### 15.5 What was built
+
+- **Schema** (`0049_series.sql`): `series` with `(channel_id, slug)` unique and a closed `mode`; `assets.series_id`
+  / `assets.episode_no` with `uq_series_episode_no` and `assets_episode_needs_series` — the pair is one fact, so
+  the check refuses a number without a series rather than trusting the writer; `watch_progress` keyed by
+  (person, file), four columns wide, with no column for a count, a view, an earning or a store. A series leaves by
+  deleting its own row and its episodes stay published, as ordinary files;
+- **`src/series.js`**: order by mode, `isFinished`, `landingEpisode`, `nextEpisode`/`previousEpisode`, `resumeFrom`
+  (≥ 5 s) with `resumeSentence`, `clockWords`, `seriesSlug`, `freeEpisodeNo`, and the refusal table with
+  `refusalOf`/`seriesRefusalCode` — one function, read by the panel, the route and the tests, so a branch cannot
+  exist in one reading and be missing from the other;
+- **Server**: the public series page, the episode strip on a file's own page, `POST /api/watch/progress`, the
+  seller's panel and its five routes, and the storefront's collapse to one card. Every refusal is a flash code the
+  panel prints from `SERIES_REFUSALS`, so the sentence a seller reads after a redirect is the module's own;
+- **Client** (`public/app.js`): the throttled report (on pause, every 15 s, and on `pagehide`), the one-time seek on
+  `loadedmetadata`, the *start from the beginning* link that seeks, saves zero and plays, and the **Next episode**
+  control revealed by `ended`. The server is the record; the client is a convenience that may forget;
+- **Tests** (14, `series.test.js`): the order, the grace on *finished*, the landing rule, the refusals, the pair in
+  SQL, positions never reading into accounting, a position POST that writes nothing twice — and the hand-made POST,
+  which is the one that found a hole (the missing `not-yours`) instead of confirming one;
+- **The walk** (`ci/eyes/series-walk.mjs` → `docs/evidence/round41`): one card and no direct episode links on the
+  storefront; the store's order and per-episode doors on the series page; a fresh visit with no resume; a pause at
+  0:12 found again after a reload and sought by the player; *start from the beginning* leaving no resume behind; the
+  episode ending to reveal a **Next episode** link and the last episode of a serial offering none; the finished
+  episode not coming back as "continue", with the series page still saying *Start with Episode 1*; and the seller's
+  panel numbering both episodes while never showing a viewer's position. The walk also refuses a session that is not
+  actually signed in — a cached cookie outliving its database would have tested the signed-out page.

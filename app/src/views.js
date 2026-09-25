@@ -57,6 +57,15 @@ import { ALLOWED_TYPES, MAX_BYTES, HOLD_DAYS, extFor } from './kyc.js';
 import {
   THEMES, THEME_KEYS, THEME_NOTE, THEME_FREE_LINE, NO_THEME, themeOf, themeStyle, motionNote,
 } from './themes.js';
+// The series (§15): the store's own order, what counts as finished, which episode a
+// person should be handed, and the two refusals. A pure module — it touches no
+// database — so the card, the strip, the page, the seller's panel and the tests all
+// read ONE answer, and this module is what keeps a card and the page behind it from
+// disagreeing about which episode is next.
+import {
+  episodeOrder, episodeWords, episodeCountWords, landingEpisode, nextEpisode, previousEpisode,
+  resumeFrom, resumeSentence, clockWords, modeOf, seriesSummary, SERIES_MODES,
+} from './series.js';
 // The ad arrangement and the seller's revenue rows: the membership's promise to the
 // member and the seller's own two-line model, written once in memberships.js.
 import {
@@ -1554,8 +1563,314 @@ function membersSection({
 </section>`;
 }
 
+/* ── THE SERIES (§15) ───────────────────────────────────────────────────────
+ *
+ * One card on the storefront, one strip on an episode's own page, one page that holds
+ * the order, and the seller's panel. Four renderers, and all four get their decisions
+ * from `series.js` — the order, what counts as finished, which episode is the landing
+ * one, and whether there IS a next. Nothing here decides any of those for itself.
+ *
+ * The rules that are visible in this markup on purpose:
+ *
+ *   · a collection has no next — no button, no countdown, nothing to be next in;
+ *   · the next control is an ordinary link with the next episode's NAME on it, so it
+ *     works with no JavaScript and says where it goes;
+ *   · a resume is a sentence plus a way back to the beginning, and the beginning is a
+ *     link (`?restart=1`) rather than a script — the player improves on it when the
+ *     script runs, and nothing depends on the script having run.
+ */
+
+/** Is this episode open to this person right now? The strip's own read, never access. */
+function episodeOpen(episode, unlockedIds) {
+  return episode.unlock_mode === 'open' || episode.unlock_mode === 'breaks'
+    || unlockedIds.has(String(episode.id)) || unlockedIds.has(episode.id);
+}
+
+/** What one episode row says about itself, in the storefront's own vocabulary. */
+function episodeStateWords(episode, { unlockedIds = new Set(), tiers = [] } = {}) {
+  if (episode.status && episode.status !== 'live') return 'Paused by the store';
+  if (episode.unlock_mode === 'members') {
+    const no = Number(episode.member_tier) || 1;
+    const name = tierByNo(tiers, no)?.name || defaultTierName(no);
+    return episodeOpen(episode, unlockedIds) ? `Open to you as a ${name} member` : `${name} members — no ad`;
+  }
+  if (episode.unlock_mode === 'breaks') return 'Free — a break inside';
+  if (episode.unlock_mode === 'open') return 'Free';
+  return episodeOpen(episode, unlockedIds) ? 'Unlocked' : 'An ad opens it';
+}
+
+/** Where this person left off in one episode, or null: the strip's and the page's line. */
+function episodePositionWords(episode, positions = {}) {
+  const row = positions[String(episode.id)] ?? positions[episode.id];
+  if (!row) return null;
+  const at = resumeFrom(row.position_sec ?? row.seconds, episode.runtime_sec ?? row.runtime_sec);
+  return at ? `you stopped at ${clockWords(at)}` : null;
+}
+
+/** One row of the episode list: the series page's list and the seller's preview share it. */
+function episodeRow({ channel, episode, here = false, unlockedIds = new Set(), tiers = [], positions = {} }) {
+  const at = episodePositionWords(episode, positions);
+  return `
+    <li class="ep${here ? ' ep-on' : ''}">
+      <span class="ep-no">${esc(episodeWords(episode.episode_no))}</span>
+      <div class="ep-body">
+        <a class="ep-title" href="/s/${esc(channel.slug)}/a/${esc(episode.slug)}">${esc(episode.title)}</a>
+        <p class="ep-said">${esc(episodeStateWords(episode, { unlockedIds, tiers }))}${at ? ` · ${esc(at)}` : ''}${episode.runtime_sec ? ` · ${esc(clockWords(episode.runtime_sec))}` : ''}</p>
+      </div>
+      ${here ? '<span class="ep-on-badge">You are here</span>' : ''}
+    </li>`;
+}
+
+/**
+ * The strip on an episode's own page.
+ *
+ * Compact on purpose: the episode's own page is about the episode, and the full list
+ * belongs one level down (§15.2). What a viewer needs here is where they are in the
+ * order, what comes before and after, and one way back into the list.
+ */
+function episodeStrip({ channel, series, episodes, currentId, mode, unlockedIds = new Set(), positions = {}, next = null, previous = null }) {
+  if (!series) return '';
+  const ordered = episodeOrder(episodes, mode);
+  const current = ordered.find((e) => String(e.id) === String(currentId)) || null;
+  const words = modeOf(mode);
+  const at = current ? episodePositionWords(current, positions) : null;
+  const n = current?.episode_no ? Number(current.episode_no) : null;
+  const to = (episode) => `/s/${esc(channel.slug)}/a/${esc(episode.slug)}`;
+  return `
+    <nav class="ep-strip" aria-label="Episodes">
+      <p class="ep-where">
+        ${n ? `<strong>${esc(episodeWords(n))}</strong> of ` : ''}${esc(episodeCountWords(ordered.length))} in
+        <a href="/s/${esc(channel.slug)}/series/${esc(series.slug)}">${esc(series.title)}</a>
+        <span class="ep-mode">· ${esc(words.label.toLowerCase())}</span>
+      </p>
+      ${at ? `<p class="small ep-resume">${esc(at.charAt(0).toUpperCase() + at.slice(1))} in this one.
+        <a class="ep-restart" href="?restart=1" data-resume-restart>Start from the beginning</a></p>` : ''}
+      <div class="ep-nav">
+        ${previous ? `<a class="btn btn-sm" href="${to(previous)}">← ${esc(episodeWords(previous.episode_no))}</a>` : ''}
+        ${next ? `<a class="btn btn-sm btn-primary" href="${to(next)}" data-next-episode>${esc(episodeWords(next.episode_no))} · ${esc(next.title)} →</a>` : ''}
+        <a class="btn btn-sm" href="/s/${esc(channel.slug)}/series/${esc(series.slug)}">${esc(episodeCountWords(ordered.length))}</a>
+      </div>
+    </nav>`;
+}
+
+/** Which episode to land on, as the server decides it and both the page and the card print it. */
+function landingWords(landing, positions = {}) {
+  if (!landing?.episode) return null;
+  const episode = landing.episode;
+  const at = episodePositionWords(episode, positions);
+  if (landing.why === 'continue') {
+    return {
+      href: episode,
+      label: at ? `Back to ${episodeWords(episode.episode_no)} — ${at.replace('you stopped at', 'you left off at')}` : `Back to ${episodeWords(episode.episode_no)}`,
+      sentence: at ? `You were in the middle of ${episodeWords(episode.episode_no)}.` : `You had started ${episodeWords(episode.episode_no)}.`,
+    };
+  }
+  return {
+    href: episode,
+    label: `Start with ${episodeWords(episode.episode_no)}`,
+    sentence: null,
+  };
+}
+
+/**
+ * One card on the storefront for a whole series (§15.2).
+ *
+ * The alternative is a dozen cards for one product, which is exactly the flattening
+ * §4's research is about. The card names the count, the mode, and the episode this
+ * person should play next — the same decision the page makes, from the same function.
+ */
+function seriesCard({ channel, series, episodes, mode, unlockedIds = new Set(), positions = {} }) {
+  const ordered = episodeOrder(episodes, mode);
+  const landing = landingEpisode({ episodes: ordered, positions, mode });
+  const words = landingWords(landing, positions);
+  const shape = landing?.episode?.shape || ordered[0]?.shape || 'watch';
+  const cover = landing?.episode?.cover_url || ordered[0]?.cover_url || null;
+  const first = ordered[0];
+  return `<a class="asset asset-series" href="/s/${esc(channel.slug)}/series/${esc(series.slug)}">
+  <div style="position:relative">
+    ${thumb({ title: series.title, coverUrl: cover })}
+    <span class="thumb-badge">${pill('Series', 'accent')}</span>
+  </div>
+  <div class="asset-body">
+    <h3>${esc(series.title)}</h3>
+    <p class="asset-desc">${esc(series.blurb || modeOf(mode).words)}</p>
+    <div class="asset-foot">
+      <span>${esc(shapeLabel(shape))} · ${esc(episodeCountWords(ordered.length))}</span>
+      <span>${esc(words ? words.label : 'No episodes yet')}</span>
+    </div>
+  </div>
+</a>`;
+}
+
+/**
+ * The series page: the order, the state of every episode, and one way in.
+ *
+ * The primary action is the landing episode and it says WHY it is that one — "you were
+ * in the middle of episode 4" is a different sentence from "start with episode 1", and
+ * a page that hides the difference is the page that hands somebody the episode they
+ * just finished.
+ */
+export function seriesPage({
+  channel, series, episodes, user, consent = null, unlockedIds = new Set(),
+  positions = {}, tiers = [], slots = [], plainFooter = false,
+}) {
+  const mode = series.mode;
+  const words = modeOf(mode);
+  const ordered = episodeOrder(episodes, mode);
+  const summary = seriesSummary(ordered, mode);
+  const landing = landingEpisode({ episodes: ordered, positions, mode });
+  const into = landingWords(landing, positions);
+  const placed = placeSlots(slots);
+  const here = landing?.episode?.id ? String(landing.episode.id) : null;
+
+  const list = ordered.length
+    ? `<ol class="ep-list">${ordered.map((episode) => episodeRow({
+      channel, episode, here: String(episode.id) === here, unlockedIds, tiers, positions,
+    })).join('')}</ol>`
+    : '<div class="empty">This series has no episodes yet. The store adds them from their own panel.</div>';
+
+  return layout({
+    title: series.title, user, activeChannel: user && user.id === channel.owner_id ? channel : null, consent,
+    plainFooter,
+    body: `
+<a class="back-link" href="/s/${esc(channel.slug)}">← ${esc(channel.name)}</a>
+
+<div class="section series-head">
+  <div class="row">
+    <h1>${esc(series.title)}</h1>
+    ${pill(words.label, 'accent')}
+  </div>
+  <p class="lede" style="margin-top:var(--space-3)">${esc(series.blurb || `${episodeCountWords(ordered.length)} from ${channel.name}.`)}</p>
+  <div class="store-meta">
+    <span>${esc(episodeCountWords(ordered.length))}</span>
+    <span class="dot" aria-hidden="true">·</span>
+    <span>${esc(words.words)}</span>
+  </div>
+  ${into ? `<p style="margin-top:var(--space-5)">
+    <a class="btn btn-primary btn-lg" href="/s/${esc(channel.slug)}/a/${esc(into.href.slug)}">${esc(into.label)}</a>
+  </p>${into.sentence ? `<p class="small" style="margin-top:var(--space-3)">${esc(into.sentence)} Nothing plays by itself — the next episode is a link you take, and a collection has no next at all.</p>` : ''}`
+    : ''}
+  ${ordered.length && !summary.contiguous ? `<p class="fine" style="margin-top:var(--space-3)">${esc(summary.words)}</p>` : ''}
+</div>
+
+${placed.head}
+
+<section class="section">
+  <div class="section-head">
+    <h2>The episodes</h2>
+    <p>${esc(words.words)}</p>
+  </div>
+  ${list}
+</section>
+
+${placed.mid}
+${placed.foot}`,
+  });
+}
+
+/**
+ * The seller's own panel: where a series is made, named, filled and emptied.
+ *
+ * Everything here is the store's edit: bytebikri cannot create a series, reorder one, or
+ * insert into one. The panel says what the store's own choice is worth, in the mode's
+ * own words, so nobody has to guess what "a collection" will do to their page.
+ */
+export function seriesPanel({ channel, user, consent = null, flash = null, series = [], candidates = [], plainFooter = false }) {
+  const cards = series.map((s) => {
+    const episodes = episodeOrder(s.episodes || [], s.mode);
+    const summary = seriesSummary(episodes, s.mode);
+    const rows = episodes.map((episode) => `
+      <form class="ep-row" method="post" action="/dashboard/${esc(channel.slug)}/series/${esc(s.id)}/episode">
+        <input type="hidden" name="assetId" value="${esc(episode.id)}">
+        <span class="ep-no">${esc(episodeWords(episode.episode_no))}</span>
+        <a class="ep-title" href="/s/${esc(channel.slug)}/a/${esc(episode.slug)}">${esc(episode.title)}</a>
+        <input class="input input-sm" type="number" name="episodeNo" value="${esc(String(episode.episode_no ?? ''))}"
+               min="1" max="9999" aria-label="Episode number" required>
+        <button class="btn btn-sm" type="submit">Save number</button>
+        <button class="btn btn-sm" type="submit" formaction="/dashboard/${esc(channel.slug)}/series/${esc(s.id)}/episode/remove">Take out</button>
+      </form>`).join('');
+    return `
+    <div class="card card-pad-lg series-card-panel">
+      <div class="row">
+        <h3>${esc(s.title)}</h3>
+        ${pill(modeOf(s.mode).label, 'accent')}
+        <span class="fine">/${esc(s.slug)}</span>
+      </div>
+      <form class="stack" method="post" action="/dashboard/${esc(channel.slug)}/series/${esc(s.id)}" style="margin-top:var(--space-4)">
+        <label class="field"><span>Title</span>
+          <input class="input" type="text" name="title" value="${esc(s.title)}" maxlength="140" required></label>
+        <label class="field"><span>Blurb</span>
+          <input class="input" type="text" name="blurb" value="${esc(s.blurb || '')}" maxlength="400"
+                 placeholder="One line under the title on the series page."></label>
+        <fieldset class="field">
+          <legend>How it is meant to be watched</legend>
+          ${Object.values(SERIES_MODES).map((m) => `
+            <label class="check"><input type="radio" name="mode" value="${esc(m.key)}"${m.key === s.mode ? ' checked' : ''}>
+              <span><strong>${esc(m.label)}</strong> — ${esc(m.words)}</span></label>`).join('')}
+        </fieldset>
+        <button class="btn btn-sm btn-primary" type="submit">Save</button>
+      </form>
+      <p class="fine" style="margin-top:var(--space-3)">${esc(summary.words)}
+        ${s.mode === 'serial' ? 'The player offers the next one when an episode ends.' : 'No “next” — any order is fine, which is what choosing a collection said.'}</p>
+      <div class="ep-edit">
+        ${rows || '<p class="fine">No episodes yet. Add one below.</p>'}
+      </div>
+      ${candidates.length ? `
+      <form class="ep-add" method="post" action="/dashboard/${esc(channel.slug)}/series/${esc(s.id)}/episode">
+        <label class="field"><span>Add a file</span>
+          <select class="input" name="assetId" required>
+            ${candidates.map((c) => `<option value="${esc(c.id)}">${esc(c.title)} — ${esc(shapeLabel(c.shape))}</option>`).join('')}
+          </select></label>
+        <label class="field"><span>Episode number</span>
+          <input class="input input-sm" type="number" name="episodeNo" min="1" max="9999"
+                 value="${esc(String(episodes.reduce((max, e) => Math.max(max, Number(e.episode_no) || 0), 0) + 1))}" required></label>
+        <button class="btn btn-sm btn-primary" type="submit">Add</button>
+      </form>`
+    : '<p class="fine">Every file that a series can hold is already in one. A reader and a download cannot be episodes — a reader holds its own chapters, and a download has no player to be next in.</p>'}
+      <form method="post" action="/dashboard/${esc(channel.slug)}/series/${esc(s.id)}/delete" style="margin-top:var(--space-4)">
+        <button class="btn btn-sm btn-danger" type="submit">Delete this series</button>
+        <span class="fine">The files stay published — only the grouping and the numbers go.</span>
+      </form>
+    </div>`;
+  }).join('');
+
+  return layout({
+    title: 'Series', user, activeChannel: channel, consent, plainFooter,
+    body: `
+<a class="back-link" href="/dashboard/${esc(channel.slug)}">← Dashboard</a>
+
+<div class="section">
+  <div class="section-head">
+    <h1>Series</h1>
+    <p>Your own order for your own files. An episode is still an ordinary file — its own door, its own ads, its own page.</p>
+  </div>
+  ${flashNote(flash)}
+  <form class="card card-pad-lg" method="post" action="/dashboard/${esc(channel.slug)}/series">
+    <h3>Start a series</h3>
+    <label class="field" style="margin-top:var(--space-4)"><span>Title</span>
+      <input class="input" type="text" name="title" maxlength="140" required placeholder="Kathmandu Nights"></label>
+    <label class="field"><span>Blurb</span>
+      <input class="input" type="text" name="blurb" maxlength="400" placeholder="One line under the title."></label>
+    <fieldset class="field">
+      <legend>How it is meant to be watched</legend>
+      ${Object.values(SERIES_MODES).map((m) => `
+        <label class="check"><input type="radio" name="mode" value="${esc(m.key)}"${m.key === 'collection' ? ' checked' : ''}>
+          <span><strong>${esc(m.label)}</strong> — ${esc(m.words)}</span></label>`).join('')}
+    </fieldset>
+    <button class="btn btn-primary" type="submit">Create</button>
+  </form>
+</div>
+
+${series.length ? cards : '<div class="empty">No series yet. A series is a playlist of your own videos or audio — nothing else changes about the files in it.</div>'}
+`,
+  });
+}
+
 export function storefront({
   channel, assets, slots, user, estimate, pageviews, unlockedIds = new Set(), consent = null,
+  // Where this person left off, by asset id. Only used for a series card and its
+  // "which one is yours to play next" line — a card on its own has nothing to resume.
+  positions = {},
   moderation = null, countryBlocked = null, verification = null, watching = false,
   // Memberships: what the store offers, what this viewer holds, who is named, and
   // whether the plan includes the feature at all. Empty tiers means the section
@@ -1576,7 +1891,39 @@ export function storefront({
   // how the pricing page and the page it prices stay in agreement.
   plainFooter = false,
 }) {
-  const cards = assets.map((a) => {
+  /*
+   * ONE CARD PER SERIES (§15.2).
+   *
+   * The episodes of a series would otherwise be a dozen cards for one product — the
+   * flattening §4's research is about — so a series is drawn once, in the place its
+   * first-published episode would have taken, and the episodes are one level down on
+   * the series page. `order` is built first so the storefront's own sort is not
+   * disturbed: an ordinary file keeps the place the database gave it.
+   */
+  const order = [];
+  const groups = new Map();
+  for (const a of assets) {
+    const sid = a.series?.id ? String(a.series.id) : null;
+    if (!sid) { order.push({ asset: a }); continue; }
+    if (!groups.has(sid)) {
+      const group = { series: a.series, episodes: [] };
+      groups.set(sid, group);
+      order.push({ group });
+    }
+    groups.get(sid).episodes.push(a);
+  }
+
+  const cards = order.map((entry) => {
+    if (entry.group) {
+      const g = entry.group;
+      return {
+        shape: g.episodes[0]?.shape || 'watch',
+        html: seriesCard({
+          channel, series: g.series, episodes: g.episodes, mode: g.series.mode, unlockedIds, positions,
+        }),
+      };
+    }
+    const a = entry.asset;
     // A `breaks` file is open too — the door does not charge. What it adds is the
     // ask inside it, which the card states the same way an ad-gated card states
     // the door's price: the cost is visible before the click, always.
@@ -2056,7 +2403,7 @@ ${closed.length ? `<section class="section">
  * make a copy traceable, and the note says exactly that, because a product that
  * claims to be un-copyable and is not is worse than one that never claimed it.
  */
-function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, slug, assetSlug, lockedReason = null, assetId = null, gate = null }) {
+function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, slug, assetSlug, lockedReason = null, assetId = null, gate = null, resumeAt = null }) {
   // `data-asset-id` is what lets the player tell the server how long the file is
   // when its metadata loads (slice 3: placement needs a measured runtime, and the
   // player is the only component that has one).
@@ -2068,6 +2415,14 @@ function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, 
   const gateAttr = gate && gate.cues?.length
     ? ` data-cues="${esc(JSON.stringify(gate.cues))}" data-break-url="${esc(gate.breakUrl)}"`
     : '';
+  // The saved position, as data the client seeks to. It is a NUMBER on the element and
+  // never a script: with the script blocked the file simply starts at the beginning,
+  // and the sentence beside the player still says where the person left off.
+  const resumeAttr = resumeAt ? ` data-resume-at="${esc(String(resumeAt))}"` : '';
+  // `data-watch` marks THIS player as one with a position worth keeping. The live stage
+  // deliberately does not carry it: a stream is joined at the edge, so "where somebody
+  // stopped" is a question about a file, not about a broadcast.
+  const watchAttr = ' data-watch';
   const frame = (inner, kind) => `
     <figure class="stage stage-${kind}"${kind === 'image' ? '' : ' data-protect'}${assetId ? ` data-asset-id="${esc(assetId)}"` : ''}${gateAttr}>
       ${inner}
@@ -2097,11 +2452,11 @@ function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, 
           <span class="audio-glyph" aria-hidden="true">♪</span>
           <div class="audio-body">
             <p class="audio-name">${esc(previewFile.filename)}</p>
-            <audio controls preload="metadata" controlslist="nodownload noplaybackrate" src="${src}"></audio>
+            <audio controls preload="metadata" controlslist="nodownload noplaybackrate" src="${src}"${resumeAttr}${watchAttr}></audio>
           </div>
         </div>`, 'audio')
       : frame(`
-        <video controls playsinline preload="metadata"${poster}
+        <video controls playsinline preload="metadata"${poster}${resumeAttr}${watchAttr}
                controlslist="nodownload noplaybackrate noremoteplayback"
                disablepictureinpicture disableremoteplayback
                src="${src}"></video>`, 'video');
@@ -2363,6 +2718,17 @@ export function assetPage({
   // stops, and where it asks permission to move on. Null for every other mode,
   // because the cues are a description of what the player does.
   gate = null,
+  // The series this file is an episode of (§15), if any: the series row, the other
+  // episodes, where this person left off in them, and the next one. Decided on the
+  // server through `series.js`, because the strip and the storefront's card must make
+  // the same choice about which episode is next.
+  series = null,
+  // The viewer's own saved position in THIS file, read to resume. Private: it is never
+  // shown to the store, and no accounting path reads it.
+  watchPosition = null,
+  // Which of this store's files this person has already unlocked, so an episode row can
+  // say "Unlocked" rather than describing a door they have already been through.
+  unlockedIds = new Set(),
   // The page model, for a file a reader can open (§13): how many pages it has, what
   // order they are in, and what the reader's words for them are. Null for a shape
   // nobody turns pages in.
@@ -2653,6 +3019,37 @@ export function assetPage({
   const kindLabel = { video: 'Video', audio: 'Audio', image: 'Image', file: 'File' }[previewFile?.kind] || null;
   const placed = placeSlots(slots);
 
+  /*
+   * THE EPISODE STRIP (§15).
+   *
+   * A file that is an episode of a series says so, names the series, and offers the
+   * episode before and after it — links with the episode's own NAME on them, in the
+   * store's order. The `?restart=1` link is what "start from the beginning" is made of:
+   * an ordinary address, so it works with no script, and the client upgrades it to a
+   * seek when the script is running.
+   */
+  const watchAt = watchPosition ? resumeFrom(watchPosition.position_sec, asset.runtime_sec) : null;
+  const stripPositions = { ...(series?.positions || {}) };
+  if (watchPosition) stripPositions[String(asset.id)] = watchPosition;
+  const strip = series?.series
+    ? episodeStrip({
+      channel, series: series.series, episodes: series.episodes || [], currentId: asset.id,
+      mode: series.series.mode, unlockedIds, positions: stripPositions,
+      next: series.next || null, previous: series.previous || null,
+    })
+    : '';
+  // The control the design promises for the END of an episode: the next episode's own
+  // name, as an ordinary link, hidden until the player reports that it finished. There
+  // is no countdown and nothing plays on its own — and a collection renders none of
+  // this, because a collection has no next.
+  const nextCta = series?.next
+    ? `
+    <div class="ep-next" data-next-cta hidden>
+      <p class="small">That was ${esc(episodeWords(asset.episode_no))}. Next in ${esc(series.series.title)}:</p>
+      <a class="btn btn-primary" href="/s/${esc(channel.slug)}/a/${esc(series.next.slug)}">${esc(episodeWords(series.next.episode_no))} · ${esc(series.next.title)} →</a>
+    </div>`
+    : '';
+
   return layout({
     title: asset.title, user, activeChannel: user && user.id === channel.owner_id ? channel : null, consent,
     plainFooter,
@@ -2672,6 +3069,9 @@ export function assetPage({
       // reading "Unlocks after the ad" would be the page's one outright lie: no ad
       // opens this, and no amount of watching one will.
       lockedReason: membersOnly && !memberPaysAds ? `${wantedName} members open this — no ad` : null,
+      // Only where a player exists and this person may use it: a resume for a locked file
+      // would be an instruction for a player that is not there.
+      resumeAt: unlocked ? watchAt : null,
       slug: channel.slug, assetSlug: asset.slug,
     })}
 
@@ -2686,6 +3086,8 @@ export function assetPage({
     ? `<a class="btn btn-sm" href="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}">Edit this file</a>` : ''}
     </div>
     <p class="lede">${esc(asset.description || 'No description yet.')}</p>
+    ${strip}
+    ${nextCta}
     ${ownerNotice ? `<div class="note note-warning" style="margin-top:var(--space-5)" role="status">
       <strong>Not everyone sees this file.</strong> ${esc(ownerNotice)}
     </div>` : ''}
@@ -5201,6 +5603,7 @@ ${conn ? `
       <dt>Store settings</dt><dd><a href="/dashboard/${esc(channel.slug)}/settings">Name, banner, listing →</a></dd>
       <dt>Reviews</dt><dd><a href="/dashboard/${esc(channel.slug)}/reviews">What buyers wrote →</a></dd>
       <dt>Attention</dt><dd><a href="/dashboard/${esc(channel.slug)}/attention">What was watched, and what we drew →</a></dd>
+      <dt>Series</dt><dd><a href="/dashboard/${esc(channel.slug)}/series">Your own order for your own files →</a></dd>
     </dl>
     ${upgrade ? `
       <div class="note note-info" style="margin-top:var(--space-5)">

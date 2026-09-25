@@ -688,6 +688,72 @@
     }, { once: true });
   });
 
+  /*
+   * ── WHERE SOMEBODY STOPPED, IN A PLAYER (§15.2) ──────────────────────────
+   *
+   * The reader's own block, in the shape video needs. Three moments write a position and
+   * nothing else does: the file PAUSES, a timer ticks while it plays (so an hour with no
+   * pause is not an hour of nothing), and the page is being hidden, which is the closest
+   * a browser gets to "they left here". Never on load and never on metadata — a page that
+   * rendered is not a page anybody watched.
+   *
+   * The position belongs to the person. It goes to one route, it is read to resume, no
+   * seller surface can see it, and NO accounting path reads it: a credited view comes
+   * from the network's signed postback, so a client that lies about where it is cannot
+   * move a number in the ledger. `sessionStorage` only saves requests — the server is the
+   * record, and writing the same position twice writes nothing there either.
+   *
+   * `data-watch` is on this player and deliberately NOT on the live stage: a stream is
+   * joined at the edge, and "where somebody stopped" is a question about a file.
+   */
+  document.querySelectorAll('[data-watch]').forEach((el) => {
+    const assetId = el.closest('[data-asset-id]')?.dataset.assetId;
+    if (!assetId) return;
+    const key = `bytebikri:watch:${assetId}`;
+    const say = (seconds, force = false) => {
+      const at = Math.max(0, Math.floor(Number(seconds) || 0));
+      if (!force) {
+        const last = Number(sessionStorage.getItem(key));
+        if (Number.isFinite(last) && Math.abs(last - at) < 2) return;
+      }
+      try { sessionStorage.setItem(key, String(at)); } catch { /* private mode */ }
+      api('/api/watch/progress', { method: 'POST', body: JSON.stringify({ assetId, seconds: at }) })
+        .catch(() => { /* losing a bookmark is not worth a visible error */ });
+    };
+
+    // The resume, which is a seek and not a jump cut: only once, and only if the file has
+    // not already started for some other reason. The sentence beside the player was
+    // rendered by the server, so this is the improvement, never the promise.
+    const at = Number(el.dataset.resumeAt);
+    if (Number.isFinite(at) && at > 0) {
+      el.addEventListener('loadedmetadata', () => { if (!el.currentTime) el.currentTime = at; }, { once: true });
+    }
+
+    el.addEventListener('pause', () => { if (!el.ended) say(el.currentTime); });
+    el.addEventListener('ended', () => {
+      say(el.currentTime, true);
+      // The next-episode control the design promises, revealed when the episode actually
+      // ends. There is no countdown and nothing plays on its own: this is a link, with the
+      // next episode's name on it, that a person has to take.
+      const cta = document.querySelector('[data-next-cta]');
+      if (cta) cta.hidden = false;
+    });
+    setInterval(() => { if (!el.paused && !el.ended) say(el.currentTime); }, 15_000);
+    window.addEventListener('pagehide', () => { if (!el.ended) say(el.currentTime, true); });
+
+    // "Start from the beginning". The link's own `?restart=1` is what happens when this
+    // script is not running; here it becomes a seek, so the viewer keeps their page.
+    const restart = document.querySelector('[data-resume-restart]');
+    if (restart) {
+      restart.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        el.currentTime = 0;
+        say(0, true);
+        el.play().catch(() => { /* autoplay refusal is the browser's call to make */ });
+      });
+    }
+  });
+
   // A media element that fails is almost always an expired link (four hours) or
   // a revoked unlock. Saying which beats a black rectangle.
   document.querySelectorAll('video[src], audio[src]').forEach((el) => {
