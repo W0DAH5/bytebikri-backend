@@ -6019,7 +6019,7 @@ ${flashNote(flash)}
         </div>
         <div class="panel-body">
           ${channel.banner_url
-    ? `<img class="settings-banner" src="${esc(channel.banner_url)}" alt="" decoding="async">`
+    ? `<img class="settings-banner" src="${esc(channel.banner_url)}" alt="" loading="lazy" decoding="async">`
     : `<div class="settings-banner settings-banner-empty"><span>No banner yet</span></div>`}
           <div class="field" style="margin-top:var(--space-4)">
             <label for="s-banner">Replace it</label>

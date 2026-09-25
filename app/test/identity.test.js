@@ -153,6 +153,26 @@ test('a store’s plan says when it runs to, and no page promises a renewal on a
   assert.ok(!/renews \$\{/.test(src), 'a page promises a period renewing on a date');
 });
 
+test('the shop’s banner loads now; the seller’s own preview waits until it is reached', () => {
+  // Two banners, two jobs. The storefront's is the first thing a visitor sees, so
+  // deferring it would delay the one image the page exists for. The seller's settings
+  // preview is three panels down a list of forms, so it is worth nothing to the seller
+  // until they scroll to it — and the demo store's banner is a real upload.
+  const shop = storefront({ ...CHANNEL, banner_url: '/b/one.png' });
+  const shopTag = shop.match(/<img class="store-banner"[^>]*>/)[0];
+  assert.ok(!shopTag.includes('loading="lazy"'),
+    'the storefront banner is deferred — it is the image that page is for');
+
+  const settings = views.storeSettings({
+    channel: { ...CHANNEL, banner_url: '/b/one.png' }, user: { id: 'p1', display_name: 'Alice' },
+    plan: { code: 'store', name: 'Store', capabilities: { can_theme: true, memberships: true } },
+    themes: Object.values(THEMES), canTheme: true, stats: {},
+    subscription: null, capabilities: { can_theme: true, memberships: true },
+  });
+  assert.match(settings, /<img class="settings-banner" src="\/b\/one\.png" alt="" loading="lazy" decoding="async">/,
+    'the seller’s banner preview is fetched before they scroll to it');
+});
+
 test('the seller’s stage lets the band paint the mark, so a hover repaints both', () => {
   const settings = views.storeSettings({
     channel: { ...CHANNEL, theme: 'everest' }, user: { id: 'p1', display_name: 'Alice' },

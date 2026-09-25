@@ -3187,3 +3187,30 @@ A period that ended is a state the product already has, so the seeder ends her p
 - **Flat vs scaled pricing for the person's premium**, and **whether the platform's own ad row may
   disappear for a paying viewer** — both the user's call.
 - **Bob's Free-plan panel copy**, checked against the plans the table actually holds.
+
+## §35 — Three leftovers from the premium-look list
+
+The person's own band — slice 9, the last of the premium-look slices — is written up in
+`PREMIUM_LOOK.md` §9: the recipe, both contrast tables, why the box is the store band's box, and the
+three layers that prove it. What belongs here is the sweep of the older leftovers that went with it.
+
+**"Renews" and "runs until" disagreed across pages.** The seller's settings panel read *"Store · renews
+25 Oct 2026"* while two other pages said, in the product's own words, that nothing here renews by itself
+and that there is no card on file. The panel was wrong: a period is bought on the manual rail and it ends
+when it ends. It now uses the Plus page's verb, `runs until <date>`, and the claim is pinned twice — the
+rendered panel has to say it, and no template in `views.js` may put a date straight after the word
+"renews". The counterfactual sentence on the money map ("a month if every running arrangement renews —
+nothing renews by itself here") stays: it is the product denying the thing, and that is the point of it.
+
+**Lazy loading was judged, not applied everywhere.** Seven of nine `<img>` tags carried no
+`loading="lazy"` and the honest answer was not "add it to all of them". The storefront's banner, the
+store's mark, the file page's stage and its unlocked preview are what their pages are *for* — the mark is
+the identity lockup in a header, the stage is the subject of the file page — and deferring any of them
+delays the first thing a visitor looks at. The seller's banner preview is different: it is three panels
+down a list of forms that a seller scrolls to, and the demo store's banner is a real upload. It is
+`loading="lazy"` now, and a test asserts both halves of that judgement, so a later sweep that adds the
+attribute everywhere fails on the banner the storefront cannot defer.
+
+**The roster's empty sentence**, and the seller's pricing bullet that called the store's chips "your own
+plates", were already fixed in §34 — rechecked this round against the two-layer rule and left as they
+are: the chip is the store's, the look is the person's, and a store cannot name somebody or unname them.
