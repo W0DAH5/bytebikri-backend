@@ -64,6 +64,11 @@ Three refusals, each with a reason that is already written down somewhere:
 3. **Audio does not leave this round.** `isPlayable` covers audio too, and a `listen` file would work
    through the same path — but the provider is a video host, the demo has no audio fixture to prove it
    against, and "it should work" is not a test. Stated here, so it is a decision rather than an omission.
+   **The surface, not the storage:** audio's own player is real and now verified — `app/seed-assets/bell-tone.wav`
+   (2 s, 32 KB, written by hand rather than by a codec) uploads, renders the `audio-shell` with its ♪ glyph,
+   and plays (`readyState` 4, duration 2 s) with no video element anywhere on the page. What is refused is
+   only *hosting* it, and §10.5 is why: Filemoon would serve an mp3 as a download, which would trade away
+   exactly this surface for a CDN hop that buys nothing on a 2 MB file.
 
 ## 3. Configuration
 
