@@ -676,10 +676,20 @@ test('every URL the sitemap lists is a URL the app actually serves', () => {
  */
 test('the shimmer is on the ring and the chip, never on the name', () => {
   const css = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  // The name is inked from `--plate-ink`, which is the palette's TEXT colour, checked
+  // against both surfaces. A name that was painted straight from the plate stops would
+  // be read at its worst stop — #4f46e5 on near-black is about 2.9:1 — so the painted
+  // effects (gradient, prism) mix their ink toward the background instead, and
+  // `test/wear.test.js` does that arithmetic on every palette in both themes.
   const nameRule = /\.member-name\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
-  assert.ok(nameRule.includes('color:'), 'a name is a solid colour');
-  assert.ok(!/background-clip|linear-gradient/.test(nameRule),
-    'gradient text is checked at its worst stop, not its average — so the name does not wear one');
+  assert.ok(nameRule.includes('--plate-ink'), 'a name is inked from the palette’s text colour');
+  assert.ok(!/background-clip/.test(nameRule), 'and the base name rule paints no gradient');
+  const painted = [...css.matchAll(/([^{}]+)\{([^{}]*background-clip:\s*text[^{}]*)\}/g)];
+  assert.ok(painted.length >= 2, 'the two painted effects exist');
+  for (const [, sel, body] of painted) {
+    assert.match(body, /--plate-ink/, `${sel.trim()} paints glyphs without the palette ink`);
+    assert.doesNotMatch(body, /var\(--plate-(a|b)\b/, `${sel.trim()} paints glyphs with a plate stop`);
+  }
   const avatar = /\.member-avatar\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
   assert.ok(avatar.includes('linear-gradient'), 'the ring and the avatar carry the gradient');
   assert.ok(avatar.includes('--plate-a') && avatar.includes('--plate-b'),
@@ -691,8 +701,12 @@ test('the motion a plate carries is opt-in, not taken back', () => {
   // Declared inside `no-preference`, which is the researched pattern: build the
   // static version first and add movement for people who have not asked for less.
   assert.ok(/@media \(prefers-reduced-motion: no-preference\)[\s\S]{0,600}?\.member-avatar--shine/.test(css),
-    'the plate sweep is declared inside prefers-reduced-motion: no-preference');
-  assert.ok(/@keyframes plate-sweep/.test(css));
+    'the avatar’s drift is declared inside prefers-reduced-motion: no-preference');
+  assert.ok(/@keyframes plate-drift/.test(css));
+  // And that drift RESTS until somebody points at the row. A plate this subtle is not
+  // worth an animation the compositor has to run for a page nobody is touching —
+  // Discord's nameplates and this product's names now agree on that.
+  assert.match(css, /\.member-avatar--shine \{ animation: plate-drift [^;]*paused;/);
   assert.equal(memberships.plateStyle(2), 'gradient', 'the top tier is the shiny one');
   assert.equal(memberships.plateStyle(1), 'solid', 'and the entry tier is not — one thing shines or nothing does');
 });

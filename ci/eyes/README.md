@@ -105,7 +105,28 @@ are run after the seeder rather than being self-contained:
 ```bash
 node ci/demo-state.mjs              # the demo state, and the restore
 node ci/eyes/member-walk.mjs        # three sessions, the attention door, 11 shots
+node ci/eyes/premium-walk.mjs       # two payers, two schemes, motion on intent, 8 shots
 ```
+
+`premium-walk.mjs` is the one walk whose subject is a DESIGN rather than a flow, and
+it is measured rather than looked at: contrast is computed in the page from the
+computed styles of the element and the surface behind it (so `color-mix()`, the
+media queries and every fallback have already been applied), painting is read from
+`background-clip`, and motion is read from `getAnimations()` — `playState` is the
+only thing that can tell a paused animation from one that was never declared, since
+both look still. It walks `prefers-color-scheme` in both directions and
+`prefers-reduced-motion: reduce`, which is the setting a decorative animation most
+often ignores.
+
+Two lessons it paid for on its first runs, both worth reusing:
+
+- **`Element.getAnimations()` does not return pseudo-element animations.** The ring's
+  motion lives on its `::after`, so it measured as `[]` while visibly turning. It
+  needs `{ subtree: true }`.
+- **A harness that measures "the page it happens to be on" lies at the first
+  navigation.** The first cut collected selectors into one list and walked it after
+  navigating to a second page; the roster measurement then found nothing and threw.
+  Measure each thing on the page it lives on, in the order you visit them.
 
 `member-walk.mjs` starts from zero standing and no membership — that state belongs to
 the seeder because it is also the state the preview should be found in — and it clears

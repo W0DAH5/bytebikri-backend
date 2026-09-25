@@ -194,10 +194,18 @@ export function plateStyle(tierNo) {
   return Number(tierNo) === 2 ? 'gradient' : 'solid';
 }
 
-/** What a plate is worth saying out loud, for the seller's own reassurance. */
+/**
+ * What a tier's chip is, said out loud.
+ *
+ * This used to be called a "plate" and described as "the perk", which is the
+ * confusion PREMIUM_LOOK.md exists to kill: a member arrives wearing TWO things —
+ * their own name effect, which they bought from bytebikri, and this store's chip,
+ * which the creator defines — and the two are unrelated. The chip is what belongs
+ * to the store, so this copy is about the chip and says whose it is.
+ */
 export const PLATE_COPY = {
-  solid: 'A ring and a name colour in their tier’s palette',
-  gradient: 'The same, with the shimmering two-tone ring — the top tier wears it',
+  solid: 'A chip in the tier’s palette beside their name, on this store’s pages',
+  gradient: 'The same chip with a slow sheen — the top tier is the only one that wears it',
 };
 
 /**

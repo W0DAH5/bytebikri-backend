@@ -86,7 +86,8 @@ import {
 // The person's own premium: what a name may wear, and the gate that decides whether
 // it is worn at all (`plusWear()` — active only, decided in SQL).
 import {
-  PLUS_NAME, PLUS_NOT, PLUS_SEPARATION_LINE, EFFECTS, EFFECT_KEYS, effectOf,
+  PLUS_NAME, PLUS_NOT, PLUS_SEPARATION_LINE, EFFECTS, EFFECT_KEYS, effectOf, wearClass, composeName,
+  WEAR_OWNER_LINE, CHIP_OWNER_LINE,
   plateOf, PLATE_KEYS, plusState, plusWear, plusDaysLeft, plusMoneyLine,
 } from './plus.js';
 // The blocker ladder. One module, so the sentence the visitor reads and the
@@ -378,7 +379,7 @@ export function layout({
     ? `<span class="who">
          <a class="who-link" href="/plus" title="${accountWear ? 'Your look, and where it comes from' : 'ByteBikri Plus — your name, the way you want it'}">
            ${accountWear
-    ? `<span class="avatar plus-avatar" style="${plateStyleAttr(accountWear.plate)}" aria-hidden="true">${esc(initials(user.display_name || user.email))}</span>`
+    ? `<span class="${plusAvatarClass(accountWear, 'avatar')}" style="${plateStyleAttr(accountWear.plate)}" aria-hidden="true">${esc(initials(user.display_name || user.email))}</span>`
     : avatar(user.display_name || user.email)}
            <span class="muted" style="font-size:var(--text-xs)">${nameTag(accountName, user, { base: 'who-name' })}</span>
          </a>
@@ -790,23 +791,35 @@ function plateStyleAttr(accentKey) {
  * a roster of twelve uploaded avatars is twelve more things to moderate and the
  * plate is about the name anyway.
  */
-function memberPlate({ name, accent = 'indigo', tier = null, style = 'solid', joined = null, me = false, plusRow = null }) {
+function memberPlate({
+  name, accent = 'indigo', tier = null, tierNo = 0, joined = null, me = false, plusRow = null,
+}) {
   const label = String(name || 'Member');
   const initial = label.trim().slice(0, 1).toUpperCase() || 'M';
-  // The top tier's row is marked so it can carry the glow and the edge; the entry
-  // tier's is not. One thing shines or nothing stands out — Discord's own advice
-  // for its role styles, and the reason this is derived from the tier rather than
-  // offered as a preference a store can spread across everybody.
-  const top = style === 'gradient';
+  /*
+   * BOTH LAYERS, BUILT IN ONE PLACE.
+   *
+   * This used to be an either/or, and it was wrong in a way worth remembering: a
+   * member who had bought a look from bytebikri lost the STORE's tier chip on the
+   * store's own roster, because the Plus branch replaced the store branch. Two
+   * unrelated payers were deciding one element and the wrong one won.
+   *
+   * `composeName` decides both and returns both. The name wears the person's own
+   * effect (or, without Plus, the palette ink of the tier they hold here); the chip
+   * beside it is always the creator's, drawn from the tier, and always present when
+   * the person holds one.
+   */
+  const layers = composeName({ plus: plusRow, tier: tierNo ? { tier_no: tierNo, name: tier, accent } : null });
+  const top = layers.chip?.style === 'gradient';
+  const namePalette = layers.name?.palette ?? accent;
+  const nameClass = ['member-name', layers.name?.className ?? 'wear-solid'].filter(Boolean).join(' ');
   return `<li class="member${me ? ' member--me' : ''}${top ? ' member--top' : ''}">
   <span class="member-avatar${top ? ' member-avatar--shine' : ''}"
         style="${plateStyleAttr(accent)}" aria-hidden="true">${esc(initial)}</span>
   <span class="member-body">
-    ${plusWear(plusRow)
-    ? `<span class="${plusNameClasses(plusWear(plusRow))}" style="${plateStyleAttr(plusWear(plusRow).plate)}">${esc(label)}</span>`
-    : `<span class="member-name${top ? ' member-name--aurora' : ''}" style="${plateStyleAttr(accent)}">${esc(label)}</span>`}
-    ${tier ? `<span class="member-tier${style === 'gradient' ? ' member-tier--shine' : ''}"
-        style="${plateStyleAttr(accent)}">${esc(tier)}</span>` : ''}
+    <span class="${nameClass}" style="${plateStyleAttr(namePalette)}">${esc(label)}</span>
+    ${layers.chip ? `<span class="store-chip${top ? ' store-chip--top' : ''}"
+        style="${plateStyleAttr(layers.chip.palette)}">${esc(layers.chip.label)}</span>` : ''}
   </span>
   ${joined ? `<span class="member-since fine">${esc(joined)}</span>` : ''}
 </li>`;
@@ -826,24 +839,45 @@ function memberPlate({ name, accent = 'indigo', tier = null, style = 'solid', jo
  */
 function plusNameClasses(wear, base = 'member-name') {
   if (!wear) return base;
-  const cls = [base];
-  if (wear.effect === 'halo') cls.push('member-name--aurora');
-  if (wear.effect === 'edge') cls.push('plus-name--edge');
-  return cls.join(' ');
+  // The effect-to-class mapping lives in `plus.js` beside the effects themselves,
+  // so an effect can never ship as a key with no styling: an unknown one has no
+  // class and therefore renders exactly as the plain look.
+  return [base, wearClass(wear.effect)].filter(Boolean).join(' ');
 }
 
 export function nameTag(name, row = null, { base = 'member-name' } = {}) {
   const label = String(name ?? '');
   if (!label) return '';
   const wear = plusWear(row);
-  if (!wear) return `<span class="${base}">${esc(label)}</span>`;
+  if (!wear) return `<span class="${base} wear-solid">${esc(label)}</span>`;
   return `<span class="${plusNameClasses(wear, base)}" style="${plateStyleAttr(wear.plate)}">${esc(label)}</span>`;
+}
+
+/**
+ * A paid store's plan, on its own header.
+ *
+ * Nothing on the free plan renders, because a free store is the normal case and a
+ * mark that everybody has is a mark that means nothing. What is left is honest:
+ * "Store" or "Pro", paid to bytebikri, in the store's own palette (or amber for
+ * Pro), and it says nothing about the members' chips and nothing about Plus —
+ * three unrelated things that share a page and never share a sentence.
+ */
+function planMark(plan) {
+  const code = plan?.capabilities?.memberships || plan?.capabilities?.can_theme ? plan?.code : null;
+  if (!code || code === 'free') return '';
+  const label = plan?.name ? String(plan.name) : (code === 'pro' ? 'Pro' : 'Store');
+  return `<span class="plan-mark${code === 'pro' ? ' plan-mark--pro' : ''}"
+    title="This store is on the ${esc(label)} plan, paid to bytebikri — it says nothing about any member’s own look.">
+    ${esc(label)} plan</span>`;
 }
 
 /** The ring on an avatar, in the same palette, for the row that has room for one. */
 function plusAvatarClass(row = null, base = '') {
   const wear = plusWear(row);
-  return wear ? `${base} plus-avatar`.trim() : base;
+  // `.plus-avatar` keeps the flat ring the earlier rounds shipped; `.wear-ring` adds
+  // the rotating conic one that arrives with the ring as a paid decoration. Both are
+  // declared, and both are inert until hovered.
+  return wear ? `${base} plus-avatar wear-ring`.trim() : base;
 }
 
 /** Everyone who chose to be named. No count — the plates are the proof. */
@@ -851,8 +885,8 @@ function memberRoster(roster = []) {
   if (!roster.length) return '';
   return `<ul class="member-roster">
     ${roster.map((m) => memberPlate({
-    name: m.display_name, accent: m.accent, tier: m.tier_name,
-    style: plateStyle(m.tier_no), joined: `since ${longDay(m.joined_at)}`,
+    name: m.display_name, accent: m.accent, tier: m.tier_name, tierNo: m.tier_no,
+    joined: `since ${longDay(m.joined_at)}`,
     // Their own look, if they have one and it is current. Two payments to two
     // different parties can be on one plate; neither can impersonate the other,
     // because a store's tier is the badge and a person's palette is the name.
@@ -940,7 +974,8 @@ function myMembershipCard({ channel, membership, tiers, rosterSize = 0, standing
     : ''}
       <a href="/s/${esc(channel.slug)}/members">The member room →</a></p>` : ''}
     <p class="fine">${listed
-    ? 'You are named on this store’s member list. That is the perk, and it is the only place a plate is visible. Hiding it changes nothing else.'
+    ? 'You are named on this store’s member list, and the chip beside your name here is the creator’s — their colour '
+      + 'for the tier you hold. It appears on this store’s pages and nowhere else. Hiding your name changes nothing else.'
     : 'You are hidden from the member list. Your files stay open either way.'}
       ${rosterSize ? ` ${plural(rosterSize, 'person', 'people')} are named here.` : ''}</p>
     <p class="fine">${esc(adModeOf(membership) === 'supporter' ? SUPPORTER_LINE : MEMBER_AD_LINE)}</p>
@@ -1014,7 +1049,7 @@ function joinPanel({ channel, user, tiers, membership, assets = [], standing = 0
         <span class="member-avatar${plate === 'gradient' ? ' member-avatar--shine' : ''}"
               aria-hidden="true">${esc(t.name.slice(0, 1).toUpperCase())}</span>
         <span class="member-name">Your name</span>
-        <span class="member-tier${plate === 'gradient' ? ' member-tier--shine' : ''}">${esc(t.name)}</span>
+        <span class="store-chip${plate === 'gradient' ? ' store-chip--top' : ''}">${esc(t.name)}</span>
       </div>
     </li>`;
   }).join('');
@@ -1296,8 +1331,11 @@ function membersSection({
   return `<section class="section" id="members">
   <div class="section-head">
     <h2>Members</h2>
-    <p>${named.length === 1 ? 'One person is named here' : `${named.length} people are named here`} — they chose
-      it, and the plate next to a name is the perk. Dues go straight to the creator; bytebikri takes nothing.</p>
+    <p>${named.length === 1 ? 'One person is named here' : `${named.length} people are named here`} — they chose it.
+      Two different things are on each row, and they come from two different places: the <strong>chip</strong> is this
+      store’s own colour for the tier that person holds, and a member’s <strong>name</strong> may wear a look they
+      bought from bytebikri, which shows the same way on every page in the product. Dues go straight to the creator;
+      bytebikri takes nothing.</p>
   </div>
   ${flash ? `<div class="note note-${flash.kind === 'danger' ? 'warning' : 'success'}" role="status">${esc(flash.message)}</div>` : ''}
   ${memberRoster(named)}
@@ -1314,6 +1352,10 @@ export function storefront({
   // is not rendered — a store that does not use this looks exactly as it did.
   tiers = [], membership = null, roster = [], membershipsOn = false, memberFlash = null,
   standing = 0,
+  // Layer S at the level of the SHOP rather than of a member: what plan this store
+  // is on. A paid store's own header says so, in the same restrained vocabulary as
+  // the member chips — a shop that shouts over its own goods is a worse shop.
+  plan = null,
   // The store's chosen look. `themeStyle` is three custom properties rather than a
   // class per theme, so a new palette is one entry in `themes.js` and no stylesheet
   // change — and the band it paints sits behind text this module already colours,
@@ -1434,6 +1476,7 @@ ${countryBlocked ? `<div class="section" style="margin-bottom:0">
       ? pill('In Explore', 'accent')
       : pill('Shared by link')}
     ${verifiedBadge(verification)}
+    ${planMark(plan)}
   </div>
   <p class="lede" style="margin-top:var(--space-3)">${esc(channel.tagline || 'A store on ByteBikri.')}</p>
   <div class="store-meta">
@@ -6227,7 +6270,7 @@ ${flashNote(flash)}
     // a queue — and five columns never fitted in 350 pixels.
     return `<tr>
       <td data-label="Member">${memberPlate({
-        name: m.display_name, accent: m.accent, tier: m.tier_name, style: plateStyle(m.tier_no),
+        name: m.display_name, accent: m.accent, tier: m.tier_name, tierNo: m.tier_no,
         // The member's own look rides on the plate here too. The seller's queue is
         // where names are read most carefully, so a name has to look the same on it
         // as it does on the storefront.
@@ -6380,11 +6423,22 @@ export function plusPage({
     nameplate: chosenPlate,
     plus_effect: chosenEffect,
   };
-  const preview = `<div class="plus-preview">
-    <span class="plus-preview-avatar" style="${plateStyleAttr(chosenPlate)}" aria-hidden="true">${esc((name || 'Y').slice(0, 1).toUpperCase())}</span>
+  /*
+   * `is-live` is the one place in the product where an effect animates without being
+   * hovered, and it is deliberate: seeing the motion is what is being sold, so the
+   * preview runs while the page is open. Everywhere else motion waits for a hover,
+   * which is both the researched pattern (Discord animates nameplates on focus) and
+   * what keeps thirty names in a roster from holding the compositor awake.
+   *
+   * `prefers-reduced-motion` still wins over `is-live` — the stylesheet's reduce
+   * block is declared after the running state — so somebody who asked for less
+   * motion sees the full look, still, including in the shop window for it.
+   */
+  const preview = `<div class="plus-preview is-live">
+    <span class="plus-preview-avatar wear-ring" style="${plateStyleAttr(chosenPlate)}" aria-hidden="true">${esc((name || 'Y').slice(0, 1).toUpperCase())}</span>
     <div>
       ${nameTag(name, previewRow)}
-      <div class="fine" style="margin-top:var(--space-2)">${esc(EFFECTS[chosenEffect].label)} in ${esc(plateOf(chosenPlate).label)}${active ? '' : ' — this is a preview, not something you are wearing yet'}</div>
+      <div class="fine" style="margin-top:var(--space-2)">${esc(EFFECTS[chosenEffect].label)} in ${esc(plateOf(chosenPlate).label)}${active ? '' : ' — this is a preview, not something you are wearing yet'}${EFFECTS[chosenEffect].moves ? ' · moving in front of you, and still for anyone whose device asks for less motion' : ' · completely still'}</div>
     </div>
   </div>`;
 
@@ -6419,13 +6473,18 @@ export function plusPage({
                 <strong>${esc(e.label)}</strong>
                 <span class="fine">${esc(e.hint)}</span>
               </span>
-              <span class="plus-effect-demo">${nameTag('Aa', { plus_active: true, nameplate: chosenPlate, plus_effect: key })}</span>
+              <span class="plus-effect-demo">${nameTag('Aa', { plus_active: true, nameplate: chosenPlate, plus_effect: key })}
+                <span class="sr-only">${e.moves ? 'this effect moves' : 'this effect never moves'}</span></span>
             </label>`;
   }).join('')}
         </div>
       </div>
       <button class="btn btn-primary" type="submit">Save the look</button>
       <p class="fine">Your look is saved whether or not an arrangement is running — the palette is yours, and only the wearing of it depends on the month.</p>
+      <div class="note note-info" role="note">
+        <p class="small" style="margin:0"><strong>Which is which.</strong> ${esc(WEAR_OWNER_LINE)}</p>
+        <p class="small" style="margin:var(--space-2) 0 0">${esc(CHIP_OWNER_LINE)}</p>
+      </div>
     </form>`;
 
   const railList = rails.filter((r) => r.id !== 'other');

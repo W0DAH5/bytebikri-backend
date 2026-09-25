@@ -57,25 +57,59 @@ export const PLUS_CODE = 'plus';
 export const PLUS_NAME = 'ByteBikri Plus';
 
 /**
- * The effects on a name. `solid` is the absence of an effect and is the default,
- * because the safest version of a cosmetic feature is the one that looks like the
- * product did before you paid for it.
+ * The effects on a name — six of them, one of them the absence of an effect.
+ *
+ * `solid` is the default, because the safest version of a cosmetic feature is the
+ * one that looks like the product did before you paid for it. The other five are
+ * the researched vocabulary: Discord ships seven display-name styles (solid,
+ * gradient, neon, toon, pop, gummy, prism) and its nameplates animate **on hover**,
+ * which is the pattern every effect here follows — a look at rest, motion on
+ * intent.
+ *
+ * `moves` is not decoration. It is read by the picker's own sentence and by the
+ * test that keeps the hints honest: a person with a vestibular reason to avoid
+ * animation has to be able to tell WHICH choices move before choosing, and the
+ * answer has to stay true when somebody adds a seventh effect.
+ *
+ * Every hint is written for that person: what it looks like, whether it moves, and
+ * that a system asking for less motion still gets the look.
  */
 export const EFFECTS = {
   solid: {
     key: 'solid',
     label: 'Plain',
-    hint: 'Your name in your palette, no glow. The version that looks right everywhere.',
+    moves: false,
+    hint: 'Your name in your palette, nothing else. The version that looks right everywhere, and the one to pick if you would rather nothing of yours moved.',
   },
   edge: {
     key: 'edge',
     label: 'Edge',
-    hint: 'A thin gradient rule under your name. Static — it never moves.',
+    moves: false,
+    hint: 'A thin gradient rule under your name, in your palette. Completely still — it never moves, on any device.',
   },
   halo: {
     key: 'halo',
     label: 'Halo',
-    hint: 'A slow glow behind your name. The only effect that moves, and only if your system allows motion.',
+    moves: true,
+    hint: 'A slow glow behind your name that breathes in your palette. It drifts only while you are hovering over it, and a system that asks for less motion gets the glow, still.',
+  },
+  gradient: {
+    key: 'gradient',
+    label: 'Gradient',
+    moves: true,
+    hint: 'Your name itself painted in your palette’s two colours, drifting slowly across the letters while you hover. Every browser falls back to the painted name if it cannot animate it.',
+  },
+  neon: {
+    key: 'neon',
+    label: 'Neon',
+    moves: true,
+    hint: 'Lit ink: your name in your palette with a bloom around it, breathing gently while you hover. The most visible effect in a dark page, and the quietest in a bright one.',
+  },
+  prism: {
+    key: 'prism',
+    label: 'Prism',
+    moves: true,
+    hint: 'A band of your palette’s colours travelling around the letters — the grandest of the six, and the one to avoid if movement is uncomfortable. Static, it is a two-tone name.',
   },
 };
 
@@ -153,6 +187,91 @@ export function plusWear(row = null) {
     effects: EFFECTS,
   };
 }
+
+/**
+ * The OWNERSHIP LINE, one per layer, because this is the mistake the whole document
+ * exists to prevent: a page reading "the plate next to a name is the perk" while the
+ * plate could have come from either of two unrelated payers.
+ */
+export const WEAR_OWNER_LINE =
+  'Your look is yours: a palette, an effect and the ring on your avatar, from bytebikri, worn on every page — '
+  + 'in a creator’s store and everywhere else. It is not a store’s gift and no creator can change it.';
+
+export const CHIP_OWNER_LINE =
+  'The chip beside a member’s name is the STORE’s own colour for the tier that member holds. The creator chose '
+  + 'it, it appears only on that store’s pages, and it is the one thing here that bytebikri does not sell to anybody.';
+
+/**
+ * Both layers on one name, decided in one place.
+ *
+ * THE BUG THIS REPLACES, because it is worth remembering: the roster used to render
+ * a Plus member's name INSTEAD of the store's tier mark, so a store's own member
+ * list lost the creator's chip the moment that member happened to have bought
+ * something from bytebikri. Two unrelated payers were deciding one element and the
+ * wrong one won.
+ *
+ * The rule now: the name is the person's (layer P), the chip is the store's
+ * (layer S), and both render, always. A creator cannot grant wear and a wearer
+ * cannot stand in for a tier.
+ *
+ * @param {{plus?: object|null, tier?: object|null}} input
+ *   `plus` is the row `plusWear()` reads (or null); `tier` is the membership tier
+ *   the person holds in THIS store, or null when they hold none.
+ */
+export function composeName({ plus = null, tier = null } = {}) {
+  const wear = plusWear(plus);
+  const name = wear
+    ? { effect: wear.effect, palette: wear.plate, className: wearClass(wear.effect) }
+    : null;
+  const tierNo = Number(tier?.tier_no) || 0;
+  const chip = tierNo
+    ? {
+      label: String(tier.name ?? '').trim() || (tierNo === 2 ? 'Elite' : 'Member'),
+      palette: ACCENTS[tier.accent] ? tier.accent : 'indigo',
+      // The tier's own rank decides how the chip is drawn — the top tier glints and
+      // the entry tier does not, which is the platform's advice borrowed from how
+      // Discord deploys gradient role styles: one or two, or nothing stands out.
+      style: tierNo === 2 ? 'gradient' : 'solid',
+    }
+    : null;
+  return { name, chip };
+}
+
+/**
+ * The class an effect wears, in one map.
+ *
+ * It was a chain of `if`s on the effect key in the view layer, which meant a new
+ * effect shipped as a name that rendered with no styling at all and no test could
+ * see it. Here, an unknown key has no class and therefore renders as plain — the
+ * same graceful answer `effectOf()` gives.
+ */
+export const WEAR_CLASS = {
+  solid: null,
+  edge: 'wear-edge',
+  halo: 'wear-halo',
+  gradient: 'wear-gradient',
+  neon: 'wear-neon',
+  prism: 'wear-prism',
+};
+
+export function wearClass(effectKey) {
+  return WEAR_CLASS[effectOf(effectKey).key] ?? null;
+}
+
+/**
+ * How much of a palette's ink survives the mix toward white (dark theme) or black
+ * (light theme) when a name is PAINTED rather than inked.
+ *
+ * Both directions raise contrast against their own background, so one share per
+ * theme is enough — and both numbers are also written into the stylesheet, which
+ * cannot import this file. `test/wear.test.js` reads the stylesheet and refuses to
+ * let the two drift, because a percentage edited in CSS is precisely the change no
+ * other test would notice.
+ */
+export const EFFECT_MIX_SHARE = { dark: 0.62, light: 0.55 };
+
+/** Every class this module can emit, for the test that checks each has a rule. */
+export const WEAR_CLASSES = Object.values(WEAR_CLASS).filter(Boolean);
 
 /** Days left on an arrangement, or null. Used by the member's own card. */
 export function plusDaysLeft({ period_end = null } = {}) {

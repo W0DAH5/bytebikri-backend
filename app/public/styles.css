@@ -2315,31 +2315,17 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 @media (prefers-color-scheme: light) {
   .member-name { color: var(--plate-ink-light, var(--text-primary)); }
 }
-.member-tier {
-  font-size: var(--text-2xs); font-weight: 700;
-  letter-spacing: 0.06em; text-transform: uppercase;
-  padding: 2px 8px; border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--plate-ink, var(--indigo-400)) 45%, transparent);
-  color: var(--plate-ink, var(--indigo-400));
-}
-@media (prefers-color-scheme: light) {
-  .member-tier { border-color: color-mix(in srgb, var(--plate-ink-light, var(--indigo-700)) 40%, transparent);
-    color: var(--plate-ink-light, var(--indigo-700)); }
-}
-/* The badge that carries the gradient: dark stops, white ink, both stops checked
-   against white at 4.5:1 or better. */
-.member-tier--shine {
-  color: #fff; border-color: transparent;
-  background-image: linear-gradient(120deg, var(--plate-a, var(--indigo-600)), var(--plate-b, var(--indigo-700)));
-  background-size: 200% 100%;
-}
+/* The chip itself is `.store-chip` in the wear block. What is left here is the
+   member ROW's layout, which is about the roster rather than about anybody's
+   decoration. */
+/* The top-tier avatar keeps the drifting gradient FILL — a solid tile, not text, so
+   the plate stops are the right colours for it and the palette test's 4.5:1 against
+   white is the number that governs the initial drawn on top. It drifts only while
+   the row is hovered, like everything else in this product that moves. */
 @media (prefers-reduced-motion: no-preference) {
-  .member-avatar--shine { animation: plate-drift 9s var(--ease-standard, ease-in-out) infinite alternate; }
-  .member-tier--shine { animation: plate-sweep 7s linear infinite; }
-}
-@keyframes plate-sweep {
-  from { background-position: 0% 50%; }
-  to { background-position: -200% 50%; }
+  .member-avatar--shine { animation: plate-drift 9s var(--ease-standard, ease-in-out) infinite alternate paused; }
+  .member:hover .member-avatar--shine, .member:focus-within .member-avatar--shine,
+  .is-live .member-avatar--shine { animation-play-state: running; }
 }
 @keyframes plate-drift {
   from { background-position: 0% 50%; }
@@ -2647,34 +2633,333 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   .theme-band { block-size: 44px; }
 }
 
-/* The name effect, and why it is a halo rather than a gradient.
-   Discord's display-name styles put the gradient on the glyphs; the research on
-   gradient TEXT is that it is checked at its worst stop, not its average, which is
-   why this product keeps a member's name a solid colour. What the top tier gets
-   instead is a soft halo in the palette's DEEP stop, animated slowly — the glyph
-   pixels never change, so the contrast the palette test proved is the contrast a
-   reader gets, in both themes, before and after the animation.
-
-   The halo goes dark-side on purpose: on the night theme a dark halo around a
-   light name raises the edge contrast, and on the day theme it is a soft shadow
-   under dark ink. A light halo would do the opposite in both, which is the trap
-   in copying the effect without copying the arithmetic. */
-.member-name--aurora {
-  text-shadow: 0 0 10px color-mix(in srgb, var(--plate-b, var(--indigo-700)) 70%, transparent);
-}
-@media (prefers-reduced-motion: no-preference) {
-  .member-name--aurora {
-    animation: plate-halo 6.5s var(--ease-standard, ease-in-out) infinite alternate;
-  }
-}
-@keyframes plate-halo {
-  from { text-shadow: 0 0 8px color-mix(in srgb, var(--plate-b, var(--indigo-700)) 55%, transparent); }
-  to { text-shadow: 0 0 18px color-mix(in srgb, var(--plate-b, var(--indigo-700)) 85%, transparent); }
-}
+/* The top tier's glint lives in TWO places and neither of them is the name:
+   `.store-chip--top` (the creator's chip, which sweeps only while hovered) and
+   `.member--top` (the row's own edge). It used to live on the name itself, which
+   meant the store was decorating layer P — the exact confusion PREMIUM_LOOK.md
+   exists to prevent, and the reason `.member-name--aurora` is gone. A member's name
+   is theirs; the store's mark is the chip. */
 /* And the row itself: a 1px gradient edge for the top tier only. */
 .member--top {
   border-color: color-mix(in srgb, var(--plate-a, var(--indigo-600)) 45%, var(--border-subtle));
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--plate-a, var(--indigo-600)) 22%, transparent);
+}
+
+/* ============================================================================
+   The wear: a person's name, in an effect they bought from US
+   ============================================================================
+   Two layers meet on a storefront's roster, and keeping them apart is the whole
+   point of this block (see PREMIUM_LOOK.md). The NAME is the member's own — a
+   palette and one of six effects, from ByteBikri Plus, worn on every page in the
+   product. The CHIP beside it is the STORE's — the tier's colour and name, defined
+   by the creator, visible only inside that store. The name element carries layer P;
+   `.store-chip` carries layer S; neither renders in place of the other.
+
+   FOUR RULES THIS BLOCK OBEYS, all of them from the researched record:
+
+   1. THE LOOK IS AT REST; THE MOTION IS ON INTENT. Discord animates nameplates on
+      hover/focus and plays profile effects only when a profile opens — the same
+      model here. Every animation below is `paused` unless the element is hovered,
+      focused, or carries `.is-live` (which the Plus page's own preview sets,
+      because seeing the motion is the thing being sold). That is also what keeps
+      an infinite gradient from holding the compositor awake in a list of thirty
+      names: nothing animates until somebody points at it.
+
+   2. GRADIENT TEXT USES INK, NEVER A PLATE STOP. `--plate-a`/`--plate-b` are
+      backgrounds built to sit UNDER white text; #4f46e5 as text on a near-black
+      page is about 2.9:1. A painted name therefore interpolates between the
+      palette's two INKS and a mix toward white (dark theme) or black (light
+      theme), and every one of those three points is composited in
+      `test/wear.test.js`. The mix share lives in `--wear-ink-share`, and a test
+      reads this file to check that the number here is the number the test proved.
+
+   3. THE PREFIXES ARE NOT OPTIONAL. `background-clip: text` needs both forms —
+      Safari on iOS still requires `-webkit-` in 2026 or the name paints as a
+      transparent rectangle. The ring's `mask-composite: exclude` needs both its
+      forms for the same reason.
+
+   4. REDUCED MOTION KEEPS THE LOOK. Under `prefers-reduced-motion: reduce` every
+      animation stops and every gradient stays painted: a person who asks for less
+      motion still gets what they paid for, and a person who asked for it is not
+      shown a moving thing because a value was sold.
+
+   The gradients are `@property`-registered angles because an unregistered custom
+   property is a STRING and strings do not interpolate: the classic stuttering
+   conic gradient. Each stop list repeats its first colour last, or the wrap at
+   0°/360° shows a seam. */
+
+@property --wear-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+/* How much of a palette's ink survives the mix toward white (dark theme) or black
+   (light theme). Both directions RAISE contrast against their own background, which
+   is why one number per theme is enough. Read by test/wear.test.js. */
+:root { --wear-ink-share: 62%; }
+@media (prefers-color-scheme: light) { :root { --wear-ink-share: 55%; } }
+
+/* Every effect is scoped to the name element, so a name inside a store's roster,
+   a review, the account chip or the Plus preview all behave identically. */
+[class*="wear-"] {
+  /* The transition is colour-and-opacity only — never geometry. A name that
+     changes size or position when hovered is a name that moves the line it is on. */
+  transition: filter 240ms ease, text-shadow 240ms ease;
+}
+
+/* ── Plain: the palette ink and nothing else. The default, and the one that looks
+   right in every context including a printed screenshot. ─────────────────── */
+.wear-solid { color: var(--plate-ink, var(--text-primary)); }
+@media (prefers-color-scheme: light) { .wear-solid { color: var(--plate-ink-light, var(--text-primary)); } }
+
+/* ── Edge: a gradient rule under the name. Completely still on every device. ── */
+.wear-edge {
+  color: var(--plate-ink, var(--text-primary));
+  padding-block-end: 2px;
+  background-image: linear-gradient(90deg, var(--plate-ink, var(--indigo-400)),
+    color-mix(in srgb, var(--plate-ink, var(--indigo-400)) var(--wear-ink-share), white));
+  background-repeat: no-repeat;
+  background-size: 100% 2px;
+  background-position: 0 100%;
+}
+@media (prefers-color-scheme: light) {
+  .wear-edge {
+    color: var(--plate-ink-light, var(--text-primary));
+    background-image: linear-gradient(90deg, var(--plate-ink-light, var(--indigo-700)),
+      color-mix(in srgb, var(--plate-ink-light, var(--indigo-700)) var(--wear-ink-share), black));
+  }
+}
+
+/* ── Halo: a soft glow behind the name, in the palette's deep stop. The glyph
+   pixels never change, so the contrast the palette test proves is the contrast a
+   reader gets — before, during and after the animation. ───────────────────── */
+.wear-halo {
+  color: var(--plate-ink, var(--text-primary));
+  text-shadow: 0 0 10px color-mix(in srgb, var(--plate-b, var(--indigo-700)) 70%, transparent);
+}
+@media (prefers-color-scheme: light) {
+  .wear-halo { color: var(--plate-ink-light, var(--text-primary));
+    text-shadow: 0 0 10px color-mix(in srgb, var(--plate-b, var(--indigo-700)) 45%, transparent); }
+}
+
+/* ── Gradient: the name painted in the palette, drifting. `background-position`
+   is the mechanism rather than the angle, because a 200%-wide background pans in
+   every browser that can paint the text at all — the widest floor of the two
+   routes, and the one that degrades to a still painted name. ───────────────── */
+.wear-gradient {
+  background-image: linear-gradient(96deg,
+    var(--plate-ink, var(--indigo-400)) 0%,
+    color-mix(in srgb, var(--plate-ink, var(--indigo-400)) var(--wear-ink-share), white) 52%,
+    var(--plate-ink, var(--indigo-400)) 100%);
+  background-size: 220% 100%;
+  background-position: 0% 50%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+@media (prefers-color-scheme: light) {
+  .wear-gradient {
+    background-image: linear-gradient(96deg,
+      var(--plate-ink-light, var(--indigo-700)) 0%,
+      color-mix(in srgb, var(--plate-ink-light, var(--indigo-700)) var(--wear-ink-share), black) 52%,
+      var(--plate-ink-light, var(--indigo-700)) 100%);
+  }
+}
+
+/* ── Neon: lit ink. The glyphs stay solid so the reading contrast is the palette's
+   proven one; the bloom around them is decoration and is what makes the effect
+   read as "lit" rather than "coloured". ───────────────────────────────────── */
+.wear-neon {
+  color: var(--plate-ink, var(--indigo-400));
+  text-shadow:
+    0 0 1px color-mix(in srgb, var(--plate-ink, var(--indigo-400)) 90%, transparent),
+    0 0 8px color-mix(in srgb, var(--plate-a, var(--indigo-600)) 65%, transparent),
+    0 0 22px color-mix(in srgb, var(--plate-a, var(--indigo-600)) 40%, transparent);
+}
+@media (prefers-color-scheme: light) {
+  /* On the day theme a bloom around dark ink is a smudge, so the light version
+     keeps one tight shadow and drops the spread. The look is "printed on good
+     paper" rather than "sign in a window", which is the honest translation. */
+  .wear-neon { color: var(--plate-ink-light, var(--indigo-700));
+    text-shadow: 0 0 6px color-mix(in srgb, var(--plate-a, var(--indigo-600)) 30%, transparent); }
+}
+
+/* ── Prism: a conic band travelling around the letters. This is the one effect
+   that needs `@property`: the angle is interpolated, so the sweep is smooth
+   instead of jumping between keyframes. The stop list repeats its first colour,
+   and the painted colours are the two inks for the reason in rule 2. ───────── */
+.wear-prism {
+  background-image: conic-gradient(from var(--wear-angle),
+    var(--plate-ink, var(--indigo-400)) 0turn,
+    color-mix(in srgb, var(--plate-ink, var(--indigo-400)) var(--wear-ink-share), white) 0.25turn,
+    var(--plate-ink, var(--indigo-400)) 0.5turn,
+    color-mix(in srgb, var(--plate-ink, var(--indigo-400)) var(--wear-ink-share), white) 0.75turn,
+    var(--plate-ink, var(--indigo-400)) 1turn);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+@media (prefers-color-scheme: light) {
+  .wear-prism {
+    background-image: conic-gradient(from var(--wear-angle),
+      var(--plate-ink-light, var(--indigo-700)) 0turn,
+      color-mix(in srgb, var(--plate-ink-light, var(--indigo-700)) var(--wear-ink-share), black) 0.25turn,
+      var(--plate-ink-light, var(--indigo-700)) 0.5turn,
+      color-mix(in srgb, var(--plate-ink-light, var(--indigo-700)) var(--wear-ink-share), black) 0.75turn,
+      var(--plate-ink-light, var(--indigo-700)) 1turn);
+  }
+}
+
+/* ── The motion, gated once for all four moving effects ──────────────────────
+   `paused` is the resting state. Hover, keyboard focus, or the Plus page's own
+   live preview start it; nothing else does. A list of thirty names therefore
+   animates at most one thing at a time, which is also what keeps a decorative
+   effect from becoming a battery cost on somebody's phone. */
+@media (prefers-reduced-motion: no-preference) {
+  .wear-halo { animation: wear-breathe 6.5s ease-in-out infinite alternate paused; }
+  .wear-gradient { animation: wear-pan 7s linear infinite paused; }
+  .wear-neon { animation: wear-pulse 5.5s ease-in-out infinite alternate paused; }
+  .wear-prism { animation: wear-spin 9s linear infinite paused; }
+  /* Two spellings of `.is-live` on purpose. `.is-live .wear-*` is the one the Plus
+     page uses: the class goes on the container around the name, because a page that
+     hands it to the element itself would have to know which of six classes is the
+     moving one. `.wear-*.is-live` is kept for a bare name with nothing around it.
+     (The walk found this the honest way: the class was on the container, the rule
+     matched only the element, and the one place in the product where motion is the
+     product was completely still.) */
+  .wear-halo:hover, .wear-halo:focus-visible, .wear-halo.is-live,
+  .wear-gradient:hover, .wear-gradient:focus-visible, .wear-gradient.is-live,
+  .wear-neon:hover, .wear-neon:focus-visible, .wear-neon.is-live,
+  .wear-prism:hover, .wear-prism:focus-visible, .wear-prism.is-live,
+  .is-live .wear-halo, .is-live .wear-gradient, .is-live .wear-neon, .is-live .wear-prism {
+    animation-play-state: running;
+  }
+}
+@keyframes wear-breathe {
+  from { text-shadow: 0 0 8px color-mix(in srgb, var(--plate-b, var(--indigo-700)) 55%, transparent); }
+  to { text-shadow: 0 0 18px color-mix(in srgb, var(--plate-b, var(--indigo-700)) 85%, transparent); }
+}
+@keyframes wear-pan {
+  from { background-position: 0% 50%; }
+  to { background-position: 200% 50%; }
+}
+@keyframes wear-pulse {
+  from { filter: brightness(1); }
+  to { filter: brightness(1.25); }
+}
+@keyframes wear-spin { to { --wear-angle: 360deg; } }
+
+/* Reduced motion: the look stays, the movement goes. One block, three tiers —
+   colour and geometry are KEPT because they are not motion (WCAG says so
+   explicitly), the travelling parts are removed. */
+@media (prefers-reduced-motion: reduce) {
+  /* Declared AFTER the running rules above and with the same specificity, so a
+     reduce user wins the cascade whatever the element or its container is wearing. */
+  .wear-halo, .wear-gradient, .wear-neon, .wear-prism,
+  .wear-halo:hover, .wear-gradient:hover, .wear-neon:hover, .wear-prism:hover,
+  .is-live .wear-halo, .is-live .wear-gradient, .is-live .wear-neon, .is-live .wear-prism {
+    animation: none;
+  }
+  .wear-gradient, .wear-prism { background-position: 50% 50%; }
+}
+
+/* ── The ring: the person's palette around their avatar, wherever an avatar is
+   drawn. A true ring rather than a padded box, so the picture inside keeps its
+   own edges: two mask layers subtracted, with both spellings of the composite.
+   The rotation is the arriving flourish, not a permanent spinner — it runs while
+   the name beside it is hovered or focused, and stops. ────────────────────── */
+.wear-ring { position: relative; }
+.wear-ring::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: inherit;
+  padding: 2px;
+  background: conic-gradient(from var(--wear-angle),
+    var(--plate-a, var(--indigo-600)) 0turn,
+    var(--plate-b, var(--indigo-700)) 0.35turn,
+    color-mix(in srgb, var(--plate-a, var(--indigo-600)) 55%, white) 0.6turn,
+    var(--plate-b, var(--indigo-700)) 0.85turn,
+    var(--plate-a, var(--indigo-600)) 1turn);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .wear-ring::after { animation: wear-spin 12s linear infinite paused; }
+  .wear-ring:hover::after, .wear-ring:focus-within::after, .wear-ring.is-live::after,
+  .is-live .wear-ring::after { animation-play-state: running; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wear-ring::after, .is-live .wear-ring::after { animation: none; }
+}
+
+/* ── The store's chip: layer S. The creator's colour, the tier's name, drawn as a
+   small plate AFTER the member's name rather than over it. The top tier is the
+   only one that glints, which is the rule the tier table already carries. ──── */
+.store-chip {
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  border: 1px solid color-mix(in srgb, var(--plate-ink, var(--indigo-400)) 45%, transparent);
+  color: var(--plate-ink, var(--indigo-400));
+  margin-inline-start: var(--space-2);
+}
+@media (prefers-color-scheme: light) {
+  .store-chip { border-color: color-mix(in srgb, var(--plate-ink-light, var(--indigo-700)) 40%, transparent);
+    color: var(--plate-ink-light, var(--indigo-700)); }
+}
+/* The top tier's chip is the store's one glinting thing: gradient ink rather than
+   a gradient fill, so the text on it stays text and its contrast is the palette's
+   own. The sweep is paused until hovered, like everything else. */
+.store-chip--top {
+  border-color: transparent;
+  background-image: linear-gradient(90deg,
+    color-mix(in srgb, var(--plate-ink, var(--indigo-400)) 22%, transparent),
+    color-mix(in srgb, var(--plate-ink, var(--indigo-400)) 8%, transparent) 45%,
+    color-mix(in srgb, var(--plate-ink, var(--indigo-400)) 26%, transparent) 55%,
+    color-mix(in srgb, var(--plate-ink, var(--indigo-400)) 8%, transparent));
+  background-size: 240% 100%;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .store-chip--top { animation: wear-pan 8s linear infinite paused; }
+  .store-chip--top:hover, .member:hover .store-chip--top, .is-live .store-chip--top { animation-play-state: running; }
+}
+@media (prefers-reduced-motion: reduce) { .store-chip--top { animation: none; } }
+
+/* ── The store's plan mark: layer S in its other form. A paid store says so on its
+   own header, in the same restrained vocabulary — the shop is the thing being
+   dressed here, and a shop that shouts over its own goods is a worse shop. ─── */
+.plan-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--plate-ink, var(--indigo-400)) 40%, transparent);
+  color: var(--plate-ink, var(--indigo-400));
+  background: color-mix(in srgb, var(--surface-base) 55%, transparent);
+}
+.plan-mark--pro {
+  border-color: color-mix(in srgb, var(--amber-400, #fbbf24) 55%, transparent);
+  color: var(--amber-300, #fcd34d);
+}
+@media (prefers-color-scheme: light) {
+  .plan-mark { color: var(--plate-ink-light, var(--indigo-700)); }
+  .plan-mark--pro { color: #92400e; }
 }
 
 /* ── the ask: what an unlock costs, shown as time rather than as a number ────
@@ -2758,7 +3043,6 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 .plus-effects { display: grid; gap: var(--space-3); margin-top: var(--space-3); }
 .plus-effect-choice { align-items: center; }
 .plus-effect-demo { flex: 0 0 auto; font-size: var(--text-lg); }
-.plus-name--edge { border-block-end: 2px solid var(--plate-a, var(--indigo-600)); padding-block-end: 1px; }
 .plus-avatar { box-shadow: 0 0 0 2px color-mix(in srgb, var(--plate-a, var(--indigo-600)) 45%, transparent); }
 .who-link { display: flex; align-items: center; gap: var(--space-2); text-decoration: none; }
 .who-link:hover .who-name { text-decoration: underline; }
@@ -2766,9 +3050,9 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 .plus-not li { font-size: var(--text-sm); line-height: var(--leading-normal); }
 .price-line { font-size: var(--text-xl); font-weight: 700; }
 @media (prefers-reduced-motion: no-preference) {
-  /* The halo already animates through `.member-name--aurora`; nothing extra is
-     declared here. This block exists so the intent is visible where the cosmetics
-     are defined: motion is opted into, never assumed. */
+  /* The name effects declare their own paused-then-running motion in the wear block;
+     nothing extra is declared here. This block exists so the intent is visible where
+     the cosmetics are defined: motion is opted into, never assumed. */
 }
 
 /* The label over a group of controls (a radiogroup of palettes, the ask picker).

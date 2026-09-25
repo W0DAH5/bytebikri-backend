@@ -1641,6 +1641,9 @@ APP.get('/s/:slug', async (req, res, next) => {
       // The join panel's whole state: the tiers, the viewer's own row, the named
       // members, and whether the feature is even on for this store.
       tiers, membership, membershipsOn,
+      // The shop's own plan, for the mark on its header. Passed rather than read in
+      // the view because the view is pure and the plan is a database fact.
+      plan: store.plan(channel),
       // Where this person is toward the watching door, if the store has one.
       standing: req.user ? await store.standingFor(req.user.id, channel.id) : 0,
       roster: tiers.length ? await store.publicRoster(channel.id) : [],

@@ -72,7 +72,7 @@ test('there is one plan and every effect is inside it', () => {
   // against cosmetics sold on top of a subscription already paid for. One plan, and
   // no second charge for a frame — asserted as data, not as good intentions.
   assert.deepEqual(PLATE_KEYS, Object.keys(PLATE_KEYS.reduce((acc, k) => ({ ...acc, [k]: k }), {})));
-  assert.equal(EFFECT_KEYS.length, 3);
+  assert.equal(EFFECT_KEYS.length, 6, 'six effects, still one plan — no second charge for a frame');
   assert.equal(effectOf('nonsense').key, 'solid', 'an effect nobody offers is the plain one');
   assert.equal(plateOf('chartreuse').label, plateOf('indigo').label, 'a palette nobody offers is the default one');
 });
@@ -83,13 +83,15 @@ test('every palette and effect is described in words a member can act on', () =>
     const e = EFFECTS[key];
     assert.ok(e.label && e.hint.length > 30, `${key} has no hint`);
   }
-  // Motion is described where it exists, and exactly one effect moves. The other two
-  // say so out loud, which is what makes the choice legible to somebody who has a
-  // reason to avoid animation.
+  // Motion is described where it exists, and every effect either moves or says that
+  // it does not. That sentence is what makes the choice legible to somebody with a
+  // reason to avoid animation, so it is asserted per effect rather than in a comment
+  // — `test/wear.test.js` does the general sweep; here it is the words on the page.
   assert.match(EFFECTS.halo.hint, /glow/);
-  assert.match(EFFECTS.halo.hint, /allows motion/, 'and its hint says the system decides');
+  assert.match(EFFECTS.halo.hint, /hover/, 'and its hint says when the motion happens');
   assert.match(EFFECTS.edge.hint, /never moves/);
-  assert.match(EFFECTS.solid.hint, /no glow/);
+  assert.match(EFFECTS.solid.hint, /nothing of yours moved/);
+  assert.equal(EFFECT_KEYS.filter((k) => EFFECTS[k].moves).length, 4, 'four move, two never do');
 });
 
 // ---------------------------------------------------------------------------
@@ -250,16 +252,23 @@ test('an active arrangement opens nothing, shortens nothing, and removes nothing
     channel: channelRow, user: null, membershipsOn: true,
     members: [memberRow({ plus_status: 'active', plus_period_end: new Date(Date.now() + 86400000) })],
   });
-  assert.match(rosterHtml, /member-name--aurora/, 'an active wearer’s effect is rendered');
+  assert.match(rosterHtml, /class="member-name wear-halo"/, 'an active wearer’s effect is rendered');
+  // AND the store's own chip is still there beside it. This assertion is the one
+  // that was missing: the old renderer let the Plus branch REPLACE the store's
+  // branch, so a member who paid bytebikri lost the creator's tier chip on the
+  // creator's own member list. Two payers, one element, wrong one won.
+  assert.match(rosterHtml, /class="store-chip[^"]*"[^>]*>Member</,
+    'the creator’s chip must survive a member having bought a look elsewhere');
 
   // The same row with its period ended: the SQL join drops `plus_status`, and the
-  // plate falls back to the store's own tier styling with no extra work and no job
-  // to trust.
+  // name falls back to the store's own palette with no extra work and no job to
+  // trust. The chip was never theirs, so nothing about it moves.
   const lapsedHtml = views.channelMembers({
     channel: channelRow, user: null, membershipsOn: true,
     members: [memberRow({ plus_status: null, plus_period_end: null })],
   });
-  assert.doesNotMatch(lapsedHtml, /member-name--aurora/, 'and an expired one is not');
+  assert.doesNotMatch(lapsedHtml, /wear-halo/, 'and an expired one is not');
+  assert.match(lapsedHtml, /class="store-chip[^"]*"[^>]*>Member</, 'the chip is unchanged by any of this');
 });
 
 // ---------------------------------------------------------------------------
