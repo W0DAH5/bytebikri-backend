@@ -379,7 +379,7 @@ export function layout({
     ? `<span class="who">
          <a class="who-link" href="/plus" title="${accountWear ? 'Your look, and where it comes from' : 'ByteBikri Plus — your name, the way you want it'}">
            ${accountWear
-    ? `<span class="${plusAvatarClass(accountWear, 'avatar')}" style="${plateStyleAttr(accountWear.plate)}" aria-hidden="true">${esc(initials(user.display_name || user.email))}</span>`
+    ? `<span class="${plusAvatarClass(user, 'avatar')}" style="${plateStyleAttr(accountWear.plate)}" aria-hidden="true">${esc(initials(user.display_name || user.email))}</span>`
     : avatar(user.display_name || user.email)}
            <span class="muted" style="font-size:var(--text-xs)">${nameTag(accountName, user, { base: 'who-name' })}</span>
          </a>
@@ -872,8 +872,12 @@ function planMark(plan) {
 }
 
 /** The ring on an avatar, in the same palette, for the row that has room for one. */
-function plusAvatarClass(row = null, base = '') {
-  const wear = plusWear(row);
+function plusAvatarClass(row = null, base = '', wear = plusWear(row)) {
+  // Takes the ROW (or, for a caller that has already resolved it, the wear itself as
+  // the third argument). It used to take a row and be handed a wear: `plusWear()` on a
+  // wear object is always null, so the header avatar silently rendered without its
+  // ring — on the one avatar every page shows. The parameter is named and the fallback
+  // is explicit so that mistake is not available again.
   // `.plus-avatar` keeps the flat ring the earlier rounds shipped; `.wear-ring` adds
   // the rotating conic one that arrives with the ring as a paid decoration. Both are
   // declared, and both are inert until hovered.

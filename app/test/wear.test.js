@@ -38,6 +38,7 @@ const {
   WEAR_OWNER_LINE, CHIP_OWNER_LINE, EFFECT_MIX_SHARE,
 } = await import('../src/plus.js');
 const { ACCENTS, ACCENT_KEYS, plateStyle } = await import('../src/memberships.js');
+const views = await import('../src/views.js');
 
 const CSS = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
 
@@ -125,6 +126,25 @@ test('the chip is the store’s, and only the top tier glints', () => {
   // And no tier means no chip: a store cannot mark somebody who holds nothing.
   assert.equal(composeName({ tier: null }).chip, null);
   assert.equal(composeName({}).chip, null);
+});
+
+test('the account chip in the header wears the ring, on every page that has a header', () => {
+  // This is the avatar a person sees most often — their own, on every page — and it
+  // was the one that wore nothing, because the call handed `plusAvatarClass` an
+  // already-resolved wear instead of the row and the null propagated silently.
+  // `views.layout` is the real renderer, so this is the page's own markup.
+  const html = views.layout({
+    title: 'Alice', user: { id: '1', display_name: 'Alice', email: 'alice@test.local', nameplate: 'teal', plus_effect: 'halo', plus_status: 'active', plus_period_end: new Date(Date.now() + 86400000) },
+    body: '<p>x</p>', consent: null,
+  });
+  assert.match(html, /class="avatar plus-avatar wear-ring"/, 'the header avatar wears the ring');
+  assert.match(html, /class="who-name wear-halo"/, 'and the name beside it wears the effect');
+  // Without an arrangement, nothing is worn: the same page, plainly.
+  const plain = views.layout({
+    title: 'Nima', user: { id: '2', display_name: 'Nima', email: 'nima@test.local', plus_status: null, plus_period_end: null, nameplate: 'teal', plus_effect: 'halo' },
+    body: '<p>x</p>', consent: null,
+  });
+  assert.doesNotMatch(plain, /wear-ring|wear-halo/, 'a lapsed person wears nothing in the header either');
 });
 
 test('a lapsed arrangement wears nothing, and its palette is kept for when it returns', () => {

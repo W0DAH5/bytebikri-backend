@@ -24,6 +24,9 @@
  *     once, which is the whole point of the round;
  *   * Bob's store on the free plan, whose header must carry no mark at all.
  *
+ * Section 4b walks the other half of "worn on every page": the signed-in person's own
+ * account chip in the header, on a page about somebody else's store.
+ *
  * The motion is read through `getAnimations()` on the real element, so what is
  * asserted is the browser's animation tree rather than the stylesheet: paused at
  * rest, running under the pointer, and gone entirely under `prefers-reduced-motion`.
@@ -309,6 +312,28 @@ if (!ringLive?.some((a) => /wear-spin/.test(a.name) && a.playState === 'running'
 await shotOf(alice.p, '.plus-preview', 'premium-4-plus-preview-live');
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 4b. The look is worn on EVERY page — the account chip is the one everybody sees
+// ─────────────────────────────────────────────────────────────────────────────
+say('4b', 'and it is worn on a page that has nothing to do with the look at all');
+// The most-seen avatar in the product is the signed-in person's own, in the header of
+// every page. It was the one that wore nothing: the call handed the class resolver a
+// resolved wear where it expected a row, so the ring silently did not render — and no
+// assertion in this file looked at the header. Now one does, on a page about somebody
+// else's store.
+await alice.p.goto(`${BASE}/s/${ROSTER_SLUG}`);
+await consent(alice.p);
+const headerChip = await alice.p.locator('.who .avatar').getAttribute('class');
+const headerName = await alice.p.locator('.who .who-name').getAttribute('class');
+const ringAtRest = await animationsOn(alice.p, '.who .wear-ring');
+console.log('  the header    :', headerChip, '·', headerName, '· ring:', JSON.stringify(ringAtRest));
+if (!/wear-ring/.test(headerChip || '')) throw new Error(`the account chip in the header wears no ring: ${headerChip}`);
+if (!/wear-/.test(headerName || '')) throw new Error('the account name in the header wears nothing');
+if (ringAtRest?.some((a) => a.playState === 'running')) {
+  throw new Error('the header ring is turning before anybody touched it — motion is on intent');
+}
+await shotOf(alice.p, '.who', 'premium-9-worn-everywhere');
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 5. Reduced motion: the look stays, the movement goes
 // ─────────────────────────────────────────────────────────────────────────────
 say(5, 'and a system that asks for less motion gets the same look, standing still');
@@ -421,4 +446,4 @@ if (errors.length) throw new Error(`${errors.length} console error(s)`);
 await dark.ctx.close(); await light.ctx.close(); await calm.ctx.close();
 await alice.ctx.close(); await calmAlice.ctx.close();
 await browser.close();
-console.log(`\nwalk complete — 8 screenshots in ${OUT}`);
+console.log(`\nwalk complete — 9 screenshots in ${OUT}`);
