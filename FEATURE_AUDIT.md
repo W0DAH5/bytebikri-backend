@@ -2911,6 +2911,17 @@ anchor, because a button that lands on nothing is a worse lie than a missing one
 in `test/blocked.test.js` (#90 renders the rung twice); the first cut offered the membership button
 unconditionally, and the page said so before the code did.
 
+**Later (§14.7 in `ASSET_ECONOMY.md`): the ladder is not only the door's.** Everything above is what a
+file's door does, and the door was for a while the only surface on the ladder: a cue inside a player, a
+seam in a reader and a break on a live stream each asked for a view and failed in silence. One table in
+`src/blocked.js` is now read by all four, each rung carries a tail for the surface that asks (`player`
+for a cue and a live break, `reader` for a seam — a withheld seam really does hold the file, so its
+sentence does not promise what the player's does), and the in-player rungs withhold the OFFER rather
+than the file or the stream. Three defects came out of walking it in a browser, all fixed in the same
+round: a withheld cue was only guarded on resume rather than on the path playback takes; pressing play
+during a break resumed the file *behind* the modal; and a returning viewer was resumed onto the cue they
+had stopped at, where nothing asked again.
+
 Five refusals hold it up, each with a source in `AD_ECONOMY.md`: **no browser checks** (79 % of
 ad-blocking is undetectable, reader mode defeats every detection, and a wall around a guess lands on the
 people who were compromising — NYU measured 13.6 % *more* intrusive ads on allowlists), **no accusation**
