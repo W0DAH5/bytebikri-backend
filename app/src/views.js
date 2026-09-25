@@ -1044,7 +1044,7 @@ function joinPanel({ channel, user, tiers, membership, assets = [], standing = 0
   })()}
       ${adModeOf(t) === 'supporter' ? `<p class="fine">${esc(SUPPORTER_LINE)}</p>` : ''}
       ${watching}
-      <p class="fine">${esc(PLATE_COPY[plate])}${plate === 'gradient' ? ' — and the top tier is the only one that wears it' : ''}</p>
+      <p class="fine">${esc(PLATE_COPY[plate])}</p>
       <div class="plate-sample" aria-label="${esc(PLATE_COPY[plate])}">
         <span class="member-avatar${plate === 'gradient' ? ' member-avatar--shine' : ''}"
               aria-hidden="true">${esc(t.name.slice(0, 1).toUpperCase())}</span>
