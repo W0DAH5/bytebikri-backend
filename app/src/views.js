@@ -72,6 +72,9 @@ import {
   ACCENTS, ACCENT_KEYS, PERIODS, CLAIM_METHODS, PLATE_COPY, MONEY_LINE, FREE_PLAN_LINE,
   CONFIRM_LINE, LAPSE_LINE, accentOf, plateStyle, tierByNo, duesLine, methodLabel,
   membershipState, daysLeft, defaultTierName,
+  // The store's own role icon: six shapes, from a fixed vocabulary, painted in the
+  // chip's ink rather than in a colour of their own.
+  GLYPHS, GLYPH_KEYS, glyphOf,
 } from './memberships.js';
 // The ask ladder. Pure, like `memberships.js`: the numbers a seller's picker shows,
 // the numbers the buyer's panel prints and the numbers the tests assert all come
@@ -155,8 +158,24 @@ const relTime = (d) => {
   return shortDay(d);
 };
 
-const initials = (s) =>
-  String(s || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+/**
+ * One or two letters for a name — the product's one derivation of a monogram.
+ *
+ * The separators matter more than they look. A store is as likely to be written
+ * `nima-crafts` as `Nima Crafts`, and a mark has to be the same mark whichever way
+ * the creator typed it; hyphens, underscores, middots and spaces all end a word
+ * here. Two letters rather than one is the other half of the rule, and it is the
+ * one piece of arithmetic the generated-identity field is unanimous about: a single
+ * initial collides about 1 in 260, two collide about 1 in 7000.
+ */
+const initials = (s) => String(s || '?')
+  .trim()
+  .split(/[\s\-_\u00b7]+/)
+  .filter(Boolean)
+  .slice(0, 2)
+  .map((w) => w[0])
+  .join('')
+  .toUpperCase();
 
 /**
  * A deterministic placeholder for content with no cover image.
@@ -166,10 +185,11 @@ const initials = (s) =>
  * between "unfinished" and "minimal". Real covers replace it the moment a
  * seller uploads one.
  */
-const glyph = (title) => {
-  const t = String(title || '?');
-  return t.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
-};
+// A file with no cover already gets a monogram (see `thumb` below). It is the SAME
+// derivation as everything else in this file rather than a second copy of "the first
+// letters of the words": two implementations is how a store's mark and a file's
+// placeholder end up disagreeing about the same word.
+const glyph = (title) => initials(title);
 const hue = (title) => {
   let h = 0;
   for (const c of String(title || '')) h = (h * 31 + c.charCodeAt(0)) % 360;
@@ -248,6 +268,49 @@ function moderationNotice(m, { heading = null } = {}) {
 
 function avatar(name) {
   return `<span class="avatar" aria-hidden="true">${esc(initials(name))}</span>`;
+}
+
+/**
+ * A store's mark: its own initials, in its own colours.
+ *
+ * `channels.logo_url` has been in the schema since migration 0008 with the comment
+ * "Optional — the UI falls back to the store initial", and no UI ever did. A
+ * storefront was a name in a heading, so every shop looked like every other shop
+ * that typed a different word, and Explore was a grid of cards with nothing of the
+ * store on them. A logo is honoured when a store has one (there is no upload for it
+ * yet, so today that is nobody); the fallback the column promised is here, derived
+ * from the name.
+ *
+ * PAINTED IN THE STORE'S OWN PALETTE, AND IN NOTHING ELSE. On a themed store the
+ * tile is the inversion the band's own controls already use — the band's ink as the
+ * surface, the band's deep stop as the letter — which is the same pair of colours
+ * `themes.test.js` measures white against at twenty points of the interpolation, so
+ * the mark cannot introduce a colour that no arithmetic has seen. A store with no
+ * theme gets the neutral tile this product already draws for a person.
+ *
+ * A rounded square, not a circle: in this product a circle is a person (the nav
+ * chip, a roster row). A store is a plate.
+ *
+ * And nothing here moves. The band on the same page drifts; the research on role
+ * styles has said since the first round what happens when everything shimmers.
+ */
+function storeMark(channel, { paint = true } = {}) {
+  const themed = themeOf(channel?.theme) ? themeStyle(channel.theme) : '';
+  const cls = `store-mark${themed ? ' store-mark--themed' : ''}`;
+  // `paint: false` is for the one caller that sits INSIDE a band which repaints
+  // itself: the seller's stage. The mark then carries the class and inherits
+  // `--theme-*` from the band, so pointing at a card repaints the seller's own mark
+  // along with the band — instead of an inline pair of properties freezing it on the
+  // theme that happened to be saved when the page loaded.
+  const style = themed && paint ? ` style="${esc(themed)}"` : '';
+  // `aria-hidden` because the store's name is always rendered beside the mark: it is
+  // a second rendering of the same word, and a screen reader reading it twice is the
+  // failure mode of every initial-letter component ever written.
+  if (channel?.logo_url) {
+    return `<span class="${cls}"${style} aria-hidden="true">`
+      + `<img src="${esc(channel.logo_url)}" alt="" decoding="async"></span>`;
+  }
+  return `<span class="${cls}"${style} aria-hidden="true">${esc(initials(channel?.name))}</span>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -583,6 +646,7 @@ function channelCard(c) {
     ? `<img class="channel-banner channel-banner-img" src="${esc(c.banner_url)}" alt="" loading="lazy" decoding="async">`
     : '<div class="channel-banner"></div>'}
   <div class="row">
+    ${storeMark(c)}
     <h3>${esc(c.name)}</h3>
     <span class="spacer"></span>
     ${c.listing_mode === 'marketplace' ? pill('Listed', 'accent') : ''}
@@ -818,11 +882,29 @@ function memberPlate({
         style="${plateStyleAttr(accent)}" aria-hidden="true">${esc(initial)}</span>
   <span class="member-body">
     <span class="${nameClass}" style="${plateStyleAttr(namePalette)}">${esc(label)}</span>
-    ${layers.chip ? `<span class="store-chip${top ? ' store-chip--top' : ''}"
-        style="${plateStyleAttr(layers.chip.palette)}">${esc(layers.chip.label)}</span>` : ''}
+    ${layers.chip ? tierChip({
+    label: layers.chip.label, glyph: layers.chip.glyph, top,
+    style: plateStyleAttr(layers.chip.palette),
+  }) : ''}
   </span>
   ${joined ? `<span class="member-since fine">${esc(joined)}</span>` : ''}
 </li>`;
+}
+
+/**
+ * The chip, drawn once — layer S, wherever a store's tier is shown beside a name.
+ *
+ * Three call sites had grown three copies of this markup (the roster, the tier card's
+ * sample, the seller's picker), which is how a chip with a glyph ends up beside a
+ * chip without one. The glyph is inside the chip on purpose: the research on how
+ * roles are drawn next to a username is unanimous that the shape reads as part of the
+ * name plate, and a shape floating beside a chip reads as two unrelated marks.
+ */
+function tierChip({ label, glyph = null, top = false, style = '' }) {
+  const g = glyphOf(glyph);
+  return `<span class="store-chip${top ? ' store-chip--top' : ''}"${style ? ` style="${style}"` : ''}>`
+    + `${g ? `<span class="tier-glyph" data-glyph="${esc(g.key)}" aria-hidden="true"></span>` : ''}`
+    + `${esc(label)}</span>`;
 }
 
 /**
@@ -1053,7 +1135,7 @@ function joinPanel({ channel, user, tiers, membership, assets = [], standing = 0
         <span class="member-avatar${plate === 'gradient' ? ' member-avatar--shine' : ''}"
               aria-hidden="true">${esc(t.name.slice(0, 1).toUpperCase())}</span>
         <span class="member-name">Your name</span>
-        <span class="store-chip${plate === 'gradient' ? ' store-chip--top' : ''}">${esc(t.name)}</span>
+        ${tierChip({ label: t.name, glyph: t.glyph, top: plate === 'gradient' })}
       </div>
     </li>`;
   }).join('');
@@ -1475,6 +1557,7 @@ ${countryBlocked ? `<div class="section" style="margin-bottom:0">
 
 <div class="section store-head${theme ? ` store-head--themed` : ''}"${themeStyle ? ` style="${esc(themeStyle)}"` : ''}>
   <div class="row">
+    ${storeMark(channel)}
     <h1>${esc(channel.name)}</h1>
     ${channel.listing_mode === 'marketplace'
       ? pill('In Explore', 'accent')
@@ -5765,6 +5848,7 @@ function themeChooser({ channel, themes, canTheme }) {
       data-slug="${esc(channel.slug)}">
     <div class="store-head${current ? ' store-head--themed' : ''}" data-theme-stage-band style="${themeStyle(current) || ''}">
       <div class="row">
+        ${storeMark({ ...channel, theme: current }, { paint: false })}
         <h1>${esc(channel.name)}</h1>
         ${pill('Preview', 'accent')}
       </div>
@@ -6190,7 +6274,8 @@ ${flashNote(flash)}
   }
 
   const tierEditor = (tierNo) => {
-    const t = tierByNo(tiers, tierNo) || { tier_no: tierNo, name: defaultTierName(tierNo), dues_npr: 0, period_months: 1, perks: null, accent: 'indigo' };
+    const t = tierByNo(tiers, tierNo)
+      || { tier_no: tierNo, name: defaultTierName(tierNo), dues_npr: 0, period_months: 1, perks: null, accent: 'indigo', glyph: null };
     const plate = plateStyle(tierNo);
     const holders = members.filter((m) => Number(m.tier_no) === tierNo).length;
     // A seller editing what a tier costs should be able to see what it currently
@@ -6203,6 +6288,25 @@ ${flashNote(flash)}
     const joinModeNow = doors.dues && doors.attention ? 'both' : doors.attention ? 'attention' : 'dues';
     const joinModeOptions = JOIN_MODES.map((m) => `<option value="${m}"${joinModeNow === m ? ' selected' : ''}>${esc(JOIN_MODE_LABEL[m])}</option>`).join('');
     const accentOptions = ACCENT_KEYS.map((k) => `<option value="${k}"${t.accent === k ? ' selected' : ''}>${esc(ACCENTS[k].label)}</option>`).join('');
+    /*
+     * The glyph picker is a row of SHAPES rather than a list of words, and that is the
+     * whole reason it is not another `<select>`. Asking a seller to choose between the
+     * words "Star" and "Spark" is asking them to imagine the thing they are buying; the
+     * tiles are drawn in this tier's own ink, at the size the chip will show them, so
+     * the choice is made by looking at it. "No mark" is a tile of equal size and equal
+     * position, because clearing a decoration has to be as available as setting one.
+     */
+    const glyphChoices = [null, ...GLYPH_KEYS].map((k) => {
+      const on = (glyphOf(t.glyph)?.key ?? null) === k;
+      return `<label class="glyph-choice${on ? ' glyph-choice--on' : ''}"
+          title="${esc(k ? GLYPHS[k].label : 'No mark beside the name')}">
+        <input type="radio" name="glyph" value="${k ?? ''}"${on ? ' checked' : ''}>
+        <span class="glyph-choice-shape">${k
+    ? `<span class="tier-glyph" data-glyph="${esc(k)}" aria-hidden="true"></span>`
+    : '<span class="tier-glyph tier-glyph--none" aria-hidden="true"></span>'}</span>
+        <span class="sr-only">${esc(k ? GLYPHS[k].label : 'No mark')}</span>
+      </label>`;
+    }).join('');
     const periodOptions = PERIODS.map((p) => `<option value="${p}"${Number(t.period_months) === p ? ' selected' : ''}>${p === 1 ? 'a month' : p === 3 ? 'every three months' : 'a year'}</option>`).join('');
     return `<form class="tier-editor" method="post"
               action="/dashboard/${esc(channel.slug)}/members/tier/${tierNo}" style="${plateStyleAttr(t.accent)}">
@@ -6239,6 +6343,13 @@ ${flashNote(flash)}
           </select>
           <span class="hint">Watching opens the same tier to people who cannot pay, and every view is still
             ad revenue you keep. ${esc(ATTENTION_SELLER_LINE)}</span>
+        </div>
+        <div class="field" style="flex:1 1 230px" role="radiogroup"
+             aria-label="A shape beside this tier’s name">
+          <span class="field-label">Mark beside the name</span>
+          <div class="glyph-pick">${glyphChoices}</div>
+          <span class="hint">One shape, in this tier’s own colour, worn inside the chip wherever a member’s
+            name is shown — your store’s mark for that tier, on your pages only.</span>
         </div>
         <div class="field" style="flex:1 1 200px">
           <label for="t${tierNo}-ads">What member files do</label>

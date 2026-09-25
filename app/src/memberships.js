@@ -177,6 +177,40 @@ export function accentOf(key) {
   return ACCENTS[key] ?? ACCENTS.indigo;
 }
 
+/**
+ * The six shapes a tier may wear beside its name — the store's own role icon.
+ *
+ * Named choices rather than a free-form field, for the reason the palettes are named
+ * too: a shape that has to read at 20 pixels beside a word cannot be invented by
+ * whoever is filling in a form. The research is blunt about the size (Discord's role
+ * icons are a 64 px upload that renders *"at roughly 20 pixels next to a username, so
+ * use one bold shape"*), and the answer to "one bold shape" is a vocabulary, not a
+ * drawing tool.
+ *
+ * The shapes are drawn in CSS (`clip-path` on a `currentColor` tile in the
+ * stylesheet), which is what makes them safe: a glyph is painted in EXACTLY the ink
+ * the tier's own name is painted in, so it can never be less readable than the word
+ * beside it, in either colour scheme, at any palette. There is no upload here either
+ * — the thing an upload buys is a moderation queue and a storefront somebody can make
+ * unreadable, and neither is worth a decoration the size of a full stop.
+ */
+export const GLYPHS = {
+  star: { label: 'Star' },
+  spark: { label: 'Spark' },
+  diamond: { label: 'Diamond' },
+  hex: { label: 'Hexagon' },
+  shield: { label: 'Shield' },
+  peak: { label: 'Peak' },
+};
+
+export const GLYPH_KEYS = Object.keys(GLYPHS);
+
+/** An unknown key is no glyph — the same graceful answer `accentOf` gives. */
+export function glyphOf(key) {
+  const k = String(key ?? '');
+  return GLYPHS[k] ? { key: k, label: GLYPHS[k].label } : null;
+}
+
 /** The creator's own words for what a tier is; used until they rename it. */
 export function defaultTierName(tierNo) {
   return Number(tierNo) === 2 ? 'Elite' : 'Member';
@@ -214,7 +248,7 @@ export const PLATE_COPY = {
  * Returns `{ ok, error, value }` rather than throwing, because every one of
  * these refusals is a sentence a seller is owed on a form they just filled in.
  */
-export function tierDraft({ name, duesNpr, periodMonths, perks, accent, joinMode, adMode } = {}) {
+export function tierDraft({ name, duesNpr, periodMonths, perks, accent, glyph, joinMode, adMode } = {}) {
   const clean = String(name ?? '').trim().replace(/\s+/g, ' ').slice(0, 24);
   if (clean.length < 2) return { ok: false, error: 'tier-name' };
   const dues = Number(duesNpr);
@@ -232,12 +266,21 @@ export function tierDraft({ name, duesNpr, periodMonths, perks, accent, joinMode
    */
   const join = JOIN_MODES.includes(String(joinMode)) ? String(joinMode) : null;
   const ads = AD_MODES.includes(String(adMode)) ? String(adMode) : null;
+  /*
+   * The glyph is the one field here where an unknown value means NONE rather than
+   * "keep what you have", and the difference matters: `accent`, `joinMode` and
+   * `adMode` all have a shipped default a person could not have chosen wrongly, while
+   * a tier either wears a shape or wears nothing. Clearing it has to be as available
+   * as setting it — a picker with no way back is a picker that keeps a decoration
+   * somebody has stopped wanting.
+   */
+  const mark = glyphOf(glyph)?.key ?? null;
   return {
     ok: true,
     error: null,
     value: {
       name: clean, duesNpr: Math.round(dues), periodMonths: months,
-      perks: line || null, accent: accentKey, joinMode: join, adMode: ads,
+      perks: line || null, accent: accentKey, glyph: mark, joinMode: join, adMode: ads,
     },
   };
 }

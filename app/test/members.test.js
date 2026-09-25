@@ -500,6 +500,11 @@ test('the tier editor refuses what it cannot deliver, and never deletes a held t
     // what the tier already has", which is what makes a picker that predates these
     // fields harmless on an edit, and it is not the same as choosing the default.
     joinMode: null, adMode: null,
+    // The chip's shape. Unlike the two arrangements above, an absent or unknown glyph
+    // means NONE rather than "keep what you have": a tier either wears a shape or
+    // wears nothing, and a picker with no way back would keep a decoration somebody
+    // has stopped wanting. The vocabulary itself is asserted in identity.test.js.
+    glyph: null,
   });
   assert.deepEqual(tierDraft({ name: 'Friend', duesNpr: 150, periodMonths: 1, joinMode: 'attention' }).value.joinMode, 'attention');
   assert.deepEqual(tierDraft({ name: 'Friend', duesNpr: 150, periodMonths: 1, adMode: 'supporter' }).value.adMode, 'supporter');

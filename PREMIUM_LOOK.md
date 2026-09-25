@@ -341,3 +341,80 @@ The floors hold: white ≥ 5.5:1 and the 92 % secondary ink ≥ 4.5:1 at **every
 interpolation**, with the grain's worst-case lightening (3 %) composited in. Any new
 stop, any white lift, or any noise layer with a bigger budget fails the build rather than
 being noticed by a reader on a train.
+
+---
+
+## 8. The next slice: identity — the store's mark, and the tier's glyph
+
+Slices 5 and 6 gave both payers a **surface**. What neither has is an **identity**: a
+storefront is a name in a heading (every store looks like every other store that typed a
+different word), and a tier is a word in a chip (the creator's colour, and nothing that
+belongs to that tier alone). Two complaints, one subject. Researched before built, as
+before.
+
+### What the research says
+
+**Discord, on the two things this slice adds.** The **server icon** is 512 × 512, masked
+to a circle, scaled down to about 32 px in the sidebar — and every one of the 2026 spec
+guides calls it *"the most visible branding element"*, *"the primary visual identity"* of
+a server: it appears in the sidebar, in invite previews, in discovery, in notifications.
+**Role icons** are a 64 × 64 upload that renders at *"roughly 20 pixels next to a
+username, so use one bold shape"*. And the split between free and paid is explicit and
+consistent across the guides: **the static icon is free — anyone gets one — while the
+banner needs Boost L2, an animated banner L3, and an animated icon L1.** Identity is a
+basic thing every shop has; ornament and movement are what the money buys.
+
+**Monograms and generated identity.** The reason Google, Apple, Slack, GitHub and Notion
+all generate an initials avatar is the same short list: no dependency on an upload,
+identity that exists the second the account does, consistency across the product, and no
+storage or moderation attached to it. Apple shows one or two initials; Google shows one
+initial and carries differentiation in the colour; GitHub derives *shape and* colour from
+a hash. The design advice attached to lettermarks is narrow and worth following: one or
+two colours, bold forms, **two initials rather than one where a name allows it** (one
+initial collides about 1 in 260 against 1 in 7000 for two), and **test the mark at 32 px**,
+which is where every one of these marks actually lives.
+
+**Where this product diverges, on purpose.** Our colour does not come from a hash. A
+hash-derived hue would be a second colour system inside a page that already has one — the
+store's own palette — and it would be a colour nobody's contrast arithmetic ever measured.
+The store already chooses two colours; the mark wears those.
+
+### Slice 7 — the store's mark
+
+* **Derived, never typed**: two initials from the store's name, split on spaces, hyphens,
+  underscores and middots, possessives dropped (`Alice's Studio` → `AS`, `nima-crafts` →
+  `NC`). No upload, no moderation queue, nothing to be left blank.
+* **Painted by the store's own palette**: on a themed store the mark is the band's own
+  inversion — the band's ink as the tile, the band's deep stop as the letter — *the pair
+  the palette test already measures*, so the mark introduces no colour the arithmetic has
+  not covered. On an unthemed store it is the neutral mark the product already draws for
+  a person. Identity is free; the colour is what the plan buys.
+* **A plate, not a circle.** In this product a circle is a person (the nav chip, the
+  roster avatar). A store is a rounded square, the same radius family as its own band.
+* Three sizes, one component: the storefront's header, the seller's chooser stage, and
+  every card in Explore.
+* **Still.** The band is the moving thing on that page. A mark that shimmers beside a band
+  that drifts is two things asking for the same attention, and the research on role styles
+  has said from the start what happens then: *if every role shimmers, none of them feel
+  special.*
+* `channels.logo_url` — in the schema since 0008, commented *"the UI falls back to the
+  store initial"*, and never rendered anywhere — is read here, so the promise is a
+  component instead of a comment.
+
+### Slice 8 — the tier's own glyph
+
+* A curated vocabulary of **six shapes** — the store's role icon, and the same answer this
+  product gave the palettes: a set of named, contrast-checked choices rather than a
+  free-form field, because a 20-pixel surface cannot carry a design that was not drawn
+  for it.
+* **Painted in `currentColor`**, which is the whole safety argument in one word: the glyph
+  is drawn in *exactly* the ink the tier's own name is drawn in, so it cannot be less
+  readable than the word beside it, in either colour scheme, at any palette.
+* Chosen by the creator per tier (six shapes plus "no glyph"), shown in the editor's own
+  sample, on the storefront's tier cards, and inside the chip wherever the chip renders —
+  the roster, the seller's queue, a review.
+* No upload. Discord's version is a 64 × 64 image at Boost L2; the thing an upload buys is
+  a moderation queue and a way to make the storefront unreadable, and the bold single
+  shape is the advice attached to their own spec.
+* The chip's existing rule is untouched: the top tier is the only one that glints, and a
+  glyph is available to both tiers — it is the tier's identity, not its shine.

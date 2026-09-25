@@ -54,7 +54,7 @@ import { themeOf, canTheme } from './themes.js';
 // second opinion about them.
 import {
   doorsOf, adModeOf, attentionProgress, standingOf,
-  JOIN_MODES, AD_MODES, doorFor,
+  JOIN_MODES, AD_MODES, doorFor, glyphOf,
 } from './memberships.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -2519,28 +2519,35 @@ export const store = {
      */
     const wantedJoin = JOIN_MODES.includes(String(value.joinMode)) ? String(value.joinMode) : null;
     const wantedAds = AD_MODES.includes(String(value.adMode)) ? String(value.adMode) : null;
+    // The glyph travels like the accent rather than like the two arrangements: it is
+    // validated in `tierDraft` (an unknown key became null there), so it is written
+    // as given — which is also what makes CLEARING one possible. There is no
+    // coalesce here because "no mark" is a value a seller chooses, not an absence to
+    // be filled in from the row that is already saved.
+    const glyph = glyphOf(value.glyph)?.key ?? null;
     const row = await one(
       `insert into membership_tiers
-         (channel_id, tier_no, name, dues_npr, period_months, perks, accent, join_mode, ad_mode)
-       values ($1, $2, $3, $4, $5, $6, $7, coalesce($8, 'dues'), coalesce($9, 'ad_free'))
+         (channel_id, tier_no, name, dues_npr, period_months, perks, accent, join_mode, ad_mode, glyph)
+       values ($1, $2, $3, $4, $5, $6, $7, coalesce($8, 'dues'), coalesce($9, 'ad_free'), $10)
        on conflict (channel_id, tier_no) do update
          set name = excluded.name, dues_npr = excluded.dues_npr,
              period_months = excluded.period_months, perks = excluded.perks,
              accent = excluded.accent,
+             glyph = excluded.glyph,
              join_mode = coalesce($8, membership_tiers.join_mode),
              ad_mode = coalesce($9, membership_tiers.ad_mode),
              updated_at = now()
        returning *`,
       [channelId, tierNo, value.name, value.duesNpr, value.periodMonths, value.perks, value.accent,
-        wantedJoin, wantedAds],
+        wantedJoin, wantedAds, glyph],
     );
     await this.audit('member.tier_set', {
       tierNo, name: row.name, duesNpr: row.dues_npr, periodMonths: row.period_months,
-      joinMode: row.join_mode, adMode: row.ad_mode,
+      joinMode: row.join_mode, adMode: row.ad_mode, glyph: row.glyph,
       was: before
         ? {
           name: before.name, duesNpr: before.dues_npr, periodMonths: before.period_months,
-          joinMode: before.join_mode, adMode: before.ad_mode,
+          joinMode: before.join_mode, adMode: before.ad_mode, glyph: before.glyph,
         }
         : null,
     }, { actorId, subjectType: 'channel', subjectId: channelId });
@@ -2826,7 +2833,7 @@ export const store = {
   membershipsOf(profileId) {
     return many(
       `select m.*, c.slug, c.name, c.avatar_url, c.logo_url,
-              t.name as tier_name, t.accent, t.perks, t.dues_npr, t.period_months
+              t.name as tier_name, t.accent, t.perks, t.dues_npr, t.period_months, t.glyph
          from memberships m
          join channels c on c.id = m.channel_id
          left join membership_tiers t
@@ -2973,7 +2980,8 @@ export const store = {
    */
   pendingMemberships(channelId) {
     return many(
-      `select m.*, p.display_name, p.email, t.name as tier_name, t.dues_npr, t.period_months
+      `select m.*, p.display_name, p.email, t.name as tier_name, t.dues_npr, t.period_months,
+              t.glyph
          from memberships m
          join profiles p on p.id = m.profile_id
          left join membership_tiers t
@@ -2987,7 +2995,7 @@ export const store = {
   /** Everyone who is in, current or not, for the seller's own page. */
   membersOfChannel(channelId) {
     return many(
-      `select m.*, p.display_name, p.email, t.name as tier_name, t.accent, t.dues_npr
+      `select m.*, p.display_name, p.email, t.name as tier_name, t.accent, t.dues_npr, t.glyph
          from memberships m
          join profiles p on p.id = m.profile_id
          left join membership_tiers t
@@ -3020,6 +3028,7 @@ export const store = {
     return many(
       `select m.profile_id, m.tier_no, m.joined_at, p.display_name,
               coalesce(t.name, 'Member') as tier_name, coalesce(t.accent, 'indigo') as accent,
+              t.glyph,
               -- Their own look, worn only while their own plan is active. Two
               -- things are being rendered on one plate (a store's tier and the
               -- person's own palette) and they come from two different payments to

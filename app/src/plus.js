@@ -49,7 +49,7 @@
  * subscription is active; this module decides what an active one looks like.
  */
 
-import { ACCENTS, ACCENT_KEYS } from './memberships.js';
+import { ACCENTS, ACCENT_KEYS, glyphOf } from './memberships.js';
 
 export const PLUS_CODE = 'plus';
 
@@ -232,6 +232,12 @@ export function composeName({ plus = null, tier = null } = {}) {
       // the entry tier does not, which is the platform's advice borrowed from how
       // Discord deploys gradient role styles: one or two, or nothing stands out.
       style: tierNo === 2 ? 'gradient' : 'solid',
+      // The shape the creator chose for this tier, or nothing. It travels WITH the
+      // chip because it has the same owner: the store defines the tier, so the store
+      // decides what its chip wears. A person's own look (layer P) can neither add a
+      // glyph to a store's chip nor take one off it — which is the same separation
+      // that keeps a Plus member from losing the creator's chip on the roster.
+      glyph: glyphOf(tier.glyph)?.key ?? null,
     }
     : null;
   return { name, chip };

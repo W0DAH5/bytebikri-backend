@@ -2492,6 +2492,41 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
    ("Settings → Accessibility → Enable Reduced Motion"), which is the honest
    admission that the right place for the switch is the reader's device. */
 
+/* ── The store's mark ───────────────────────────────────────────────────────
+   The shop's front door: two letters derived from the store's name (or its logo, on
+   the day a store has one) on a rounded tile. A circle in this product is a person —
+   the nav chip, a roster row — so a store gets a plate, in the same radius family as
+   its own band.
+
+   A themed store's tile is the INVERSION the band's own controls already use: the
+   band's ink as the surface, the band's deep stop as the letter. That is not a
+   coincidence, it is the reason this can be painted in the store's own colours at
+   all — it is the pair `themes.test.js` measures white against at twenty points of
+   the palette interpolation, so the mark opens no second contrast argument.
+
+   Nothing here moves. The band on the same page drifts, and a mark that shimmered
+   beside it would be two things asking for the same attention. */
+.store-mark {
+  width: 48px; height: 48px; flex: none;
+  display: grid; place-items: center;
+  border-radius: var(--radius-lg);
+  background: var(--surface-overlay);
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  font-size: var(--text-lg); font-weight: 800; letter-spacing: 0.03em;
+  overflow: hidden;
+}
+.store-mark img { width: 100%; height: 100%; object-fit: cover; }
+.store-mark--themed {
+  background: var(--theme-ink, #fff);
+  border-color: color-mix(in srgb, var(--theme-ink, #fff) 28%, transparent);
+  color: var(--theme-from, var(--indigo-700));
+}
+/* Smaller where the type around it is smaller — the seller's stage, and smallest of
+   all a card in Explore. One component, three sizes. */
+.theme-stage .store-mark { width: 40px; height: 40px; font-size: var(--text-md); }
+.channel-card .store-mark { width: 34px; height: 34px; font-size: var(--text-sm); border-radius: var(--radius-md); }
+
 /* The box, themed or not — and this rule is the one that makes a themed band a
    BAND: without its own padding the store name sits hard against the gradient's
    edge, which is what the first live screenshot of this feature showed. The default
@@ -2957,6 +2992,9 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
    small plate AFTER the member's name rather than over it. The top tier is the
    only one that glints, which is the rule the tier table already carries. ──── */
 .store-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: var(--text-2xs);
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -2989,6 +3027,67 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   .store-chip--top:hover, .member:hover .store-chip--top, .is-live .store-chip--top { animation-play-state: running; }
 }
 @media (prefers-reduced-motion: reduce) { .store-chip--top { animation: none; } }
+
+/* ── The tier's glyph: the store's own role icon ─────────────────────────────
+   One shape, inside the chip, before the tier's name. Six of them, from a fixed
+   vocabulary, because the surface it lives on is about ten pixels wide and the
+   researched advice for that surface is one sentence: *"it renders at roughly 20
+   pixels next to a username, so use one bold shape"*.
+
+   EVERY SHAPE IS PAINTED IN `currentColor`, AND THAT IS THE WHOLE SAFETY ARGUMENT.
+   A glyph is not a colour the creator chose; it is the ink the tier's own name is
+   already drawn in, lifted into a silhouette. It cannot be less readable than the
+   word beside it, in either colour scheme, at any of the eight palettes — there is
+   no second contrast question here to get wrong, because there is no second colour.
+
+   Drawn with `clip-path` rather than an image, an emoji or an icon font: an emoji is
+   somebody else's artwork rendered at somebody else's size, a font is a dependency
+   that can fail to load, and an upload is a moderation queue. A polygon is a shape
+   that is the same shape everywhere, and nothing has to be fetched to see it. */
+.tier-glyph {
+  display: inline-block;
+  width: 0.95em; height: 0.95em;
+  flex: none;
+  background: currentColor;
+}
+.tier-glyph[data-glyph="star"] { clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%); }
+.tier-glyph[data-glyph="spark"] { clip-path: polygon(50% 0%, 58% 42%, 100% 50%, 58% 58%, 50% 100%, 42% 58%, 0% 50%, 42% 42%); }
+.tier-glyph[data-glyph="diamond"] { clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%); }
+.tier-glyph[data-glyph="hex"] { clip-path: polygon(25% 2%, 75% 2%, 100% 50%, 75% 98%, 25% 98%, 0% 50%); }
+.tier-glyph[data-glyph="shield"] { clip-path: polygon(50% 0%, 100% 16%, 100% 54%, 50% 100%, 0% 54%, 0% 16%); }
+.tier-glyph[data-glyph="peak"] { clip-path: polygon(0% 100%, 33% 22%, 50% 52%, 67% 8%, 100% 100%); }
+/* The absence of a mark, drawn at the same size and in the same place as the marks:
+   a picker where "none" is a word and the others are pictures teaches a seller that
+   none is the default rather than a choice. */
+.tier-glyph--none { background: none; border: 1px solid color-mix(in srgb, currentColor 45%, transparent); border-radius: var(--radius-full); }
+
+/* The seller's picker: the shapes themselves, in this tier's own ink, at the size
+   the chip will show them. A `<select>` of the words "Star" and "Spark" asks a
+   seller to imagine the thing they are buying. */
+.glyph-pick { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
+.glyph-choice {
+  position: relative;
+  display: grid; place-items: center;
+  width: 36px; height: 36px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, currentColor 26%, transparent);
+  color: var(--plate-ink, var(--indigo-400));
+  cursor: pointer;
+}
+@media (prefers-color-scheme: light) { .glyph-choice { color: var(--plate-ink-light, var(--indigo-700)); } }
+.glyph-choice input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.glyph-choice-shape {
+  width: 100%; height: 100%;
+  display: grid; place-items: center;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+.glyph-choice:hover .glyph-choice-shape { background: color-mix(in srgb, currentColor 10%, transparent); }
+.glyph-choice input:checked + .glyph-choice-shape {
+  background: color-mix(in srgb, currentColor 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 55%, transparent);
+}
+.glyph-choice input:focus-visible + .glyph-choice-shape { outline: 2px solid currentColor; outline-offset: 2px; }
 
 /* ── The store's plan mark: layer S in its other form. A paid store says so on its
    own header, in the same restrained vocabulary — the shop is the thing being
