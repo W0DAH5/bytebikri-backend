@@ -25,7 +25,7 @@ const {
   SLOTS, SLOT_KEYS, OWNERS, personSlots, storeSlots, slotOf, itemOf, catalogProblems, LOOK_FIELDS,
 } = await import('../src/cosmetics.js');
 const { ACCENT_KEYS } = await import('../src/memberships.js');
-const { EFFECT_KEYS } = await import('../src/plus.js');
+const { EFFECT_KEYS, RING_KEYS, FRAME_KEYS, ringClass, frameClass } = await import('../src/plus.js');
 const { THEME_KEYS } = await import('../src/themes.js');
 const views = await import('../src/views.js');
 
@@ -143,6 +143,17 @@ test('the picker draws every slot a person wears, and nothing else', async () =>
         `${slot.key}.${value.key} is in the catalog and not in the picker`);
     }
   }
+  // Exactly ONE value per slot comes back checked, always. A radio group with nothing
+  // selected submits nothing, and the route refuses a slot with no value — so a person
+  // who had never opened the picker could not save their look at all, which is the bug
+  // this assertion was written for. What is pre-checked is what the product is drawing
+  // for them right now: the orbiting ring the account chip already carries, and the
+  // card's own plain edge.
+  for (const slot of personSlots()) {
+    const checked = (html.match(new RegExp(`name="${slot.key}" value="[^"]+" checked`, 'g')) || []).length;
+    assert.equal(checked, 1, `${slot.key} comes back with ${checked} values checked, not one`);
+  }
+
   // The route and the picker are the same list: a field the route reads that the picker
   // does not draw is a slot a person can never choose.
   assert.deepEqual(LOOK_FIELDS, personSlots().map((s) => s.key));
@@ -165,6 +176,66 @@ test('a new slot cannot ship without a place to store it', () => {
   const server = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
   assert.match(server, /for \(const slot of personSlots\(\)\)/,
     'the look route stopped validating against the catalog');
+});
+
+test('the two outer layers are checked by name in the database, like the effects', async () => {
+  // The ring and the frame arrived in 0044 with their own vocabulary, so the migration
+  // is a second list and this is the assertion that keeps it the same list. The
+  // nameplate deliberately still has none — see the test above — so each slot is
+  // checked for the arrangement it actually has rather than for a house style.
+  const rings = await checkList('profiles', 'plus_ring');
+  assert.deepEqual(rings, RING_KEYS, 'the ring slot and profiles.plus_ring have drifted');
+  assert.deepEqual(slotOf('ring').values.map((v) => v.key), RING_KEYS);
+
+  const frames = await checkList('profiles', 'plus_frame');
+  assert.deepEqual(frames, FRAME_KEYS, 'the frame slot and profiles.plus_frame have drifted');
+  assert.deepEqual(slotOf('frame').values.map((v) => v.key), FRAME_KEYS);
+});
+
+test('no choice is not the same as choosing nothing, for either outer layer', () => {
+  // A person who has never opened the picker keeps the ring this product has always
+  // drawn. A person who chose "no ring" gets none. The two must not collapse into one
+  // class, or the slot would take a decoration away from somebody who never asked.
+  assert.equal(ringClass(null), 'wear-ring', 'the default ring changed for people who never chose');
+  assert.equal(ringClass(undefined), 'wear-ring');
+  assert.equal(ringClass('none'), 'ring-none');
+  assert.equal(ringClass('hairline'), 'ring-hairline');
+  assert.equal(ringClass('orbit'), 'wear-ring', 'orbit IS the ring the product already draws');
+  assert.equal(ringClass('double'), 'ring-double');
+  assert.equal(new Set(RING_KEYS.map(ringClass)).size, RING_KEYS.length,
+    'two ring values render identically — four choices must be four rings');
+
+  // A frame has no such history: every card already has an edge, so "not chosen" and
+  // "none" are the same rendering, and only the three decorated values have a class.
+  assert.equal(frameClass(null), '');
+  assert.equal(frameClass('none'), '');
+  for (const key of ['hairline', 'double', 'glow']) {
+    assert.equal(frameClass(key), `frame-${key}`);
+  }
+  assert.equal(new Set(['hairline', 'double', 'glow'].map(frameClass)).size, 3);
+});
+
+test('a frame decorates an edge and can never repaint the card', () => {
+  // The rule this enforces is the ownership one: the surface under a name belongs to
+  // whoever owns the page. A frame that set `background` or `color` could change what
+  // the ink sits on — and the contrast arithmetic that governs every name on this
+  // platform would no longer describe the page. Read as source, because that is the
+  // only place a CSS declaration can be checked without rendering.
+  const css = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const rules = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+    .filter(([, selector]) => /\.frame-(hairline|double|glow)\b/.test(selector));
+  assert.ok(rules.length >= 4, 'the frame rules went missing');
+  for (const [, selector, body] of rules) {
+    assert.ok(!/\bbackground(-color|-image)?\s*:/.test(body),
+      `${selector.trim()} sets a background — the frame is an edge, not a surface`);
+    assert.ok(!/(^|[;{\s])color\s*:/.test(body),
+      `${selector.trim()} sets a text colour — the frame is an edge, not a surface`);
+  }
+  // And the frame classes are on the person's card, not on a store's surface: the store
+  // band's own block must not have learned about frames.
+  const bandStart = css.indexOf('.own-band--themed');
+  const bandEnd = css.indexOf('@keyframes', bandStart);
+  assert.ok(!/frame-/.test(css.slice(bandStart, bandEnd)), 'the store’s own band grew a frame');
 });
 
 test('a slot item is looked up by its own keys, and an unknown key is nothing', () => {

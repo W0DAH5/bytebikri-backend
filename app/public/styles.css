@@ -3047,6 +3047,92 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   .wear-ring::after, .is-live .wear-ring::after { animation: none; }
 }
 
+/* ── THE RING SLOT ───────────────────────────────────────────────────────────
+   Four ways to ring an initial. `wear-ring` is the orbiting conic the product has
+   always drawn and stays what "no choice" and "orbit" both mean, so nobody's avatar
+   moves because a slot was added. The other three are new, and they draw on the
+   avatar's own pseudo-elements rather than on `box-shadow`, which matters for one
+   reason: a store's top-tier light lands on the same avatar, and a person's ring
+   choice must not be able to put out the store's light (or the reverse). Two owners,
+   two properties.
+
+   `ring-none` is a CHOICE, and the only rule it needs is the one that takes away the
+   flat ring this product draws on the account chip — an avatar that never carried a
+   ring has nothing to remove. ───────────────────────────────────────────────── */
+.ring-hairline, .ring-double { position: relative; }
+.ring-hairline::after {
+  content: '';
+  position: absolute; inset: -3px;
+  border: 2px solid color-mix(in srgb, var(--plate-a, var(--indigo-600)) 45%, transparent);
+  border-radius: inherit;
+  pointer-events: none;
+}
+/* Double: two rings with a two-pixel gap — the outer one stepped out, the inner one
+   close to the initial. A coin, not a glow: nothing here is blurred. */
+.ring-double::after {
+  content: '';
+  position: absolute; inset: -5px;
+  border: 1px solid color-mix(in srgb, var(--plate-a, var(--indigo-600)) 55%, transparent);
+  border-radius: inherit;
+  pointer-events: none;
+}
+.ring-double::before {
+  content: '';
+  position: absolute; inset: -2px;
+  border: 1px solid color-mix(in srgb, var(--plate-b, var(--indigo-700)) 55%, transparent);
+  border-radius: inherit;
+  pointer-events: none;
+}
+/* The account chip keeps its flat ring for the default and for orbit; for the two
+   rings drawn by hand it stands down, because the class IS the ring. */
+.plus-avatar.ring-hairline, .plus-avatar.ring-double, .plus-avatar.ring-none { box-shadow: none; }
+
+/* ── THE FRAME SLOT ──────────────────────────────────────────────────────────
+   The edge of the person's own card, wherever that card is drawn. An edge and ONLY
+   an edge: no rule in this block sets a background or a text colour, and the test in
+   `test/cosmetics.test.js` reads this file and fails if one ever does. The surface a
+   name sits on belongs to whoever owns the page — a store has its themes, a person
+   has their own band — and a frame that could repaint it would be the ownership
+   mistake this whole engine exists to prevent. */
+.frame-hairline, .frame-double { position: relative; }
+.frame-hairline { border-color: color-mix(in srgb, var(--plate-a, var(--indigo-600)) 55%, var(--border-subtle)); }
+.frame-double { border-color: color-mix(in srgb, var(--plate-a, var(--indigo-600)) 45%, var(--border-subtle)); }
+.frame-double::after {
+  content: '';
+  position: absolute; inset: 3px;
+  border: 1px solid color-mix(in srgb, var(--plate-a, var(--indigo-600)) 30%, transparent);
+  border-radius: calc(var(--radius-lg) - 3px);
+  pointer-events: none;
+}
+.frame-glow {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--plate-a, var(--indigo-600)) 35%, transparent),
+    0 8px 20px -12px color-mix(in srgb, var(--plate-b, var(--indigo-700)) 65%, transparent);
+}
+
+/* ── The two new picker tiles ────────────────────────────────────────────────
+   The ring control shows an initial wearing the ring; the frame control shows a small
+   card with the frame on its edge. Both are drawn with the SAME classes the product
+   renders, so the picker cannot promise a ring or an edge the product does not draw. */
+.look-avatar {
+  position: relative;
+  inline-size: 2rem; block-size: 2rem;
+  display: grid; place-items: center; border-radius: 50%;
+  font-size: var(--text-sm); font-weight: 700; line-height: 1;
+  color: #fff;
+  background-image: linear-gradient(140deg, var(--plate-a, var(--indigo-600)), var(--plate-b, var(--indigo-700)));
+}
+.look-frame {
+  position: relative;
+  display: grid; place-items: center;
+  inline-size: 2.6rem; block-size: 2.1rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font-size: var(--text-2xs); font-weight: 700;
+}
+
 /* ── The store's chip: layer S. The creator's colour, the tier's name, drawn as a
    small plate AFTER the member's name rather than over it. The top tier is the
    only one that glints, which is the rule the tier table already carries. ──── */

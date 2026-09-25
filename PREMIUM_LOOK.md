@@ -551,18 +551,32 @@ and it is the ownership correction from the earlier rounds extended from badges 
   tiers wear. They belong to the creator, they are paid for on the store's own plan, and they never
   appear beside a member's name as if they were that member's.
 
-That is why there is no `cardBackground` and no `profileFrame` slot in the engine. On a store's page the
-surface belongs to the store (it has themes); on a person's own page it belongs to the person (their own
-band on `/library`, §9). A slot that let either repaint the other's surface is the exact confusion the
-earlier correction was about — and the researched record says the same thing from the other side:
-*if every role shimmers, none feel special*.
+That is why there is no `cardBackground` slot in the engine. On a store's page the surface belongs to the
+store (it has themes); on a person's own page it belongs to the person (their own band on `/library`, §9).
+A slot that let either repaint the other's surface is the exact confusion the earlier correction was
+about — and the researched record says the same thing from the other side: *if every role shimmers, none
+feel special*.
+
+The two slots the review called frames are a different matter, because a ring and an edge are not
+surfaces, and they were built:
+
+* **The avatar frame is the ring.** The avatar here is an initial, not an upload, so what a person decorates
+  is what is drawn around it: `none`, `hairline`, `orbit` (the ring the product has always drawn) and
+  `double`. It is a person's slot, it travels with their name, and — deliberately — it draws on the
+  avatar's pseudo-elements rather than on `box-shadow`, because a store's own top-tier light lands on the
+  same avatar and one owner's decoration must not be able to put out the other's.
+* **The profile frame is the card's edge.** The card is a rendering of the person, so the edge of it is
+  theirs to decorate wherever the card is drawn: a store's roster, the seller's member list, their own
+  stage. `hairline`, `double` and `glow`, and no more than that: an edge, never the surface, never the ink,
+  never the store's chip — and a test reads the stylesheet and fails if a frame rule ever names a
+  background or a colour.
 
 ### The review's eight slots, one by one
 
 | The review proposed | What this product does | Why |
 |---|---|---|
-| **Profile frame** | The **page's surface**, owned by the page's owner: a store's band on its pages (§6), the person's own band on `/library` (§9) | A frame around a card that a stranger owns is a claim about somebody else's page |
-| **Avatar frame** | Already there in one form: the ring that arrives with a look (`.plus-avatar`, `.wear-ring`). A **chosen ring treatment** is the next slot this engine would carry — one column, one control, one renderer branch | The avatar here is an initial, not an upload; a "frame" in this product is a ring |
+| **Profile frame** | Built as the **card's edge**: `frame` — `none`, `hairline`, `double`, `glow`, on the person's own card wherever it is drawn. The page's *surface* stays the page owner's (a store's band, §6; the person's band, §9) | An edge is a decoration of the person's card; a surface would be a claim about somebody else's page |
+| **Avatar frame** | Built as the **ring**: `ring` — `none`, `hairline`, `orbit`, `double`, drawn on the initial, everywhere the person's look is rendered | The avatar here is an initial, not an upload; a "frame" in this product is a ring |
 | **Name effect** | `effect` — six, four of which move, each described in words that say so | Already built, and the words exist because choosing on a phone should not be a surprise |
 | **Badge** | The store's **tier chip** (creator-defined, layer S), the **plan mark** on a paid store, the **verification badge** on a store an operator checked | Three badges, three owners, three meanings — and none of them granted by a store to a person |
 | **Card background** | The surface, as above | Same reason as the profile frame; it is the same slot by another name |
@@ -575,8 +589,18 @@ earlier correction was about — and the researched record says the same thing f
 `app/src/cosmetics.js` is the declaration. A slot has a `key` (the form field and the column), an
 `owner` (`person` or `store`), a `grant` (`plus`, `creator`, `store-plan`), a `kind` (which picker
 control draws it), a `label`, the question it answers, and its `values` — each with a label, and with
-`moves` and one sentence of words wherever a person can choose it. Four slots today: two a person wears
-(`nameplate`, `effect`) and two a store sets (`glyph`, `theme`).
+`moves` and one sentence of words wherever a person can choose it. Six slots today: four a person wears
+(`nameplate`, `effect`, `ring`, `frame`) and two a store sets (`glyph`, `theme`).
+
+The two outer layers were added exactly the way the engine was built to add them — one entry each in
+`SLOTS`, one column each with its own check (`0044`: `profiles.plus_ring`, `profiles.plus_frame`), one
+renderer branch each (`memberPlate`'s avatar and card, the account chip, the stage). The picker grew the
+control by kind (`demo`: a tile that IS the thing — an initial wearing the ring, a small card edged with
+the frame), not by another hand-written block. `NULL` in either column means **not chosen**, and it
+renders as the product always has, which is why nobody's avatar changed on the day the slot arrived; the
+two `demo` slots also taught the picker a rule it did not have — a slot with **nothing** checked submits
+nothing, so the picker pre-checks what is being drawn (the orbiting ring, the plain edge) and a first save
+works.
 
 What makes it an engine rather than a table is that nothing else keeps a second list:
 
@@ -598,9 +622,9 @@ review's actual ask, and it is the property that makes the fifth phase cheap ins
 **Phase 1 (entitlements, inventory, equipped, renderer):** built — `plusWear()` decides what is worn
 from the database's own clock, `profiles` holds what is chosen, `composeName()` is the renderer.
 
-**Phases 2 and 3 (visual slots, animation):** partly built and partly refused above. The next honest
-addition is the ring treatment, because it is the one visual slot with an existing render and a clear
-owner.
+**Phases 2 and 3 (visual slots, animation):** built as far as this product should carry them — the ring
+and the frame arrived with the engine's own mechanism, and what stays refused is the aura, the particles
+and the per-list entrance animation (bandwidth, and a second design to audit under reduced motion).
 
 **Phases 4 and 5 (shop, individual purchases, bundles, seasonal passes, rarity, collections, creator
 marketplace):** all of them are **money movement**, and the standing instruction is that moving money
@@ -616,3 +640,12 @@ The picker no longer keeps its own list of slots: it draws the catalog, the rout
 the catalog is checked against the database it has to agree with. The look a member saves is byte for
 byte the look they see in the preview, and the walk that proves it (`premium-walk.mjs` §11) still passes
 through the new path: choose prism, save, switch palette to rose, save back to teal and halo.
+
+The round that added the ring and the frame is the engine's own test: the catalog gained two entries, the
+schema gained two checked columns, the picker gained one control kind — and `premium-walk.mjs` §15 proves
+the whole chain in a browser. That section reads both groups of tiles, chooses a coin ring and a glow,
+watches them arrive on the stage's avatar and on the stage itself without a round trip, saves them, checks
+the account chip in the header, and then reads the person's card **through carol's session** on a store's
+roster — because the roster does not name the reader's own row, and what matters is what another person
+sees: the creator's chip still there, the store's top-tier light still alight, and the person's ring and
+edge around both.

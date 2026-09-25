@@ -28,12 +28,18 @@
  *     own plan, and they never appear beside a member's name as if they were that
  *     member's.
  *
- * That is why there is no "card background" or "profile frame" slot in this file: on a
- * store's page the surface belongs to the store (it has themes), and on a person's own
- * page it belongs to the person (they have their own band on `/library`). A slot that
- * let either repaint the other's surface is the exact confusion the ownership
- * correction was about, and the research on premium looks says the same thing from the
- * other side: "if every role shimmers, none feel special".
+ * That is why there is no "card background" slot in this file: on a store's page the
+ * surface belongs to the store (it has themes), and on a person's own page it belongs to
+ * the person (they have their own band on `/library`). A slot that let either repaint
+ * the other's surface is the exact confusion the ownership correction was about, and the
+ * research on premium looks says the same thing from the other side: "if every role
+ * shimmers, none feel special".
+ *
+ * The two slots the review called frames are a different matter, because a ring and an
+ * edge are decorations rather than surfaces, and they ARE here: `ring` (the initial's
+ * ring, drawn on the avatar's pseudo-elements so that a store's own top-tier light on
+ * the same avatar is untouched) and `frame` (the edge of the person's own card, wherever
+ * that card is drawn — an edge only, never the surface or the ink).
  *
  * WHAT IS DELIBERATELY NOT HERE, with the reason (the proposal's phases 4 and 5):
  * a cosmetic shop, individual purchases, bundles, seasonal passes, rarity tiers and a
@@ -48,11 +54,13 @@
  *
  * WHAT A NEW SLOT COSTS. One entry in `SLOTS`, one column with its check constraint, one
  * renderer branch, and the tests in `test/cosmetics.test.js` fail until the DB, the
- * picker and the write path all agree. Nothing else in the product has to learn about
+ * picker and the write path all agree. The ring and the frame are that claim being
+ * cashed: two entries, two columns (0044), one new picker control kind, and the walk
+ * (`ci/eyes/premium-walk.mjs` §15) reading the result off a store's roster. Nothing else in the product has to learn about
  * it: the picker iterates this list, and the `/plus/look` route validates against it.
  */
 import { ACCENTS, ACCENT_KEYS, GLYPHS, GLYPH_KEYS } from './memberships.js';
-import { EFFECTS, EFFECT_KEYS } from './plus.js';
+import { EFFECTS, EFFECT_KEYS, RINGS, RING_KEYS, FRAMES, FRAME_KEYS } from './plus.js';
 import { THEMES, THEME_KEYS } from './themes.js';
 
 /**
@@ -102,6 +110,58 @@ export const SLOTS = [
       hint: EFFECTS[key].hint,
       moves: EFFECTS[key].moves,
       words: EFFECTS[key].hint,
+    })),
+  },
+  {
+    // THE AVATAR'S RING — the second slot the cosmetics review asked for by name
+    // ("avatar frame"), in the only form this product can honestly have it: the avatar
+    // here is an initial, not an upload, so what can be decorated is the ring around it.
+    //
+    // It is a PERSON slot and it renders wherever the person's look renders — the
+    // account chip, their own card, the roster plate. A store cannot set it and cannot
+    // take it away: the card is a rendering of the person, not a surface of the store's.
+    key: 'ring',
+    column: 'plus_ring',
+    owner: 'person',
+    grant: 'plus',
+    kind: 'demo',
+    demo: 'avatar',
+    label: 'The ring around your initial',
+    question: 'What your initial is ringed with.',
+    hint: 'The ring is drawn around the initials this product shows for everybody — there '
+      + 'is no picture to upload and nothing to moderate. Only the ring is yours; a store’s '
+      + 'own top-tier light on the same avatar is the store’s and stays where it is.',
+    values: RING_KEYS.map((key) => ({
+      key,
+      label: RINGS[key].label,
+      hint: RINGS[key].hint,
+      moves: RINGS[key].moves,
+      words: `${RINGS[key].label} — ${RINGS[key].hint}`,
+    })),
+  },
+  {
+    // THE FRAME — the card's edge. Deliberately an EDGE and nothing else: the surface
+    // under the words belongs to whoever owns the page (a store has its themes, a person
+    // has their own band on /library), so a slot that repainted it would be the exact
+    // ownership confusion this engine exists to prevent. The stylesheet test refuses a
+    // frame rule that names a background or a colour.
+    key: 'frame',
+    column: 'plus_frame',
+    owner: 'person',
+    grant: 'plus',
+    kind: 'demo',
+    demo: 'card',
+    label: 'The edge of your card',
+    question: 'What the card with your name on it is edged with.',
+    hint: 'Your card is drawn on a store’s roster, in the seller’s member list and on your '
+      + 'own page. This is its edge — never its surface, never the store’s chip, and never '
+      + 'anything the creator chose.',
+    values: FRAME_KEYS.map((key) => ({
+      key,
+      label: FRAMES[key].label,
+      hint: FRAMES[key].hint,
+      moves: FRAMES[key].moves,
+      words: `${FRAMES[key].label} — ${FRAMES[key].hint}`,
     })),
   },
   {

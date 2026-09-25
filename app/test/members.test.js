@@ -46,6 +46,7 @@ const {
   doorsOf, attentionViews, attentionProgress, attentionLine, attentionStandingLine,
   attentionBankedLine, adModeOf, doorFor, ATTENTION_MONEY_LINE, SUPPORTER_LINE,
 } = await import('../src/memberships.js');
+const { plusWear } = await import('../src/plus.js');
 const { startUnlock } = await import('../src/unlocks.js');
 
 after(async () => { await close(); });
@@ -267,6 +268,46 @@ test('a members-only file stays on the storefront, locked, and says what opens i
     assert.match(page, /the dues you have paid for are current/);
     assert.ok(member.period_end === null || true);
     assert.ok(owner.id && tag);
+  } finally { await cleanup(channel, owner, member); }
+});
+
+test('the roster hands the renderer the palette the look is painted from', async () => {
+  // A regression test with a real bug behind it. `publicRoster` aliased the column to
+  // `plus_plate`, and `plusWear()` reads `nameplate` — so on a store's roster every
+  // dressed member's name fell back to indigo while their chosen palette sat in the row
+  // beside it. The alias was the bug: the query must hand the renderer the field the
+  // renderer reads, and the card's own edge and ring (which take their colours from the
+  // same field) are what makes that visible at a glance.
+  const { owner, channel, member } = await fixture();
+  try {
+    // The TOP tier on purpose: its chip is the gradient one, and that is the same tier
+    // whose avatar carries the store's own glint — so this is the one card where the
+    // store's light and the person's ring land on the same element, and both must show.
+    await store.joinMembership({ profileId: member.id, channelId: channel.id, tierNo: 2, claim: claim({ amountNpr: 600 }) });
+    await store.confirmMembership({ profileId: member.id, channelId: channel.id, ownerId: owner.id, actorId: owner.id });
+    await query(`update profiles
+                    set nameplate = 'teal', plus_effect = 'halo',
+                        plus_ring = 'double', plus_frame = 'glow'
+                  where id = $1`, [member.id]);
+    const [row] = await store.publicRoster(channel.id);
+    assert.equal(row.nameplate, 'teal', 'the roster row does not carry the field the look is read from');
+
+    // The same row the storefront receives, with the arrangement the join proves in
+    // production (asserted directly here so this test needs no subscription fixture).
+    const dressed = { ...row, plus_active: true };
+    assert.equal(plusWear(dressed).plate, 'teal');
+    assert.equal(plusWear(dressed).ring, 'double');
+    assert.equal(plusWear(dressed).frame, 'glow');
+
+    const html = views.storefront({
+      channel, assets: [], slots: [], user: null, membership: null, membershipsOn: true,
+      tiers: await store.membershipTiers(channel.id), roster: [dressed],
+    });
+    assert.match(html, /<li class="member[^"]*frame-glow"[^>]*style="[^"]*--plate-a:#0f766e/,
+      'the roster card is edged in something other than the member’s own palette');
+    assert.match(html, /member-avatar--shine[^"]*ring-double|ring-double[^"]*member-avatar--shine/,
+      'the ring and the store’s top-tier light do not share the avatar');
+    assert.match(html, /class="store-chip/, 'the store’s own chip left the card');
   } finally { await cleanup(channel, owner, member); }
 });
 

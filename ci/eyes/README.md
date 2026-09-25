@@ -105,7 +105,7 @@ are run after the seeder rather than being self-contained:
 ```bash
 node ci/demo-state.mjs              # the demo state, and the restore
 node ci/eyes/member-walk.mjs        # three sessions, the attention door, 11 shots
-node ci/eyes/premium-walk.mjs       # two payers, two schemes, motion on intent; 20 shots (16 design, 4 gifting)
+node ci/eyes/premium-walk.mjs       # two payers, two schemes, motion on intent; 23 shots (19 design, 4 gifting)
 node ci/eyes/reset-rent.mjs alice   # puts the rent invoice back to issued
 node ci/eyes/rent-walk.mjs          # the seller's invoice, the reference, the operator's match; 5 shots
 ```
@@ -127,6 +127,15 @@ aurora is not running. It then visits a store's page as the same paying person t
 the band is not there, loads `/library` as somebody with no arrangement to show the
 head is unchanged, and repeats the whole thing under `prefers-reduced-motion: reduce`
 where the band must keep its colour and its mesh and lose only the drift.
+
+Section 15 is the other two slots of the person's own look — the ring around the
+initial and the edge of their card. It reads both groups of tiles, chooses a coin ring
+and a glow, and checks the three places a choice has to arrive without a round trip and
+then with one: the stage's avatar and the stage itself, the account chip in the header
+after the save, and — seen through carol's session, because the roster does not name the
+reader's own row — the person's card on a store's roster, where the store's chip and the
+store's own top-tier light must both still be there beside the person's ring and edge.
+It puts back exactly what it found, so the walk is re-runnable against its own output.
 
 `premium-walk.mjs` is the one walk whose subject is a DESIGN rather than a flow, and
 it is measured rather than looked at: contrast is computed in the page from the

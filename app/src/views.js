@@ -102,6 +102,9 @@ import {
   // The person's own band: the one surface a palette bought here is painted on that
   // belongs to the person rather than to a store.
   personBand, OWN_BAND_LINE, OWN_BAND_MIX,
+  // The two outer layers of a look: the ring around the initial, and the edge of the
+  // person's own card. Both decided by `plusWear()`/`composeName()`, like the paint.
+  ringClass, frameClass, ringOf, frameOf,
 } from './plus.js';
 // The blocker ladder. One module, so the sentence the visitor reads and the
 // sentence the seller's dashboard prints cannot disagree about what was done.
@@ -896,8 +899,14 @@ function memberPlate({
   const top = layers.chip?.style === 'gradient';
   const namePalette = layers.name?.palette ?? accent;
   const nameClass = ['member-name', layers.name?.className ?? 'wear-solid'].filter(Boolean).join(' ');
-  return `<li class="member${me ? ' member--me' : ''}${top ? ' member--top' : ''}">
-  <span class="member-avatar${top ? ' member-avatar--shine' : ''}"
+  // The two outer layers, on the card itself. `layers.ring`/`layers.frame` come out of
+  // the same `composeName()` call as the name, so a page cannot draw one of the four
+  // person layers and forget the others.
+  const frame = cardFrame({ frame: layers.frame?.key ?? null, plate: namePalette });
+  const ring = avatarRing({ ring: layers.ring?.key ?? null });
+  return `<li class="member${me ? ' member--me' : ''}${top ? ' member--top' : ''}${frame.cls ? ` ${frame.cls}` : ''}"
+    ${frame.style ? `style="${frame.style}"` : ''}>
+  <span class="member-avatar${top ? ' member-avatar--shine' : ''}${ring ? ` ${ring}` : ''}"
         style="${plateStyleAttr(accent)}" aria-hidden="true">${esc(initial)}</span>
   <span class="member-body">
     <span class="${nameClass}" style="${plateStyleAttr(namePalette)}">${esc(label)}</span>
@@ -982,7 +991,42 @@ function plusAvatarClass(row = null, base = '', wear = plusWear(row)) {
   // `.plus-avatar` keeps the flat ring the earlier rounds shipped; `.wear-ring` adds
   // the rotating conic one that arrives with the ring as a paid decoration. Both are
   // declared, and both are inert until hovered.
-  return wear ? `${base} plus-avatar wear-ring`.trim() : base;
+  // The person's ring CHOICE replaces the default ring; no choice keeps the one this
+  // product has always drawn. `ring-none` is a choice and it is spelled out in the
+  // stylesheet as "this element has no ring", which is not the same state as a person
+  // who has never opened the picker — taking their ring away would be the product
+  // inventing a change on a page they never touched.
+  const ring = wear ? ringClass(wear.ring) : null;
+  return wear ? `${base} plus-avatar ${ring}`.trim() : base;
+}
+
+/**
+ * The ring on any avatar that is not the account chip: the roster plate, the seller's
+ * member list, the person's own preview.
+ *
+ * `''` when the person has not chosen a ring, because these avatars carry no ring today
+ * and a slot must add decoration rather than move it: a member who never opened the
+ * picker keeps the plate they already had, exactly as with the name paint.
+ */
+function avatarRing(wear) {
+  if (!wear || !wear.ring || wear.ring === 'none') return '';
+  return ringClass(wear.ring);
+}
+
+/**
+ * The edge of the person's own card, wherever the card is drawn.
+ *
+ * An EDGE, not a surface: the border colour and, for two of the four, a rule or a light
+ * outside the box. It never sets a background or a text colour — the stylesheet test
+ * refuses that — so the store's chip, the card's ink and the palette arithmetic that
+ * governs them are all untouched by it.
+ */
+function cardFrame(wear) {
+  const cls = wear ? frameClass(wear.frame) : '';
+  if (!cls) return { cls: '', style: '' };
+  // The card carries the palette so the frame's two colours can resolve, exactly the
+  // way `plateStyleAttr` already dresses the avatar and the name inside it.
+  return { cls, style: plateStyleAttr(wear.plate) };
 }
 
 /** Everyone who chose to be named. No count — the plates are the proof. */
@@ -6606,7 +6650,7 @@ ${flashNote(flash)}
 export function plusPage({
   user, consent = null, flash = null, current = 'plus',
   plan = null, subscription = null, state = 'none',
-  rails = [], railsReady = false, look = { nameplate: null, effect: null },
+  rails = [], railsReady = false, look = { nameplate: null, effect: null, ring: null, frame: null },
   previewWear = null, wear = null,
   // The two periods a person may buy (0042). `yearPlan` is the same plan with a
   // twelve-month period, so the second price is read from the table and the discount
@@ -6623,6 +6667,11 @@ export function plusPage({
   const days = active ? plusDaysLeft({ period_end: subscription?.period_end }) : null;
   const chosenPlate = look.nameplate || 'indigo';
   const chosenEffect = effectOf(look.effect).key;
+  // The two outer layers. An unknown key is the same graceful answer as everywhere else
+  // in this file: no choice, and therefore the default the product already draws.
+  const chosenRing = ringOf(look.ring)?.key ?? null;
+  const chosenFrame = frameOf(look.frame)?.key ?? null;
+  const initial = (name || 'Y').slice(0, 1).toUpperCase();
 
   // The live preview: the reader's own name, in the palette and effect selected
   // right now — or, if they have never chosen, in the default with nothing on it.
@@ -6630,6 +6679,8 @@ export function plusPage({
     plus_active: true,
     nameplate: chosenPlate,
     plus_effect: chosenEffect,
+    plus_ring: chosenRing,
+    plus_frame: chosenFrame,
   };
   /*
    * `is-live` is the one place in the product where an effect animates without being
@@ -6665,8 +6716,13 @@ export function plusPage({
    * member chooses, without a round trip and without a second copy of the effect table
    * in JavaScript: the words and the classes come out of the picker's own markup.
    */
-  const preview = `<div class="plus-preview is-live" data-look-stage style="${plateStyleAttr(chosenPlate)}">
-    <span class="plus-preview-avatar wear-ring" aria-hidden="true">${esc((name || 'Y').slice(0, 1).toUpperCase())}</span>
+  // The stage is the person's own card, so it wears their ring choice and their frame
+  // choice while they choose — no round trip, and no second copy of the vocabularies:
+  // the page script reads both off the picker's own demo tiles.
+  const stageRing = chosenRing ? ringClass(chosenRing) : 'wear-ring';
+  const stageFrame = chosenFrame ? frameClass(chosenFrame) : '';
+  const preview = `<div class="plus-preview is-live${stageFrame ? ` ${stageFrame}` : ''}" data-look-stage style="${plateStyleAttr(chosenPlate)}">
+    <span class="plus-preview-avatar ${stageRing}" data-look-avatar aria-hidden="true">${esc(initial)}</span>
     <div class="plus-preview-body">
       <span class="plus-preview-row">
         <span class="${plusNameClasses({ effect: chosenEffect }, 'member-name')}" data-look-name>${esc(name)}</span>
@@ -6692,7 +6748,17 @@ export function plusPage({
    * with no control is a programming error and renders nothing — the test that every
    * person slot appears in this form is what stops a silent omission.
    */
-  const chosen = { nameplate: chosenPlate, effect: chosenEffect };
+  // The picker always has something checked for every slot, because a radio group with
+  // nothing checked submits nothing and the route would refuse the save — the first
+  // save a person ever makes must work. What is pre-checked is what the product is
+  // drawing for them RIGHT NOW: the orbiting ring the account chip has always carried,
+  // and the card's own plain edge.
+  const chosen = {
+    nameplate: chosenPlate,
+    effect: chosenEffect,
+    ring: chosenRing ?? 'orbit',
+    frame: chosenFrame ?? 'none',
+  };
   const pickerField = (slot) => {
     const current = chosen[slot.key];
     const head = `<span class="field-label" id="plus-${esc(slot.key)}-label">${esc(slot.label)}</span>`;
@@ -6727,6 +6793,31 @@ export function plusPage({
               </span>
               <span class="plus-effect-demo">${nameTag('Aa', { plus_active: true, nameplate: chosenPlate, plus_effect: v.key })}
                 <span class="sr-only">${v.moves ? 'this effect moves' : 'this effect never moves'}</span></span>
+            </label>`).join('')}
+        </div>
+      </div>`;
+    }
+    // The two outer layers are one control: a row of cards whose tile is the thing
+    // itself — an initial wearing the ring, or a small card with the frame on its edge.
+    // The tile is drawn from the same class the product renders, so the picker cannot
+    // promise a ring the product does not draw.
+    if (slot.kind === 'demo') {
+      const tile = (v) => (slot.demo === 'avatar'
+        ? `<span class="look-avatar ${ringClass(v.key)}" style="${plateStyleAttr(chosenPlate)}" aria-hidden="true">${esc(initial)}</span>`
+        : `<span class="look-frame ${frameClass(v.key)}" style="${plateStyleAttr(chosenPlate)}" aria-hidden="true">${esc(initial)}</span>`);
+      return `
+      <div class="field">
+        ${head}
+        <div class="plus-effects" role="radiogroup" aria-labelledby="plus-${esc(slot.key)}-label">
+          ${slot.values.map((v) => `
+            <label class="choice plus-effect-choice" data-demo-key="${esc(v.key)}" data-demo-label="${esc(v.label)}">
+              <input type="radio" name="${esc(slot.key)}" value="${esc(v.key)}" ${current === v.key ? 'checked' : ''}>
+              <span>
+                <strong>${esc(v.label)}</strong>
+                <span class="fine">${esc(v.hint)}</span>
+              </span>
+              <span class="plus-effect-demo">${tile(v)}
+                <span class="sr-only">${v.moves ? 'this choice moves' : 'this choice never moves'}</span></span>
             </label>`).join('')}
         </div>
       </div>`;

@@ -3257,3 +3257,57 @@ already paid for, so the date it ends does not change. It was being shown to sto
 where it describes a date that does not exist. The two situations now have two sentences: a running store
 keeps its date, and a store with nothing running is told the year starts the day the transfer is matched
 and that nothing renews by itself when it ends.
+
+## §37 — The two outermost layers: a ring you choose, and the edge of your own card
+
+§10 of `PREMIUM_LOOK.md` built the cosmetics engine and refused two of the review's slots outright: the
+"avatar frame" and the "profile frame". Half of that refusal was right and half of it was too broad, and
+the difference is the whole of this section.
+
+**What was right.** A *surface* is never a person's to redecorate. On a store's page it belongs to the
+store (the themes it pays for), and on a person's own page it belongs to the person (the band §9 built).
+So the refusal stands for the review's "card background", because a background is a surface.
+
+**What was too broad.** A ring and an edge are not surfaces. They are decorations of things that are
+already the person's own: the initial drawn for them, and the card that is a rendering of them. Refusing
+them was refusing the review's actual request on the grounds of a different one, and the engine's own
+mechanism was already sitting there waiting.
+
+**The ring** (`profiles.plus_ring`, `0044`) — `none`, `hairline`, `orbit`, `double`. `orbit` is the ring
+this product has always drawn (a flat ring with a slow conic sweep on hover), and `NULL` — never chosen —
+renders as it always did, so no existing wearer's avatar changed on the day the slot arrived. The four
+draw on the avatar's pseudo-elements rather than on `box-shadow`, and that detail is an ownership rule
+rather than a style: a store's own top-tier light lands on the same avatar, and a person taking their ring
+off must not put out the store's light. The walk checks exactly that on a live roster.
+
+**The frame** (`profiles.plus_frame`) — `hairline`, `double`, `glow`, and `none`. It is the edge of the
+person's card wherever that card is drawn — the roster, the seller's member list, the person's own stage.
+An edge and nothing else: a test reads the stylesheet and fails if a frame rule ever names a background or
+a text colour, because the moment a frame can change what the words sit on, every contrast claim this
+product makes about a name is describing a page that no longer exists.
+
+**The engine, tested by its own extension.** Both slots cost one entry in `cosmetics.js`, one checked
+column, one renderer branch, and one new picker control kind (`demo` — a tile that IS the thing: an
+initial wearing the ring, a small card edged with the frame). Nothing else in the product learned about
+them. The tests bind the two new vocabularies to Postgres's own check constraints, the picker's markup,
+the write path's SQL and the schema, and `premium-walk.mjs` §15 proves the chain in a browser: chosen on
+the stage without a round trip, worn on the account chip after the save, and — read through carol's
+session, because a roster does not name the reader's own row — on the person's card in a store, beside
+the creator's chip and under the store's own top-tier light.
+
+**One rule the slots taught the picker.** A radio group with nothing checked submits nothing, and the look
+route refuses a slot with no value — so a person who had never opened the picker could not have saved
+their look at all. The picker now pre-checks what the product is drawing for them right now (the orbiting
+ring, the plain edge), and a test asserts exactly one value comes back checked for every slot.
+
+**The bug the slice found underneath it.** Building the card's edge meant the card finally needed the
+member's palette on itself, and that is how a much older mistake surfaced: `publicRoster` selected
+`p.nameplate as plus_plate`, and `plusWear()` reads `nameplate`. Nobody's *name* is drawn from the roster
+row's own field — the paint fell through to the fallback, so on a store's roster every dressed member was
+painted indigo, whatever they had chosen and paid for, while their palette sat in the same row. It had
+been that way since the look was first worn on a roster, and nothing caught it because indigo is a
+perfectly plausible colour for a name and because no test read the roster's palette at all. Two things
+changed that: an edge in the wrong colour is visibly the tier's colour rather than the person's, and the
+regression test now goes through `publicRoster` itself, so the query and the renderer have to agree about
+what the field is called. The walk reads the result on a live roster, in carol's session, where the
+store's chip and the store's top-tier light sit on the same card and must both survive.

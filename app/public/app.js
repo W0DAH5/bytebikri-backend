@@ -862,6 +862,23 @@
     stage.setAttribute('style', plate.getAttribute('style') || '');
     const demo = effect.querySelector('.plus-effect-demo [class*="wear-"]');
     nameEl.className = demo ? demo.className : 'member-name wear-solid';
+    // The two outer layers, read off the picker's own tiles: the tile for the checked
+    // ring is an initial already wearing that ring, and the tile for the checked frame
+    // is a small card already edged with it. Both tiles are drawn by the server with
+    // the product's own classes, so this copies a vocabulary instead of keeping a
+    // second one in JavaScript.
+    const avatarEl = stage.querySelector('[data-look-avatar]');
+    const ringTile = checked('ring')?.closest('[data-demo-key]')?.querySelector('.look-avatar');
+    if (avatarEl && ringTile) {
+      const keep = [...avatarEl.classList].filter((c) => !/^(wear-ring|ring-(none|hairline|double))$/.test(c));
+      avatarEl.className = [...keep, ...[...ringTile.classList].filter((c) => c !== 'look-avatar')].join(' ');
+    }
+    const frameTile = checked('frame')?.closest('[data-demo-key]')?.querySelector('.look-frame');
+    if (frameTile) {
+      const keep = [...stage.classList].filter((c) => !/^frame-/.test(c));
+      stage.className = [...keep, ...[...frameTile.classList].filter((c) => c.startsWith('frame-'))].join(' ');
+    }
+
     const moving = effect.dataset.effectMoves === 'yes';
     line.textContent = `${effect.dataset.effectLabel} in ${plate.dataset.plateLabel}`
       + (moving

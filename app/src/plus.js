@@ -138,6 +138,118 @@ export function effectOf(key) {
 }
 
 /**
+ * THE RING — what the initial is ringed with.
+ *
+ * A look has always carried a ring: a flat ring in the palette, with a slow conic sweep
+ * on hover. It was not a choice, because a look was one thing. It is a slot now, which
+ * is what the cosmetics review called the avatar frame, in the only form this product
+ * can honestly have it — the avatar here is an initial, not an upload.
+ *
+ * `none` is a real choice and it is not the same as not choosing: a person who wants
+ * nothing around their initial gets nothing, while a row that has never been near the
+ * picker keeps the ring every look has always had (`ringClass(null)`). Taking a ring
+ * AWAY because somebody never opened a form would be the product inventing a change.
+ */
+export const RINGS = {
+  none: {
+    key: 'none',
+    label: 'No ring',
+    moves: false,
+    hint: 'The initial with nothing around it. The quietest option, and the one to pick if a ring on your own card reads as fuss.',
+  },
+  hairline: {
+    key: 'hairline',
+    label: 'Hairline',
+    moves: false,
+    hint: 'A flat ring in your palette, two pixels wide. Completely still, on every device.',
+  },
+  orbit: {
+    key: 'orbit',
+    label: 'Orbit',
+    moves: true,
+    hint: 'The same ring, with a slow sweep of your palette turning around it while you hover over your own card. Still, for anyone whose device asks for less motion.',
+  },
+  double: {
+    key: 'double',
+    label: 'Double',
+    moves: false,
+    hint: 'Two rings with a gap between them — reads as a coin, and stays legible at the size the account chip draws it.',
+  },
+};
+
+export const RING_KEYS = Object.keys(RINGS);
+
+export function ringOf(key) {
+  return RINGS[key] ?? null;
+}
+
+/**
+ * THE FRAME — the edge of the person's own card.
+ *
+ * The card is a rendering of a person, and their cosmetics travel with them: the same
+ * rule the name paint already follows, everywhere that card is drawn — a store's roster,
+ * the seller's member queue, the buyer's preview. What it decorates is an EDGE. It never
+ * touches the card's surface, its ink, the store's chip, or the store's own band, and a
+ * test reads the stylesheet and fails if a frame rule names a colour or a background.
+ */
+export const FRAMES = {
+  none: {
+    key: 'none',
+    label: 'None',
+    moves: false,
+    hint: 'The store’s own card, with nothing of yours on its edge.',
+  },
+  hairline: {
+    key: 'hairline',
+    label: 'Hairline',
+    moves: false,
+    hint: 'A one-pixel edge in your palette, all the way round.',
+  },
+  double: {
+    key: 'double',
+    label: 'Double rule',
+    moves: false,
+    hint: 'A hairline with a second one stepped in from it. The most formal of the four, and still just an edge.',
+  },
+  glow: {
+    key: 'glow',
+    label: 'Glow',
+    moves: false,
+    hint: 'A soft light in your palette behind the card’s edge. It does not pulse — a glow that breathes on a page full of cards is a page that will not settle.',
+  },
+};
+
+export const FRAME_KEYS = Object.keys(FRAMES);
+
+export function frameOf(key) {
+  return FRAMES[key] ?? null;
+}
+
+/**
+ * The classes a ring adds to an avatar. `null` is not "none": it is the ring every look
+ * has always had, which is what keeps every existing wearer looking exactly as they did.
+ */
+export function ringClass(ringKey) {
+  if (ringKey === null || ringKey === undefined) return 'wear-ring';
+  return {
+    none: 'ring-none',
+    hairline: 'ring-hairline',
+    orbit: 'wear-ring',
+    double: 'ring-double',
+  }[ringKey] ?? 'wear-ring';
+}
+
+/** The classes a frame adds to the card, or '' for the card's own edge. */
+export function frameClass(frameKey) {
+  return {
+    none: '',
+    hairline: 'frame-hairline',
+    double: 'frame-double',
+    glow: 'frame-glow',
+  }[frameKey] ?? '';
+}
+
+/**
  * YOUR OWN BAND — the page that is yours, in your own colours.
  *
  * The survey's "profile themes" item, answered inside this product's rules. A store's
@@ -249,11 +361,19 @@ export function plusWear(row = null) {
   const active = row.plus_active === true
     || plusState({ status: row.plus_status ?? row.status, period_end: row.plus_period_end ?? row.period_end }) === 'active';
   if (!active) return null;
-  if (!row.nameplate && !row.plus_effect) return null;
+  // A look is worn when ANY of its slots has been chosen. Before the ring and the frame
+  // existed this read "a palette or an effect", and it stays true for those two: a
+  // person who has chosen only a ring has still chosen something, and telling them they
+  // are wearing nothing would be the product contradicting its own picker.
+  if (!row.nameplate && !row.plus_effect && !row.plus_ring && !row.plus_frame) return null;
   const effect = effectOf(row.plus_effect).key;
   return {
     plate: ACCENTS[row.nameplate] ? row.nameplate : 'indigo',
     effect,
+    // The two outer layers. An unknown key is the same graceful answer every other
+    // vocabulary in this file gives: no choice, and therefore the default.
+    ring: ringOf(row.plus_ring)?.key ?? null,
+    frame: frameOf(row.plus_frame)?.key ?? null,
     effects: EFFECTS,
   };
 }
@@ -293,6 +413,11 @@ export function composeName({ plus = null, tier = null } = {}) {
   const name = wear
     ? { effect: wear.effect, palette: wear.plate, className: wearClass(wear.effect) }
     : null;
+  // The two outer layers of the person's own card. Same owner as the name and the same
+  // decision (`plusWear`), which is the whole reason they are decided here rather than
+  // at the four places a card is drawn.
+  const ring = wear ? { key: wear.ring, className: ringClass(wear.ring) } : null;
+  const frame = wear ? { key: wear.frame, className: frameClass(wear.frame) } : null;
   const tierNo = Number(tier?.tier_no) || 0;
   const chip = tierNo
     ? {
@@ -310,7 +435,7 @@ export function composeName({ plus = null, tier = null } = {}) {
       glyph: glyphOf(tier.glyph)?.key ?? null,
     }
     : null;
-  return { name, chip };
+  return { name, chip, ring, frame };
 }
 
 /**

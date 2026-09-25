@@ -316,14 +316,25 @@ await alice.p.locator('.plus-preview').waitFor(WAIT);
 // first in the DOM is how this assertion read `[]` over a page that was moving.
 const previewWear = await alice.p.locator('.plus-preview .member-name').getAttribute('class');
 const previewLive = await animationsOn(alice.p, '.plus-preview .member-name');
-const ringLive = await animationsOn(alice.p, '.plus-preview .wear-ring');
-console.log('  the wearer’s preview:', previewWear, JSON.stringify(previewLive), '· the ring:', JSON.stringify(ringLive));
+// The ring, asked for by its own hook rather than by the class that only ONE of the
+// four ring choices carries: since the ring became a slot, looking for `.wear-ring`
+// finds nothing for a person wearing a hairline or a coin, and the walk read that as a
+// broken animation. What is asserted is that the avatar MOVES according to what it
+// wears — the orbiting ring turns, and the three still rings stay still.
+const ringAvatar = await alice.p.locator('.plus-preview [data-look-avatar]');
+const ringClass = await ringAvatar.getAttribute('class');
+const ringLive = await animationsOn(alice.p, '.plus-preview [data-look-avatar]');
+console.log('  the wearer’s preview:', previewWear, JSON.stringify(previewLive), '· the ring:', ringClass, JSON.stringify(ringLive));
 if (!/wear-/.test(previewWear || '')) throw new Error(`the wearer’s own look is not in the preview: ${previewWear}`);
 if (!previewLive?.some((a) => a.playState === 'running')) {
   throw new Error('the Plus preview is not moving — the one place the motion is the product');
 }
-if (!ringLive?.some((a) => /wear-spin/.test(a.name) && a.playState === 'running')) {
-  throw new Error(`the ring is not turning in the preview: ${JSON.stringify(ringLive)}`);
+const spins = (ringLive || []).some((a) => /wear-spin/.test(a.name) && a.playState === 'running');
+if (/wear-ring/.test(ringClass || '') && !spins) {
+  throw new Error(`the orbiting ring is not turning in the preview: ${JSON.stringify(ringLive)}`);
+}
+if (!/wear-ring/.test(ringClass || '') && spins) {
+  throw new Error(`a still ring is turning in the preview: ${ringClass}`);
 }
 await shotOf(alice.p, '.plus-preview', 'premium-4-plus-preview-live');
 
@@ -340,12 +351,21 @@ await alice.p.goto(`${BASE}/s/${ROSTER_SLUG}`);
 await consent(alice.p);
 const headerChip = await alice.p.locator('.who .avatar').getAttribute('class');
 const headerName = await alice.p.locator('.who .who-name').getAttribute('class');
-const ringAtRest = await animationsOn(alice.p, '.who .wear-ring');
+const ringAtRest = await animationsOn(alice.p, '.who .avatar');
 console.log('  the header    :', headerChip, '·', headerName, '· ring:', JSON.stringify(ringAtRest));
-if (!/wear-ring/.test(headerChip || '')) throw new Error(`the account chip in the header wears no ring: ${headerChip}`);
+// The same rule as the preview: the chip wears the ring the person chose, and it is
+// still until somebody touches it. Which ring that is, is read off the class.
+const headerRing = ['wear-ring', 'ring-hairline', 'ring-double'].find((c) => (headerChip || '').includes(c));
+if (!headerRing) throw new Error(`the account chip in the header wears no ring: ${headerChip}`);
+if (headerRing !== (ringClass || '').match(/wear-ring|ring-hairline|ring-double/)?.[0]) {
+  throw new Error(`the header and the preview wear different rings: ${headerChip} vs ${ringClass}`);
+}
 if (!/wear-/.test(headerName || '')) throw new Error('the account name in the header wears nothing');
-if (ringAtRest?.some((a) => a.playState === 'running')) {
+if (/wear-ring/.test(headerChip || '') && ringAtRest?.some((a) => a.playState === 'running')) {
   throw new Error('the header ring is turning before anybody touched it — motion is on intent');
+}
+if (!/wear-ring/.test(headerChip || '') && ringAtRest?.length) {
+  throw new Error(`a still ring animates in the header: ${JSON.stringify(ringAtRest)}`);
 }
 await shotOf(alice.p, '.who', 'premium-9-worn-everywhere');
 
@@ -459,8 +479,12 @@ console.log('  the Plus page states both owners: yes');
 say(8, 'all six effects are offered, each with words for what it does');
 await p.goto(`${BASE}/plus`);
 await consent(p);
-await p.locator('.plus-effects').first().scrollIntoViewIfNeeded();
-const choices = await p.locator('.plus-effect-choice').evaluateAll((els) => els.map((el) => ({
+// Scoped to the EFFECT slot's own group: the picker draws one group per slot, and a
+// selector that matched all of them would be counting somebody else's control. (It was,
+// the round the ring and the frame arrived — fourteen "effects", six of them effects.)
+const effectGroup = '[aria-labelledby="plus-effect-label"] ';
+await p.locator(effectGroup.trim()).scrollIntoViewIfNeeded();
+const choices = await p.locator(`${effectGroup}.plus-effect-choice`).evaluateAll((els) => els.map((el) => ({
   key: el.querySelector('input[name=effect]')?.value,
   label: el.querySelector('strong')?.textContent,
   hint: el.querySelector('.fine')?.textContent,
@@ -475,7 +499,7 @@ for (const c of choices) {
     throw new Error(`the demo for ${c.key} does not wear it: ${c.demo}`);
   }
 }
-await shotOf(p, '.plus-effects', 'premium-8-effect-picker');
+await shotOf(p, effectGroup.trim(), 'premium-8-effect-picker');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 10. The store's band — the aurora, and the seller seeing it before keeping it
@@ -979,10 +1003,105 @@ console.log('  reduced motion:', JSON.stringify(reduced));
 if (!reduced.present || !reduced.mesh) throw new Error('reduced motion lost the band itself');
 if (reduced.animation !== 'none') throw new Error(`the aurora still runs for a reduce user: ${reduced.animation}`);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 15. The two outer layers — the ring on the initial, and the edge of the card
+// ─────────────────────────────────────────────────────────────────────────────
+say(15, 'the ring and the frame are chosen on the person’s own stage and worn on a store’s roster');
+const outer = await openCtx({ scheme: 'dark', who: 'alice' });
+await outer.p.goto(`${BASE}/plus`);
+await consent(outer.p);
+// What is worn right now, so the walk can put it back at the end and re-run cleanly.
+const startOuter = await outer.p.evaluate(() => ({
+  ring: document.querySelector('input[name=ring]:checked')?.value ?? null,
+  frame: document.querySelector('input[name=frame]:checked')?.value ?? null,
+}));
+console.log('  worn now      :', JSON.stringify(startOuter));
+if (!startOuter.ring || !startOuter.frame) {
+  throw new Error('a slot has nothing checked — a radio group with no selection could never be saved');
+}
+// Four rings and four edges, each drawn with the class the product renders — the tile
+// for the checked value IS an initial wearing it.
+const outerTiles = await outer.p.evaluate(() => ({
+  rings: document.querySelectorAll('[aria-labelledby="plus-ring-label"] .plus-effect-choice .look-avatar').length,
+  frames: document.querySelectorAll('[aria-labelledby="plus-frame-label"] .plus-effect-choice .look-frame').length,
+}));
+console.log('  the two groups:', JSON.stringify(outerTiles));
+if (outerTiles.rings !== 4 || outerTiles.frames !== 4) {
+  throw new Error(`the outer layers are not drawn: ${JSON.stringify(outerTiles)}`);
+}
+
+await outer.p.locator('input[name="ring"][value="double"]').check();
+await outer.p.locator('input[name="frame"][value="glow"]').check();
+await outer.p.waitForTimeout(200);
+const chosenOuter = await outer.p.evaluate(() => ({
+  url: location.pathname,
+  avatar: document.querySelector('[data-look-avatar]')?.className ?? '',
+  stage: document.querySelector('[data-look-stage]')?.className ?? '',
+}));
+console.log('  after choosing:', JSON.stringify(chosenOuter));
+if (chosenOuter.url !== '/plus') throw new Error('choosing a ring navigated — the stage should be live');
+if (!/\bring-double\b/.test(chosenOuter.avatar)) throw new Error(`the chosen ring did not reach the avatar: ${chosenOuter.avatar}`);
+if (!/\bframe-glow\b/.test(chosenOuter.stage)) throw new Error(`the chosen frame did not reach the card: ${chosenOuter.stage}`);
+await shotOf(outer.p, '[data-look-stage]', 'premium-21-look-outer');
+
+// Saved, and worn: the account chip beside the name at the top of the product, which is
+// the avatar this ring has always been drawn on.
+await outer.p.locator('form.plus-look button[type=submit]').click();
+await outer.p.waitForLoadState('domcontentloaded');
+const worn = await outer.p.evaluate(() => ({
+  ringChecked: document.querySelector('input[name="ring"][value="double"]')?.checked ?? false,
+  frameChecked: document.querySelector('input[name="frame"][value="glow"]')?.checked ?? false,
+  chip: document.querySelector('.who-link .plus-avatar')?.className ?? '',
+}));
+console.log('  after saving  :', JSON.stringify(worn));
+if (!worn.ringChecked || !worn.frameChecked) throw new Error('the saved look did not come back on the picker');
+if (!/\bring-double\b/.test(worn.chip)) throw new Error(`the account chip is not wearing the saved ring: ${worn.chip}`);
+await shotOf(outer.p, '.who-link', 'premium-22-account-ring');
+
+// A store's roster draws the person's card — and this is the view of SOMEBODY ELSE.
+// (The roster does not name the reader's own row: alice looking at her own store's list
+// saw "0 people are named here", which is a product decision, not a missing member, and
+// a walk that read it as one would be asserting the wrong thing.) So the witness is
+// carol: what another person actually sees beside alice's name.
+const witness = await openCtx({ scheme: 'dark', who: 'carol' });
+await witness.p.goto(`${BASE}/s/nima-crafts`);
+await consent(witness.p);
+const rosterCard = await witness.p.evaluate((who) => {
+  const card = [...document.querySelectorAll('.member')]
+    .find((li) => li.querySelector('.member-name')?.textContent.trim().toLowerCase().includes(who));
+  if (!card) return null;
+  return {
+    cls: card.className,
+    ring: card.querySelector('.member-avatar')?.className ?? '',
+    chip: Boolean(card.querySelector('.store-chip')),
+    name: card.querySelector('.member-name')?.textContent.trim() ?? '',
+  };
+}, 'alice');
+console.log('  as carol sees :', JSON.stringify(rosterCard));
+if (!rosterCard) throw new Error('alice is not on nima’s roster — the demo state changed');
+if (!/\bframe-glow\b/.test(rosterCard.cls)) throw new Error(`the frame did not travel to the roster card: ${rosterCard.cls}`);
+if (!/\bring-double\b/.test(rosterCard.ring)) throw new Error(`the ring did not travel to the roster avatar: ${rosterCard.ring}`);
+if (!rosterCard.chip) throw new Error('the person’s frame took the store’s chip away');
+// The store's own layer on the same avatar is untouched: the top tier still glints, and
+// it is the store's, drawn whether or not the person chose a ring.
+if (!/member-avatar--shine/.test(rosterCard.ring)) {
+  throw new Error(`the person’s ring put out the store’s top-tier light: ${rosterCard.ring}`);
+}
+await shotOf(witness.p, '.member-roster', 'premium-23-roster-frame');
+
+// Put back exactly what was worn before, so the walk leaves the state it found.
+await outer.p.goto(`${BASE}/plus`);
+await consent(outer.p);
+await outer.p.locator(`input[name="ring"][value="${startOuter.ring}"]`).check();
+await outer.p.locator(`input[name="frame"][value="${startOuter.frame}"]`).check();
+await outer.p.locator('form.plus-look button[type=submit]').click();
+await outer.p.waitForLoadState('domcontentloaded');
+console.log('  put back      :', startOuter.ring, '/', startOuter.frame);
+
 const errors = [...dark.p.errors, ...light.p.errors, ...calm.p.errors,
   ...alice.p.errors, ...calmAlice.p.errors, ...nima.p.errors,
   ...bob.p.errors, ...carolG.p.errors, ...operator.p.errors,
-  ...own.p.errors, ...none.p.errors, ...still.p.errors];
+  ...own.p.errors, ...none.p.errors, ...still.p.errors, ...outer.p.errors, ...witness.p.errors];
 console.log('\nconsole errors:', errors.length ? JSON.stringify(errors, null, 1) : 'none');
 if (errors.length) throw new Error(`${errors.length} console error(s)`);
 
@@ -990,5 +1109,6 @@ await dark.ctx.close(); await light.ctx.close(); await calm.ctx.close();
 await alice.ctx.close(); await calmAlice.ctx.close(); await nima.ctx.close();
 await bob.ctx.close(); await carolG.ctx.close(); await operator.ctx.close();
 await own.ctx.close(); await none.ctx.close(); await still.ctx.close();
+await outer.ctx.close(); await witness.ctx.close();
 await browser.close();
-console.log(`\nwalk complete — 20 screenshots in ${OUT}`);
+console.log(`\nwalk complete — 23 screenshots in ${OUT}`);

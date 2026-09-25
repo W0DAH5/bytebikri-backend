@@ -1160,7 +1160,12 @@ async function plusContext(req) {
     yearPlan,
     subscription,
     state: plusState({ status: subscription?.status, period_end: subscription?.period_end }),
-    look: { nameplate: me?.nameplate ?? null, effect: me?.plus_effect ?? null },
+    look: {
+      nameplate: me?.nameplate ?? null, effect: me?.plus_effect ?? null,
+      // The two outer layers, read from the row the same way the paint is: the form
+      // shows what is actually stored, and an unknown value reads as "not chosen".
+      ring: me?.plus_ring ?? null, frame: me?.plus_frame ?? null,
+    },
     wear: plusWear(me),
     // What this person has bought for other people. Read here rather than on the view
     // so the page a buyer reloads is the page the database says.
