@@ -999,11 +999,20 @@ export function reviewName(row = null) {
   return nameTag(row.buyer_name, row);
 }
 
-export function nameTag(name, row = null, { base = 'member-name' } = {}) {
+export function nameTag(name, row = null, { base = 'member-name', accent = null } = {}) {
   const label = String(name ?? '');
   if (!label) return '';
   const wear = plusWear(row);
-  if (!wear) return `<span class="${base} wear-solid">${esc(label)}</span>`;
+  // No look of their own: the name takes the palette of whatever context it is drawn in.
+  // On a store's card that is the tier they hold there (the same `accent` the roster's
+  // name uses), and everywhere else there is nothing to paint and the page's own ink
+  // applies. Without the accent a member appeared in two colours on ONE page — the
+  // store's teal on their roster row and the fallback indigo in the queue above it.
+  if (!wear) {
+    return accent
+      ? `<span class="${base} wear-solid" style="${plateStyleAttr(accent)}">${esc(label)}</span>`
+      : `<span class="${base} wear-solid">${esc(label)}</span>`;
+  }
   return `<span class="${plusNameClasses(wear, base)}" style="${plateStyleAttr(wear.plate)}">${esc(label)}</span>`;
 }
 
@@ -6522,9 +6531,14 @@ ${flashNote(flash)}
 
   const queue = pending.map((m) => {
     const state = 'pending';
+    // The person's own look, if they have one. This is the seller's page and the name is
+    // being shown to somebody else, which is the rule everywhere else in the product —
+    // and their bytebikri look has nothing to do with whether these dues are confirmed,
+    // so a member waiting on their store still wears the palette they bought. The TIER
+    // pill beside it stays the store's, as always: two payers, two elements.
     return `<li class="queue-row">
       <div class="queue-line">
-        <strong>${esc(m.display_name)}</strong>
+        ${nameTag(m.display_name, m, { accent: m.accent })}
         <span class="pill">${esc(m.tier_name || defaultTierName(m.tier_no))}</span>
         <span class="spacer"></span>
         <span class="fine">${m.claimed_at ? relTime(m.claimed_at) : 'just now'}</span>

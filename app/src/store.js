@@ -2984,12 +2984,22 @@ export const store = {
    */
   pendingMemberships(channelId) {
     return many(
-      `select m.*, p.display_name, p.email, t.name as tier_name, t.dues_npr, t.period_months,
-              t.glyph
+      // The look rides here for the same reason it rides on the roster and the member
+      // list: this row is drawn on the seller's OWN page, and the name on it is a person
+      // the platform is showing to somebody else. Whether these dues have been confirmed
+      // has nothing to do with whether that person pays bytebikri for a look — the two
+      // payers are unrelated — so a member waiting on their store's confirmation still
+      // wears the palette they bought, and the join decides that, not the row's status.
+      `select m.*, p.display_name, p.email, t.name as tier_name, t.accent, t.dues_npr, t.period_months,
+              t.glyph,
+              p.nameplate, p.plus_effect as plus_effect,
+              p.plus_ring as plus_ring, p.plus_frame as plus_frame,
+              pl.plus_status, pl.plus_period_end
          from memberships m
          join profiles p on p.id = m.profile_id
          left join membership_tiers t
            on t.channel_id = m.channel_id and t.tier_no = m.tier_no
+         ${PLUS_JOIN}
         where m.channel_id = $1 and m.status = 'pending'
         order by m.claimed_at asc nulls last`,
       [channelId],

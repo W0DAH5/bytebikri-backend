@@ -1262,6 +1262,7 @@ const queue = await seller.p.evaluate(() => [...document.querySelectorAll('.memb
   who: n.textContent.trim(),
   cls: n.className,
   palette: getComputedStyle(n).getPropertyValue('--plate-a').trim(),
+  where: n.closest('.queue-row') ? 'waiting' : 'roster',
 })));
 console.log('  the seller’s queue:', JSON.stringify(queue));
 if (!queue.length) throw new Error('the seller’s member list rendered no member rows');
@@ -1271,6 +1272,43 @@ if (!dressedRow) {
 }
 if (dressedRow.palette !== '#0f766e') {
   throw new Error(`the seller’s queue painted the member in ${dressedRow.palette}, not their own palette`);
+}
+// The WAITING list above the roster draws the same person: dues nobody has confirmed yet
+// have nothing to do with whether somebody pays bytebikri for a look, so that row goes
+// through the same plate helper rather than printing a bare name. Asserted as markup —
+// the element is a `.member-name` span (which is how the helper draws a name) and the
+// store's own tier pill is still beside it.
+const waitingRow = await seller.p.evaluate(() => {
+  const row = document.querySelector('.queue-row');
+  if (!row) return null;
+  const name = row.querySelector('.member-name');
+  return {
+    who: name?.textContent.trim() ?? null,
+    cls: name?.className ?? null,
+    palette: name ? getComputedStyle(name).getPropertyValue('--plate-a').trim() : null,
+    pill: row.querySelector('.pill')?.textContent.trim() ?? null,
+  };
+});
+console.log('  waiting on you:', JSON.stringify(waitingRow));
+if (waitingRow) {
+  if (!waitingRow.who || !/member-name/.test(waitingRow.cls || '')) {
+    throw new Error(`the waiting list prints a bare name instead of a plate: ${JSON.stringify(waitingRow)}`);
+  }
+  if (!waitingRow.pill) throw new Error('the store’s own tier pill left the waiting row');
+  // ONE PAGE, ONE PERSON, ONE COLOUR. This page draws the same member twice — queued above,
+  // rostered below. A member with a look of their own wears it in both places; a member
+  // without one takes the colour of the page (their tier's accent), so the two rows must
+  // agree. They did not: the queue fell back to the renderer's default and the roster to
+  // the tier, putting one name in two colours on one screen.
+  const samePerson = queue.filter((r) => r.who === waitingRow.who);
+  const queuedPlain = /wear-solid/.test(waitingRow.cls || '');
+  for (const row of samePerson) {
+    if (/wear-solid/.test(row.cls) !== queuedPlain) continue; // different paint rule, nothing to compare
+    if (queuedPlain && row.palette !== waitingRow.palette) {
+      throw new Error(`the same member is two colours on one page: ${waitingRow.palette} in the queue, ` +
+        `${row.palette} on the roster`);
+    }
+  }
 }
 await shotOf(seller.p, '.members-file', 'premium-24-seller-queue');
 await seller.ctx.close();

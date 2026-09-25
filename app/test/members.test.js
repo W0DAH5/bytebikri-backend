@@ -359,6 +359,78 @@ test('the seller’s own member list hands the renderer the look too', async () 
       'the seller’s queue did not dress the member’s name');
     assert.match(html, /--plate-a:#0f766e/, 'and not in the member’s own palette');
     assert.match(html, /class="store-chip/, 'the seller’s own chip left the row');
+
+    // AND THE WAITING LIST, which draws the same person one page up. Dues awaiting
+    // confirmation are UNRELATED to whether somebody pays bytebikri for a look, so a
+    // member sitting in "Waiting on you" still wears the palette they bought — the query
+    // carries the look and the subscription join, and the route hands the row straight
+    // to `nameTag`. The tier pill beside it remains the store's, as always.
+    const waiting = await store.userByEmailOrCreate(`member-wait-${Date.now()}@test.local`);
+    try {
+      await store.joinMembership({ profileId: waiting.id, channelId: channel.id, tierNo: 1, claim: claim() });
+      const waitClaim = await store.claimPlus({ profileId: waiting.id, txnReference: `WAIT-${Date.now()}` });
+      await store.matchCustomerPlanPayment({ paymentId: waitClaim.payment.id, actorId: null });
+      await query(`update profiles set display_name = 'Bimal', nameplate = 'rose', plus_effect = 'edge' where id = $1`, [waiting.id]);
+      const pendingRows = await store.pendingMemberships(channel.id);
+      const pendingRow = pendingRows.find((r) => r.profile_id === waiting.id);
+      assert.ok(pendingRow, 'the pending claim is not in the queue at all');
+      assert.equal(pendingRow.nameplate, 'rose', 'the waiting row does not carry the look');
+      assert.equal(pendingRow.plus_status, 'active', 'and not the arrangement behind it');
+      const pendingHtml = views.channelMembers({
+        channel, user: owner, members: [], pending: [pendingRow],
+        tiers: await store.membershipTiers(channel.id), membershipsOn: true, plan: PLANS.store,
+      });
+      // Asserted as the whole attribute: the palette the look is painted from and the
+      // effect class that paints it, in the order the helper writes them.
+      assert.match(pendingHtml,
+        /class="member-name wear-edge" style="--plate-ink:#fb7185;--plate-ink-light:#be123c;--plate-a:#e11d48;--plate-b:#be123c"/,
+        'the waiting list draws the member’s name plain — the store is showing them to somebody');
+      assert.match(pendingHtml, /<span class="pill">Friend</, 'the store’s own tier pill left the waiting row');
+
+      // AND THE PERSON WHO BOUGHT NOTHING. Their name has no look of its own, so the
+      // colour has to come from the page they are drawn on — and the page draws them
+      // twice: once in the queue above, once on the roster below. Falling back to the
+      // renderer's default made the SAME person indigo in the queue and the store's teal
+      // on their own row, two colours, one page, one name. The accent the tier carries is
+      // the single source for both, so the two spans must come out byte-identical.
+      const plain = await store.userByEmailOrCreate(`member-plain-${Date.now()}@test.local`);
+      try {
+        await store.joinMembership({ profileId: plain.id, channelId: channel.id, tierNo: 1, claim: claim() });
+        const plainClaim = await store.claimPlus({ profileId: plain.id, txnReference: `PLAIN-${Date.now()}` });
+        await store.matchCustomerPlanPayment({ paymentId: plainClaim.payment.id, actorId: null });
+        await query(`update profiles set display_name = 'Nirmala', nameplate = null where id = $1`, [plain.id]);
+        const tiersNow = await store.membershipTiers(channel.id);
+        const plainPending = (await store.pendingMemberships(channel.id)).find((r) => r.profile_id === plain.id);
+        assert.ok(plainPending, 'the plain member is not in the queue');
+        assert.equal(plainPending.accent, tiersNow[0].accent, 'the queue dropped the tier palette');
+        const plainRoster = (await store.membersOfChannel(channel.id)).find((r) => r.profile_id === plain.id);
+        assert.ok(plainRoster, 'the plain member is not on the roster');
+        const nameSpanOf = (html) => html.match(/<span class="member-name[^"]*"[^>]*>Nirmala<\/span>/)?.[0];
+        const queuedName = nameSpanOf(views.channelMembers({
+          channel, user: owner, members: [], pending: [plainPending],
+          tiers: tiersNow, membershipsOn: true, plan: PLANS.store,
+        }));
+        const rosterName = nameSpanOf(views.channelMembers({
+          channel, user: owner, members: [plainRoster], pending: [],
+          tiers: tiersNow, membershipsOn: true, plan: PLANS.store,
+        }));
+        assert.ok(queuedName && rosterName, 'the plain member’s name is not being drawn at all');
+        assert.equal(queuedName, rosterName,
+          'the same member is two colours on one page — the queue and the roster disagree');
+      } finally {
+        await query(`delete from customer_plan_payments where customer_subscription_id in
+                      (select id from customer_subscriptions where profile_id = $1)`, [plain.id]);
+        await query('delete from customer_subscriptions where profile_id = $1', [plain.id]);
+        await query('delete from memberships where profile_id = $1 and channel_id = $2', [plain.id, channel.id]);
+        await query('delete from profiles where id = $1', [plain.id]);
+      }
+    } finally {
+      await query(`delete from customer_plan_payments where customer_subscription_id in
+                    (select id from customer_subscriptions where profile_id = $1)`, [waiting.id]);
+      await query('delete from customer_subscriptions where profile_id = $1', [waiting.id]);
+      await query('delete from memberships where profile_id = $1 and channel_id = $2', [waiting.id, channel.id]);
+      await query('delete from profiles where id = $1', [waiting.id]);
+    }
   } finally {
     // Payments hang off the subscription, not the profile; the receipt goes before the
     // arrangement it paid for.
