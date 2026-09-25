@@ -521,3 +521,89 @@ what that conversation is for (a surface, a month, share of voice).
   in words. We count what we drew, which is exactly why the count is evidence and not a bill.
 - **No per-person ledger.** The events already carry who watched what (they have to: that is how a view is
   credited). The ledger aggregates them, and adds no new tracking of its own.
+
+---
+
+## 13. The reader — pages are a sequence, and a gate is a seam
+
+§5.1 says a read is "an ordered image set" and §7's slice table says the between-chapter gate waits for a
+reader surface, because a gate that nothing can stop at is a sentence rather than a product. This section is
+that surface, and its whole design is three boundaries: **what a page is, where a gate may sit, and what the
+reader refuses to draw.**
+
+**What the research says, and what it costs us.** Two reading conventions share this shape, and they are
+not interchangeable: webtoon-style content is a *vertical continuous scroll* with no page turn at all
+("storytelling driven by vertical distance between panels"), while manga and manhwa are *page-based* — and
+manga reads right-to-left, manhwa left-to-right. The complaint readers write down about free readers is
+always the same three things: full-screen ads **between chapters**, banners **over the reading area**, and a
+*mandatory* video before the chapter. So the rules that follow are the readers' own rules: a gate is a seam
+between two pages, never a thing on a page, and it is never on every seam.
+
+**1. What the reader draws, and what it says when it cannot.**
+
+| The file | The reader |
+|---|---|
+| an image (`jpg/png/webp/gif/avif`) | one page per file — the two-image set that `assetShape` already calls a read is exactly this |
+| a **zip of images** (`.cbz`; also `.zip`) | one page per image *entry*, read from the archive's own index |
+| a **PDF** | the browser's own viewer in a frame, opened at a page (`#page=n`); range requests already work |
+| `.epub .mobi .fb2 .djvu .cbr .cb7` | **not drawn.** The reader says so in one line and offers the file, with the "download instead" control §5.2 promised — an override *down*, never up |
+
+Choosing "the import the browser already ships" over vendoring PDF.js is §7's own note (*no vendoring until
+chosen*) read strictly: a vendored renderer is a dependency we would have to keep, and a PDF the browser
+paints needs no code from us at all. The cost is honest and stated: **we cannot see inside a PDF**, so it
+counts as **one chapter** however many pages it has, and no gate can be placed inside it.
+
+**2. The page model — order is the seller's, not ours.**
+
+- **Natural order**, case-insensitive: `10` after `9`. The classic alphabetical sort works only because
+  publishers zero-pad (`001.jpg`); natural order agrees with it there and *fixes* the archive that shipped
+  `1.jpg … 10.jpg` without padding.
+- **Filtered, never reordered.** Junk (`__MACOSX/`, `.DS_Store`, `Thumbs.db`, `._*` resource forks) and
+  metadata (`ComicInfo.xml`) are not pages. Nothing else is dropped: `cover.jpg` stays where it sorts,
+  because moving it would be inventing an order the seller did not choose.
+- **Chapter count is the page count**, and this is the whole reason the model exists: §5.3's planner was
+  already written to place gates "after page 13 and page 27" of a forty-page read, and it was being told
+  `files.length` — one. A reader makes that count true, and the planner needs no change to receive it.
+- **Direction and mode are the store's, per file**: `page` (one page per screen) or `scroll` (a vertical
+  strip), left-to-right or right-to-left. Default `page` + `ltr`; a manga store sets `rtl` once and its
+  reader turns the right way. Both modes keep the gate at a seam: scrolling is continuous *within a
+  segment*, and a segment ends where a gate is.
+
+**3. Reading a zip without unpacking it.** A CBZ is a standard ZIP, and its **central directory** is the
+index every reader uses to build the page list — which is exactly the random access this architecture
+wants: one page served per request, no unpacking, and the same token machinery as every other byte.
+
+- **Sizes come from the central directory, not the local header.** A ZIP written with a data descriptor
+  (bit 3) has zeros in the local header, and the local header's *extra field* is often a different length
+  from the central one — the entry's data starts after the **local** header's own name+extra. That is the
+  one bug that would make every page of a valid archive unreadable, so it is what the test checks.
+- **Both methods**: `stored` (0) copied, `deflate` (8) inflated — built into Node, so this costs no
+  dependency. The CBZ convention is `stored` (images are already compressed) with `deflate` permitted;
+  real archives contain both.
+- **Caps, because a zip can be a bomb**: pages (entries), per-page bytes, and the archive itself are
+  bounded, and a test builds a small archive that expands past the cap to prove the refusal is a sentence
+  rather than a crash. ZIP64 is refused the same way — a 4 GB comic is a download, and saying so is the
+  feature.
+- **Names are labels and nothing else.** No entry is ever written to disk or resolved against a path, so
+  `../../etc/passwd` inside an archive is a label that sorts somewhere and draws nothing. The reader serves
+  bytes from the buffer it already holds; there is no traversal surface to get wrong.
+
+**4. The gate, and how the reader makes it stronger than the player's.** The player's gate is a pause the
+server releases (`data-cues` + the network's postback); a viewer with devtools can seek past it, and §10 says
+so. A reader can do better, because in a reader **every page is minted separately**: the page route asks the
+same question the gate asks, and **refuses bytes past an uncleared seam**. The veil is a courtesy; the
+refusal is the product. A gate stands where the planner put it — never before chapter 3, never two within one
+chapter of each other, never inside a page — and the file page says where the stops are *before* the first
+page, because a gate nobody was told about reads as a fault.
+
+**5. Resume, one row per person and file.** A reader expects "continue where you left off", so
+`reading_progress` holds one row per (person, file): the step, and when. It is written when a page actually
+changes rather than when a page renders — a URL fetcher, a preview crawler or a refresh is not reading — and
+it is private: the store sees that a file was opened, never where somebody stopped in it. The file page
+offers *Continue at page N*; the reader never asks twice.
+
+**6. What the reader refuses.** No ad on a page, ever — the gate is a seam or it is not a gate. No gate on
+every seam. No DRM, and no per-page watermarking beyond what the images already carry. No page counting for
+a format we cannot read (a PDF is one chapter, and the planner is told one). No reading position shared with
+the store. No vendored renderer until a renderer is chosen, and no dependency added for a format the
+browser or Node already ships.
