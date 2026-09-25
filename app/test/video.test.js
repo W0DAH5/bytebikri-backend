@@ -340,11 +340,14 @@ test('a token that is not there is refused before any request is made', async ()
 
 // ── 3. more than one host ───────────────────────────────────────────────────
 //
-// Three providers share one seam, and the facts that make them different are the ones
-// worth asserting: Catbox answers in plain text and has no id beyond the file's name;
-// GoFile wraps its answers in a `status` field that beats the HTTP code, and a free
-// account cannot produce a playable link at all. Each gets its own in-process stub,
-// because what these tests ask is "what did the client actually send".
+// Four providers share one seam, and the facts that make them different are the ones worth
+// asserting: Catbox answers in plain text and has no id beyond the file's name; Pixeldrain
+// authenticates with Basic auth whose PASSWORD is the key, and refuses hotlinks on a free
+// plan; Telegra.ph answers an ARRAY on success and an object on failure, is undocumented,
+// and cannot delete anything. Each gets its own in-process stub, because what these tests
+// ask is "what did the client actually send". (GoFile was here and is gone: a free account
+// could not produce a playable link, which is a fact about the ACCOUNT rather than a bug
+// in the client, and no amount of correct code fixes it.)
 
 const seenCatbox = [];
 const catboxStub = http.createServer(async (req, res) => {
@@ -390,7 +393,7 @@ before(async () => {
 after(async () => { await new Promise((resolve) => catboxStub.close(resolve)); });
 
 test('the registry knows its hosts, and a misspelled driver is local rather than something else', () => {
-  assert.deepEqual(video.HOSTS, ['filemoon', 'gofile', 'catbox']);
+  assert.deepEqual(video.HOSTS, ['filemoon', 'pixeldrain', 'telegraph', 'catbox']);
   assert.equal(video.videoDriver({ VIDEO_DRIVER: 'FILEMOON ' }), 'filemoon');
   assert.equal(video.videoDriver({ VIDEO_DRIVER: 'nope' }), 'local',
     'a typo in an env file must leave every byte on disk, not pick another host');
@@ -400,11 +403,11 @@ test('the registry knows its hosts, and a misspelled driver is local rather than
 test('a key names the host that holds the bytes, and cannot be talked into naming another', () => {
   const uuid = 'd4c5e6f7-a8b9-4c0d-9e1f-2a3b4c5d6e7f';
   assert.equal(video.remoteKey('abc123.mp4', 'catbox'), 'catbox/abc123.mp4');
-  assert.equal(video.remoteKey(uuid, 'gofile'), `gofile/${uuid}`);
+  assert.equal(video.remoteKey(uuid, 'pixeldrain'), `pixeldrain/${uuid}`);
   assert.equal(video.remoteKey('AbC_-9', 'filemoon'), 'filemoon/AbC_-9');
 
   assert.equal(video.remoteProvider('catbox/abc123.mp4'), 'catbox');
-  assert.equal(video.remoteId('gofile/' + uuid), uuid);
+  assert.equal(video.remoteId('pixeldrain/' + uuid), uuid);
   assert.equal(video.remoteProvider('private/aaaa-bbbb.mp4'), null, 'a local key is not a remote one');
   assert.equal(video.remoteProvider('catbox/../../etc/passwd'), null, 'an id with a path in it is not a key');
   assert.equal(video.remoteProvider('kyc/x.mp4'), null);
@@ -467,85 +470,236 @@ test('Catbox: playback is a url made from the name — it costs no host call', a
   assert.equal(seenCatbox.length, before, 'a name is the whole answer; asking the host would spend a request to learn nothing');
 });
 
-const seenGofile = [];
-let gofileTier = 'premium';
-const gofileStub = http.createServer(async (req, res) => {
+// ── Pixeldrain: raw-body PUT, Basic auth with the key as the PASSWORD ───────
+//
+// The three things a naive client gets wrong, and the reason each is asserted rather than
+// assumed: the credential goes in the PASSWORD field of Basic auth (a bearer token
+// authenticates as nobody); the body is the file ITSELF, not a multipart form (the docs
+// recommend PUT because the form "can cause performance issues"); and a delete that
+// answers 404 means the file is already gone, which is the outcome the caller wanted.
+
+const seenPixel = [];
+const pixelStub = http.createServer(async (req, res) => {
   const chunks = [];
   for await (const c of req) chunks.push(c);
   const body = Buffer.concat(chunks);
   const url = new URL(req.url, 'http://127.0.0.1');
-  seenGofile.push({ path: url.pathname, auth: req.headers.authorization, bytes: body.length, tier: gofileTier });
-  const json = (payload) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)); };
-  if (url.pathname === '/accounts/getid') return json({ status: 'ok', data: { id: 'stub-account', tier: gofileTier } });
-  if (gofileTier !== 'premium' && url.pathname !== '/accounts/getid') {
-    // The documented trap: HTTP 200 carrying an error status.
-    return json({ status: 'error-notPremium' });
+  seenPixel.push({
+    method: req.method, path: url.pathname, bytes: body.length,
+    auth: req.headers.authorization, contentType: req.headers['content-type'], referer: req.headers.referer,
+  });
+  const json = (code, payload) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)); };
+  // Basic auth, key in the password field. The stub refuses anything else, so a client that
+  // sends a bearer cannot pass these tests by accident.
+  const decoded = String(req.headers.authorization || '').startsWith('Basic ')
+    ? Buffer.from(String(req.headers.authorization).slice(6), 'base64').toString('utf8') : '';
+  const authed = decoded.slice(decoded.indexOf(':') + 1) === 'stub-key';
+  if (url.pathname === '/api/user') {
+    if (!authed) return json(401, { success: false, value: 'unauthorized' });
+    return json(200, { success: true, id: 'stub', email: 'stub@example.test', subscription: { id: 'free', name: 'Free' } });
   }
-  if (url.pathname === '/uploadfile') {
-    return json({ status: 'ok', data: { id: 'aaaa-bbbb-cccc-dddd', name: 'clip.mp4', downloadPage: 'https://gofile.io/d/stubCode' } });
+  if (req.method === 'PUT' && url.pathname.startsWith('/api/file/')) {
+    if (!authed) return json(401, { success: false, value: 'unauthorized' });
+    return json(201, { success: true, id: 'pixel1', name: decodeURIComponent(url.pathname.split('/').pop()), size: body.length });
   }
-  if (url.pathname.endsWith('/directlinks')) {
-    return json({ status: 'ok', data: { id: 'link1', directLink: 'https://store.gofile.io/download/direct/link1/clip.mp4' } });
+  if (req.method === 'DELETE' && url.pathname === '/api/file/gone') return json(404, { success: false, value: 'not_found' });
+  if (req.method === 'DELETE' && url.pathname.startsWith('/api/file/')) {
+    if (!authed) return json(401, { success: false, value: 'unauthorized' });
+    return json(200, { success: true });
   }
-  if (url.pathname === '/contents' && req.method === 'DELETE') return json({ status: 'ok', data: {} });
-  return json({ status: 'error-notFound' });
+  if (url.pathname === '/api/file/pixel1/info') {
+    return json(200, { success: true, id: 'pixel1', name: 'clip.mp4', size: 12, mime_type: 'video/mp4', can_download: true });
+  }
+  return json(404, { success: false, value: 'not_found' });
 });
-let gofileBase = '';
+let pixelBase = '';
 before(async () => {
-  await new Promise((resolve) => gofileStub.listen(0, '127.0.0.1', resolve));
-  gofileBase = `http://127.0.0.1:${gofileStub.address().port}`;
+  await new Promise((resolve) => pixelStub.listen(0, '127.0.0.1', resolve));
+  pixelBase = `http://127.0.0.1:${pixelStub.address().port}/api`;
 });
-after(async () => { await new Promise((resolve) => gofileStub.close(resolve)); });
+after(async () => { await new Promise((resolve) => pixelStub.close(resolve)); });
 
-const gofileEnv = (extra = {}) => ({
-  ...process.env,
-  VIDEO_DRIVER: 'gofile',
-  GOFILE_TOKEN: 'stub-token',
-  GOFILE_API_BASE: gofileBase,
-  GOFILE_UPLOAD_BASE: gofileBase,
-  ...extra,
+const pixelEnv = (extra = {}) => ({
+  ...process.env, VIDEO_DRIVER: 'filemoon', FILE_DRIVER: 'pixeldrain',
+  PIXELDRAIN_API_KEY: 'stub-key', PIXELDRAIN_API_BASE: pixelBase, ...extra,
 });
 
-test('GoFile: premium account — upload goes to the upload host, playback to the api host', async () => {
-  gofileTier = 'premium';
+test('Pixeldrain: the bytes ARE the request body, and the key travels as a Basic password', async () => {
+  const before = seenPixel.length;
+  const payload = Buffer.from('pretend video');
+  const out = await video.upload(payload, 'clip.mp4', {
+    mimeType: 'video/mp4', provider: 'pixeldrain', env: pixelEnv(),
+  });
+  assert.equal(out.key, 'pixeldrain/pixel1');
+  const call = seenPixel.slice(before).find((c) => c.method === 'PUT');
+  assert.equal(call.path, '/api/file/clip.mp4', 'the filename is part of the path, not a form field');
+  assert.equal(call.bytes, payload.length,
+    'the raw body is the file itself — no multipart wrapper, no boundary, no second copy in memory');
+  assert.equal(call.contentType, 'video/mp4');
+  assert.equal(call.auth, `Basic ${Buffer.from(':stub-key').toString('base64')}`,
+    'Basic auth with an EMPTY username: the key is the password. A bearer token here authenticates as nobody');
+});
+
+test('Pixeldrain: playback is a url on the api host, and costs no call', async () => {
+  const before = seenPixel.length;
+  const found = await video.playback('pixel1', { provider: 'pixeldrain', env: pixelEnv() });
+  assert.equal(found.kind, 'file', 'a general host serves progressive bytes — there is no playlist to resolve');
+  assert.equal(found.url, `${pixelBase}/file/pixel1`);
+  assert.equal(seenPixel.length, before, 'the url is arithmetic on an id we already hold');
+});
+
+test('Pixeldrain: the account tier is a NAME, not an object, because the doctor matches on it', async () => {
   video.forgetAccount();
-  const before = seenGofile.length;
-  const out = await video.upload(Buffer.from('pretend video'), 'clip.mp4', { mimeType: 'video/mp4', env: gofileEnv() });
-  assert.equal(out.key, 'gofile/aaaa-bbbb-cccc-dddd');
-  const found = await video.playback(out.id, { provider: 'gofile', env: gofileEnv() });
-  assert.equal(found.kind, 'file');
-  assert.match(found.url, /\/direct\/link1\/clip\.mp4$/);
-  const paths = seenGofile.slice(before).map((c) => c.path);
-  assert.deepEqual(paths, ['/accounts/getid', '/uploadfile', '/contents/aaaa-bbbb-cccc-dddd/directlinks'],
-    'the tier is checked first, then the bytes travel to the upload host, then a direct link is minted');
-  assert.ok(seenGofile.slice(before).every((c) => c.auth === 'Bearer stub-token'), 'every call carries the bearer');
+  const who = await video.account({ provider: 'pixeldrain', env: pixelEnv() });
+  assert.equal(who.tier, 'Free', 'the answer is {subscription: {id, name}} — a client that passes it through prints [object Object]');
+  assert.equal(who.email, 'stub@example.test');
+  assert.equal(video.providers.pixeldrain.capabilities.policy.commercial, 'premium');
 });
 
-test('GoFile: a 200 carrying an error status is an ERROR, because `status` is the truth', async () => {
-  gofileTier = 'free';
-  video.forgetAccount();
+test('Pixeldrain: a delete that 404s is a success, because gone is gone', async () => {
+  assert.equal(await video.remove('gone', { provider: 'pixeldrain', env: pixelEnv() }), true);
+  assert.equal(await video.remove('pixel1', { provider: 'pixeldrain', env: pixelEnv() }), true);
+});
+
+test('Pixeldrain: a limit refusal keeps the host\'s own words — including the hotlink one', async () => {
+  /*
+   * The free-tier reality this whole round turns on: `hotlink_detected` is the refusal a
+   * store's own page would meet, and the sentence that explains it mentions the plan. It has
+   * to survive to whoever reads the log, because "the file host answered 403" is not
+   * something an operator can act on.
+   */
+  const refusing = http.createServer((req, res) => {
+    res.writeHead(403, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ success: false, value: 'hotlink_detected', message: 'Hotlinking was detected, hotlinking is only allowed with a premium subscription' }));
+  });
+  await new Promise((resolve) => refusing.listen(0, '127.0.0.1', resolve));
+  const env = pixelEnv({ PIXELDRAIN_API_BASE: `http://127.0.0.1:${refusing.address().port}/api` });
+  try {
+    await assert.rejects(
+      video.providers.pixeldrain.file('pixel1', { env }),
+      (e) => e.name === 'VideoApiError' && /hotlink_detected/.test(e.message) && /premium subscription/.test(e.message),
+      'the host\'s explanation is the only one that mentions the plan',
+    );
+    // And playback deliberately does NOT call the host, so a refusal cannot be met here:
+    // the url is built from an id we already hold. Whether the host will SERVE that url to a
+    // viewer's browser is a question about the account, which the doctor asks out loud.
+    const found = await video.playback('pixel1', { provider: 'pixeldrain', env });
+    assert.equal(found.url, `http://127.0.0.1:${refusing.address().port}/api/file/pixel1`);
+  } finally {
+    await new Promise((resolve) => refusing.close(resolve));
+  }
+});
+
+// ── Telegra.ph: an ARRAY on success, an object on failure, and no delete ────
+//
+// This host is undocumented, so every behaviour below is asserted against what its users
+// have established it does — and the two that matter most are the ones a client can get
+// wrong silently: the answer's SHAPE decides success, and there is no way to take a file
+// back.
+
+const seenTele = [];
+const teleStub = http.createServer(async (req, res) => {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  const body = Buffer.concat(chunks);
+  const url = new URL(req.url, 'http://127.0.0.1');
+  seenTele.push({ path: url.pathname, bytes: body.length, contentType: req.headers['content-type'] });
+  const json = (code, payload) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)); };
+  if (url.pathname === '/upload' && req.method === 'POST') {
+    // Envelope: an array when it works, an object when it does not. The type it dislikes is
+    // reported the way the host reports it.
+    assert.ok(/multipart\/form-data/.test(req.headers['content-type'] || ''), 'the upload must be multipart');
+    if (/video\//.test(body.toString('latin1').slice(0, 4000))) return json(200, { error: 'FILE_TYPE_INVALID' });
+    return json(200, [{ src: '/file/5a1b2c3d4e5f60718293a4b5c6d7.png' }]);
+  }
+  return json(404, { error: 'NOT_FOUND' });
+});
+let teleBase = '';
+before(async () => {
+  await new Promise((resolve) => teleStub.listen(0, '127.0.0.1', resolve));
+  teleBase = `http://127.0.0.1:${teleStub.address().port}`;
+});
+after(async () => { await new Promise((resolve) => teleStub.close(resolve)); });
+
+const teleEnv = (extra = {}) => ({
+  ...process.env, VIDEO_DRIVER: 'filemoon', IMAGE_DRIVER: 'telegraph',
+  TELEGRAPH_UPLOAD_BASE: `${teleBase}/upload`, TELEGRAPH_FILE_BASE: teleBase, ...extra,
+});
+
+test('Telegra.ph: an image goes up, and the answer is an ARRAY of paths', async () => {
+  const before = seenTele.length;
+  const out = await video.upload(Buffer.from('pretend png'), 'photo.png', { mimeType: 'image/png', provider: 'telegraph', env: teleEnv() });
+  assert.equal(out.id, '5a1b2c3d4e5f60718293a4b5c6d7.png', 'the id is the last segment of the returned path');
+  assert.equal(out.key, 'telegraph/5a1b2c3d4e5f60718293a4b5c6d7.png');
+  const call = seenTele.slice(before)[0];
+  assert.equal(call.path, '/upload', 'the upload host is telegra.ph — NOT api.telegra.ph, which refuses this endpoint');
+  assert.equal(call.contentType.split(';')[0], 'multipart/form-data');
+});
+
+test('Telegra.ph: an OBJECT under HTTP 200 is a refusal, not a file with no url', async () => {
+  /*
+   * The failure envelope is a sibling shape of the success one — an array when it works, an
+   * object when it does not — and a client that reads `json[0]` on both gets `undefined` and
+   * reports "accepted the upload but named no usable file". That sentence sends whoever
+   * debugs it into the client, when the host had already said exactly what was wrong.
+   */
+  const refusing = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'FILE_TOO_BIG' }));
+  });
+  await new Promise((resolve) => refusing.listen(0, '127.0.0.1', resolve));
+  try {
+    await assert.rejects(
+      video.providers.telegraph.upload(Buffer.from('pretend png'), 'photo.png', {
+        mimeType: 'image/png', env: teleEnv({ TELEGRAPH_UPLOAD_BASE: `http://127.0.0.1:${refusing.address().port}/upload` }),
+      }),
+      (e) => e.name === 'VideoApiError' && /refused the upload: FILE_TOO_BIG/.test(e.message),
+      'a 200 carrying an error object is a refusal — the host\'s own word, not a shrug',
+    );
+  } finally {
+    await new Promise((resolve) => refusing.close(resolve));
+  }
+});
+
+test('Telegra.ph: a non-image is refused locally, because this host is not the video path', async () => {
+  const before = seenTele.length;
   await assert.rejects(
-    video.playback('aaaa-bbbb-cccc-dddd', { provider: 'gofile', env: gofileEnv() }),
-    (e) => e.name === 'VideoApiError' && /error-notPremium/.test(e.message),
-    'a client that trusted the HTTP code would read this as success',
+    video.upload(Buffer.from('pretend video'), 'clip.mp4', { mimeType: 'video/mp4', provider: 'telegraph', env: teleEnv() }),
+    (e) => e.name === 'VideoApiError' && /image host takes jpg, png and gif/.test(e.message),
+    'the endpoint happens to accept mp4 too, and we still refuse it: a video with no delete is worse than a video with one',
   );
+  assert.equal(seenTele.length, before, 'no request — the kind is known before the bytes move');
 });
 
-test('GoFile: a free account is refused BEFORE the bytes are sent, and told why', async () => {
-  gofileTier = 'free';
-  video.forgetAccount();
-  const before = seenGofile.length;
+test('Telegra.ph: over 5 MB is refused BEFORE the bytes move', async () => {
+  const before = seenTele.length;
   await assert.rejects(
-    video.upload(Buffer.alloc(4096), 'clip.mp4', { mimeType: 'video/mp4', env: gofileEnv() }),
-    (e) => e.name === 'VideoApiError'
-      && /free tier cannot produce a playable link/.test(e.message)
-      && /premium/i.test(e.message),
+    video.upload(Buffer.alloc(5 * 1024 * 1024 + 1), 'big.png', { mimeType: 'image/png', provider: 'telegraph', env: teleEnv() }),
+    (e) => e.name === 'VideoApiError' && /refused before sending/.test(e.message),
+    'a 5 MB cap discovered after a mobile upload is somebody\'s data allowance spent to learn what the client knew',
   );
-  const calls = seenGofile.slice(before);
-  assert.deepEqual(calls.map((c) => c.path), ['/accounts/getid'],
-    'the tier is the only thing that should have been asked — no upload, because a file it cannot play is worse than a refusal');
-  gofileTier = 'premium';
-  video.forgetAccount();
+  assert.equal(seenTele.length, before, 'no request at all');
+});
+
+test('Telegra.ph: playback is a url from the name, and there is NO delete to call', async () => {
+  const before = seenTele.length;
+  const found = await video.playback('5a1b2c3d4e5f60718293a4b5c6d7.png', { provider: 'telegraph', env: teleEnv() });
+  assert.equal(found.url, `${teleBase}/file/5a1b2c3d4e5f60718293a4b5c6d7.png`);
+  assert.equal(seenTele.length, before);
+
+  /*
+   * THE HONESTY TEST.
+   *
+   * Returning `true` here would be the easy lie: the local file row would be deleted and the
+   * product would report a clean removal while the image stayed readable at a public url
+   * forever. Throwing is what makes the delete route say "unconfirmed", which is true, and
+   * it is why this host may only hold things a store need not take back.
+   */
+  await assert.rejects(
+    video.remove(found.id, { provider: 'telegraph', env: teleEnv() }),
+    (e) => e.name === 'VideoApiError' && /no delete endpoint/.test(e.message) && /unconfirmed/.test(e.message),
+  );
+  assert.equal(video.providers.telegraph.capabilities.deletable, false);
 });
 
 test('a delete goes to the host that holds the bytes, not to the configured one', async () => {
@@ -635,25 +789,128 @@ test('a host is asked whether it takes this KIND of media, and only one of them 
   const kindsOf = (host) => video.providers[host].capabilities.kinds;
   assert.deepEqual(kindsOf('filemoon'), ['video'],
     'Filemoon is a video host: its non-video uploads are download-only, which is a downgrade for us, not a feature');
-  assert.ok(kindsOf('gofile').includes('audio') && kindsOf('gofile').includes('image'),
-    'GoFile is the generalist — no file-type restrictions, previews inside its own UI');
+  assert.ok(kindsOf('pixeldrain').includes('audio') && kindsOf('pixeldrain').includes('file'),
+    'Pixeldrain is the generalist now — any file kind, direct urls, a real delete');
   assert.ok(kindsOf('catbox').includes('image'), 'Catbox takes images, which is what most of the web uses it for');
+  assert.deepEqual(kindsOf('telegraph'), ['image'], 'the image host is an image host, and that is a limit worth writing down');
+
+  /*
+   * THE VOCABULARY IS `mediaKind`'S, AND THIS IS THE TEST THAT KEEPS IT THAT WAY.
+   *
+   * `kinds` is matched against the value `mediaKind()` returns — video, audio, image, or
+   * `file` for everything else. The first draft of the Pixeldrain module declared
+   * `['video','audio','image','archive','document']`, which reads perfectly and could never
+   * match: `mediaKind` has no word `archive`, so every store archive, pdf and epub would
+   * have stayed on our disk while the registry looked configured. A declaration that can
+   * never be consulted is worse than a missing one, because it looks like the work is done.
+   */
+  const ROUTER_WORDS = ['video', 'audio', 'image', 'file'];
+  for (const host of video.HOSTS) {
+    for (const kind of kindsOf(host)) {
+      assert.ok(ROUTER_WORDS.includes(kind),
+        `${host} declares the kind "${kind}", which mediaKind() can never return — it can only ever be ${ROUTER_WORDS.join(', ')}`);
+    }
+  }
 
   // The predicate the router consults.
   assert.equal(video.hostAccepts('video', 'filemoon'), true);
   assert.equal(video.hostAccepts('audio', 'filemoon'), false, 'audio must never be sent to a video-only host');
   assert.equal(video.hostAccepts('audio', 'catbox'), true, 'Catbox declares audio; whether we MAY use it is the policy question below');
+  assert.equal(video.hostAccepts('video', 'telegraph'), false, 'a host with no delete must never be handed a video');
   assert.equal(video.hostAccepts('video', 'local'), false, 'no host means no host');
 });
 
-test('the router keeps a kind the configured host does not take on our disk', async () => {
+test('each KIND of media can be routed to its own host — and an unconfigured kind stays home', () => {
+  /*
+   * The routing table, as behaviour rather than as a paragraph.
+   *
+   * With four hosts and three variables, "which host is configured" stopped having one
+   * answer. This is the shape the whole round is about: a video and a photo from the same
+   * seller can leave by different doors, and a kind nobody configured stays on our disk.
+   */
+  const env = {
+    VIDEO_DRIVER: 'filemoon', IMAGE_DRIVER: 'telegraph', FILE_DRIVER: 'pixeldrain',
+    FILEMOON_TOKEN: 'k', PIXELDRAIN_API_KEY: 'k',
+  };
+  assert.equal(video.driverForKind('video', env), 'filemoon');
+  assert.equal(video.driverForKind('image', env), 'telegraph');
+  assert.equal(video.driverForKind('audio', env), 'pixeldrain', 'audio falls through to the general host');
+  assert.equal(video.driverForKind('file', env), 'pixeldrain', 'and so does an archive or a pdf');
+
+  // A general host answers for the kinds it accepts, without needing a variable each.
+  const generalOnly = { FILE_DRIVER: 'pixeldrain', PIXELDRAIN_API_KEY: 'k' };
+  assert.equal(video.driverForKind('image', generalOnly), 'pixeldrain');
+  assert.equal(video.driverForKind('video', generalOnly), 'pixeldrain');
+
+  // A specific driver that does not accept the kind falls THROUGH rather than hijacking it.
+  const wrongWayRound = { VIDEO_DRIVER: 'telegraph', FILE_DRIVER: 'pixeldrain', PIXELDRAIN_API_KEY: 'k' };
+  assert.equal(video.driverForKind('video', wrongWayRound), 'pixeldrain',
+    'a video must not be handed to a host that cannot delete it just because the variable says video');
+
+  // No credentials, no hosts — the state a fresh clone and the demo are in.
+  assert.equal(video.driverForKind('video', { VIDEO_DRIVER: 'filemoon' }), 'local',
+    'a driver whose credential is missing is not configured, and a misconfigured host must not be used');
+  assert.equal(video.driverForKind('image', {}), 'local');
+  assert.equal(video.hostsEnabled({}), false);
+  // In ROUTED_KINDS order, so the boot line reads video → audio → image → file and two runs
+  // of the same deployment never differ in what they print.
+  assert.deepEqual(video.activeHosts(env), [
+    { host: 'filemoon', kinds: ['video'] },
+    { host: 'pixeldrain', kinds: ['audio', 'file'] },
+    { host: 'telegraph', kinds: ['image'] },
+  ], 'the boot line names every kind that leaves, in the order an operator reads them');
+});
+
+test('a file a host would refuse is kept on our disk, and the seller never sees a failure', () => {
+  /*
+   * Found by booting, not by reading.
+   *
+   * With `IMAGE_DRIVER=telegraph` set, the demo seeder's own jpg made the whole seed throw:
+   * the host refuses anything outside jpg/png/gif under 5 MB, and rather than keeping the
+   * image it could not take, the first version of this routing failed the upload. A host's
+   * cap must not become the PRODUCT's cap — our own disk serves every image perfectly well —
+   * so the router asks about the FILE, and falls through to local storage when the answer is
+   * no.
+   */
+  const env = {
+    VIDEO_DRIVER: 'filemoon', FILEMOON_TOKEN: 'k',
+    IMAGE_DRIVER: 'telegraph',
+    FILE_DRIVER: 'pixeldrain', PIXELDRAIN_API_KEY: 'k',
+  };
+  const file = (extra) => ({ mimeType: 'image/png', filename: 'photo.png', size: 1024, ...extra });
+
+  assert.equal(video.driverForKind('image', env, file()), 'telegraph', 'a small png is exactly what it is for');
+
+  assert.equal(video.driverForKind('image', env, file({ size: 6 * 1024 * 1024 })), 'pixeldrain',
+    'a 6 MB photo is over the image host\'s cap — the general host takes it instead');
+  assert.equal(video.driverForKind('image', { ...env, FILE_DRIVER: '' }, file({ size: 6 * 1024 * 1024 })), 'local',
+    'and with no general host configured it stays here, rather than failing the upload');
+
+  assert.equal(video.driverForKind('image', env, file({ mimeType: 'image/svg+xml', filename: 'logo.svg' })), 'pixeldrain',
+    'an svg is a picture everywhere except at an image host that takes jpg/png/gif');
+  assert.equal(video.driverForKind('image', env, file({ mimeType: '', filename: 'cover.jpg' })), 'telegraph',
+    'a file whose type was never declared is judged by its name — which is how the seeder calls it');
+
+  // The sentence a person can act on, rather than a silent stay-at-home.
+  const why = video.whyLocal('image', { ...env, FILE_DRIVER: '' }, file({ mimeType: 'image/svg+xml', filename: 'logo.svg' }));
+  assert.match(why, /telegraph/, 'the reason names the host that said no');
+  assert.match(why, /jpg, png or gif/);
+  assert.equal(video.whyLocal('image', {}, file()), null, 'with nothing configured there is nothing to explain');
+});
+
+test('the router keeps a kind no configured host takes on our disk', async () => {
   // Not a hypothetical: this is the guard that stops a future "let audio go to the host"
-  // edit from silently sending it to a host that would serve it as a download.
+  // edit from silently sending it to a host that would serve it as a download. The driver
+  // here is Filemoon (video-only) with no general host configured, which is the default
+  // deployment — so audio and images must stay.
   await withDriver(async () => {
     assert.equal(storage.routesToHost({ namespace: 'private', mimeType: 'audio/mpeg' }), false);
     assert.equal(storage.routesToHost({ namespace: 'private', mimeType: 'image/png' }), false);
     assert.equal(storage.routesToHost({ namespace: 'private', mimeType: 'video/mp4' }), true,
       'the one kind Filemoon is for still goes');
+    assert.equal(storage.routesToHost({ namespace: 'kyc', mimeType: 'video/mp4' }), false,
+      'identity documents never leave, whatever the routing table says');
+    assert.equal(storage.routesToHost({ namespace: 'public', mimeType: 'video/mp4' }), false);
   });
 });
 
@@ -669,9 +926,27 @@ test('the policy each host is used under is data, not a footnote', () => {
   assert.ok(catbox.blockedExtensions.includes('exe'), 'its own refusals are part of the picture');
 
   assert.equal(video.providers.filemoon.capabilities.policy.commercial, 'allowed');
-  assert.equal(video.providers.gofile.capabilities.policy.commercial, 'premium');
-  assert.equal(video.providers.gofile.capabilities.streamsInPage, 'premium',
-    'on a free GoFile account nothing it returns is playable — which is why upload() refuses first');
+
+  /*
+   * The two new hosts, and the one flag between them that changes what the PRODUCT may do.
+   *
+   * Pixeldrain is `premium` for our use because hotlinking is its paid feature — a 302 from
+   * a store's page to its url is precisely a hotlink, and its own error list says so. That
+   * is a warning to give an operator, not a reason to refuse the upload: the bytes land,
+   * the url works, and whether it will serve them to a viewer's browser is a fact about the
+   * account.
+   *
+   * Telegra.ph's `deletable: false` is the load-bearing one. A store can remove a file from
+   * its page; if the bytes are at a host with no delete, the product cannot honour that, so
+   * the flag exists, `remove()` refuses in words, and the delete route reports it as
+   * unconfirmed rather than claiming a clean removal.
+   */
+  assert.equal(video.providers.pixeldrain.capabilities.policy.commercial, 'premium');
+  assert.match(video.providers.pixeldrain.capabilities.policy.note, /hotlink/i);
+  assert.equal(video.providers.telegraph.capabilities.deletable, false);
+  assert.equal(video.providers.telegraph.capabilities.maxBytes, 5 * 1024 * 1024);
+  assert.equal(video.providers.telegraph.capabilities.policy.commercial, 'unknown');
+  assert.match(video.providers.telegraph.capabilities.policy.note, /UNDOCUMENTED/);
 
   const verdict = video.hostSuitability('catbox');
   assert.equal(verdict.commercial, 'prohibited');

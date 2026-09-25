@@ -1,12 +1,14 @@
 /**
  * The video hosts, behind one interface: the registry.
  *
- * Three providers are configured for the same seam — Filemoon, GoFile and Catbox — and
- * `VIDEO_STORAGE.md` §10.1 records what each can and cannot do. This module is what the
- * rest of the app talks to, and it owns exactly four things:
+ * Four providers are configured for the same seam — Filemoon, Pixeldrain, Telegra.ph and
+ * Catbox — and `VIDEO_STORAGE.md` §10 records what each can and cannot do. This module is
+ * what the rest of the app talks to, and it owns exactly five things:
  *
- *   1. **Which driver is configured** (`VIDEO_DRIVER`), and whether it is usable at all.
- *   2. **The keys.** `filemoon/<id>`, `gofile/<uuid>`, `catbox/<name>.mp4`. The provider is
+ *   1. **Which driver takes which KIND of media** (`VIDEO_DRIVER`, `IMAGE_DRIVER`,
+ *      `FILE_DRIVER` — §10.6), and whether it is usable at all.
+ *   2. **The keys.** `filemoon/<id>`, `pixeldrain/<id>`, `telegraph/<name>.jpg`,
+ *      `catbox/<name>.mp4`. The provider is
  *      part of the key, so a store's file keeps playing from wherever it was uploaded
  *      even after `VIDEO_DRIVER` changes on a later deploy — and a delete goes to the host
  *      holding the bytes rather than to whatever is configured today. A key is a promise
@@ -29,7 +31,8 @@
  * `npm run video:check` exists for the machine that CAN reach them.
  */
 import * as filemoon from './video-filemoon.js';
-import * as gofile from './video-gofile.js';
+import * as pixeldrain from './video-pixeldrain.js';
+import * as telegraph from './video-telegraph.js';
 import * as catbox from './video-catbox.js';
 import { VideoApiError } from './video-shared.js';
 
@@ -40,11 +43,18 @@ export {
 /**
  * Every provider, by the name that appears in front of a key.
  *
- * The order is the order the doctor prints, and it is deliberately not alphabetical:
- * Filemoon is what the product deploys with, and the others are alternatives with a
- * caveat each.
+ * The order is the order the doctor prints, and it reads as the ROUTING TABLE now that a
+ * host is chosen per KIND of media (§10.6):
+ *
+ *   filemoon    video       the video host, and the one this product deploys with
+ *   pixeldrain  the rest    a general file host: direct urls, byte ranges, a real delete
+ *   telegraph   images      small, permanent, free — and it can never delete one
+ *   catbox      development only: its terms forbid being a service's CDN
+ *
+ * GoFile is gone: a free account could not produce a playable link at all, and paying for
+ * one to serve files this product keeps on its own disk bought nothing.
  */
-export const PROVIDERS = { filemoon, gofile, catbox };
+export const PROVIDERS = { filemoon, pixeldrain, telegraph, catbox };
 export const HOSTS = Object.keys(PROVIDERS);
 
 const isHost = (value) => Object.prototype.hasOwnProperty.call(PROVIDERS, value);
@@ -68,6 +78,116 @@ export const configured = (driver, env = process.env) =>
 
 export const videoHostEnabled = (env = process.env) => configured(videoDriver(env), env);
 
+/**
+ * The environment variable that chooses a host for each KIND of media.
+ *
+ * One driver was enough while there was one host. There are four now and they are not
+ * interchangeable (§10.5), so the choice is per kind — and every one of them is unset by
+ * default, which is what keeps "no configuration means every byte on our disk" true for a
+ * fresh clone, for the demo, and for every deployment that never wanted a host.
+ *
+ *   VIDEO_DRIVER   video     filemoon (or pixeldrain, for a store with no video host)
+ *   IMAGE_DRIVER   image     telegraph (or pixeldrain)
+ *   FILE_DRIVER    the rest  pixeldrain — audio, archives, documents, and video too
+ */
+export const DRIVER_VARS = { video: 'VIDEO_DRIVER', image: 'IMAGE_DRIVER', file: 'FILE_DRIVER' };
+
+const driverFrom = (env, variable) => {
+  const value = String((env || {})[variable] || '').trim().toLowerCase();
+  return isHost(value) ? value : 'local';
+};
+
+/**
+ * Which host takes this KIND of media — or 'local'.
+ *
+ * The order is specific-then-general: an image prefers `IMAGE_DRIVER` and falls back to a
+ * general `FILE_DRIVER`, so a deployment that configures one host for everything gets
+ * that one host for everything it accepts. A kind no configured host declares stays on
+ * our disk, which is the same rule the router used when there was only one host.
+ *
+ * The `configured` and `hostAccepts` checks are not belt-and-braces. They are what stops
+ * `IMAGE_DRIVER=telegraph` from being handed a video (no delete, and video has a host),
+ * and what keeps a driver whose credential is missing from being used at all.
+ */
+export function driverForKind(kind, env = process.env, file = null) {
+  const key = kind === 'video' ? 'video' : (kind === 'image' ? 'image' : 'file');
+  const candidates = key === 'file' ? ['FILE_DRIVER'] : [DRIVER_VARS[key], 'FILE_DRIVER'];
+  for (const variable of candidates) {
+    const driver = driverFrom(env, variable);
+    if (driver === 'local') continue;
+    if (!configured(driver, env)) continue;
+    if (!hostAccepts(kind, driver, env)) continue;
+    /*
+     * THE FILE ITSELF, not just its kind.
+     *
+     * A host can be right for a kind and still refuse a particular file — Telegra.ph's 5 MB
+     * cap and four formats, Catbox's 200 MB and its blocked extensions. Asking only about the
+     * kind would send those files anyway, the host would refuse them AFTER the bytes crossed
+     * the wire, and a seller's upload would fail because a host they never chose has a rule
+     * they never saw. With `file` in hand the router moves on to the next candidate — usually
+     * no candidate, which means `local`, which always works.
+     */
+    if (file && typeof PROVIDERS[driver].acceptsFile === 'function') {
+      const verdict = PROVIDERS[driver].acceptsFile(file);
+      if (!verdict.ok) continue;
+    }
+    return driver;
+  }
+  return 'local';
+}
+
+/**
+ * Why a kind is NOT going to a host, in words a seller could act on.
+ *
+ * `driverForKind` returning `local` is the right behaviour and a terrible explanation: it
+ * means either "no host is configured", "the host is for other kinds", or "this particular
+ * file is too big for it", and those are three different things to tell whoever is looking at
+ * an upload that stayed on the disk. This is the sentence for the third case.
+ */
+export function whyLocal(kind, env = process.env, file = null) {
+  if (!hostsEnabled(env)) return null;
+  const key = kind === 'video' ? 'video' : (kind === 'image' ? 'image' : 'file');
+  const candidates = key === 'file' ? ['FILE_DRIVER'] : [DRIVER_VARS[key], 'FILE_DRIVER'];
+  const reasons = [];
+  for (const variable of candidates) {
+    const driver = driverFrom(env, variable);
+    if (driver === 'local') continue;
+    if (!configured(driver, env)) { reasons.push(`${variable}=${driver} has no credential set`); continue; }
+    if (!hostAccepts(kind, driver, env)) { reasons.push(`${driver} does not take ${kind}`); continue; }
+    if (file && typeof PROVIDERS[driver].acceptsFile === 'function') {
+      const verdict = PROVIDERS[driver].acceptsFile(file);
+      if (!verdict.ok) { reasons.push(`${driver}: ${verdict.why}`); continue; }
+    }
+  }
+  return reasons.length ? reasons.join('; ') : null;
+}
+
+/**
+ * Every kind the router distinguishes, in the order they are worth reading.
+ *
+ * `audio` IS separate even though it shares a driver variable with `file`: a store's audio
+ * and its archives are different promises (one plays in the page, one downloads), and an
+ * operator reading the boot line should see that a host is taking audio rather than
+ * inferring it from the word "file".
+ */
+export const ROUTED_KINDS = ['video', 'audio', 'image', 'file'];
+
+/** Is ANY kind of media going to a host? The privacy notice and the boot line ask. */
+export const hostsEnabled = (env = process.env) =>
+  ROUTED_KINDS.some((kind) => driverForKind(kind, env) !== 'local');
+
+/** The hosts in play and the kinds each holds, for a line that has to name what leaves. */
+export const activeHosts = (env = process.env) => {
+  const found = new Map();
+  for (const kind of ROUTED_KINDS) {
+    const driver = driverForKind(kind, env);
+    if (driver === 'local') continue;
+    if (!found.has(driver)) found.set(driver, []);
+    found.get(driver).push(kind);
+  }
+  return [...found].map(([host, kinds]) => ({ host, kinds }));
+};
+
 /** The api base of the configured provider, for the messages and the doctor. */
 export const videoHostBase = (env = process.env) => {
   const driver = videoDriver(env);
@@ -78,7 +198,7 @@ export const videoHostBase = (env = process.env) => {
  * Every provider's facts, for the doctor and for anything that has to explain a choice.
  *
  * A function rather than a frozen table so that the note can carry the ONE thing that
- * changes per account (GoFile's tier) without every caller re-deriving it.
+ * changes per account or per plan without every caller re-deriving it.
  */
 export function hostFacts(env = process.env) {
   return HOSTS.map((host) => ({
@@ -95,10 +215,10 @@ export function hostFacts(env = process.env) {
  * The first version of this registry had one question in it ("is the driver set?") and
  * three providers, which quietly implied they were three ways of doing the same job.
  * They are not, and `VIDEO_STORAGE.md` §10.5 records what each is actually designed for:
- * Filemoon is a video host whose non-video uploads are download-only; GoFile is a
- * generalist whose playable links are Premium; Catbox is a small-file host whose own
- * terms forbid being a service's CDN. So a kind a host does not declare stays on our
- * disk, and the answer is data rather than a coincidence of one boolean.
+ * Filemoon is a video host whose non-video uploads are download-only; Telegra.ph takes
+ * images and can never delete one; Catbox's own terms forbid being a service's CDN. So a
+ * kind a host does not declare stays on our disk. The vocabulary is `mediaKind`'s — video,
+ * audio, image, file — and a test holds every provider's list to it.
  *
  * `mediaKind` lives in `media.js` (video/audio/image/archive/document/…) and is imported
  * by `store.js` already; this takes the kind it returns rather than re-deriving it, so
@@ -143,7 +263,17 @@ const neededFor = (host) => PROVIDERS[host]?.capabilities?.needs || 'a credentia
  * guess.
  */
 export function mediaOrigins(env = process.env) {
-  const declared = HOSTS.flatMap((host) => (PROVIDERS[host].configured(env) ? PROVIDERS[host].mediaOrigins(env) : []));
+  /*
+   * The hosts actually IN USE, not every host whose credential exists.
+   *
+   * Telegra.ph is the reason this changed: it has no credential, so `configured()` is true
+   * for it unconditionally, and a policy built from "configured hosts" would allow
+   * telegra.ph in the CSP of every deployment in the world — including the ones that have
+   * never sent it a byte. The CSP is a list of the places a page may reach; it should name
+   * what this deployment actually uses and nothing else.
+   */
+  const inUse = new Set(activeHosts(env).map((entry) => entry.host));
+  const declared = [...inUse].flatMap((host) => PROVIDERS[host].mediaOrigins(env));
   const fromEnv = String(env.VIDEO_MEDIA_ORIGINS || '').split(/[,\s]+/).filter(Boolean);
   return [...new Set([...declared, ...fromEnv])];
 }
@@ -291,9 +421,18 @@ export async function account({ env = process.env, provider, ...rest } = {}) {
   return providerFor(provider).account({ env, ...rest });
 }
 
-/** Forget the cached identity — the doctor asks fresh, and so does a test. */
+/**
+ * Forget any cached identity — the doctor asks fresh, and so does a test.
+ *
+ * Every provider that caches anything exposes `forgetAccount`; this asks each of them
+ * rather than naming one, which is how the function survived the removal of a host that
+ * used to be the only one with a cache.
+ */
 export function forgetAccount() {
-  if (typeof gofile.forgetAccount === 'function') gofile.forgetAccount();
+  for (const host of HOSTS) {
+    const forget = PROVIDERS[host].forgetAccount;
+    if (typeof forget === 'function') forget();
+  }
 }
 
 /**

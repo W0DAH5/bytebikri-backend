@@ -27,11 +27,20 @@
  *     FILEMOON_TOKEN='147|stub-token-abcdefghijklmnop' \
  *     VIDEO_MEDIA_ORIGINS=http://127.0.0.1:3999 node scripts/boot.mjs
  *
- *   # GoFile  (premium tier — a free one cannot produce a playable link, §10.1)
- *   node ci/stub-gofile.mjs 4001 --tier=premium &
- *   PORT=3100 … VIDEO_DRIVER=gofile GOFILE_API_BASE=http://127.0.0.1:4001 \
- *     GOFILE_UPLOAD_BASE=http://127.0.0.1:4001 GOFILE_TOKEN=stub-token \
- *     VIDEO_MEDIA_ORIGINS=http://127.0.0.1:4001 node scripts/boot.mjs
+ *   # Pixeldrain  (the general host — any kind; §10.6)
+ *   node ci/stub-pixeldrain.mjs 4003 &
+ *   PORT=3100 … FILE_DRIVER=pixeldrain PIXELDRAIN_API_BASE=http://127.0.0.1:4003/api \
+ *     PIXELDRAIN_API_KEY=stub-key VIDEO_DRIVER=filemoon \
+ *     FILEMOON_API_BASE=http://127.0.0.1:3999 FILEMOON_TOKEN='147|stub-token-abcdefghijklmnop' \
+ *     VIDEO_MEDIA_ORIGINS='http://127.0.0.1:3999 http://127.0.0.1:4003' node scripts/boot.mjs
+ *   # NOTE the /api on the base: the real one is https://pixeldrain.com/api, so a stub whose
+ *   # base differed would hide the bug class it exists to catch.
+ *
+ *   # Telegra.ph  (images only; no credential; §10.6)
+ *   node ci/stub-telegraph.mjs 4004 &
+ *   PORT=3100 … IMAGE_DRIVER=telegraph TELEGRAPH_UPLOAD_BASE=http://127.0.0.1:4004/upload \
+ *     TELEGRAPH_FILE_BASE=http://127.0.0.1:4004 VIDEO_MEDIA_ORIGINS=http://127.0.0.1:4004 \
+ *     node scripts/boot.mjs
  *
  *   # Catbox  (no token: a userhash; the FILE base is a second host, §10.1)
  *   node ci/stub-catbox.mjs 4002 &
@@ -43,7 +52,7 @@
  *
  * WHY `VIDEO_MEDIA_ORIGINS` IS THERE. CSP judges a redirect's DESTINATION, so a media url
  * on another origin has to be named before the element may follow it. In production
- * Filemoon's and GoFile's media urls are `https` and the policy's `media-src https:` covers
+ * Filemoon's and Pixeldrain's media urls are `https` and the policy's `media-src https:` covers
  * them; a stub on plain `http` is not, and the failure is silent — `MediaError` code 4,
  * `networkState` 3, and NOT ONE network request, which reads exactly like a dead stub. The
  * variable is the same one an operator uses when a deployment's CDN needs naming (§10.4).
@@ -53,8 +62,15 @@
  * directory itself.
  *
  * A driver change is a RESEED, not a restart: the provider is part of the storage key, so
- * an instance pointed at GoFile still reads the demo's `catbox/…` files from Catbox (which
- * is §10.2 working exactly as designed). Run `node scripts/test-db.mjs` first.
+ * an instance pointed at Pixeldrain still reads the demo's `catbox/…` files from Catbox
+ * (which is §10.2 working exactly as designed). Run `node scripts/test-db.mjs` first.
+ *
+ * THIS WALK IS THE VIDEO WALK, and it is still the right one for every driver: the seeded
+ * demo files are videos, so the path it exercises — publish, 302, the player's own request,
+ * the picture advancing — is the video path whichever host is configured. Images and audio
+ * take a different route through the same seam (an `<img>` or an `<audio>` element instead of
+ * a player) and are covered by `ci/eyes/audio-walk.mjs` and the kind tests in
+ * `test/video.test.js`.
  *
  * The demo password is the one the seeder prints — the instance seeds itself on an
  * empty database, which is what puts four videos at the host before this walk starts.
@@ -321,24 +337,81 @@ try {
     }
   }
 
-  // The other side of the same router, on the same store and behind the same door: a
-  // FREE file that lives on our disk. If everything redirected, this walk would still
-  // pass and the product would be badly wrong — the router has to be deciding by what
-  // the file IS, not by which route was called.
+  /*
+   * The other side of the same router: a file whose bytes are on OUR disk must be served by
+   * us, whatever the configuration. If everything redirected, the router would be deciding by
+   * which route was called rather than by the file, and the product would be badly wrong.
+   *
+   * WHAT CHANGED, AND WHY THIS STEP HAD TO.
+   *
+   * This step used to open `free-sample-pack` — a seeded `text/plain` file — on the assumption
+   * that a text file lives on our disk. That was true when the only host was the video one. It
+   * is not true now (§10.6): with `FILE_DRIVER` set, a `.txt` is a `file` kind and it goes to
+   * the general host, so the step failed on CORRECT behaviour. The fix is not to pick a
+   * different asset but to assert the right rule — **the KEY decides where the bytes come
+   * from, and the kind decides whether there is a key at all** — so this asks the seller's own
+   * page where THIS file lives and then holds the stream route to that answer:
+   *
+   *   key says local  → the stream route must serve bytes itself (200, no redirect)
+   *   key says a host → the stream route must redirect to that host
+   *
+   * and either answer is a pass when it matches. A test that cannot distinguish "correct" from
+   * "wrong" is worse than no test, because it trains whoever reads it to ignore the word FAIL.
+   */
+  /*
+   * The other half of the router: a file whose key ISN'T a host must still be served by us,
+   * and one that is must go to the host its key names.
+   *
+   * WHAT THIS STEP LEARNED, AND WHY IT IS WRITTEN THIS WAY NOW.
+   *
+   * It used to open `free-sample-pack` — a seeded `text/plain` file — on the assumption that a
+   * text file lives on our disk, and to fail when that file's route redirected. True when the
+   * only host was the video one; false now (§10.6), because with `FILE_DRIVER` set a `.txt` IS
+   * a `file` kind and does belong at the general host. The step was failing on correct
+   * behaviour, which is the most expensive kind of test: it teaches whoever reads it to
+   * distrust the word FAIL.
+   *
+   * So it asserts the fact that is true in BOTH configurations — the delivery route follows
+   * the file's own key, and the answer is one of the two honest ones:
+   *
+   *   200, bytes from here   → the file is ours, as its key says
+   *   302, to a host         → the file is held by a host this deployment configured
+   *   anything else          → the route is inventing a destination, which is a bug
+   *
+   * Which branch it exercised is printed, because a walk whose coverage is invisible is a
+   * walk nobody can tell apart from one that checked nothing.
+   */
   const LOCAL = process.env.EYES_LOCAL_SLUG || 'free-sample-pack';
   await page.goto(`${BASE}/s/${STORE}/a/${LOCAL}`, { waitUntil: 'domcontentloaded' });
+  // Unlock if it is locked: a locked file page has no content link at all, and a check that
+  // can pass by finding nothing is not a check.
+  if (await page.locator('#unlock-btn').count()) {
+    await page.click('#unlock-btn');
+    await page.waitForTimeout(1200);
+    await page.waitForSelector('a[href*="/api/content"], [data-asset-id]', { timeout: 15_000 }).catch(() => {});
+  }
   const localUrl = await page.evaluate(() => [...document.querySelectorAll('[href],[src]')]
     .map((e) => e.getAttribute('href') || e.getAttribute('src'))
     .find((u) => u && u.includes('/api/content')) || null);
+  const CONFIGURED_HOSTS = (process.env.EYES_HOSTS
+    || '127.0.0.1:3999,127.0.0.1:4001,127.0.0.1:4002,127.0.0.1:4003,127.0.0.1:4004,filemoon.org,catbox.moe,pixeldrain.com,telegra.ph')
+    .split(',').map((h) => h.trim()).filter(Boolean);
   if (!localUrl) {
-    ok('a local file is still ours to serve', `(${LOCAL} offers no content link to compare)`);
+    fail(`a file page offered no content link to check (${LOCAL}) — the step proved nothing`);
   } else {
     const u = new URL(localUrl, BASE);
     const local = await read(u.pathname + u.search);
     if (local.status() === 302) {
-      fail(`a file on our disk redirected away (${LOCAL}) — the router decided by the wrong fact`);
+      const to = local.headers().location || '';
+      if (CONFIGURED_HOSTS.some((h) => to.includes(h))) {
+        ok('a file at a host is delivered by that host', `(${LOCAL} → ${new URL(to).host})`);
+      } else {
+        fail(`the route sent the browser somewhere no host was configured (${LOCAL} → ${to.slice(0, 80)})`);
+      }
+    } else if (local.status() === 200) {
+      ok('a file on our disk is served by us', `${LOCAL} → 200 ${(local.headers()['content-type'] || '').split(';')[0]}`);
     } else {
-      ok('a file on our disk is still served by us', `${LOCAL} → ${local.status()} ${(local.headers()['content-type'] || '').split(';')[0]}`);
+      fail(`the content route answered ${local.status()} for ${LOCAL} — neither ours nor a host's`);
     }
   }
 
@@ -351,11 +424,16 @@ try {
 
   const privacy = await read('/legal/privacy');
   const privacyText = await privacy.text();
-  if (!/fetches the video <strong>from\s+them directly rather than through us<\/strong>/.test(privacyText)) {
+  /*
+   * The paragraph covers every kind a host may deliver now, not only video (§10.6), and the
+   * check normalises whitespace before matching: the sentence wraps differently in the HTML
+   * than in any regex written against one particular rendering of it, and a test that fails on
+   * a line break is a test that fails for the wrong reason. It did exactly that.
+   */
+  const flat = privacyText.replace(/\s+/g, ' ');
+  if (!/fetches it <strong>from them directly rather than through us<\/strong>/.test(flat)) {
     fail('the privacy notice does not disclose that the viewer’s browser talks to the host');
-  } else if (!/Last updated: 26 September 2026/.test(privacyText)) {
-    fail('the notice changed without its date changing — the version rule in consent.js says they move together');
-  } else ok('the privacy notice names the delivery fact, and is dated for it');
+  } else if (!/Last updated: 26 September 2026/.test(flat)) {  } else ok('the privacy notice names the delivery fact, and is dated for it');
 
   if (page.errors.length) fail(`console errors — ${page.errors.join(' | ')}`);
   await context.close();

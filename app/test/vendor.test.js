@@ -83,3 +83,17 @@ test('the CSP lets a MediaSource reach the element', () => {
   assert.ok(!/https?:\/\//.test(media), `an external media host entered the CSP: ${media.trim()}`);
   assert.ok(worker && /'blob:'/.test(worker), 'worker-src does not name blob:, so hls.js cannot transmux in its worker');
 });
+
+test('the CSP lets a HOSTED image reach the element, not just a local one', () => {
+  // The sibling of the media-src bug above, and found the same way — by walking an image
+  // whose bytes are at a host (`IMAGE_DRIVER`). The route answers with a 302 to that host,
+  // CSP judges the redirect's destination, and `img-src 'self' data:` refused it before the
+  // request was even attempted: an `<img>` with the right src, `naturalWidth` 0, and an
+  // empty network log. No console error a seller would ever see.
+  const img = server.split('\n').find((l) => l.includes('imgSrc:'));
+  assert.ok(img, 'no imgSrc directive — a hosted image would never load');
+  assert.match(img, /'self'/, 'our own images must keep working');
+  assert.match(img, /videoMediaOrigins\(\)/,
+    'img-src must name the configured media hosts, or a store image kept at one is invisible');
+  assert.match(img, /data:/, 'the reveal/QR images this product draws itself are data urls');
+});

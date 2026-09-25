@@ -4,7 +4,7 @@
  *
  * Written the same way as the Filemoon client it was carved out of, and for the same
  * reason: this environment refuses egress to every provider we have (TLS reset or a
- * bare connection refusal for filemoon.org, gofile.io and catbox.moe alike; GitHub
+ * bare connection refusal for every host in the registry alike; GitHub
  * answers, so it is an allowlist rather than a broken network). Not one line here has
  * met a live API, so nothing is trusted beyond HTTP itself and every wrong guess is
  * made legible by `describe()`/`describeDeep()`.
@@ -67,9 +67,8 @@ export async function httpCall(url, {
  * First present value among candidate keys, at the top level or one level down under
  * `data`.
  *
- * No provider's envelope is confirmed (Filemoon's `{data: {...}}` vs GoFile's
- * `{status, data}` were both guesses from documentation), so look in both rather than
- * betting on one.
+ * No provider's envelope is confirmed (Filemoon's `{data: {...}}` was a guess from its
+ * documentation), so look in both rather than betting on one.
  */
 export function pick(source, keys) {
   if (!source || typeof source !== 'object') return undefined;

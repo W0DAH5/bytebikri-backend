@@ -27,8 +27,8 @@
  *     player will not be told to load a demuxer for these bytes.
  *
  * The `userhash` is a full-access credential (it uploads and deletes for the whole
- * account), so it lives beside the other hosts' tokens in `app/.env` and never in a
- * tracked file — the same rule as `FILEMOON_TOKEN` and `GOFILE_TOKEN`.
+ * account), so it lives beside the other hosts' keys in `app/.env` and never in a
+ * tracked file — the same rule as `FILEMOON_TOKEN` and `PIXELDRAIN_API_KEY`.
  */
 import { VideoApiError } from './video-shared.js';
 
@@ -72,7 +72,7 @@ export const capabilities = {
    * refused (.exe, .scr, .cpl, .jar), `.doc*` is refused, GIFs are capped at 20 MB,
    * and `.html`/`.php` are served as plain text.
    */
-  kinds: ['video', 'audio', 'image', 'archive'],
+  kinds: ['video', 'audio', 'image', 'file'],
   blockedExtensions: ['exe', 'scr', 'cpl', 'jar', 'doc', 'docx', 'html', 'php'],
   policy: {
     commercial: 'prohibited',
@@ -81,6 +81,26 @@ export const capabilities = {
       + "not for a store's delivery path",
   },
 };
+
+/**
+ * Would this host take this file?
+ *
+ * The router asks before any bytes move, for the reason §10.1 gives: a 300 MB upload refused
+ * after it crossed the wire is somebody's data allowance spent to learn what this module
+ * already knew. A file it will not take is stored LOCALLY instead — the seller's upload still
+ * succeeds, and a host's cap never becomes the product's cap.
+ */
+export function acceptsFile({ mimeType = '', filename = '', size = 0 } = {}) {
+  if (size > MAX_BYTES) {
+    return { ok: false, why: `${(size / 1024 / 1024).toFixed(1)} MB is over Catbox's ${MAX_BYTES / 1024 / 1024} MB cap` };
+  }
+  const extension = String(filename || '').split('.').pop().toLowerCase();
+  if (capabilities.blockedExtensions.includes(extension)) {
+    return { ok: false, why: `Catbox refuses .${extension} files by policy` };
+  }
+  void mimeType;
+  return { ok: true };
+}
 
 /** Configured means the credential this host needs is present. */
 export const configured = (env = process.env) => Boolean(env.CATBOX_USERHASH);
@@ -123,7 +143,7 @@ export const idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
  * The origin a page has to be allowed to load this host's media from.
  *
  * A provider that knows where its bytes live can say so, and the CSP in `server.js` names
- * it rather than widening the policy for everyone. Filemoon and GoFile cannot answer this
+ * it rather than widening the policy for everyone. Filemoon cannot answer this
  * statically — their media urls come back from the API on a host nobody publishes — which
  * is why the policy allows `https:` for MEDIA specifically and why the doctor prints the
  * origin it observed for the operator to add to `VIDEO_MEDIA_ORIGINS` when a playlist has

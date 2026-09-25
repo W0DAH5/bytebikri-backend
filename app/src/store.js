@@ -68,7 +68,7 @@ import {
 // driver is configured at all, how to put bytes there, how to tell a remote key
 // from a local one, and how to delete one. `VIDEO_STORAGE.md` is the reasoning.
 import {
-  videoHostEnabled, hostAccepts, videoDriver, upload as videoUpload, remove as videoRemove,
+  driverForKind, whyLocal, hostAccepts, upload as videoUpload, remove as videoRemove,
   isRemoteKey, remoteId, remoteProvider,
 } from './video.js';
 // `mediaKind` is the product's own answer to "what is this file", and the router
@@ -137,7 +137,7 @@ export const storage = {
    * Two questions, and the second one is the correction this round makes: IS a host
    * configured, and does that host take this KIND of media at all (`hostAccepts`,
    * VIDEO_STORAGE.md §10.5). The three providers are not three ways of doing one job —
-   * Filemoon is for video, GoFile's playable links are Premium, Catbox's terms forbid
+   * Filemoon is for video, Telegra.ph takes images and cannot delete one, Catbox's terms forbid
    * being a service's CDN — so a kind the configured host does not declare stays here
    * rather than being sent somewhere it will not be served from.
    *
@@ -145,19 +145,48 @@ export const storage = {
    * `public` never leaves, and neither does anything a viewer reads rather than plays
    * (a reader's archive is offset-addressed by our own reader).
    */
-  routesToHost({ namespace = 'private', mimeType = '', filename = '' } = {}) {
-    if (!videoHostEnabled()) return false;
+  routesToHost({ namespace = 'private', mimeType = '', filename = '', size = 0 } = {}) {
     if (namespace !== 'private') return false;
     const kind = mediaKind(mimeType, filename);
-    if (kind !== 'video') return false;
-    return hostAccepts(kind, videoDriver());
+    return driverForKind(kind, process.env, { mimeType, filename, size }) !== 'local';
   },
 
   async put(buffer, filename, { namespace = 'private', mimeType = '' } = {}) {
     if (!/^[a-z]+$/.test(namespace)) throw new Error('bad storage namespace');
-    if (this.routesToHost({ namespace, mimeType, filename })) {
-      const { key } = await videoUpload(buffer, filename, { mimeType });
-      return key;
+    // The SIZE is part of the routing decision now (a host's cap is not our cap), so it is
+    // passed rather than defaulted — otherwise `routesToHost` would answer about a file it
+    // was told nothing about.
+    if (this.routesToHost({ namespace, mimeType, filename, size: buffer?.length ?? 0 })) {
+      /*
+       * WHICH host, decided HERE and passed in.
+       *
+       * The adapter used to resolve the provider itself from `VIDEO_DRIVER`, which was
+       * right when there was one host and one variable. There are four hosts and three
+       * variables now, and the answer depends on the KIND — an image and a video from the
+       * same seller leave by different doors. Resolving it twice would let the two answers
+       * drift; resolving it once, here, where the routing decision is already made, keeps
+       * the key that comes back and the host that holds the bytes the same answer.
+       */
+      const kind = mediaKind(mimeType, filename);
+      const file = { mimeType, filename, size: buffer?.length ?? 0 };
+      const driver = driverForKind(kind, process.env, file);
+      if (driver !== 'local') {
+        const { key } = await videoUpload(buffer, filename, { mimeType, provider: driver });
+        return key;
+      }
+      /*
+       * THE HOST SAID NO TO THIS FILE, SO WE KEEP IT.
+       *
+       * Reached when a host is configured for the kind but would refuse this particular file
+       * — a 6 MB photo for an image host with a 5 MB cap, a `.docx` for Catbox. The upload
+       * succeeds on our own disk instead of failing, because a host's limit must not become
+       * the product's: the seller gets a file that works and a page that opens it, and the
+       * only difference is which disk the bytes are on. The reason is logged once, at the
+       * moment it matters, rather than being discovered by a support question later.
+       */
+      const why = whyLocal(kind, process.env, file);
+      if (why) console.warn(`  storage: kept ${filename || kind} on our own disk — ${why}`);
+      // fall through to the local branch below
     }
     const ext = (path.extname(filename || '') || '').toLowerCase().replace(/[^.a-z0-9]/g, '');
     await fs.mkdir(path.join(UPLOAD_DIR, namespace), { recursive: true });

@@ -24,7 +24,7 @@ import { one, query } from './db.js';
 import { readSecret } from './config.js';
 // Whether a media host is in play at all — the fact the notice's version and its
 // own paragraph both follow (`VIDEO_STORAGE.md` §3, §7).
-import { videoHostEnabled } from './video.js';
+import { hostsEnabled } from './video.js';
 
 /**
  * Bump this whenever the notice changes in a way a person would care about:
@@ -33,11 +33,11 @@ import { videoHostEnabled } from './video.js';
  *
  * ── AND ONE OF THOSE BUMPS IS CONDITIONAL ────────────────────────────────────
  *
- * A video host that DELIVERS a store's video is a new category of recipient: the
+ * A media host that DELIVERS a store's file is a new category of recipient: the
  * viewer's browser asks it for the bytes, so it learns an IP address this
  * platform never used to give anyone (`VIDEO_STORAGE.md` §7). But it is a
- * recipient only where a video host is configured — a deployment with
- * `VIDEO_DRIVER` unset hands nobody anything it did not hand over yesterday, and
+ * recipient only where a host is configured for some kind of media — a deployment
+ * with the drivers unset hands nobody anything it did not hand over yesterday, and
  * asking its visitors to consent again would be asking about something that does
  * not happen there. That is the mistake the PURPOSES comment above refuses to
  * make, in the other direction.
@@ -48,10 +48,10 @@ import { videoHostEnabled } from './video.js';
 export const POLICY_VERSION_BASE = '2026-09-1';
 export const POLICY_VERSION_MEDIA_HOST = '2026-09-2';
 
-export const policyVersionFor = ({ videoHost = false } = {}) =>
-  (videoHost ? POLICY_VERSION_MEDIA_HOST : POLICY_VERSION_BASE);
+export const policyVersionFor = ({ mediaHost = false } = {}) =>
+  (mediaHost ? POLICY_VERSION_MEDIA_HOST : POLICY_VERSION_BASE);
 
-export const POLICY_VERSION = policyVersionFor({ videoHost: videoHostEnabled() });
+export const POLICY_VERSION = policyVersionFor({ mediaHost: hostsEnabled() });
 
 /**
  * The purposes we ask about. `necessary` is not on the list: it is not a choice.

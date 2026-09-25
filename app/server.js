@@ -18,7 +18,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { store, storage, SLOT_DEFS, slugify, PLANS, nextPlan } from './src/store.js';
-import { videoHostEnabled, mediaOrigins as videoMediaOrigins } from './src/video.js';
+import { hostsEnabled, mediaOrigins as videoMediaOrigins } from './src/video.js';
 // The cosmetics engine: the look picker's slots, declared once. This route validates a
 // submitted look against the catalog rather than against a list typed here.
 import { personSlots } from './src/cosmetics.js';
@@ -182,7 +182,24 @@ APP.use(helmet({
       // Ad networks load their own scripts and frames from their own origins.
       // Locked to 'self' for now because no tag is rendered yet; this list grows
       // when component 6 does, and it must be an allowlist, never a wildcard.
-      imgSrc: ["'self'", 'data:'],
+      /*
+       * `img-src` names the media hosts, and for the same reason `media-src` does.
+       *
+       * A store's image can now live at a host (`IMAGE_DRIVER`), and the page loads it
+       * through our route, which answers with a 302 to that host's url. CSP judges a
+       * redirect's DESTINATION, so with `'self' data:` alone the element never attempted the
+       * request at all: the `<img>` was there, `naturalWidth` was 0, and the network log was
+       * completely empty — the exact failure mode §10.4 records for media, found the same way,
+       * by walking it (`/tmp/eyes/kind-walk.mjs`) rather than by reading the policy.
+       *
+       * `data:` was already allowed for the reveal/QR images this product draws itself, which
+       * is a weaker allowance than the one added here, and an image can neither execute
+       * anything nor send anything anywhere — the directives that could leak (`script-src`,
+       * `connect-src`) stay narrow. The enumerated origins come first so a development or
+       * staging host on plain `http` works without a certificate; `https:` covers the CDN a
+       * provider redirects to, whose origin is only known once it answers.
+       */
+      imgSrc: ["'self'", 'data:', ...videoMediaOrigins(), 'https:'],
       // Scripts may only talk to us — this is the directive that would otherwise let an
       // injected script post a session somewhere. A hosted PLAYLIST is fetched by hls.js
       // through XHR, though, so the origins this deployment's providers serve media from
@@ -599,7 +616,7 @@ APP.post('/consent', async (req, res, next) => {
 });
 
 /*
- * `videoHost` is passed to every document and read by one of them: the privacy notice
+ * `mediaHost` is passed to every document and read by one of them: the privacy notice
  * is the only page whose text depends on whether this deployment delivers video bytes
  * through somebody else's CDN, and its date moves with that paragraph
  * (`VIDEO_STORAGE.md` §7). The consent version moves with the same fact, in
@@ -611,7 +628,7 @@ APP.get('/legal/:slug', async (req, res, next) => {
   try {
     const build = LEGAL_DOCS[req.params.slug];
     if (!build) return res.status(404).send('Not found');
-    const doc = build({ consent: req.consent, videoHost: videoHostEnabled() });
+    const doc = build({ consent: req.consent, mediaHost: hostsEnabled() });
     res.send(views.legalPage({
       user: req.user, doc, consent: req.consent,
       missingOperatorFields: legal.MISSING_OPERATOR_FIELDS,
@@ -8037,44 +8054,48 @@ const SERVER = APP.listen(PORT, '0.0.0.0', () => {
   console.log(`\n  ByteBikri  →  http://0.0.0.0:${PORT}`);
   console.log(`  storefront →  /s/alice`);
   console.log(`  dashboard  →  /dashboard/alice   (sign in first)\n`);
-  if (videoHostEnabled()) {
+  if (hostsEnabled()) {
     /*
-     * Say at boot what a configured host can and cannot do.
+     * Say at boot WHICH KIND of media is leaving, to which host, and whether the host
+     * answered.
+     *
+     * Two things changed here at once, and both are because the registry stopped being one
+     * driver. A store's bytes can now go to more than one place (`driverForKind`), so a
+     * single "video host" line would describe a third of the truth; and a host that cannot
+     * do something — Telegra.ph cannot delete, Catbox is development-only — has to say so
+     * BEFORE a seller meets it in the publish form rather than after.
      *
      * This is the one dependency whose failure is not obvious: the page still renders, the
-     * existing files still play, and the only symptom is that every video upload fails —
-     * with a sentence about a host the operator may not remember configuring. It writes a
-     * warning rather than refusing to start, because a host being down is not a reason to
-     * take the whole platform down with it (VIDEO_STORAGE.md §6).
-     *
-     * GoFile gets one extra line because its failure is not a network problem: a free
-     * account cannot produce a playable link at all (see `src/video-gofile.js`), which is
-     * a fact about the ACCOUNT and has to be said in those words, at boot, before a seller
-     * meets it in the publish form.
+     * existing files still play, and the only symptom is that new uploads fail — with a
+     * sentence about a host the operator may not remember configuring. It warns rather
+     * than refusing to start, because a host being down is not a reason to take the
+     * platform down with it (VIDEO_STORAGE.md §6).
      */
     import('./src/video.js').then(async (video) => {
-      const driver = video.videoDriver();
-      const facts = video.hostFacts().find((h) => h.host === driver);
-      if (driver === 'catbox') {
-        // No account endpoint and no listing: a userhash is a key, not an identity. The
-        // one honest check is a real upload, which is the doctor's job, not boot's.
-        console.log(`  video host  →  catbox (${facts?.note || 'no account check available'})\n`);
-        return;
+      for (const { host, kinds } of video.activeHosts()) {
+        const facts = video.hostFacts().find((h) => h.host === host);
+        const caps = facts || {};
+        const caveats = [];
+        if (caps.deletable === false) caveats.push('cannot delete — a file sent there stays');
+        if (caps.policy?.commercial === 'prohibited') caveats.push('DEVELOPMENT ONLY (terms)');
+        if (caps.policy?.commercial === 'premium') caveats.push('needs a paid plan to serve');
+        console.log(`  ${kinds.join('/').padEnd(9)} →  ${host}${caveats.length ? ` — ${caveats.join('; ')}` : ''}`);
+        // A host with no account to ask (Catbox's userhash, Telegra.ph's absence of one)
+        // is not probed: the honest check for those is a real upload, which is the doctor.
+        if (host === 'catbox' || host === 'telegraph') continue;
+        try {
+          const who = await video.account({ provider: host });
+          console.log(`             reachable (${who.email || who.tier || who.id || 'ok'})`);
+        } catch (err) {
+          console.warn(`             UNREACHABLE — ${err.message}`);
+          console.warn(`             uploads to ${host} will fail until it comes back. Everything else works,`);
+          console.warn('             and files already there keep playing. Check it with:');
+          console.warn(`               npm run video:check --prefix app -- --driver=${host}\n`);
+        }
       }
-      const who = await video.account();
-      if (driver === 'gofile' && String(who.tier).toLowerCase() !== 'premium') {
-        console.warn(`\n  VIDEO HOST CANNOT DELIVER — this GoFile account is "${who.tier}":`);
-        console.warn(`    ${video.providers.gofile.PLAYBACK_NEEDS_PREMIUM}`);
-        console.warn('    Every video upload will be refused until this changes.\n');
-        return;
-      }
-      console.log(`  video host  →  ${driver} reachable (${who.email || who.tier || 'ok'})\n`);
+      console.log('');
     }).catch((err) => {
-      console.warn('\n  VIDEO HOST UNREACHABLE — VIDEO_DRIVER is set but the host did not answer:');
-      console.warn(`    ${err.message}`);
-      console.warn('    Every video upload will fail until it comes back. Everything else works,');
-      console.warn('    and files already on the host keep playing. Check it with:');
-      console.warn('      npm run video:check --prefix app\n');
+      console.warn(`\n  video hosts: could not report status — ${err.message}\n`);
     });
   }
 });

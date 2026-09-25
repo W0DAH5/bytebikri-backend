@@ -83,7 +83,7 @@ export const FACTS = {
 // Privacy
 // ---------------------------------------------------------------------------
 
-export const privacy = ({ videoHost = false } = {}) => ({
+export const privacy = ({ mediaHost = false } = {}) => ({
   slug: 'privacy',
   title: 'Privacy',
   lede: `How ${op()} handles personal data, written to describe what the software actually does.`,
@@ -121,14 +121,14 @@ export const privacy = ({ videoHost = false } = {}) => ({
         that holds uploaded files. Both process data on our instructions. We do not sell personal
         data, and there is no advertising business here beyond the networks a store connects
         itself.</p>
-        ${videoHost ? `<p>Videos are a case of their own, and it is the one place a company other
-        than ours sees somebody who is using this site. A store's video files are stored by that
-        same storage provider, and when you press play your browser fetches the video <strong>from
-        them directly rather than through us</strong> — so they see your IP address, the same thing
-        any video host sees, and we see only that you opened the file. They are not told your name,
-        your email address, or what else you have watched here. Documents you hand over for an
-        identity check are never held there: those stay on our own servers and are destroyed when
-        the check is decided.</p>` : ''}`,
+        ${mediaHost ? `<p>File storage is a case of its own, and it is the one place a company
+        other than ours sees somebody who is using this site. A store's files may be stored by that
+        same storage provider, and when you open one your browser fetches it <strong>from them
+        directly rather than through us</strong> — so they see your IP address, the same thing any
+        file host sees, and we see only that you opened the file. They are not told your name, your
+        email address, or what else you have watched or read here. Two things never go to them:
+        documents you hand over for an identity check, which stay on our own servers and are
+        destroyed when the check is decided, and anything you have not asked to open.</p>` : ''}`,
     },
     {
       h: 'How long we keep it',
@@ -169,7 +169,7 @@ export const privacy = ({ videoHost = false } = {}) => ({
       h: 'Changes',
       body: `<p>When this notice changes in a way that matters, the version changes with it and the
         consent banner returns — because an old agreement does not cover a new purpose.</p>
-        <p>Last updated: ${videoHost ? LAST_UPDATED_MEDIA_HOST : LAST_UPDATED}.</p>`,
+        <p>Last updated: ${mediaHost ? LAST_UPDATED_MEDIA_HOST : LAST_UPDATED}.</p>`,
     },
   ],
 });

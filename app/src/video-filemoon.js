@@ -4,7 +4,7 @@
  * `store.js`'s storage adapter has said "replace with the media API later" since
  * the beginning. This was that API and is now the first of three: this module knows
  * this host's shape — endpoints, headers, error bodies and the field a playback url
- * comes back in — and nothing above it knows any of that. GoFile and Catbox sit beside
+ * comes back in — and nothing above it knows any of that. The other hosts sit beside
  * this file and share `video-shared.js` with it.
  */
 
@@ -60,6 +60,16 @@ export const capabilities = {
 export const mediaOrigins = () => [];
 
 /** Configured means the credential this host needs is present. */
+/**
+ * Would this host take this file? Whatever its kind check says.
+ *
+ * Filemoon has no published per-file cap to test here, and the kind question is answered by
+ * `capabilities.kinds` before this is ever asked; so the file-level answer is yes, and the
+ * router's fallback-to-local path therefore never triggers for a video. Stated explicitly so
+ * that every provider answers the same question in the same shape.
+ */
+export const acceptsFile = () => ({ ok: true });
+
 export const configured = (env = process.env) => Boolean(env.FILEMOON_TOKEN);
 
 const DEFAULT_BASE = 'https://filemoon.org/api/v1';
