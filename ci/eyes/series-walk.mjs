@@ -24,6 +24,13 @@
  * removes episodes, and does NOT show anybody's position — the store is told the order
  * is theirs, not where any viewer is in it.
  *
+ * And the ninth is the one that says the eight slices compose: the SECOND episode is
+ * ad-gated while the first is free (§15.1 — an episode is an ordinary file with its own
+ * door), so the walk clears that door through the same dev-only simulator the ad walks
+ * use, and then checks that what is behind it is exactly the ordinary thing: a player, a
+ * strip that still places the episode, a position the route accepted as a change, and the
+ * same position posted twice accepted as nothing.
+ *
  *   node series-walk.mjs [storeSlug] [seriesSlug] [viewer] [outDir]
  *
  * Dev-only, like every walk here.
@@ -31,7 +38,7 @@
 import { chromium } from 'playwright-core';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, rmSync } from 'node:fs';
-import { login, sessionFor } from './lib.mjs';
+import { consent, login, sessionFor } from './lib.mjs';
 
 const BASE = process.env.EYES_BASE || 'http://127.0.0.1:3000';
 const [SLUG = 'alice', SERIES = 'poster-kit', VIEWER = 'alice', OUT = 'docs/evidence/round41'] =
@@ -89,6 +96,19 @@ const page = await ctx.newPage();
 const errors = [];
 page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text().slice(0, 160)); });
 page.on('pageerror', (e) => errors.push(`PAGEERROR ${e.message.slice(0, 160)}`));
+
+// Every position the page reports, so the route's own answer can be read — `changed` is
+// the difference between "written" and "written again", and only the response says which.
+const positions = [];
+page.on('response', async (r) => {
+  if (!/\/api\/watch\/progress$/.test(new URL(r.url()).pathname)) return;
+  try { positions.push(await r.json()); } catch { /* the client swallows these too */ }
+});
+const starts = [];
+page.on('response', async (r) => {
+  if (!/\/api\/unlock\/start$/.test(new URL(r.url()).pathname)) return;
+  try { starts.push(await r.json()); } catch { /* the modal will say so */ }
+});
 
 const shot = (name) => page.screenshot({ path: `${OUT}/${name}.png` });
 const text = async (sel) => (await page.locator(sel).first().innerText()).replace(/\s+/g, ' ').trim();
@@ -247,8 +267,96 @@ if (!/A serial/.test(panel)) fail('the panel does not say which mode the store c
 if (/stopped at|left off|12:0/i.test(panel)) fail('the seller’s page shows a viewer’s position — it must never');
 await shot('series-6-seller');
 
+/* ── 9. The other episode's own door, and the ordinary thing behind it ───── */
+say(9, 'the second episode keeps its own door — and is an ordinary file behind it');
+// Start from the ask, or a finished unlock from an earlier run would walk past the door
+// this step exists to open.
+execFileSync('node', ['ci/eyes/reset-unlock.mjs', VIEWER, `${SERIES}-part-two`], { encoding: 'utf8' });
+await page.goto(`${BASE}/s/${SLUG}/a/${SERIES}-part-two`);
+await page.waitForSelector('.ep-strip');
+await consent(page);
+const locked = {
+  lockedStage: await page.locator('.stage-locked').count(),
+  player: await page.locator('[data-watch]').count(),
+  ask: await text('#unlock-btn'),
+  strip: await text('.ep-strip'),
+};
+console.log('  ', JSON.stringify(locked));
+if (locked.lockedStage !== 1 || locked.player !== 0) fail('the second episode did not start behind its own door');
+if (!/ad/i.test(locked.ask)) fail(`the door does not say what it wants: ${locked.ask}`);
+await shot('series-7-second-door');
+
+// A harness cannot be an ad network, so it plays one: the dev-only simulator signs the
+// postback the provider documents and delivers it over real HTTP.
+await page.click('#unlock-btn');
+const asked = Date.now();
+while (!starts.length && Date.now() - asked < 10_000) await page.waitForTimeout(250);
+if (!starts.length) fail('the page never asked for a view');
+const start = starts[starts.length - 1];
+const delivered = await fetch(`${BASE}/dev/simulate-network/${start.adConfig.providerId}`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({
+    viewId: start.viewId, connectionId: start.adConfig.connectionId, durationSec: start.adConfig.minSeconds,
+  }),
+});
+console.log('   network       :', delivered.status, JSON.stringify(await delivered.json().catch(() => ({}))).slice(0, 120));
+// The granted page reloads itself with the player in place of the door.
+await page.waitForSelector('[data-watch]', { timeout: 30_000 })
+  .catch(async () => {
+    await page.goto(`${BASE}/s/${SLUG}/a/${SERIES}-part-two`);
+    await page.waitForSelector('[data-watch]', { timeout: 10_000 })
+      .catch(async () => fail(`the door did not clear: ${JSON.stringify(await stage())}`));
+  });
+const opened = {
+  stage: await stage(),
+  lockedStage: await page.locator('.stage-locked').count(),
+  strip: await text('.ep-strip'),
+  next: await page.locator('[data-next-episode]').count(),
+  cta: await page.locator('[data-next-cta]').count(),
+};
+console.log('  ', JSON.stringify(opened));
+if (opened.lockedStage !== 0) fail('the door is still on the page after the network credited the view');
+if (!/Episode 2 of 2/.test(opened.strip)) fail(`the strip lost its place behind the door: ${opened.strip}`);
+if (opened.next !== 0 || opened.cta !== 0) fail('the last episode offers a next once its door is open');
+
+// Behind the door it is an ordinary file: playing writes a position, and the route says
+// so. The five-second clip cannot prove a RESUME (series.js refuses anything under five
+// seconds), so what is asserted here is the write and the idempotence.
+positions.length = 0;
+await page.evaluate(async () => {
+  const v = document.querySelector('[data-watch]');
+  await v.play().catch(() => {});
+  await new Promise((r) => setTimeout(r, 2500));
+  v.pause();
+});
+await page.waitForTimeout(900);
+const written = positions[positions.length - 1];
+console.log('   position      :', JSON.stringify(written));
+if (!written || written.ok !== true || written.changed !== true || !(written.seconds >= 2)) {
+  fail(`playing behind the door wrote no position: ${JSON.stringify(positions)}`);
+}
+// The same position again is not a change — the server is the record, and a bookmark
+// that keeps being "written" would move a timestamp every time a tab is hidden.
+const assetId = await page.evaluate(() => document.querySelector('[data-watch]')?.closest('[data-asset-id]')?.dataset.assetId || null);
+const twice = await page.evaluate(({ id, seconds }) => fetch('/api/watch/progress', {
+  method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ assetId: id, seconds }),
+}).then((r) => r.json()), { id: assetId, seconds: written.seconds });
+console.log('   the same again:', JSON.stringify(twice));
+if (!twice || twice.ok !== true || twice.changed !== false) {
+  fail(`the same position was reported as a change: ${JSON.stringify(twice)}`);
+}
+// And the door stays open: the grant is a row, not a page.
+await page.goto(`${BASE}/s/${SLUG}/a/${SERIES}-part-two`);
+await page.waitForSelector('.ep-strip');
+const back = { player: await page.locator('[data-watch]').count(), lockedStage: await page.locator('.stage-locked').count() };
+console.log('   after a reload:', JSON.stringify(back));
+if (back.player !== 1 || back.lockedStage !== 0) fail(`the unlock did not survive a reload: ${JSON.stringify(back)}`);
+await shot('series-8-unlocked');
+
 console.log(`\nconsole errors  : ${errors.length ? errors.join(' | ') : 'none'}`);
 if (errors.length) fail('console errors during the walk');
 await browser.close();
-console.log(`\nshots           : ${OUT}/series-1..6`);
+console.log(`\nshots           : ${OUT}/series-1..8`);
 console.log('series walk: ok');

@@ -367,7 +367,8 @@ seconds" is currently a sentence, not a gate. Slice 8 is last because it is the 
 | 5 Ledger | **Built** — `ad_view_events` gained `placement`/`surface` (written by the claim, from the attempt's own snapshot); `ad_position_daily` counts rendered positions by page, placement and side; `/dashboard/:slug/attention` prints the two blocks and never their sum. 4 tests (`attention.test.js`), 3 screenshots from a real browser walk (`ci/eyes/ledger-walk.mjs`, `docs/evidence/round37`). §12 is the design |
 | 6 Reader | **Built** — `archive.js` (a zip read through the central directory, both compression methods, caps that refuse a bomb rather than a big book: 8 tests) and `pages.js` (the page model: natural order, junk filtered, `ComicInfo.xml` not a page; the plan the reader turns, its segments, and the gate sentence: 11 tests). The reader itself is one page at a time or one continuous scroll, left to right or right to left, the store's choice per file; a stop lands **between** pages and the server refuses the bytes behind it (`403 a view is owed before this page`) rather than hiding them with a veil. The bookmark is the reader's own (`reading_progress`, PK (user, file)) and never shown to the store. 8 tests in `reader.test.js`, 8 screenshots from a real browser walk (`ci/eyes/reader-walk.mjs`, `docs/evidence/round38`) that also flips both seller choices and watches the reader obey. §13 is the design. Suite 763/763/0 |
 | 7 Live | **Built** — §14 is the design: a live file is the store's own `https://…m3u8` (no ingest, no re-host, no recording), hls.js 1.7.3 vendored because Chrome and Firefox have no native HLS, and a break is a WINDOW only the store's own POST can open, which buys clean entries for newcomers at the ratio Twitch taught the industry. Built: `live.js` holds the arithmetic and the four caps, `live_breaks` holds the windows (one open per file, enforced by a partial unique index), and the seller's own POST is the only writer. 10 unit tests, 4 fixture tests, and `ci/eyes/live-walk.mjs` in a real browser (6 shots, `docs/evidence/round39`) — the stream plays, a break the seller calls stops it, the view is credited, playback resumes at the EDGE, and a newcomer inside the window walks in clean. Suite 782/782/0 |
-| 8 Series | **Built** — §15 is the design: `series` (a slug and a closed `mode` per store), `assets.series_id`/`episode_no` with the pair checked as one thing, and `watch_progress` as the person's own bookmark (`0049_series.sql`). `src/series.js` is pure and decides the order, the landing episode, the next one, and *finished* from one place; the storefront collapses a series into one card, the series page lists the store's order, and an episode's page carries the strip, the resume, and a **Next episode** link that appears only when the episode ends — no timer, no autoplay. 14 tests in `series.test.js` and `ci/eyes/series-walk.mjs` in a real browser (`docs/evidence/round41`, 6 shots). Suite 801/801/0 |
+| 8 Series | **Built** — §15 is the design: `series` (a slug and a closed `mode` per store), `assets.series_id`/`episode_no` with the pair checked as one thing, and `watch_progress` as the person's own bookmark (`0049_series.sql`). `src/series.js` is pure and decides the order, the landing episode, the next one, and *finished* from one place; the storefront collapses a series into one card, the series page lists the store's order, and an episode's page carries the strip, the resume, and a **Next episode** link that appears only when the episode ends — no timer, no autoplay. 14 tests in `series.test.js` and `ci/eyes/series-walk.mjs` in a real browser (`docs/evidence/round41`, 8 shots, including the ad-gated episode's own door cleared through the dev-only network
+simulator and the position route answering `changed: true` then `false`). Suite 801/801/0 |
 
 ---
 
@@ -836,7 +837,10 @@ The evidence, all of it 2025–2026 and all of it about the same three decisions
 - **Tests**: the order flips with the mode; a finished episode does not come back as "continue"; a hand-crafted
   POST cannot put a download in a series or a foreign file into somebody's series; the position is never read by
   any accounting path; and a browser walk (`ci/eyes/series-walk.mjs`) that watches one episode end, takes the
-  next control, and finds the resume line waiting on the one it left.
+  next control, finds the resume line waiting on the one it left, and then — because the second episode of the
+  fixture is ad-gated while the first is free — clears that episode's own door through the dev-only network
+  simulator and checks that behind it the file is exactly ordinary: a player, a strip that still places the
+  episode, a position the route accepted as a change, and the same position again accepted as nothing.
 
 ### 15.5 What was built
 
@@ -858,10 +862,13 @@ The evidence, all of it 2025–2026 and all of it about the same three decisions
 - **Tests** (14, `series.test.js`): the order, the grace on *finished*, the landing rule, the refusals, the pair in
   SQL, positions never reading into accounting, a position POST that writes nothing twice — and the hand-made POST,
   which is the one that found a hole (the missing `not-yours`) instead of confirming one;
-- **The walk** (`ci/eyes/series-walk.mjs` → `docs/evidence/round41`): one card and no direct episode links on the
-  storefront; the store's order and per-episode doors on the series page; a fresh visit with no resume; a pause at
-  0:12 found again after a reload and sought by the player; *start from the beginning* leaving no resume behind; the
+- **The walk** (`ci/eyes/series-walk.mjs` → `docs/evidence/round41`, 8 shots): one card and no direct episode links
+  on the storefront; the store's order and per-episode doors on the series page; a fresh visit with no resume; a pause
+  at 0:12 found again after a reload and sought by the player; *start from the beginning* leaving no resume behind; the
   episode ending to reveal a **Next episode** link and the last episode of a serial offering none; the finished
-  episode not coming back as "continue", with the series page still saying *Start with Episode 1*; and the seller's
-  panel numbering both episodes while never showing a viewer's position. The walk also refuses a session that is not
-  actually signed in — a cached cookie outliving its database would have tested the signed-out page.
+  episode not coming back as "continue", with the series page still saying *Start with Episode 1*; the seller's panel
+  numbering both episodes while never showing a viewer's position; and — the check that the slices compose — the
+  **ad-gated** second episode starting behind its own door, that door cleared by a real postback through the dev-only
+  simulator, and the ordinary file found behind it (`{ok:true, changed:true}` for the position, `changed:false` for the
+  same one twice, the unlock still there after a reload). The walk also refuses a session that is not actually signed
+  in — a cached cookie outliving its database would have tested the signed-out page.
