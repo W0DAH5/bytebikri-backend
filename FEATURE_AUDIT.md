@@ -3495,3 +3495,66 @@ the row and the sentence.
 pricing it is a new decision with its own record — not a column that quietly appeared here first.
 
 Suite **736/736/0** (four new tests); the walk is green, no console errors.
+
+## §42 — The reader: pages that are counted, a seam the server enforces, and a bookmark that is the reader's own
+
+§13 designed a surface for files that are read rather than played, and the design's own first line was
+the blocker: **the planner was told the file count.** A forty-page comic had one chapter, so the
+between-chapter cue slice 3 had built could never be placed on one, and the seller's panel said so in
+its own words. This slice makes the page count real and then builds the reader on top of it.
+
+**The archive is read the way readers read it.** `app/src/archive.js` finds the end-of-central-directory
+record by scanning backwards (a zip may carry a comment, and a reader that trusts the last 22 bytes
+loses the archive), takes entry sizes from the central directory rather than the local header, and
+inflates DEFLATE entries while STORED ones pass through untouched — which is exactly what a CBZ tool
+writes, because the images are already compressed. Two refusal rules ride along: a declared or produced
+size past its cap is refused *before* the bytes are trusted, and a zip64 archive is named and refused
+rather than misread. The unit fixture is written by hand, byte by byte, with an extra field in the local
+header that is a different length from the central one's and an entry whose local header carries zeros —
+the two lies a wrongly-written reader believes.
+
+**`pages.js` is the model, and it is the only place the words come from.** Natural order (so `page-10`
+follows `page-9`), junk filtered (`__MACOSX/`, dotfiles), `ComicInfo.xml` recognised as metadata and not
+drawn, one step per drawable page, a segment list split at the gate cues, and the gate sentence itself —
+*"One view after page 6."* The seller's panel, the buyer's file page and the reader all print that one
+sentence from one function, so the promise on the file page cannot drift from the ask behind the link.
+
+**A reader's stop is a real stop.** `breakCues` is the player's list and carries timestamps;
+`betweenCues` is the reader's and carries page numbers. `startBreak` now finds the cue in whichever list
+the file's shape has, snapshots the seam into the attempt (`break_index` with a null `break_at_sec`), and
+the ledger row it produces reads `between / asset / rewarded` like any other verified view. A seller can
+turn a `read` file into a `breaks` file, and the plan's cues move from timestamps to seams without the
+planner learning a second vocabulary.
+
+**The veil is not the enforcement.** Page bytes travel the same signed route as every other file, and
+the route refuses a step behind an uncleared gate whether it was reached by clicking or by a URL typed
+into the address bar: `403 {"error":"a view is owed before this page","gate":{"sentence":"One view after
+page 6."}}`. That is the claim that makes the gate a gate rather than a decoration, and the walk proves
+it by repointing the token it was given at the step it was not — no clicking, no client, just the URL.
+
+**The bookmark is the reader's, and the store never sees it.** `reading_progress` is keyed
+`(user_id, asset_id)` with a step and a timestamp, and a test reads `information_schema.columns` to
+assert no column matches `seconds|percent|completed|revenue|paid|price|cut|amount`. The write only
+happens when the step CHANGES (the beacon dedupes in `sessionStorage` by asset), because a position that
+moved on every render would be a reading history rather than a bookmark.
+
+**What the browser proved.** `ci/eyes/reader-walk.mjs`, seven sections, eight screenshots in
+`docs/evidence/round38`, console errors none. The file page offers *Start reading* and prints the
+promise beside it; page one is drawn out of the CBZ at 1400px; the ask first stands at page 6 with page
+6 itself drawn (the seam is after it, where page 7 would be); the deep link to page 7 renders the ask
+with **no image element at all**; the hand-made fetch gets the 403 above with a JSON content type; the
+sandbox network's signed postback turns the page; the bookmark comes back as *Continue reading — Page 8
+of 12*; a 390px phone has zero horizontal overflow. Section 7 flips the seller's two choices on the
+file's own page (both controls, one save, its own sentence: *"Saved. The reader now presents this file
+the way you chose…"*), then reads the buyer's reader — which must be in scroll mode, right to left, with
+the forward control on the left and a six-page strip rather than a single frame — and puts it back.
+
+**The walk's own discoveries.** A repeat run proved nothing twice: an unlock already cleared means no
+ask, and a bookmark already written means the reader opens on page 12 instead of page 1.
+`reset-unlock.mjs` clears the bookmark too now, and the walk starts at the reader's own URL rather than
+by clicking *Continue reading*. The screenshot of the scroll mode caught an empty frame on the first
+run: `decoding="async"` is right for a reader and wrong for a camera, so every reader screenshot waits
+for `img.decode()` first. And a deliberate 403 is now CREDITED rather than counted — the walk spends one
+expected refusal on its own hand-made fetch, so "console errors: none" still means what it says.
+
+Suite **763/763/0**; the seller's panel and the save route are covered as tests and as a walk.

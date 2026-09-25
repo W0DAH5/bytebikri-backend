@@ -20,7 +20,7 @@
  */
 import crypto from 'node:crypto';
 import { store } from './store.js';
-import { breakCues, breaksSupported } from './placement.js';
+import { breakCues, betweenCues, breaksSupported } from './placement.js';
 import { readSecret } from './config.js';
 import { parsePostback, GRANTS_UNLOCK, getAdapter, devSimulatorFor } from './providers/index.js';
 import { availabilityFor, resolveCountry } from './geo.js';
@@ -230,7 +230,7 @@ export async function startBreak({ assetId, userId, cueIndex, providerId, person
     return { ok: false, error: 'this file is not live' };
   }
   if (!breaksSupported(await store.shapeOf(asset))) {
-    return { ok: false, error: 'this file has no player to stop' };
+    return { ok: false, error: 'this file has no surface that can stop' };
   }
 
   // The cue is an index into the plan and nothing else. `Number(null)` is 0 and
@@ -245,7 +245,12 @@ export async function startBreak({ assetId, userId, cueIndex, providerId, person
   }
 
   const plan = await store.adPlanFor(asset, { membersOnly: asset.unlock_mode === 'members' });
-  const cue = breakCues(plan).find((c) => c.index === wanted);
+  // A stop is a stop at whichever surface can honour it: a player by timestamp, a
+  // reader at a seam between two pages. Both lists are the planner's own cues, so a
+  // file that changed shape between the render and the click cannot invent one.
+  const shape = await store.shapeOf(asset);
+  const stops = shape === 'read' ? betweenCues(plan) : breakCues(plan);
+  const cue = stops.find((c) => c.index === wanted);
   if (!cue) return { ok: false, error: 'no such break in this file' };
   // The planner's own cue, so the ledger's word for this stop comes from the thing
   // that placed it rather than from the wrapper that indexes it.
@@ -270,12 +275,16 @@ export async function startBreak({ assetId, userId, cueIndex, providerId, person
     ad_min_seconds: plan.budget.seconds || 15,
     break_index: cue.index,
     // Snapshotted so a plan edited mid-watch cannot move the break under somebody
-    // who is already sitting through it.
+    // who is already sitting through it. A reader's cue has no second to record —
+    // the seam is the position — so this is null there, which is the true value.
     break_at_sec: cue.atSec,
     // From the planner's own cue, not spelled again here: `breakCues` only ever hands
     // back a mid-roll today, and reading `kind` off the cue is what keeps that true
     // when the reader and live surfaces arrive (slices 6 and 7).
     placement: rawCue?.kind ?? 'mid',
+    // The ledger's word for where this person was stopped. A reader's gate is still
+    // on the file's own page, so the surface does not change with the shape — what
+    // changes is the placement, and that comes from the cue the planner placed.
     surface: 'asset',
   });
 
@@ -285,7 +294,10 @@ export async function startBreak({ assetId, userId, cueIndex, providerId, person
     viewId: view.id,
     breakIndex: cue.index,
     position: cue.position,
-    total: breakCues(plan).length,
+    total: stops.length,
+    // The step a reader has to reach again after this view, so the client does not
+    // have to re-derive where the gate was from a list it parsed earlier.
+    atChapter: cue.atChapter ?? null,
     adConfig: {
       providerId: connection.provider_id,
       connectionId: connection.id,
@@ -665,4 +677,23 @@ export const STREAM_TTL_MS = 4 * 60 * 60 * 1000;
 export function issueStreamUrl({ assetId, file, userId, basePath }) {
   const token = signAccessToken({ assetId, fileId: file.id, userId, ttlMs: STREAM_TTL_MS });
   return `${basePath}/api/content/${assetId}/file/${file.id}/stream?t=${encodeURIComponent(token)}`;
+}
+
+/**
+ * One page of a reader, as a URL.
+ *
+ * The same token as a stream, and for the same reason: a reader turns a page every
+ * few seconds for twenty minutes, so a ten-minute download token would expire in the
+ * middle of a chapter and look like a broken file. The token binds (asset, file,
+ * user) exactly as the other two do; the STEP is in the path, because a page is a
+ * position inside a file rather than a thing a token can prove.
+ *
+ * The route re-derives the page model and refuses bytes past a seam this person has
+ * not cleared (§13), so a hand-written URL gets no further than the reader's own
+ * next-page link would.
+ */
+export function issuePageUrl({ assetId, file, userId, step, basePath }) {
+  const token = signAccessToken({ assetId, fileId: file.id, userId, ttlMs: STREAM_TTL_MS });
+  return `${basePath}/api/content/${assetId}/file/${file.id}/page/${encodeURIComponent(step)}`
+    + `?t=${encodeURIComponent(token)}`;
 }

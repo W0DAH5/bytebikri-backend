@@ -111,7 +111,21 @@ node ci/eyes/premium-walk.mjs       # two payers, two schemes, motion on intent;
 node ci/eyes/reset-rent.mjs alice   # puts the rent invoice back to issued
 node ci/eyes/rent-walk.mjs          # the seller's invoice, the reference, the operator's match; 5 shots
 node ci/eyes/ledger-walk.mjs alice  # a storefront render, then the owner's attention ledger; 3 shots
+node ci/eyes/reset-unlock.mjs bob kathmandu-sketchbook   # clear one viewer's unlock ON the comic
+node ci/eyes/reader-walk.mjs alice kathmandu-sketchbook bob   # the reader: pages, the seam, the bookmark; 8 shots
 ```
+
+`reader-walk.mjs` is the walk for the reader, and its subject is a file rather than a page: page one is
+drawn out of a real CBZ through the signed route, the seam shows the ask *before* the page it owes, a
+deep link past the seam is refused by the SERVER with the same sentence the page prints (`403 a view is
+owed before this page` — read by hand, from a URL repointed at the blocked step), the network's own
+signed postback turns the page, and the bookmark the reader writes brings the offer back as
+*Continue reading* on the file page. Section 7 is the seller's own two choices: it flips the mode and the
+direction on the file's page and then reads the buyer's reader, which must obey both and put the forward
+control on the left for right-to-left. It leaves the demo file reading the way it found it. A repeat run
+needs `reset-unlock.mjs`, which clears the unlock, the attempt, the view events AND the bookmark for one
+(viewer, file) pair — a bookmark left behind opens the reader on the last page and makes a second run
+prove nothing.
 
 `rent-walk.mjs` is the walk for the one money path that had never been walked. It needs the invoice to
 be OPEN, so it has its own reset — a paid invoice is the right outcome for a seller and a dead end for a

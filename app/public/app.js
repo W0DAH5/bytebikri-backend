@@ -510,6 +510,142 @@
     });
   });
 
+  /*
+   * ── THE READER'S GATE ─────────────────────────────────────────────────────
+   *
+   * The same verified view as a break in a player, asked at a seam instead of at a
+   * timestamp: the reader stops at the end of a segment, this starts an attempt, and
+   * the page turns when the NETWORK has confirmed it. Nothing here decides that a
+   * view happened, and the button cannot make a page appear: the route that serves
+   * the bytes does its own check, so a client that lied would still get a 403.
+   *
+   * `location.assign` rather than a history entry: the page after a cleared seam is
+   * where the person was going, not a place they navigated to from the gate.
+   */
+  document.querySelectorAll('[data-reader-gate]').forEach((button) => {
+    const panel = button.closest('.reader-gate');
+    const statusEl = panel ? $('#reader-gate-status', panel) : null;
+    const say = (text, kind = '') => {
+      if (!statusEl) return;
+      statusEl.textContent = text;
+      statusEl.style.color = kind ? `var(--${kind}-text)` : '';
+    };
+    const modal = $('#ad-modal');
+    const countEl = $('#ad-count');
+    const progressEl = $('#ad-progress');
+    const providerLine = $('#ad-provider');
+    const titleEl = $('#ad-title');
+    const askLine = $('#ad-ask-tail');
+    let ticker = null;
+    let cancelled = false;
+
+    $('#ad-close')?.addEventListener('click', () => { cancelled = true; });
+
+    button.addEventListener('click', async () => {
+      const assetId = button.dataset.assetId;
+      const next = button.dataset.next;
+      const cueIndex = Number(button.dataset.cueIndex) || 0;
+      if (!assetId || !next) return;
+      button.disabled = true;
+      say('Starting the view…');
+      const start = await api(button.dataset.breakUrl || '/api/unlock/break', {
+        method: 'POST',
+        body: JSON.stringify({ assetId, cueIndex }),
+      });
+      if (!start.ok) {
+        say(start.error || 'Could not start a view. Nothing was charged and no page was turned.', 'danger');
+        button.disabled = false;
+        return;
+      }
+      const seconds = Number(start.adConfig?.minSeconds) || 15;
+      if (titleEl) titleEl.textContent = 'Your ad is playing';
+      if (askLine) askLine.textContent = 'One view, then the next page.';
+      if (providerLine) providerLine.textContent = `${start.adConfig.providerId} · rewarded video`;
+      if (countEl) countEl.textContent = String(seconds);
+      if (progressEl) progressEl.style.width = '0%';
+      if (modal) modal.hidden = false;
+      say('Waiting for the network to confirm the view…');
+      let left = seconds;
+      clearInterval(ticker);
+      ticker = setInterval(() => {
+        left -= 1;
+        if (countEl) countEl.textContent = String(Math.max(left, 0));
+        if (progressEl) progressEl.style.width = `${Math.min(((seconds - left) / seconds) * 100, 100)}%`;
+        if (left <= 0) clearInterval(ticker);
+      }, 1000);
+
+      if (start.adConfig?.devSimulator) {
+        api(`/dev/simulate-network/${encodeURIComponent(start.adConfig.providerId)}`, {
+          method: 'POST',
+          body: JSON.stringify({
+            viewId: start.viewId,
+            connectionId: start.adConfig.connectionId,
+            durationSec: seconds,
+          }),
+        }).catch(() => { /* the wait below decides */ });
+      }
+
+      // The wait is on the SERVER's answer, never on the countdown — the same rule
+      // the player follows, and the reason the ✕ is a cancellation of the wait rather
+      // than a claim about the ad.
+      const deadline = Date.now() + 90_000;
+      let credited = false;
+      while (Date.now() < deadline && !cancelled) {
+        const s = await api(`/api/unlock/status?assetId=${encodeURIComponent(assetId)}`
+          + `&viewId=${encodeURIComponent(start.viewId)}`);
+        if (Number(s.viewsDone) >= Number(s.viewsRequired)) { credited = true; break; }
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+      clearInterval(ticker);
+      if (modal) modal.hidden = true;
+      if (credited) {
+        say('Confirmed. Turning the page…', 'success');
+        window.location.assign(next);
+        return;
+      }
+      button.disabled = false;
+      say(cancelled
+        ? 'Dropped. The page is still where it was, and the store was not credited for that view.'
+        : 'The network has not confirmed that view yet. Reload to try the seam again.', 'warning');
+    });
+  });
+
+  /*
+   * ── WHERE SOMEBODY STOPPED ───────────────────────────────────────────────
+   *
+   * Posted when the STEP CHANGES, not when the page loads: a refresh, a crawler and a
+   * preview all render a page without anybody reading it. The session remembers what
+   * was last posted so moving back and forth does not write a row per click, and the
+   * final post happens as the page is being hidden, which is the closest a browser
+   * gets to "they left here".
+   */
+  const reader = $('[data-reader]');
+  if (reader) {
+    const assetId = reader.dataset.assetId;
+    const step = Number(reader.dataset.readerStep) || 1;
+    const progressUrl = reader.dataset.progressUrl;
+    const key = assetId ? `bytebikri:read:${assetId}` : null;
+    const last = key ? Number(sessionStorage.getItem(key)) || 0 : 0;
+    if (assetId && progressUrl && step !== last) {
+      api(progressUrl, { method: 'POST', body: JSON.stringify({ assetId, step }) })
+        .then((r) => { if (r.ok && key) sessionStorage.setItem(key, String(step)); })
+        .catch(() => { /* losing a bookmark is not worth a visible error */ });
+    }
+
+    // Arrow keys, the way every reader has them — and they follow the FILE's
+    // direction, so a manga store's right arrow goes back.
+    const rtl = reader.dataset.direction === 'rtl';
+    document.addEventListener('keydown', (ev) => {
+      if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+      const tag = (ev.target?.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || ev.target?.isContentEditable) return;
+      const forward = rtl ? 'ArrowLeft' : 'ArrowRight';
+      const back = rtl ? 'ArrowRight' : 'ArrowLeft';
+      const href = ev.key === forward ? reader.dataset.next : (ev.key === back ? reader.dataset.prev : null);
+      if (href) window.location.assign(href);
+    });
+  }
+
   // ── protected media ──────────────────────────────────────────────────────
   //
   // Deterrence, and nothing more. The honest statement is in the markup above

@@ -97,14 +97,22 @@ import { SANDBOX_PROVIDER_IDS } from './src/providers/index.js';
 import { selectableProviders, providerById, payoutVerdict, loadRegistry } from './src/registry.js';
 import {
   startUnlock, startBreak, unlockStatus, handlePostback, signHousePostback,
-  verifyAccessToken, issueDownloadUrl, issueStreamUrl,
+  verifyAccessToken, issueDownloadUrl, issueStreamUrl, issuePageUrl,
 } from './src/unlocks.js';
 import {
   mediaKind, isPlayable, isWatermarkable, hasImageMagick, watermarkImage,
   watermarkLabel, watermarkSvgDataUri, derivativeKey, cachedDerivative, cacheDerivative,
   rangeFor, assetShape, measuredSeconds, MAX_RUNTIME_SEC,
 } from './src/media.js';
-import { placementPanelShown, breakCues, breaksSupported } from './src/placement.js';
+import { placementPanelShown, breakCues, betweenCues, breaksSupported } from './src/placement.js';
+// The page model (§13): what a read is once its pages are counted, and where the
+// gates fall between them. Imported here because the reader's route, the gate and
+// the file page must all read the same answer.
+import {
+  segmentsFor, gatesBefore, segmentFor, stepLabel, gateSentence, isArchiveName,
+  readMode, readDirection, READ_MODES, READ_DIRECTIONS,
+} from './src/pages.js';
+import { readEntry } from './src/archive.js';
 import { selfTest as adapterSelfTest, advisories as adapterAdvisories, ADAPTERS } from './src/providers/index.js';
 import * as views from './src/views.js';
 import { REVEAL_BOOTSTRAP } from './src/views.js';
@@ -2121,10 +2129,17 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
      * database's business, and the client learns it the same way it learns
      * everything else: by asking the status route.
      */
-    const gate = unlocked && asset.unlock_mode === 'breaks' && placement
+    const stops = shape === 'read' ? betweenCues(placement) : breakCues(placement ?? {});
+    const gate = unlocked && asset.unlock_mode === 'breaks' && placement && stops.length
       ? {
         breakUrl: '/api/unlock/break',
-        cues: breakCues(placement).map((c) => ({ index: c.index, atSec: c.atSec, seconds: c.seconds })),
+        // A player's cue has a second; a reader's has a step. Exactly one of the two
+        // is present, which is why the client checks which surface it is on rather
+        // than assuming a shape.
+        reader: shape === 'read',
+        cues: stops.map((c) => ({
+          index: c.index, atSec: c.atSec, seconds: c.seconds, chapter: c.atChapter ?? null,
+        })),
       }
       : null;
 
@@ -2138,6 +2153,14 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
       channel, asset, files, unlocked, user: req.user, consent: req.consent,
       placement,
       gate,
+      // The page model, for a file a reader can open (§13). It is what the page's
+      // counting words and its reader link are built from, and null for every other
+      // shape — there is no page count for a video, and inventing one would be a
+      // number with nothing behind it.
+      pages: shape === 'read' ? await store.assetPagePlan(asset, files) : null,
+      progress: shape === 'read' && req.user
+        ? await store.readingProgress(req.user.id, asset.id)
+        : null,
       accessUntil: unlock?.expires_at ?? null,
       previewFile, markUri, markLabel,
       alreadyReported,
@@ -3045,6 +3068,223 @@ function sendRanged(req, res, buf, { type, filename, disposition = 'inline' }) {
  * per request, per account — same token machinery, same unlock check, so the app
  * cannot obtain anything a browser could not.
  */
+// ---------------------------------------------------------------------------
+// The reader — a page at a time, and the seam where a view is asked for
+// ---------------------------------------------------------------------------
+//
+// §13's surface. The route asks the FILE page's questions in the same order — the
+// store, the file, whether this viewer may see it, the country, and whether they can
+// open it at all — because a second way into the same bytes is a second place the
+// answer can be wrong. When the answer is "not unlocked", the reader sends them to
+// the file page rather than rendering a door of its own: there is one door in this
+// product, and it is on the page that states the ask.
+//
+// The step is a query parameter rather than a path segment so that a reader who
+// stops mid-chapter has a URL a person can paste, and so `?p=1` is the same page as
+// no parameter at all.
+
+/** The reader's own view of a file: what it is, and where this person is in it. */
+async function readerContext(req, res) {
+  const channel = await store.channelBySlug(req.params.slug);
+  if (!channel) { res.status(404).send('Channel not found'); return null; }
+  if (!isPublicChannel(channel) && !maySeeHidden(req, channel)) {
+    res.status(404).send('Channel not found');
+    return null;
+  }
+  const asset = await store.assetBySlug(channel.id, req.params.assetSlug);
+  if (!asset) { await notFoundPage(req, res, 'file'); return null; }
+
+  const holdsUnlock = req.user ? await store.isUnlocked(asset.id, req.user.id) : false;
+  if (!maySeeHiddenFile({ asset, user: req.user, ownerId: channel.owner_id, holdsUnlock })) {
+    await notFoundPage(req, res, 'file');
+    return null;
+  }
+  const maySeeEverything = Boolean(req.user)
+    && (req.user.id === channel.owner_id || req.user.role === 'admin');
+  if (!isAssetPublic(asset.moderation_state) && !maySeeEverything && !holdsUnlock) {
+    await notFoundPage(req, res, 'file');
+    return null;
+  }
+
+  const country = viewerCountry(req);
+  const countryRule = country ? (await store.countryRulesFor([asset.id], country))[0] ?? null : null;
+  const channelBlock = await store.channelCountryBlock(channel.id, country);
+  const resolved = resolveCountry({ assetRule: countryRule, channelBlock });
+  const availability = availabilityFor({ assetState: asset.moderation_state, resolved });
+  if (!availability.visible && !maySeeEverything) {
+    const rules = await store.policyRules();
+    countryDependent(res);
+    res.status(blockStatus(resolved) ?? 451).send(views.countryBlocked({
+      user: req.user, consent: null, country, store: channel, asset,
+      sentence: blockSentence({
+        resolved, rule: ruleFor(rules, resolved.ruleCode), store: channel.name, country,
+      }),
+    }));
+    return null;
+  }
+
+  const memberDoor = req.user
+    ? await store.memberDoorFor({ profileId: req.user.id, channelId: channel.id, asset })
+    : { door: 'none', membership: null };
+  const memberCover = memberDoor.door === 'covered' ? memberDoor.membership : null;
+  const unlocked = (['open', 'breaks'].includes(asset.unlock_mode) || holdsUnlock || Boolean(memberCover))
+    && availability.unlockable;
+
+  const files = await store.filesOf(asset.id);
+  const plan = await store.assetPagePlan(asset, files);
+  return { channel, asset, files, plan, unlocked, holdsUnlock, memberCover, country };
+}
+
+APP.get('/s/:slug/a/:assetSlug/read', async (req, res, next) => {
+  try {
+    const ctx = await readerContext(req, res);
+    if (!ctx) return undefined;
+    const { channel, asset, files, plan, unlocked } = ctx;
+    const base = `/s/${encodeURIComponent(channel.slug)}/a/${encodeURIComponent(asset.slug)}`;
+    // Nothing to read, or nothing this person may read yet: the file page is where
+    // both are explained, and it is where the one door in this product lives.
+    if (!plan.chapters || !unlocked) return res.redirect(base);
+
+    const rowsById = new Map(files.map((f) => [f.id, f]));
+    const placement = asset.unlock_mode === 'breaks'
+      ? await store.adPlanFor(asset, { membersOnly: asset.unlock_mode === 'members' })
+      : null;
+    const cues = asset.unlock_mode === 'breaks' ? betweenCues(placement ?? {}) : [];
+    const { segments } = segmentsFor(plan, cues);
+    // Cleared seams, by the planner's own cue index — `pending_views.break_index` is
+    // what a claimed view records, and comparing it to a segment's position would
+    // break the moment a seller edited their plan.
+    const cleared = new Set(await store.clearedGates(req.user?.id ?? null, asset.id));
+    const owedBefore = (n) => gatesBefore(segments, n).filter((g) => !cleared.has(Number(g.index)));
+
+    const last = plan.steps.length;
+    const requested = Number.parseInt(req.query.p ?? '', 10);
+    const start = Number.isInteger(requested) && requested >= 1 ? Math.min(requested, last) : 1;
+    const mode = readMode(asset.read_mode);
+    const direction = readDirection(asset.read_direction);
+
+    // Every byte of content in this product is minted for an account, and the reader
+    // is not an exception: a page URL has to know whose bookmark it belongs to. The
+    // file page says the same thing in its own words ("unlocks are tied to your
+    // account"), so this is the same rule rather than a new one.
+    const signedIn = Boolean(req.user);
+
+    const segment = segmentFor(segments, start) ?? segments[segments.length - 1];
+    // A step that owes a seam is not drawn AT ALL: no URL is minted for it, which is
+    // what makes the veil more than a picture. The refusal in the byte route is the
+    // second half of the same rule — arriving here by a pasted URL shows the ask, and
+    // taking the URL apart and fetching the page directly gets a 403.
+    const owedHere = signedIn ? owedBefore(start) : [];
+    const windowEnd = mode === 'scroll' && !owedHere.length ? segment.to : start;
+    const items = [];
+    if (signedIn && !owedHere.length) {
+      for (let n = start; n <= windowEnd; n += 1) {
+        const step = plan.steps[n - 1];
+        const file = rowsById.get(step.fileId);
+        items.push({
+          n,
+          url: file && step.drawable
+            ? issuePageUrl({ assetId: asset.id, file, userId: req.user.id, step: n, basePath: '' })
+            : null,
+          alt: `${stepLabel(plan, n)}${step.entryName ? ` — ${step.entryName}` : ''}`,
+          caption: step.kind === 'archive' && step.entryName ? step.entryName : '',
+        });
+      }
+    }
+
+    // The seam, two ways round: the page AFTER this window may owe a view, and the
+    // page we are ON may owe one (a deep link, or a back button into a segment that
+    // was never paid for). Both render the same ask; only where it leads differs.
+    const after = windowEnd + 1;
+    const owedNext = signedIn && after <= last ? owedBefore(after) : [];
+    const gateCue = owedHere[0] ?? owedNext[0] ?? null;
+    const retrySame = Boolean(owedHere.length);
+    const gate = gateCue
+      ? {
+        cueIndex: gateCue.index,
+        sentence: gateSentence(plan, gateCue),
+        seconds: Number(placement?.budget?.seconds) || 15,
+        nextHref: `${base}/read?p=${retrySame ? start : after}`,
+      }
+      : null;
+
+    const prevHref = start > 1 ? `${base}/read?p=${start - 1}` : null;
+    // A gated reader gets the ask INSTEAD of a link that the byte route would refuse:
+    // the rule is enforced twice, once so the page never offers a dead end, and once
+    // so the dead end cannot be walked around.
+    const nextHref = gate
+      ? null
+      : (after <= last ? `${base}/read?p=${mode === 'scroll' ? windowEnd : after}` : null);
+
+    const step = plan.steps[start - 1];
+    const refusal = step.kind === 'file'
+      ? {
+        sentence: plan.refusals.find((r) => r.fileId === step.fileId)?.sentence
+          || 'This reader draws image sets and archives of images. Download this file and use your own app.',
+      }
+      : null;
+    const downloadUrl = step.kind === 'file' && req.user
+      ? issueDownloadUrl({ assetId: asset.id, file: rowsById.get(step.fileId), userId: req.user.id, basePath: '' })
+      : null;
+
+    const progress = req.user ? await store.readingProgress(req.user.id, asset.id) : null;
+    await store.bumpPageView(channel.id);
+    if (req.user) await store.markChannelSeen(req.user.id, channel.id);
+
+    res.send(views.layout({
+      title: `${asset.title} — ${stepLabel(plan, start)}`,
+      user: req.user, consent: req.consent, current: 'marketplace',
+      body: views.readerPage({
+        channel, asset, user: req.user,
+        label: stepLabel(plan, start),
+        mode, direction,
+        items, current: start, total: last,
+        prevHref, nextHref,
+        gate,
+        refusal: owedHere.length ? null : refusal,
+        downloadUrl,
+        signin: signedIn
+          ? null
+          : { href: `/login?next=${encodeURIComponent(`${base}/read?p=${start}`)}` },
+        resume: progress && Number(progress.step) !== start
+          ? {
+            label: stepLabel(plan, Number(progress.step)) || `page ${progress.step}`,
+            href: `${base}/read?p=${progress.step}`,
+          }
+          : null,
+        assetUrl: base,
+      }),
+    }));
+  } catch (err) { next(err); }
+});
+
+/**
+ * Recording where somebody stopped.
+ *
+ * A page CHANGE, never a render: the client posts this when the step it is showing is
+ * a different step from the one it last told us about, which is why the beacon is
+ * wired to the page's identity rather than to its load event. The answer is what was
+ * stored, so a client cannot believe it moved something it did not.
+ */
+APP.post('/api/reading/progress', async (req, res, next) => {
+  try {
+    if (!req.user) return requireUser(res);
+    const assetId = req.body?.assetId;
+    if (!assetId) return res.status(400).json({ ok: false, error: 'no file' });
+    const asset = await store.assetById(assetId);
+    if (!asset) return res.status(404).json({ ok: false, error: 'file not found' });
+    const plan = await store.assetPagePlan(asset);
+    const step = Number(req.body?.step);
+    if (!Number.isInteger(step) || step < 1 || step > plan.chapters) {
+      return res.status(400).json({ ok: false, error: 'no such page in this file' });
+    }
+    const saved = await store.saveReadingProgress({ userId: req.user.id, assetId, step });
+    // `saved` is null when the step did not change, which is not a failure: it is the
+    // write that correctly did nothing.
+    return res.json({ ok: true, step: saved ? saved.step : step, changed: Boolean(saved) });
+  } catch (err) { return next(err); }
+});
+
 APP.get('/api/content/:assetId', async (req, res, next) => {
   try {
     if (!req.user) return requireUser(res);
@@ -3203,6 +3443,102 @@ APP.get('/api/content/:assetId/file/:fileId/stream', async (req, res, next) => {
 });
 
 /**
+ * One page of a reader, as bytes — and the place a gate stops being a picture.
+ *
+ * §10 is honest about the player's gate: a pause the server releases can be skipped
+ * by anyone with devtools, and the only thing the clamp stops is the ordinary way of
+ * skipping a break. A reader can do better, and this route is the difference: every
+ * page is minted separately, so the answer to "may this person see step 14" is asked
+ * before a byte is produced, and the answer is no for as long as the seam at step 13
+ * is uncleared. There is no client-side trick that turns a 403 into a page.
+ *
+ * The rule is read from the same two functions the markup uses — `segmentsFor` and
+ * `gatesBefore` — so the veil on the page and the refusal here cannot disagree. A
+ * deep link (a pasted URL for page 40) owes EVERY gate before it, not the last one,
+ * which is why the check is a list rather than a cursor.
+ *
+ * An archive page is unpacked from the entry the index points at, in memory, and
+ * never written to disk; a plain image is served through the same watermark the
+ * stream route applies, because "anything served as pixels can be traced" is a rule
+ * about pixels rather than about the download button.
+ */
+APP.get('/api/content/:assetId/file/:fileId/page/:n', async (req, res, next) => {
+  try {
+    const access = await resolveContentRequest(req, res, { event: 'content.page_served' });
+    if (!access) return undefined;
+    const { asset, file, userId } = access;
+
+    const step = Number.parseInt(req.params.n, 10);
+    if (!Number.isInteger(step) || step < 1) {
+      return res.status(400).json({ ok: false, error: 'no such page in this file' });
+    }
+    const files = await store.filesOf(asset.id);
+    const plan = await store.assetPagePlan(asset, files);
+    const item = plan.steps[step - 1];
+    if (!item || item.fileId !== file.id) {
+      return res.status(404).json({ ok: false, error: 'no such page in this file' });
+    }
+
+    // The seam. Only a `breaks` file has gates at all; every other mode carries none,
+    // and `betweenCues` of an empty plan is an empty list rather than a special case.
+    if (asset.unlock_mode === 'breaks') {
+      const placement = await store.adPlanFor(asset, { membersOnly: false });
+      const { segments } = segmentsFor(plan, betweenCues(placement ?? {}));
+      const owed = gatesBefore(segments, step);
+      if (owed.length) {
+        const cleared = new Set(await store.clearedGates(userId, asset.id));
+        const missing = owed.find((gate) => !cleared.has(Number(gate.index)));
+        if (missing) {
+          // A 403 with the gate's own sentence, and no bytes. The reader's page shows
+          // this as an ask rather than an error; a hand-written URL gets the refusal.
+          return res.status(403).json({
+            ok: false,
+            error: 'a view is owed before this page',
+            gate: { cueIndex: missing.index, sentence: gateSentence(plan, missing) },
+          });
+        }
+      }
+    }
+
+    // A PDF is drawn by the browser's viewer, which ranges: same treatment as a
+    // stream, so seeking works inside a document we cannot see into.
+    if (item.kind === 'pdf') {
+      const buf = await storage.get(file.storage_key);
+      return sendRanged(req, res, buf, {
+        type: file.mime_type || 'application/pdf', filename: file.filename,
+      });
+    }
+
+    let buf;
+    let type = item.mime || file.mime_type || 'application/octet-stream';
+    if (item.kind === 'archive') {
+      const archive = await storage.get(file.storage_key);
+      const read = readEntry(archive, item.entry);
+      if (!read.ok) {
+        await store.audit('content.page_failed', {
+          assetId: asset.id, fileId: file.id, entry: item.entryName, reason: read.reason,
+        });
+        return res.status(422).json({ ok: false, error: 'this page could not be unpacked' });
+      }
+      buf = read.bytes;
+    } else {
+      buf = await storage.get(file.storage_key);
+      if (isWatermarkable(file.mime_type, file.filename) && await hasImageMagick()) {
+        const marked = await watermarked(file, userId, buf);
+        if (marked) { buf = marked; type = 'image/jpeg'; }
+      }
+    }
+
+    // `inline` and ranged: a page is content, not a download, and a large scanned
+    // page should not have to arrive in one piece to be drawn.
+    return sendRanged(req, res, buf, { type, filename: path.basename(item.entryName || file.filename) });
+  } catch (err) {
+    if (err.code === 'ENOENT') return res.status(410).json({ ok: false, error: 'file missing from storage' });
+    return next(err);
+  }
+});
+
+/**
  * The watermarked derivative for one file and one viewer, cached for the day.
  *
  * Returned as `null` rather than thrown when ImageMagick is missing or a file is
@@ -3316,6 +3652,13 @@ const SUCCESS_FLASH = {
   },
   published: (v) => `Published “${String(v).slice(0, 80)}”. It is live on your storefront now.`,
   saved: () => 'Saved.',
+  // The reader's two choices, said as the difference they make. A seller who picked
+  // "right to left" has just changed how every page of the file turns, and "Saved."
+  // would leave them scrolling to find which control moved.
+  'read-choices': () => 'Saved. The reader now presents this file the way you chose — a page at a time or as '
+    + 'one continuous scroll, and the pages turn the way this language reads. Nothing about what the file asks '
+    + 'changed: a stop still lands between pages, never inside one.',
+
   submitted: () => 'Reference received. An operator matches it against the bank or wallet statement by hand, and your plan changes when it clears.',
   // Rent's own sentence. It shared `submitted` with the plan flow above, which promised
   // a PLAN change — and rent is not a plan: the invoice is the platform's, and clearing
@@ -3407,6 +3750,11 @@ const SUCCESS_FLASH = {
 };
 
 const ERROR_FLASH = {
+  // The reader's two choices, refused. The panel only renders them for a file a
+  // reader opens, so this is reachable by a hand-crafted post — and a refusal that
+  // names the rule is the difference between a bug report and a dead end.
+  'read-shape': 'This file is not one a reader opens, so there is no page order to set. Nothing was changed.',
+  'read-choices': 'Pick "a page at a time" or "one continuous scroll", and a page direction. Nothing was changed.',
   // Membership refusals. Each names the rule, because a person who has just
   // filled in a payment form and been bounced deserves to know which part of it
   // was wrong — and two of these are about who they are, not what they typed.
@@ -4678,6 +5026,10 @@ APP.get('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
       tiers: membershipsOn ? await store.membershipTiers(channel.id) : [],
       planCode: store.effectivePlanCode(channel),
       files: await store.filesOf(asset.id),
+      // The page count, so the seller's plan panel asks the planner the same
+      // question the buyer's page does: a forty-page comic has room for a break
+      // after page 13, and the panel used to be told it had one chapter.
+      pages: await store.assetPagePlan(asset),
       policy: await store.unlockPolicy(asset.id),
       stats: await store.reviewStatsOfAsset(asset.id),
       unlocks: (await store.unlocksOfChannel(channel.id)).filter((u) => u.asset_id === asset.id).length,
@@ -4735,7 +5087,11 @@ APP.post('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
      */
     const asSaved = { ...asset, declared_value_npr: Number(req.body.valueNpr) || 0 };
     const plan = wantsBreaks ? await store.adPlanFor(asSaved, { membersOnly: false }) : null;
-    const breaksOk = Boolean(plan) && breaksSupported(shape) && breakCues(plan).length > 0;
+    // A stop is counted where it can be honoured: a reader's plan carries between
+    // cues, and a player's carries timestamps. Counting only the timestamps made a
+    // forty-page comic unable to choose the mode its own planner had planned for.
+    const stops = shape === 'read' ? betweenCues(plan) : breakCues(plan ?? {});
+    const breaksOk = Boolean(plan) && breaksSupported(shape) && stops.length > 0;
     if (wantsBreaks && !breaksOk) {
       // The title and description still save: a seller who chose the wrong mode
       // should not lose their typing over it.
@@ -4746,6 +5102,30 @@ APP.post('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
       });
       return res.redirect(`${back}?error=no-breaks`);
     }
+
+    /*
+     * How the file reads — the reader's two choices (§13).
+     *
+     * They come from the SAME form as everything else, so there is no second save
+     * button and no way to change how a file reads while leaving the title half-typed.
+     * Only a file a reader opens carries them: on a video they would be two switches
+     * wired to nothing, and a body carrying them for one is a hand-crafted post, so it
+     * is refused with a sentence instead of ignored.
+     *
+     * Invalid values are refused rather than defaulted. Defaulting would be the worse
+     * bug of the two: a body saying `readMode=diagonal` would silently reset a manga
+     * to left-to-right. The refusal is checked HERE, before anything is written, so a
+     * bad request moves nothing at all rather than half-saving the form.
+     */
+    const readSubmitted = req.body.readMode !== undefined || req.body.readDirection !== undefined;
+    if (readSubmitted && shape !== 'read') return res.redirect(`${back}?error=read-shape`);
+    const readChoices = readSubmitted
+      && READ_MODES.includes(req.body.readMode) && READ_DIRECTIONS.includes(req.body.readDirection)
+      ? { mode: req.body.readMode, direction: req.body.readDirection }
+      : null;
+    if (readSubmitted && !readChoices) return res.redirect(`${back}?error=read-choices`);
+    const readChanged = readChoices && (readChoices.mode !== readMode(asset.read_mode)
+      || readChoices.direction !== readDirection(asset.read_direction));
 
     await store.updateAsset(asset.id, {
       title,
@@ -4788,7 +5168,13 @@ APP.post('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
       for (const key of submitted) choices[String(key)] = true;
       await store.setAdPlan(asset.id, choices);
     }
+    if (readChoices) {
+      await store.setReadChoices({ assetId: asset.id, mode: readChoices.mode, direction: readChoices.direction });
+    }
     await store.audit('asset.updated', { assetId: asset.id, channelId: channel.id });
+    // The reader's own sentence, because "Saved." would not say that the file now
+    // turns its pages a different way — and that is the whole of what changed.
+    if (readChanged) return res.redirect(`${back}?saved=read-choices`);
     return res.redirect(`${back}?saved=1`);
   } catch (err) { return next(err); }
 });
@@ -6215,6 +6601,41 @@ async function seed({ force = false } = {}) {
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;
   }
+
+  /**
+   * A comic, so the reader has something to read.
+   *
+   * §13's surface needs a real archive rather than a fixture inside a test: this is a
+   * CBZ written by `scripts/make-demo-comic.mjs` — twelve pages, both zip methods, and
+   * the junk and metadata a real archive carries — seeded in `breaks` mode, which is the
+   * mode whose whole point is a gate INSIDE a file that was already free to open. Its
+   * single ask falls at the seam between pages 6 and 7, which is the demo of a seam.
+   *
+   * Skipped silently if the file is missing, like the clip above: a deployment that did
+   * not ship the demo comic should still come up.
+   */
+  let comic = null;
+  try {
+    const comicBytes = await fs.readFile(path.resolve(__dirname, 'seed-assets/demo-comic.cbz'));
+    const comicAsset = await store.createAsset({
+      channelId: alice.id, title: "Kathmandu sketchbook — volume 1", slug: 'kathmandu-sketchbook',
+      moderationState: 'approved', unlockMode: 'breaks',
+      coverUrl: '/img/demo/kathmandu-street.jpg',
+      description: "Twelve pages of the valley's streets, doors and posters. Free to open, and it "
+        + 'asks for one view between two pages — nothing before you start.',
+    });
+    await store.addFile({
+      assetId: comicAsset.id,
+      storageKey: await storage.put(comicBytes, 'kathmandu-sketchbook.cbz'),
+      filename: 'kathmandu-sketchbook.cbz', mimeType: 'application/vnd.comicbook+zip',
+      sizeBytes: comicBytes.length,
+      checksum: crypto.createHash('sha256').update(comicBytes).digest('hex'),
+    });
+    comic = comicAsset;
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  void comic;
 
   const sampleAsset = await store.createAsset({
     channelId: alice.id, title: 'Free sample pack', slug: 'free-sample-pack',

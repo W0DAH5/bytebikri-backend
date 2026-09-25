@@ -169,10 +169,12 @@ mark a zip as a video to dodge an ask.
 | **stream** | live URL (HLS/RTMP-relay) | live player | **store-scheduled breaks only**; no automation, ever |
 
 Unknown media (an extension we do not recognise) is `download` — the honest default. There is no box
-anywhere for a seller to type a shape, and there will not be one: the "publish this as a plain
-download instead" control (an override *down*, never up) arrives with slice 6, when there is a reader
-surface to override away from. Until there is somewhere to play or read a file, a chooser would be a
-choice about nothing.
+anywhere for a seller to type a shape, and there will not be one: a chooser would be a choice about
+nothing. One piece of that design is still unbuilt and is not claimed anywhere else: the override
+*down*, "publish this as a plain download instead". The reader that arrived with slice 6 refuses the
+formats it cannot draw and hands the file over instead (`.epub .mobi .fb2 .djvu .cbr .cb7`), which is
+the honest escape for a buyer — but a seller who wants their `.cbz` treated as a plain download has no
+control for it yet.
 
 ### 5.2 The placement catalogue and the nine rules
 
@@ -361,7 +363,7 @@ seconds" is currently a sentence, not a gate.
 | 3 Placement | **Built** — planner, seller controls, measured runtime, seller panel, and the player gate. 33 tests (`placement.test.js`, `adplan.test.js`, `breakgate.test.js`), 12 screenshots from two real browser walks (`docs/evidence/round36`, harnesses `ci/eyes/break-walk.mjs` and `ci/eyes/breaks-seller-walk.mjs`). Suite 663/663/0 |
 | 4 Attention door | **Built** — `join_mode`/`ad_mode` per tier, `member_standing`, `joinByAttention` (with the extension), `memberDoorFor` + the `unlocks.js` refusal, the member room at `/s/:slug/members`, the seller's two pickers, and one `watchingDoor()` control. 5 tests in `members.test.js` (21 in that file), 11 screenshots from a real three-session walk (`ci/eyes/member-walk.mjs`). Suite 668/668/0 |
 | 5 Ledger | **Built** — `ad_view_events` gained `placement`/`surface` (written by the claim, from the attempt's own snapshot); `ad_position_daily` counts rendered positions by page, placement and side; `/dashboard/:slug/attention` prints the two blocks and never their sum. 4 tests (`attention.test.js`), 3 screenshots from a real browser walk (`ci/eyes/ledger-walk.mjs`, `docs/evidence/round37`). §12 is the design |
-| 6 Reader | Not started |
+| 6 Reader | **Built** — `archive.js` (a zip read through the central directory, both compression methods, caps that refuse a bomb rather than a big book: 8 tests) and `pages.js` (the page model: natural order, junk filtered, `ComicInfo.xml` not a page; the plan the reader turns, its segments, and the gate sentence: 11 tests). The reader itself is one page at a time or one continuous scroll, left to right or right to left, the store's choice per file; a stop lands **between** pages and the server refuses the bytes behind it (`403 a view is owed before this page`) rather than hiding them with a veil. The bookmark is the reader's own (`reading_progress`, PK (user, file)) and never shown to the store. 8 tests in `reader.test.js`, 8 screenshots from a real browser walk (`ci/eyes/reader-walk.mjs`, `docs/evidence/round38`) that also flips both seller choices and watches the reader obey. §13 is the design. Suite 763/763/0 |
 | 7 Live | Not started |
 
 ---

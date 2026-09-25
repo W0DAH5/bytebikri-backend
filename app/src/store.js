@@ -46,6 +46,10 @@ import { HOLD_DAYS } from './kyc.js';
 import { resolveAsk } from './adscale.js';
 import { placementsFor, planFor } from './placement.js';
 import { assetShape, measuredSeconds } from './media.js';
+// The page model: what a read file is once you count its pages. Imported by the
+// store because the planner has to be told a PAGE count and the count is a fact
+// about the upload — see §13 and slice 6.
+import { pagePlan, archiveIndexFor, isArchiveName } from './pages.js';
 // The signal vocabulary, so a recorded kind is one the ladder understands. Pure
 // module: no database, no clock of its own, imports nothing.
 import { SIGNALS } from './blocked.js';
@@ -2056,7 +2060,91 @@ export const store = {
     );
   },
   filesOf(assetId) {
-    return many('select * from asset_files where asset_id = $1 order by sort_order', [assetId]);
+    // Total order, not "whatever the planner returns": a reader's step 3 has to be
+    // one specific file on every render and every request. `sort_order` is the
+    // seller's (the ordering UI does not exist yet, so it is 0 today), then the
+    // upload order, then the name — the same order the page model sorts by.
+    return many(`select * from asset_files where asset_id = $1
+                  order by sort_order, created_at, id`, [assetId]);
+  },
+
+  /**
+   * The ordered pages of a read asset, and the order is the promise.
+   *
+   * Derived, never stored: an archive's own index is the page list, and a cached
+   * copy of somebody else's upload is a copy that can go stale. The archive listing
+   * is memoised per (file, checksum) inside `pages.js`, which is what keeps this
+   * cheap enough to call on every asset-page render.
+   */
+  async assetPagePlan(asset, files = null) {
+    if (!asset) return pagePlan({ files: [] });
+    const rows = files ?? await this.filesOf(asset.id);
+    const archives = {};
+    for (const f of rows) {
+      if (!isArchiveName(f.filename)) continue;
+      const index = await archiveIndexFor(f, (key) => storage.get(key));
+      if (index) archives[f.id] = index;
+    }
+    return pagePlan({ files: rows, archives });
+  },
+
+  /** Where this person stopped in this file, or null. Private to them. */
+  readingProgress(userId, assetId) {
+    if (!userId) return null;
+    return one('select step, updated_at from reading_progress where user_id = $1 and asset_id = $2',
+      [userId, assetId]);
+  },
+
+  /**
+   * Record a page change — and only a page change.
+   *
+   * The upsert carries `where reading_progress.step <> excluded.step`, so a re-render
+   * of the same page writes nothing and touches no timestamp. That is not just an
+   * optimisation: "when did they last turn a page" and "when did they last load this
+   * URL" are different questions, and only the first one is worth an answer.
+   */
+  saveReadingProgress({ userId, assetId, step }) {
+    const n = Number(step);
+    if (!userId || !Number.isInteger(n) || n < 1) return null;
+    return one(
+      `insert into reading_progress (user_id, asset_id, step, updated_at)
+       values ($1, $2, $3, now())
+       on conflict (user_id, asset_id) do update
+         set step = excluded.step, updated_at = now()
+       where reading_progress.step <> excluded.step
+       returning *`,
+      [userId, assetId, n],
+    );
+  },
+
+  /**
+   * The gate seams this person has already cleared on this file.
+   *
+   * Read from the attempt rows that already exist — a completed view at a break
+   * index — rather than from a new "unlocked gates" table, because a second record
+   * of the same fact is a second thing that can disagree with the ledger. Returns
+   * numbers so a caller can build a Set without caring about the driver's types.
+   */
+  async clearedGates(userId, assetId) {
+    if (!userId) return [];
+    const rows = await many(
+      `select distinct break_index from pending_views
+        where user_id = $1 and asset_id = $2 and completed and break_index is not null`,
+      [userId, assetId],
+    );
+    return rows.map((r) => Number(r.break_index)).sort((a, b) => a - b);
+  },
+
+  /**
+   * How the store wants its own file presented. Its call, not ours: a manga reads
+   * right to left, a webtoon does not turn pages at all.
+   */
+  setReadChoices({ assetId, mode, direction }) {
+    return one(
+      `update assets set read_mode = $2, read_direction = $3, updated_at = now()
+        where id = $1 returning *`,
+      [assetId, mode, direction],
+    );
   },
   async fileById(fid) {
     return one('select * from asset_files where id = $1', [fid]);
@@ -4775,6 +4863,12 @@ export const store = {
       this.channelById(asset.channel_id),
     ]);
     const shape = assetShape(files, { url: asset.external_url });
+    // A read is counted in PAGES, and this is where the count comes from. The
+    // planner was written against page counts from the start ("a 40-page manhwa with
+    // two asks after page 13 and page 27") and was being handed the file count,
+    // which for one CBZ is 1 — so a forty-page comic could carry no gate at all.
+    // Only a read pays for this: every other shape's count IS its file count.
+    const pages = shape === 'read' ? await this.assetPagePlan(asset, files) : null;
     const planCode = channel ? this.effectivePlanCode(channel) : 'free';
     const ask = policy
       ? {
@@ -4792,11 +4886,11 @@ export const store = {
       ask,
       planCode,
       choices: policy?.ad_plan ?? null,
-      // A reader's chapters are its files: one image per page, one page per
-      // chapter in a cbz, one track per audio file. The planner is told the count
-      // rather than deciding it, because what counts as a chapter is a fact about
-      // the upload and not about ad placement.
-      chapters: files.length,
+      // The count, from the thing that can see inside an upload: one page per image
+      // entry in a CBZ, one page per image file, one chapter per file when a store
+      // uploads a set. The planner is told it rather than deciding it, because what
+      // counts as a chapter is a fact about the upload, not about ad placement.
+      chapters: pages ? pages.chapters : files.length,
       membersOnly,
     });
   },

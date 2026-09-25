@@ -87,8 +87,11 @@ import {
 // look picker below is this list, drawn — see the module for the ownership rule.
 import { personSlots } from './cosmetics.js';
 import {
-  PLACEMENT_BOUNDS, PLACEMENTS, planFor, stamp, placementSentence, breakCues, breakSentence, breaksSupported,
+  PLACEMENT_BOUNDS, PLACEMENTS, planFor, stamp, placementSentence, breakCues, breakSentence,
+  betweenCues, breaksSupported,
 } from './placement.js';
+// The page model (§13): the reader's own words for a step, and where its gates fall.
+import { stepLabel, gateSentence } from './pages.js';
 // The person's own premium: what a name may wear, and the gate that decides whether
 // it is worn at all (`plusWear()` — active only, decided in SQL).
 import {
@@ -2198,6 +2201,53 @@ export function reviewSection({ channel, asset, reviews = [], reviewStats = {}, 
 }
 
 /**
+ * The ad modal, once.
+ *
+ * It was written inside the file page, and the reader needs the same one: a gate in
+ * a reader is the same verified view as a break in a player, and a second modal with
+ * its own ids would be a second place for the countdown, the escape hatch and the
+ * blocker hint to drift. Extracted rather than copied — the ids below are the
+ * contract `app.js` is written against, and there is exactly one copy of them.
+ *
+ * `modalAsk` is the DOOR's ask (two ads of thirty seconds, and so on). A file that
+ * carries breaks has no door ask to describe, so it passes null and the client fills
+ * the line in with the break's own position instead.
+ */
+export function adModal({ modalAsk = null }) {
+  return `<div class="modal" id="ad-modal" hidden role="dialog" aria-modal="true" aria-labelledby="ad-title">
+  <div class="modal-card">
+    <div class="row">
+      <span class="pill pill-locked">Rewarded ad${modalAsk && modalAsk.ads > 1 ? ` · ${modalAsk.ads} ads` : ''}</span>
+      <span class="spacer"></span>
+      <button class="btn btn-sm btn-ghost" id="ad-close" type="button" aria-label="Close">✕</button>
+    </div>
+    <h2 id="ad-title" style="margin-top:var(--space-4);font-size:var(--text-lg)">Your ad is playing</h2>
+    ${modalAsk ? `<p class="small" style="margin-top:var(--space-2)">
+      ${esc(askLabel(modalAsk))}<span id="ad-ask-tail">${modalAsk.ads > 1 ? '. The next one is asked for only if this one is credited.' : '.'}</span>
+    </p>` : `<p class="small" style="margin-top:var(--space-2)"><span id="ad-ask-tail"></span></p>`}
+    <p class="fine" id="ad-provider" style="margin-top:var(--space-1)"></p>
+    <div class="ad-frame" style="margin-top:var(--space-5)">
+      <div style="text-align:center">
+        <div class="ad-count" id="ad-count">${Number(modalAsk?.seconds) || 15}</div>
+        <div class="fine" style="margin-top:var(--space-2)">seconds remaining</div>
+      </div>
+      <div class="ad-progress" id="ad-progress"></div>
+    </div>
+    <p class="fine" style="margin-top:var(--space-4)" id="ad-note">
+      The unlock is not granted by this screen. It arrives from the provider's server,
+      signed, and is verified on our side before your access appears.
+    </p>
+    <!-- The polite half of the blocker policy, where a person is actually waiting for
+         an ad: the ladder's rungs explain a FAILED attempt, and in a blocked browser
+         that takes a minute and a half to happen. Empty until the frame opens; filled
+         by app.js. It names no browser and accuses nobody, because the platform cannot
+         tell a blocker from a bad connection and does not pretend to (src/blocked.js). -->
+    <p class="fine" id="ad-hint" style="margin-top:var(--space-2)"></p>
+  </div>
+</div>`;
+}
+
+/**
  * "Something is wrong with this file."
  *
  * One link, not a form: the form appears when it is asked for, because a report
@@ -2269,6 +2319,13 @@ export function assetPage({
   // stops, and where it asks permission to move on. Null for every other mode,
   // because the cues are a description of what the player does.
   gate = null,
+  // The page model, for a file a reader can open (§13): how many pages it has, what
+  // order they are in, and what the reader's words for them are. Null for a shape
+  // nobody turns pages in.
+  pages = null,
+  // Where this person stopped last time, so the page can offer "continue" rather than
+  // making them find their place again. Private: it is only ever this person's.
+  progress = null,
   markUri = '', markLabel = '', accessUntil = null, consent = null,
   reviews = [], reviewStats = {}, canReview = false, myReview = null, reviewError = null,
   reported = null, alreadyReported = false, reportError = null,
@@ -2448,7 +2505,39 @@ export function assetPage({
    * without a player that stops there would be the same class of sentence slice 2
    * was written to close.
    */
-  const breakLine = gate && !unlocked ? null : (gate ? breakSentence(placement) : null);
+  const breakLine = gate && !unlocked
+    ? null
+    : (pages && betweenCues(placement ?? {}).length
+      ? readStopsSentence(pages, placement)
+      : (gate ? breakSentence(placement) : null));
+  /*
+   * The way in, for a file this page cannot play.
+   *
+   * A read has no player, so before the reader existed its page offered a download
+   * and nothing else — and a page count nobody had counted. This is the one control
+   * the file page needs: start at the first page, or at the page this person stopped
+   * on. It is rendered only when the person can actually open the file, because a
+   * link to a reader that will redirect them back here is worse than no link.
+   */
+  const readerHref = `/s/${esc(channel.slug)}/a/${esc(asset.slug)}/read`;
+  const readerBlock = pages && pages.chapters > 0 && (open || unlocked)
+    ? `<div class="reader-offer">
+         <a class="btn btn-primary btn-lg btn-block" href="${readerHref}${progress && Number(progress.step) > 1 ? `?p=${Number(progress.step)}` : ''}">
+           ${progress && Number(progress.step) > 1
+    ? `Continue reading — ${esc(stepLabel(pages, Number(progress.step)) || `page ${progress.step}`)}`
+    : 'Start reading'}
+         </a>
+         <p class="fine" style="margin-top:var(--space-3);text-align:center">
+           ${esc(plural(pages.chapters, 'page'))}${pages.refusals.length
+    ? ` · ${esc(plural(pages.refusals.length, 'file'))} in this listing opens in your own app instead`
+    : ''} · where you stop is remembered for you, and only for you.
+         </p>
+       </div>`
+    : '';
+
+  // Hoisted for the same reason `readStopsSentence` is a function: the sentence is
+  // the page's promise, and the promise is printed only where the behaviour exists.
+  void readerBlock;
   // What the ad modal describes. A `breaks` file's modal is about ONE view inside
   // the file, so the door's sentence ("2 ads of 45 seconds") would be wrong there —
   // the client fills this line in with the break's own position instead.
@@ -2477,14 +2566,14 @@ export function assetPage({
   const actionBlock = refusalBlock || (open
     ? `<div class="note note-success">${breaksMode
     ? 'Free to open. No ad before it starts.'
-    : 'Free — no ad needed.'}</div>${breakLine ? `<p class="small">${esc(breakLine)}</p>` : ''}
+    : 'Free — no ad needed.'}</div>${breakLine ? `<p class="small">${esc(breakLine)}</p>` : ''}${readerBlock}
        ${breaksMode ? `<div id="unlock-status" class="fine" role="status" aria-live="polite"
             style="margin-top:var(--space-3);text-align:center"></div>` : ''}${filesPanel}`
     : unlocked
       ? `<div class="note note-success"><strong>Unlocked.</strong>
            ${memberCover
     ? `This file is open through your <strong>${esc(memberTierName || wantedName)}</strong> membership, for as long as the period you have paid for runs${memberCover.period_end ? ` — ${plural(Math.max(daysLeft(memberCover.period_end) ?? 0, 0), 'day')} left` : ''}.`
-    : accessExpiry(open ? null : accessUntil)}</div>${filesPanel}`
+    : accessExpiry(open ? null : accessUntil)}</div>${readerBlock}${filesPanel}`
       : memberPaysAds
         ? `<div class="note note-info"><strong>Your membership.</strong> This tier keeps the ordinary asks, so the same
              view opens this file as opens any other — the belonging is the roster, the member room, and the file being
@@ -2582,38 +2671,162 @@ export function assetPage({
 ${reportError ? `<section class="section"><div class="note note-danger" role="alert">${esc(reportError)}</div></section>` : ''}
 ${reportBlock({ channel, asset, user, alreadyReported, reported })}
 
-<div class="modal" id="ad-modal" hidden role="dialog" aria-modal="true" aria-labelledby="ad-title">
-  <div class="modal-card">
-    <div class="row">
-      <span class="pill pill-locked">Rewarded ad${modalAsk && modalAsk.ads > 1 ? ` · ${modalAsk.ads} ads` : ''}</span>
-      <span class="spacer"></span>
-      <button class="btn btn-sm btn-ghost" id="ad-close" type="button" aria-label="Close">✕</button>
-    </div>
-    <h2 id="ad-title" style="margin-top:var(--space-4);font-size:var(--text-lg)">Your ad is playing</h2>
-    ${modalAsk ? `<p class="small" style="margin-top:var(--space-2)">
-      ${esc(askLabel(modalAsk))}<span id="ad-ask-tail">${modalAsk.ads > 1 ? '. The next one is asked for only if this one is credited.' : '.'}</span>
-    </p>` : `<p class="small" style="margin-top:var(--space-2)"><span id="ad-ask-tail"></span></p>`}
-    <p class="fine" id="ad-provider" style="margin-top:var(--space-1)"></p>
-    <div class="ad-frame" style="margin-top:var(--space-5)">
-      <div style="text-align:center">
-        <div class="ad-count" id="ad-count">${Number(modalAsk?.seconds) || 15}</div>
-        <div class="fine" style="margin-top:var(--space-2)">seconds remaining</div>
-      </div>
-      <div class="ad-progress" id="ad-progress"></div>
-    </div>
-    <p class="fine" style="margin-top:var(--space-4)" id="ad-note">
-      The unlock is not granted by this screen. It arrives from the provider's server,
-      signed, and is verified on our side before your access appears.
-    </p>
-    <!-- The polite half of the blocker policy, where a person is actually waiting for
-         an ad: the ladder's rungs explain a FAILED attempt, and in a blocked browser
-         that takes a minute and a half to happen. Empty until the frame opens; filled
-         by app.js. It names no browser and accuses nobody, because the platform cannot
-         tell a blocker from a bad connection and does not pretend to (src/blocked.js). -->
-    <p class="fine" id="ad-hint" style="margin-top:var(--space-2)"></p>
-  </div>
-</div>`,
+${adModal({ modalAsk })}`,
   });
+}
+
+
+/**
+ * What a reader is going to ask, said in the reader's own words.
+ *
+ * `breakSentence` is the player's sentence and takes its nouns from the planner
+ * ("after chapter 3"). A reader's own page turns in PAGES for a flat archive and in
+ * chapters for a file-per-chapter set, and the page model is the only thing that knows
+ * which — so the sentence is built from the same `gateSentence` the reader itself
+ * prints, and the promise on the file page cannot drift from the gate behind the link.
+ */
+function readStopsSentence(pages, placement) {
+  const stops = betweenCues(placement ?? {});
+  if (!stops.length) return null;
+  const where = stops.map((cue) => gateSentence(pages, cue)).join(' ');
+  return `Free to open, and nothing before you start. ${where} `
+    + 'The page turns when the ad network confirms the view, not when the countdown ends.';
+}
+
+/**
+ * The reader — one page at a time, and the seam where a view is asked for.
+ *
+ * §13 is the design; this is the surface. Four things are deliberate here:
+ *
+ *   1. **The page is a server-rendered step.** Turning a page is a link, not a script:
+ *      the reader works with JavaScript off, the browser's back button is a real back
+ *      button, and a deep link to page 14 is a URL rather than a state machine. The
+ *      script only adds what a link cannot do — the progress beacon, arrow keys, and
+ *      the gate's verified view.
+ *   2. **The gate is at the END of a segment**, never on a page: the last control of a
+ *      segment is the ask, the first control of the next segment is a page turn. That is
+ *      what "a gate is a seam" means in markup, and it is why the reader can say where
+ *      it will stop before you start.
+ *   3. **Scroll mode scrolls within its segment.** A webtoon is continuous, so the strip
+ *      is continuous — up to the next seam, where the same gate stands. A continuous
+ *      scroll that interrupted mid-strip would be the one thing every reader complains
+ *      about.
+ *   4. **An undrawable step still has a page.** A `.cbr` or an `.epub` gets one screen
+ *      saying the reader does not draw it, with the file's own download control — the
+ *      "download instead" override §5.2 promised, which is an override DOWN and never up.
+ */
+export function readerPage({
+  channel, asset, user = null, label, mode = 'page', direction = 'ltr',
+  // The steps rendered in this request: one for `page` mode, a strip for `scroll`.
+  items = [],
+  current = 1, total = 1,
+  prevHref = null, nextHref = null,
+  // The gate at the end of this segment, when the next step is past a seam this
+  // person has not cleared. Null when there is nothing to ask for yet.
+  gate = null,
+  // Set when the step itself cannot be drawn: the sentence, and the file's URL.
+  refusal = null,
+  downloadUrl = null,
+  // Set for a visitor with no account. Every page URL in this product is minted for
+  // somebody, so the reader says so in the same breath as the file page does rather
+  // than showing a page that cannot load.
+  signin = null,
+  // Where this person stopped last time, so the page can offer it. The reader never
+  // asks twice: this is a link, not a redirect.
+  resume = null,
+  assetUrl = '/',
+  flash = null,
+}) {
+  const rtl = direction === 'rtl';
+  const turn = (href, word, arrow, primary = false) => (href
+    ? `<a class="btn btn-sm${primary ? ' btn-primary' : ''}" href="${esc(href)}" rel="${word === 'Next' ? 'next' : 'prev'}">${rtl ? `${arrow} ${word}` : `${word} ${arrow}`}</a>`
+    : `<span class="btn btn-sm btn-ghost" aria-disabled="true">${rtl ? `${arrow} ${word}` : `${word} ${arrow}`}</span>`);
+  const prev = turn(prevHref, 'Previous', rtl ? '→' : '←');
+  const next = turn(nextHref, 'Next', rtl ? '←' : '→', true);
+
+  const strip = items.map((it) => (it.url
+    ? `<figure class="reader-page">
+         <img src="${esc(it.url)}" alt="${esc(it.alt || label)}"${mode === 'scroll' && it.n !== current ? ' loading="lazy" decoding="async"' : ' decoding="async"'}>
+         <figcaption class="fine">${esc(it.caption || '')}</figcaption>
+       </figure>`
+    : `<figure class="reader-page reader-missing">
+         <figcaption class="fine">${esc(it.caption || 'This page could not be opened.')}</figcaption>
+       </figure>`)).join('');
+
+  const gatePanel = gate
+    ? `<div class="note note-warning reader-gate" role="status">
+         <p><strong>${esc(gate.sentence || 'One view, then the next page.')}</strong></p>
+         <p class="small" style="margin-top:var(--space-2)">
+           ${gate.seconds ? `About ${gate.seconds} seconds. ` : ''}The page turns when the ad network confirms the view,
+           not when the countdown ends — so this is one request to the network, and it is the same verified
+           view that opens a file anywhere else here.
+         </p>
+         <p style="margin-top:var(--space-4)">
+           <button class="btn btn-primary" type="button"
+                   data-reader-gate data-cue-index="${Number(gate.cueIndex) || 0}"
+                   data-break-url="${esc(gate.breakUrl || '/api/unlock/break')}"
+                   data-asset-id="${esc(asset?.id || '')}"
+                   data-next="${esc(gate.nextHref || '')}">Watch a view to continue</button>
+           ${gate.nextHref ? `<a class="link-quiet" style="margin-left:var(--space-3)" href="${esc(assetUrl)}">Back to the file</a>` : ''}
+         </p>
+         <p class="fine" id="reader-gate-status" style="margin-top:var(--space-2)"></p>
+       </div>`
+    : '';
+
+  const refused = refusal
+    ? `<div class="note note-warning">
+         <p>${esc(refusal.sentence)}</p>
+         ${downloadUrl ? `<p style="margin-top:var(--space-3)"><a class="btn btn-sm btn-primary" href="${esc(downloadUrl)}" download>Download the file</a></p>` : ''}
+       </div>`
+    : '';
+
+  const needSignIn = signin
+    ? `<div class="note note-warning" role="status">
+         <p><strong>Sign in to start reading.</strong></p>
+         <p class="small" style="margin-top:var(--space-2)">
+           Pages are minted for an account — that is how the reader knows whose bookmark to
+           keep, and how a view inside a file is counted for the store that published it.
+         </p>
+         <p style="margin-top:var(--space-3)">
+           <a class="btn btn-sm btn-primary" href="${esc(signin.href)}">Sign in</a>
+         </p>
+       </div>`
+    : '';
+
+  return `<div class="reader" data-reader data-reader-step="${Number(current) || 1}"
+     data-asset-id="${esc(asset?.id || '')}"
+     data-progress-url="/api/reading/progress"
+     data-prev="${esc(prevHref || '')}" data-next="${esc(nextHref || '')}"
+     data-direction="${esc(direction)}" data-mode="${esc(mode)}">
+  <div class="section" style="padding-bottom:0">
+    <div class="section-head">
+      <h1>${esc(asset?.title || 'Reading')}</h1>
+      <span class="spacer"></span>
+      <span class="pill">${esc(label)}</span>
+    </div>
+    <p class="lede">
+      ${esc(channel?.name || '')}${mode === 'scroll' ? ' · continuous scroll, stopped at the next seam' : ''}
+      · <a href="${esc(assetUrl)}">the file page</a>
+    </p>
+    ${resume ? `<p class="fine">You stopped at ${esc(resume.label)}. <a href="${esc(resume.href)}">Continue there</a>.</p>` : ''}
+    ${flashNote(flash)}
+  </div>
+
+  <div class="reader-stage" data-direction="${esc(direction)}">
+    ${strip}
+  </div>
+
+  <div class="reader-bar">
+    ${rtl ? next : prev}
+    <span class="fine" role="status">${esc(label)}</span>
+    ${rtl ? prev : next}
+  </div>
+
+  ${needSignIn}
+  ${gatePanel}
+  ${refused}
+  ${adModal({ modalAsk: null })}
+</div>`;
 }
 
 /**
@@ -7203,6 +7416,10 @@ export function assetManage({
   // (adscale.js ASK_CEILING). Passed in rather than looked up: a view renders
   // synchronously and asks the database nothing.
   planCode = 'free',
+  // The page model for this file (§13), computed by the server because a view asks
+  // the database nothing. It is what makes the seller's plan panel and the buyer's
+  // reader agree about how many steps a read has.
+  pages = null,
   // Availability: the countries this creator chose, and the countries the
   // platform did. Two lists rather than one, because they are two different
   // standing — a creator can undo theirs and cannot undo ours.
@@ -7269,10 +7486,14 @@ export function assetManage({
     ask: { ...storedAsk, ceiling: asks[storedLevel].ceiling },
     planCode,
     choices: policy.ad_plan,
-    chapters: files.length || 1,
+    chapters: shape === 'read' && pages ? pages.chapters : (files.length || 1),
     membersOnly: asset.unlock_mode === 'members',
   });
-  const breaksPossible = breaksSupported(shape) && breakCues(placementPlan).length > 0;
+  // A stop is counted where it can be honoured: a reader's plan carries between
+  // cues, a player's carries timestamps (§13). Same rule as the save route, from the
+  // same module, so the panel cannot offer a mode the route would refuse.
+  const stopsForPanel = shape === 'read' ? betweenCues(placementPlan) : breakCues(placementPlan);
+  const breaksPossible = breaksSupported(shape) && stopsForPanel.length > 0;
   /*
    * What this file asks a VISITOR for, which is not the same as what its policy row
    * says.
@@ -7288,7 +7509,7 @@ export function assetManage({
   const openMode = asset.unlock_mode === 'open' || asset.unlock_mode === 'members';
   const askedOfVisitors = openMode
     ? 0
-    : asset.unlock_mode === 'breaks' ? breakCues(placementPlan).length : storedAsk.ads;
+    : asset.unlock_mode === 'breaks' ? stopsForPanel.length : storedAsk.ads;
   // Drift: the ask was calibrated when the file was worth something else. Said
   // plainly and never auto-corrected — an ask that moved on its own under a
   // visitor's feet would be worse than one that is briefly behind.
@@ -7378,6 +7599,76 @@ export function assetManage({
     ? `<p class="fine">This file runs ${esc(stamp(asset.runtime_sec))} — measured by the player, not typed here.</p>`
     : `<p class="fine">The player has not measured this file's length yet, so no break inside it can be
             placed. Open the file once and this panel fills in.</p>`}
+        </div>
+      </div>` : '';
+
+  /*
+   * How the file reads — the reader's own two choices (§13).
+   *
+   * Rendered only for a file a reader opens, and only where the file actually has
+   * steps to turn: a single image is a file with a reader, but "a page at a time or a
+   * continuous scroll" is a question about a SEQUENCE, and asking it of a one-page
+   * file would be a control whose two answers are the same picture.
+   *
+   * Both choices are the store's, not ours, and the panel says what each one does to
+   * the ASK as well as to the drawing — because the seller's real question about a
+   * reader is whether the breaks still land. They do: a stop sits between pages in
+   * both modes, and the sentence below says so rather than leaving them to find out
+   * by opening their own file.
+   */
+  // The stored choices, read through the reader's own vocabulary rather than trusted:
+  // a row written before this panel existed has no value at all, and `null` is not a
+  // radio button.
+  const readModeOf = (a) => (a?.read_mode === 'scroll' ? 'scroll' : 'page');
+  const readDirectionOf = (a) => (a?.read_direction === 'rtl' ? 'rtl' : 'ltr');
+  const readPanel = shape === 'read' && pages && pages.chapters > 1 ? `
+      <div class="panel" style="margin-top:var(--space-5)">
+        <div class="panel-head">
+          <h2>How this file reads</h2>
+          <span class="pill">${esc(plural(pages.chapters, 'step'))}</span>
+        </div>
+        <div class="panel-body">
+          <div class="field">
+            <span class="field-label" id="read-mode-label">Turning</span>
+            <div class="stack" role="radiogroup" aria-labelledby="read-mode-label">
+              <label class="choice">
+                <input type="radio" name="readMode" value="page" ${readModeOf(asset) === 'page' ? 'checked' : ''}>
+                <span>
+                  <strong>A page at a time</strong>
+                  <span class="fine">A comic, a manga, a scanned book. One page is drawn, and the next is a
+                  button away.</span>
+                </span>
+              </label>
+              <label class="choice">
+                <input type="radio" name="readMode" value="scroll" ${readModeOf(asset) === 'scroll' ? 'checked' : ''}>
+                <span>
+                  <strong>One continuous scroll</strong>
+                  <span class="fine">A webtoon. The pages arrive in order as the reader goes, and the strip stops at
+                  the seam rather than turning a page.</span>
+                </span>
+              </label>
+            </div>
+          </div>
+          <div class="field">
+            <span class="field-label" id="read-dir-label">Which way the pages turn</span>
+            <div class="stack" role="radiogroup" aria-labelledby="read-dir-label">
+              <label class="choice">
+                <input type="radio" name="readDirection" value="ltr" ${readDirectionOf(asset) === 'ltr' ? 'checked' : ''}>
+                <span><strong>Left to right</strong><span class="fine">The usual order in this language.</span></span>
+              </label>
+              <label class="choice">
+                <input type="radio" name="readDirection" value="rtl" ${readDirectionOf(asset) === 'rtl' ? 'checked' : ''}>
+                <span><strong>Right to left</strong><span class="fine">Manga. The next page sits on the left of the
+                bar, where a reader of it looks first.</span></span>
+              </label>
+            </div>
+          </div>
+          <p class="fine" style="margin-top:var(--space-4)">
+            This changes how the file is drawn and nothing about what it asks for. A stop still lands
+            <strong>between</strong> pages — never inside one, and never over the art — and the page after it opens
+            when the ad network confirms the view. Where a reader stopped is kept for them alone; this panel never
+            sees it.
+          </p>
         </div>
       </div>` : '';
 
@@ -7601,6 +7892,7 @@ ${notice ? `
       </div>
       ${askPanel}
       ${placementPanel}
+      ${readPanel}
       <div class="row" style="gap:var(--space-4);align-items:flex-start">
         <div class="field" style="flex:1 1 140px">
           <label for="a-hours">Access lasts</label>

@@ -40,8 +40,15 @@ const out = await withTransaction(async (tx) => {
   const events = await tx.query(`delete from ad_view_events where user_id = $1 and asset_id = $2`, [userId, assetId]);
   const unlocks = await tx.query(`delete from unlocks where user_id = $1 and asset_id = $2`, [userId, assetId]);
   const views = await tx.query(`delete from pending_views where user_id = $1 and asset_id = $2`, [userId, assetId]);
-  return { events: events.rowCount, unlocks: unlocks.rowCount, views: views.rowCount };
+  // The bookmark is the fourth row a walk leaves behind, and it is the one that changes
+  // the STARTING state rather than the ending one: a second run of `reader-walk.mjs`
+  // would open on "Continue reading — Page 12 of 12" and never see page one at all.
+  // It is this person's own row on this one file, and this tool only runs against the
+  // development database.
+  const bookmarks = await tx.query(`delete from reading_progress where user_id = $1 and asset_id = $2`, [userId, assetId]);
+  return { events: events.rowCount, unlocks: unlocks.rowCount, views: views.rowCount, bookmarks: bookmarks.rowCount };
 });
 
-console.log(`cleared for ${WHO} · "${title}": ${out.events} view event(s), ${out.unlocks} unlock(s), ${out.views} attempt(s)`);
+console.log(`cleared for ${WHO} · "${title}": ${out.events} view event(s), ${out.unlocks} unlock(s), `
+  + `${out.views} attempt(s), ${out.bookmarks} bookmark(s)`);
 process.exit(0);

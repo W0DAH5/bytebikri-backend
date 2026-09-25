@@ -93,25 +93,28 @@ export const PLACEMENTS = {
 };
 
 /**
- * The shapes whose breaks a player can actually stop for, today.
+ * The shapes whose breaks a surface can actually stop for.
  *
- * `watch` and `listen` are played by a real `<video>`/`<audio>` element, so the
- * page can pause the playhead, run the verified view, and put it back where it
- * was. The others are named here and nowhere else:
+ * `watch` and `listen` are played by a real `<video>`/`<audio>` element, so the page
+ * can pause the playhead, run the verified view, and put it back where it was.
+ * `read` joined them in slice 6, when a page-turner of our own arrived: the reader
+ * stops at a SEAM — the boundary between two pages or two chapters — so the gate it
+ * honours is the `between` cue the planner was already placing, and the stop is a
+ * page turn rather than a pause at a timestamp.
  *
- *   read   — the between-chapter gate needs the reader surface (slice 6). Until
- *            there is a page-turner of our own, there is nothing to stop, and a
- *            "gate" rendered as a heading on a page of images would be theatre.
+ * The others are named here and nowhere else:
+ *
  *   play   — a game asks for a view at a failure state IT owns (slice 3's own
  *            catalogue entry); that is a shell we have not built.
  *   stream — seller-scheduled by rule, never automatic (rule 4).
  *   download — no playhead (its ads are the page's boxes).
  *
  * So this is not a preference list: it is the list of shapes where the promise
- * "it asks while you watch" can be kept. A mode that switched a read into breaks
- * would promise a gate nobody can honour, which is the failure slice 2 closed.
+ * "it asks while you watch" (or read) can be kept. A mode that switched a read into
+ * breaks before the reader existed would have promised a gate nobody could honour,
+ * which is the failure slice 2 closed.
  */
-export const BREAK_SHAPES = ['watch', 'listen'];
+export const BREAK_SHAPES = ['watch', 'listen', 'read'];
 
 export const breaksSupported = (shape) => BREAK_SHAPES.includes(shape);
 
@@ -480,6 +483,40 @@ export function breakCues(plan) {
       atSec: cue.atSec,
       seconds: plan.budget.seconds,
     }));
+}
+
+/**
+ * The between-chapter cues a READER can stop at.
+ *
+ * The mirror of `breakCues`, and separate from it on purpose: a cue with no
+ * timestamp cannot be handed to a player (it would be stopping at a number it made
+ * up), and a cue with a timestamp cannot be handed to a reader (there is no
+ * playhead to compare it to). `between` cues carry the step they follow, which is a
+ * page or a chapter depending on the upload — the page model owns that word, and the
+ * reader's own sentence uses it.
+ */
+export function betweenCues(plan) {
+  if (!plan?.cues?.length) return [];
+  return plan.cues
+    .map((cue, index) => ({ cue, index }))
+    .filter(({ cue }) => cue.kind === 'between' && Number.isInteger(cue.atChapter))
+    .map(({ cue, index }, position) => ({
+      index,
+      // The order the reader meets them, which is what the page prints.
+      position: position + 1,
+      atChapter: cue.atChapter,
+      atSec: null,
+      seconds: plan.budget?.seconds ?? 0,
+      label: cue.label,
+    }));
+}
+
+/**
+ * The stops a surface can honour for this plan: a player by timestamp, a reader by
+ * seam. Both are the planner's own cues, indexed; neither is derived here.
+ */
+export function stopCues(plan, surface = 'player') {
+  return surface === 'reader' ? betweenCues(plan) : breakCues(plan);
 }
 
 /**

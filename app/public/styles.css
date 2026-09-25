@@ -3521,3 +3521,59 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
    padding and the links keep their colour on every plan — this is a rule about
    alignment, not about hiding anything. */
 .footer-plain .row { justify-content: flex-end; }
+
+/* ---------------------------------------------------------------------------
+   The reader (§13)
+
+   A page of somebody's comic is the content, so nothing here competes with it: the
+   stage is the page itself, centred and capped at a measure a person can read
+   without scrolling sideways on a phone, and the bar under it holds the two controls
+   and the counter. The bar is sticky because a reader turns pages far more often
+   than they scroll back to find a button, and it sits on its own surface so the
+   controls stay legible over a dark scan and a white one.
+
+   `data-direction` is the store's choice, and it is a real one: a manga reads right
+   to left, so the two controls swap sides rather than merely relabelling.
+   --------------------------------------------------------------------------- */
+.reader { display: block; }
+.reader-stage {
+  display: grid;
+  gap: var(--space-5);
+  justify-items: center;
+  margin-top: var(--space-5);
+  min-width: 0;
+}
+.reader-page { margin: 0; display: grid; justify-items: center; min-width: 0; max-width: 100%; }
+.reader-page img {
+  display: block;
+  max-width: min(100%, 860px);
+  height: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+}
+.reader-page figcaption { margin-top: var(--space-2); text-align: center; }
+.reader-missing {
+  padding: var(--space-6);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  color: var(--text-muted);
+}
+.reader-bar {
+  position: sticky;
+  bottom: var(--space-3);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  justify-content: space-between;
+  margin-top: var(--space-6);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+}
+.reader-stage[data-direction="rtl"] { direction: rtl; }
+.reader-gate { margin-top: var(--space-5); }
+.reader-offer { margin: var(--space-5) 0; padding: var(--space-5); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); background: var(--surface-raised); }
