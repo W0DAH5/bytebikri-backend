@@ -217,8 +217,14 @@ export function upgradeExplanation(quote, { nprFmt = (n) => `NPR ${Number(n).toL
       `You are on ${quote.from.name}, which is ${quote.from.priceNpr === 0 ? 'free' : nprFmt(quote.from.priceNpr) + ' a year'}.`,
       quote.daysLeft > 0
         ? `You have ${quote.daysLeft} day${quote.daysLeft === 1 ? '' : 's'} left in the period you have paid for, so today's amount is the difference pro-rated to it.`
-        : 'No period is running yet, so today\'s amount is the full difference.',
-      'Your renewal date does not move. The next charge is the full price, on the same date as before.',
+        : 'No period is running yet, so today\'s amount is the full difference, and the year starts the day the transfer is matched.',
+      // Two different situations, and only one of them has a renewal date. Telling a
+      // store with no period that its renewal date "does not move" describes a date
+      // that does not exist — the same class of sentence as the plan panel's "Renews"
+      // label, which promised a renewal this product never performs.
+      quote.daysLeft > 0
+        ? 'Your renewal date does not move. The next charge is the full price, on the same date as before.'
+        : 'Nothing renews by itself: the year runs from the day it is matched, and when it ends the plan stays as it is until you send another transfer.',
     ],
   };
 }
@@ -236,9 +242,13 @@ export function planBenefits(plan, { availableSlots = null } = {}) {
   const c = plan.capabilities;
   const out = [];
   out.push(c.max_assets === -1 ? 'Unlimited published files' : `Up to ${c.max_assets} published files`);
+  // A count of one is a count of one. The free plan has a single position and the
+  // bullet read "1 ad slots on your pages" — small, and exactly the kind of line a
+  // seller reads as carelessness about their own shop.
+  const slots = (n) => `${n} ad slot${n === 1 ? '' : 's'} on your pages`;
   out.push(availableSlots && availableSlots < c.slot_count
-    ? `${availableSlots} ad slots on your pages — every web position there is today`
-    : `${c.slot_count} ad slots on your pages`);
+    ? `${slots(availableSlots)} — every web position there is today`
+    : slots(c.slot_count));
   out.push(c.marketplace_listed
     ? 'Explore listing, if you want it — bytebikri brings the traffic'
     : 'Your own address only — free forever');

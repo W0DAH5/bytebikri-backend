@@ -3186,7 +3186,7 @@ A period that ended is a state the product already has, so the seeder ends her p
   fixture: 2 store slots, 1 platform slot, ~380 views in 30 days → NPR 36 for the year).
 - **Flat vs scaled pricing for the person's premium**, and **whether the platform's own ad row may
   disappear for a paying viewer** — both the user's call.
-- **Bob's Free-plan panel copy**, checked against the plans the table actually holds.
+- **Bob's Free-plan panel copy**, checked against the plans the table actually holds — **DONE in §36.**
 
 ## §35 — Three leftovers from the premium-look list
 
@@ -3233,3 +3233,27 @@ promise a plan change, and that it says what rent is not.
 **The roster's empty sentence**, and the seller's pricing bullet that called the store's chips "your own
 plates", were already fixed in §34 — rechecked this round against the two-layer rule and left as they
 are: the chip is the store's, the look is the person's, and a store cannot name somebody or unname them.
+
+## §36 — The Free panel, read against the plan the table actually holds
+
+The last leftover on the list was Bob's Free panel: the fixture has a store on the free plan, so the
+panel can be read end to end instead of imagined, and reading it found three sentences that were wrong
+about the product rather than about him.
+
+**"Renews 25 Sept 2027".** The plan panel's own label. It was the same claim the settings panel made and
+§35 removed — nothing here renews by itself — and it was still standing on the one page a seller opens to
+find out when their period ends. The label is `Runs until` now, and with no period it reads "No period
+running — nothing renews by itself". A test asserts both the presence of the new label and the absence of
+the old one, in the same rendered page.
+
+**"1 ad slots on your pages".** `planBenefits` built the slot bullet by concatenation, so the free plan's
+single position — and the capped "every web position there is today" line when the product has one —
+printed a plural. Small, and exactly the kind of line a seller reads as carelessness about their own shop.
+The count is a function now, and a test covers one slot, two slots and the capped line.
+
+**"Your renewal date does not move. The next charge is the full price, on the same date as before."**
+That sentence is true and useful for a store upgrading MID-period: the amount is pro-rated to the period
+already paid for, so the date it ends does not change. It was being shown to stores with NO period at all,
+where it describes a date that does not exist. The two situations now have two sentences: a running store
+keeps its date, and a store with nothing running is told the year starts the day the transfer is matched
+and that nothing renews by itself when it ends.

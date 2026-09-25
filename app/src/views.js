@@ -5600,7 +5600,11 @@ export function billing({
   <div class="panel-body">
     <dl class="kv">
       <dt>Price</dt><dd>${plan.priceNpr ? `${npr(plan.priceNpr)} a year` : 'Free, permanently'}</dd>
-      <dt>Renews</dt><dd>${periodEnd ? day(periodEnd) : 'No renewal — nothing to renew'}</dd>
+      <!-- "Runs until", not "Renews": nothing here renews by itself, and the rest of
+           the product says so in as many words. A label promising a renewal on a date
+           is the one claim this page cannot make while the rail is a transfer a person
+           matches by hand. -->
+      <dt>Runs until</dt><dd>${periodEnd ? day(periodEnd) : 'No period running — nothing renews by itself'}</dd>
       <dt>Status</dt><dd>${subscription ? esc(subscription.status.replace('_', ' ')) : 'free'}${pending ? ' · upgrade requested' : ''}</dd>
       <dt>Paid with bytebikri</dt><dd>${npr(paidTotal)} to date</dd>
     </dl>

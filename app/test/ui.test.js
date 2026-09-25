@@ -279,6 +279,10 @@ test('the billing page states both charges and refuses to invent a third', () =>
 
   assert.ok(/NPR 822/.test(html), 'the pro-rated amount is on the page');
   assert.ok(/renewal date does not move/i.test(html));
+  // And the panel above it says when the period RUNS TO. "Renews <date>" was the label,
+  // which promised a renewal the manual rail never performs.
+  assert.ok(/<dt>Runs until<\/dt>/.test(html), 'the plan panel does not say when the period runs to');
+  assert.ok(!/<dt>Renews<\/dt>/.test(html), 'the plan panel promises a renewal on a date');
   assert.ok(/no card checkout/i.test(html), 'the absence of a processor is explained, not hidden');
   assert.ok(/0%/.test(html), 'the 0% ad-share promise is stated where money is mentioned');
   assert.ok(!/checkout now|pay with card|stripe|paypal/i.test(html), 'no fake checkout, ever');

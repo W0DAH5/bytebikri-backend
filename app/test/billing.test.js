@@ -442,6 +442,28 @@ test('the upgrade explanation shows its arithmetic rather than one number', () =
   assert.ok(lines.lines.some((l) => /renewal date does not move/i.test(l)));
 
   assert.equal(upgradeExplanation(null), null);
+
+  // A store with no period running has no renewal date, so it is not promised one.
+  const fresh = upgradeExplanation({ from: PLANS.free, to: PLANS.store, daysLeft: 0, fullDifference: 999, amountNpr: 999 });
+  assert.ok(fresh.lines.some((l) => /No period is running yet/.test(l)), 'the absent period is stated');
+  assert.ok(fresh.lines.some((l) => /year starts the day the transfer is matched/i.test(l)),
+    'a first year has to say when it starts');
+  assert.ok(!fresh.lines.some((l) => /renewal date does not move/i.test(l)),
+    'a renewal date that does not exist is promised to a store with no period');
+  assert.ok(fresh.lines.some((l) => /Nothing renews by itself/.test(l)),
+    'the sentence that replaces it has to say what actually happens');
+});
+
+test('a plan with one position offers a slot, not slots', () => {
+  const free = planBenefits(PLANS.free);
+  assert.ok(free.some((b) => /^1 ad slot on your pages$/.test(b)),
+    `the free plan’s bullet reads “${free.find((b) => /ad slot/.test(b))}”`);
+  const store2 = planBenefits(PLANS.store);
+  assert.ok(store2.some((b) => /^2 ad slots on your pages$/.test(b)), 'and two are still slots');
+  // The "every web position there is today" line is also a count, and it is capped by
+  // the product rather than by the plan — one position today is still one slot.
+  assert.ok(planBenefits(PLANS.pro, { availableSlots: 1 }).some((b) => /^1 ad slot on your pages — every web position/.test(b)),
+    'the capped line pluralises too');
 });
 
 test('plan benefits read as sentences, with no negative sentinel showing through', () => {
