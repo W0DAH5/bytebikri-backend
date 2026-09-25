@@ -19,6 +19,9 @@
  *      and playback resumes at the buffer's END — ahead of where the viewer was.
  *   4. The store ends the break early, and its own sentence says so (the window closes
  *      now; the clean entries it bought still run for the length that was announced).
+ *      The VIEWER's sentence is asserted too, and that is the point of holding the
+ *      network: an ask that started is seen through, and what the person reads at the
+ *      end of it says the window was closed early rather than that it ran (§14.6).
  *   5. A newcomer walks in with NO ask: the trade, honoured — plus the seller's own
  *      record of the break, including that it was ended early.
  *
@@ -133,6 +136,14 @@ const trades = await sp.locator('.choice .fine').allInnerTexts();
 console.log('  the panel      :', JSON.stringify({ url: urlField, trade: trades.find((t) => /buys/.test(t)) }));
 if (!/\.m3u8/.test(urlField)) fail('the panel does not have the stream address');
 if (!trades.some((t) => /buys .* clean entries/.test(t))) fail('the trade is not stated before the button');
+// The network is HELD, so the break's ask is still on screen when the seller ends the
+// break. In dev the simulator credits a view in about two seconds; without this, the
+// state this walk needs to read cannot exist.
+let release = null;
+const held = new Promise((resolve) => { release = resolve; });
+let gate = null;
+await vp.route('**/dev/simulate-network/**', async (route) => { await gate; return route.continue(); });
+gate = held;
 await sp.locator('input[name=seconds][value="30"]').check();
 await sp.getByRole('button', { name: 'Call this break' }).click();
 await sp.waitForLoadState('load');
@@ -148,13 +159,8 @@ if (!stopped.paused) fail('the stream kept playing through the break the store c
 if (!/store called this break/.test(tail)) fail('the modal does not say where this break came from');
 await shot(vp, 'live-4-the-break');
 
-await vp.waitForFunction(() => document.querySelector('#ad-modal')?.hidden !== false, null, { timeout: 60_000 })
-  .catch(() => fail('the modal never closed — the view was never credited'));
-const resumed = await look(vp);
-console.log('  resumed        :', JSON.stringify(resumed));
-if (resumed.at <= before.at) fail(`playback went backwards (${before.at} → ${resumed.at}): a stream does not wait`);
-if (Math.abs(resumed.edge - resumed.at) > 1.6) fail('the viewer did not come back at the live edge');
-if (!/View confirmed/.test(resumed.status)) fail(`the stage does not say the view was confirmed: ${resumed.status}`);
+if (await vp.locator('#ad-modal').isHidden()) fail('the modal was already over — the network was not held');
+console.log('  the ask is still up while the store decides');
 
 // ── 4. the store ends it early, in its own words ────────────────────────────────
 say(4, 'the store ends the break early, and the panel says which of the two it did');
@@ -165,9 +171,26 @@ const afterEnd = await sp.locator('body').innerText();
 console.log('  the panel says :', JSON.stringify(afterEnd.match(/Break (called|ended)[^\n]*/)?.[0].slice(0, 130)));
 if (!/Break ended/.test(afterEnd)) fail('ending a break does not say the window closed');
 if (/Break called/.test(afterEnd)) fail('ending a break still says a break was called');
+await shot(sp, 'live-4-the-break-ended-early');
 
-// ── 5. a newcomer inside the window walks in clean ──────────────────────────────
-say(5, 'a newcomer walks in with no ask: the entries the break bought');
+// ── 5. the viewer finishes the ask, and is told WHICH end it was ────────────────
+say(5, 'the ask finishes, and the viewer is told the window was closed early');
+gate = null;
+release();
+await vp.waitForFunction(() => document.querySelector('#ad-modal')?.hidden !== false, null, { timeout: 90_000 })
+  .catch(() => fail('the modal never closed — the view was never credited'));
+const resumed = await look(vp);
+console.log('  resumed        :', JSON.stringify(resumed));
+if (resumed.at <= before.at) fail(`playback went backwards (${before.at} → ${resumed.at}): a stream does not wait`);
+if (Math.abs(resumed.edge - resumed.at) > 1.6) fail('the viewer did not come back at the live edge');
+if (!/store ended this break early/.test(resumed.status)) {
+  fail(`the viewer is not told the window was closed early: ${resumed.status}`);
+}
+if (!/confirmed/i.test(resumed.status)) fail(`the credited view is not confirmed: ${resumed.status}`);
+await shot(vp, 'live-5-after-the-early-end');
+
+// ── 6. a newcomer inside the window walks in clean ──────────────────────────────
+say(6, 'a newcomer walks in with no ask: the entries the break bought');
 const newcomer = await person('carol');
 const np = newcomer.page;
 await np.goto(fileUrl);
@@ -181,10 +204,10 @@ console.log('  the ask        :', newcomerAsk ? 'still there' : 'none — the en
 if (newcomerAsk) fail('a newcomer inside the covered window was still asked for a view');
 if (newcomerDoor) fail('a newcomer inside the covered window was still shown the door sentence');
 if (!/just ran a break/.test(clean)) fail('the covered door does not say why it is open');
-await shot(np, 'live-5-clean-entry');
+await shot(np, 'live-6-clean-entry');
 
-// ── 6. the seller's own record ──────────────────────────────────────────────────
-say(6, "the seller's panel keeps the record: one break, ended early, and no live panel on a file that is not one");
+// ── 7. the seller's own record ──────────────────────────────────────────────────
+say(7, "the seller's panel keeps the record: one break, ended early, and no live panel on a file that is not one");
 await sp.goto(panelUrl);
 const history = await sp.locator('body').innerText();
 console.log('  the history    :', JSON.stringify((history.match(/\d+ seconds? · cue \d+[^\n]*/) || ['(none)'])[0].slice(0, 100)));
@@ -209,7 +232,7 @@ await shot(sp, 'live-6-the-panel');
 // ── the console, at the end, once ───────────────────────────────────────────────
 const errors = [...viewer.errors, ...newcomer.errors, ...seller.errors];
 console.log('\n  console errors :', errors.length ? JSON.stringify(errors) : 'none');
-console.log(`  shots          : ${OUT}/live-{1-the-door,2-the-ask,3-playing,4-the-break,5-clean-entry,6-the-panel}.png`);
+console.log(`  shots          : ${OUT}/live-{1-the-door,2-the-ask,3-playing,4-the-break,4-the-break-ended-early,5-after-the-early-end,6-clean-entry}.png`);
 if (errors.length) fail('the pages reported console errors — see above');
 await browser.close();
 console.log('\nthe stream played, a break the store called stopped it, the viewer came back at the edge,'

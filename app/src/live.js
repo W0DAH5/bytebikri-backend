@@ -211,6 +211,13 @@ export function cleanEntrySentence(until, now = new Date()) {
  * through window 3 is not stopped by window 3 a second time — the ledger is the memory
  * (rule: no second serving of the same view), which is why `cleared` is a parameter
  * instead of a second table.
+ *
+ * `lastClosed` is the most recent window the STORE closed, with both of its ends. A
+ * viewer inside a break's ask needs exactly two facts afterwards — was the view
+ * credited, and did the window it was asked for still exist — and the second one is a
+ * row rather than a client's clock: `closed_at` before `ends_at` is an early end, a
+ * window that simply ran out has already said so with its own deadline. §14.6 is the
+ * table of sentences this decides.
  */
 export function liveState({ breaks = [], cleared = [], unlocked = false, now = new Date() } = {}) {
   const open = breaks.find((row) => windowIsOpen(row, now)) || null;
@@ -227,7 +234,22 @@ export function liveState({ breaks = [], cleared = [], unlocked = false, now = n
       remainingSeconds: Math.max(0, Math.round((new Date(open.ends_at).getTime() - new Date(now).getTime()) / 1000)),
     }
     : null;
+  const lastClosed = breaks
+    .filter((row) => row.closed_at)
+    .sort((a, b) => new Date(b.closed_at) - new Date(a.closed_at))[0] || null;
   return {
+    lastClosed: lastClosed
+      ? {
+        breakId: lastClosed.id,
+        cueIndex: Number(lastClosed.cue_index),
+        closedAt: lastClosed.closed_at,
+        endsAt: lastClosed.ends_at,
+        // The one question the client actually asks of it: did this window end before
+        // the end it announced? A window that ran out is not "ended early", and saying
+        // it was would be the same class of lie the sentences exist to remove.
+        early: new Date(lastClosed.closed_at).getTime() < new Date(lastClosed.ends_at).getTime(),
+      }
+      : null,
     break: open
       ? {
         breakId: open.id,

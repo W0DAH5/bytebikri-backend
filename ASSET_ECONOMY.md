@@ -366,7 +366,7 @@ seconds" is currently a sentence, not a gate. Slice 8 is last because it is the 
 | 4 Attention door | **Built** — `join_mode`/`ad_mode` per tier, `member_standing`, `joinByAttention` (with the extension), `memberDoorFor` + the `unlocks.js` refusal, the member room at `/s/:slug/members`, the seller's two pickers, and one `watchingDoor()` control. 5 tests in `members.test.js` (21 in that file), 11 screenshots from a real three-session walk (`ci/eyes/member-walk.mjs`). Suite 668/668/0 |
 | 5 Ledger | **Built** — `ad_view_events` gained `placement`/`surface` (written by the claim, from the attempt's own snapshot); `ad_position_daily` counts rendered positions by page, placement and side; `/dashboard/:slug/attention` prints the two blocks and never their sum. 4 tests (`attention.test.js`), 3 screenshots from a real browser walk (`ci/eyes/ledger-walk.mjs`, `docs/evidence/round37`). §12 is the design |
 | 6 Reader | **Built** — `archive.js` (a zip read through the central directory, both compression methods, caps that refuse a bomb rather than a big book: 8 tests) and `pages.js` (the page model: natural order, junk filtered, `ComicInfo.xml` not a page; the plan the reader turns, its segments, and the gate sentence: 11 tests). The reader itself is one page at a time or one continuous scroll, left to right or right to left, the store's choice per file; a stop lands **between** pages and the server refuses the bytes behind it (`403 a view is owed before this page`) rather than hiding them with a veil. The bookmark is the reader's own (`reading_progress`, PK (user, file)) and never shown to the store. 8 tests in `reader.test.js`, 8 screenshots from a real browser walk (`ci/eyes/reader-walk.mjs`, `docs/evidence/round38`) that also flips both seller choices and watches the reader obey. §13 is the design. Suite 763/763/0 |
-| 7 Live | **Built** — §14 is the design: a live file is the store's own `https://…m3u8` (no ingest, no re-host, no recording), hls.js 1.7.3 vendored because Chrome and Firefox have no native HLS, and a break is a WINDOW only the store's own POST can open, which buys clean entries for newcomers at the ratio Twitch taught the industry. Built: `live.js` holds the arithmetic and the four caps, `live_breaks` holds the windows (one open per file, enforced by a partial unique index), and the seller's own POST is the only writer. 10 unit tests, 4 fixture tests, and `ci/eyes/live-walk.mjs` in a real browser (6 shots, `docs/evidence/round39`) — the stream plays, a break the seller calls stops it, the view is credited, playback resumes at the EDGE, and a newcomer inside the window walks in clean. Suite 782/782/0 |
+| 7 Live | **Built** — §14 is the design: a live file is the store's own `https://…m3u8` (no ingest, no re-host, no recording), hls.js 1.7.3 vendored because Chrome and Firefox have no native HLS, and a break is a WINDOW only the store's own POST can open, which buys clean entries for newcomers at the ratio Twitch taught the industry. Built: `live.js` holds the arithmetic and the four caps, `live_breaks` holds the windows (one open per file, enforced by a partial unique index), and the seller's own POST is the only writer. 10 unit tests, 4 fixture tests, and `ci/eyes/live-walk.mjs` in a real browser (6 shots, `docs/evidence/round39`) — the stream plays, a break the seller calls stops it, the view is credited, playback resumes at the EDGE, and a newcomer inside the window walks in clean. Suite 782/782/0. **Later, the viewer's own side of an early end** (§14.6): `liveState` gained `lastClosed` (with `early` derived from `closed_at` vs `ends_at`, one more unit test), the client chooses its sentence from that fact, and the walk holds the network's delivery at the proxy so it can reach the state the sentence is about — the seller ends the break while the viewer's ask is on screen, and the person is told so ("The store ended this break early. Your view was confirmed — back at the live edge."). 7 shots now |
 | 8 Series | **Built** — §15 is the design: `series` (a slug and a closed `mode` per store), `assets.series_id`/`episode_no` with the pair checked as one thing, and `watch_progress` as the person's own bookmark (`0049_series.sql`). `src/series.js` is pure and decides the order, the landing episode, the next one, and *finished* from one place; the storefront collapses a series into one card, the series page lists the store's order, and an episode's page carries the strip, the resume, and a **Next episode** link that appears only when the episode ends — no timer, no autoplay. 14 tests in `series.test.js` and `ci/eyes/series-walk.mjs` in a real browser (`docs/evidence/round41`, 8 shots, including the ad-gated episode's own door cleared through the dev-only network
 simulator and the position route answering `changed: true` then `false`). Suite 801/801/0 |
 
@@ -717,7 +717,14 @@ The store calls it. Concretely:
 - no autoplay with sound, no interstitial over the stream, no ad on the entry frame itself, and no break
   that hides the fact that the stream continued;
 - no second serving of the same view: a credited break is credited once, from the network's own
-  postback, like every other view in this product.
+  postback, like every other view in this product;
+- **no ask that outlives its own window without saying so.** A break the store ends early closes the
+  window; a viewer who was INSIDE the ask when that happened is still asked to finish the view (their
+  time is already being spent, and the view is their own standing — see below), but the sentence they
+  get at the end names what actually happened. The distinction is the server's: `live_breaks.closed_at`
+  before `ends_at` is an early end, and `ends_at` passing with no `closed_at` is a window that ran out.
+  Stated in §14.6 because it is a sentence and not a control — but a sentence that was previously
+  untrue, which is the kind of thing this document exists to catch.
 
 ### 14.5 What slice 7 builds
 
@@ -737,7 +744,30 @@ The store calls it. Concretely:
 - **The walk**: `ci/eyes/live-walk.mjs` against the generated fixture — playback advances
   (`currentTime` moves), the door asks once, a break called from the *seller's* page stops the viewer,
   the network credits it, the viewer resumes at the live edge, a newcomer inside the covered window
-  walks in clean, and the seller's ledger shows the row.
+  walks in clean, and the seller's ledger shows the row. The delivery is deliberately SLOWED for this
+  walk (the simulator is held at the proxy), because the seller's own "End it now" and the viewer's
+  sentence about it only exist while the modal is still up — which is the state the walk was previously
+  guarding with a `waitForFunction` instead of asserting.
+
+### 14.6 What the viewer is told, and who owns the last word
+
+The break is the one interruption this product allows, and everything about it is designed to leave
+the viewer's own picture intact: they are stopped rather than talked over, the modal says where the
+stop came from, and the resume is at the live edge because a stream does not wait. What the viewer is
+TOLD at the end of it is part of that promise and not decoration. Three facts decide the sentence,
+and each of them is a row rather than a guess:
+
+| the window | the view | what the viewer reads |
+|---|---|---|
+| ran to its own end | credited | *View confirmed. Back at the live edge — the stream moved on while the break ran.* |
+| the store ended it early | credited | *The store ended this break early. Your view was confirmed — back at the live edge.* |
+| the store ended it early | not confirmed | *The store ended this break early. The network has not confirmed the view yet — you are at the live edge.* |
+| the viewer closed it | — | *Break closed. You are back at the live edge — the stream kept going while it was up.* |
+
+The rule behind the rows: **an ask that has started is seen through.** Cancelling mid-view because a
+window closed would take a person's attention and hand back nothing — neither the store's ad nor the
+viewer's standing — and the view a break asks for is the viewer's own currency (§12), not the store's.
+So the window closing early changes the words, never the work already underway.
 
 ## 15. The series — a playlist of episodes, and the one place we do NOT take the wheel
 

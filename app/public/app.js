@@ -1279,11 +1279,33 @@
     return false;
   };
 
+  /*
+   * The window the ask belongs to, and whether it survived the ask.
+   *
+   * A break the store ends early leaves the person inside a modal for a window that no
+   * longer exists. Cancelling their view would take their time and give back nothing —
+   * neither the store's ad nor their own standing — so the ask is seen through and the
+   * SENTENCE changes instead. §14.6 is the table; the fact comes from the state endpoint
+   * (`lastClosed.early`), never from the browser's clock.
+   */
+  let asking = null;
+  const windowEndedEarly = async () => {
+    const state = await api(stateUrl).catch(() => null);
+    const last = state?.lastClosed;
+    return Boolean(last && last.breakId === asking?.breakId && last.early);
+  };
+
   const runBreak = async (window_) => {
     if (!window_ || gating) return;
     gating = true;
+    asking = window_;
     video.pause();
     const declined = new Promise((resolve) => { decline = () => resolve('declined'); });
+    // Watched while the ask runs, and only then: a window can be closed by the store at
+    // any moment, including one second after the modal appeared.
+    const watcher = setInterval(() => {
+      windowEndedEarly().then((early) => { if (early && asking) asking.early = true; });
+    }, 4000);
     try {
       const start = await api(viewUrl, {
         method: 'POST',
@@ -1338,6 +1360,10 @@
 
       const outcome = await Promise.race([waitForCredit(start.viewId), declined]);
       clearInterval(ticker);
+      // Asked once more before the sentence is chosen: the watcher ticks every four
+      // seconds, and a window closed in the last of them must not be reported as a
+      // window that ran out. One request, at the only moment the answer is read.
+      if (outcome && !asking.early) asking.early = await windowEndedEarly();
       if (modal) modal.hidden = true;
       if (outcome === 'declined') {
         // Choosing not to watch is not evasion, and it is not a reason to hold the
@@ -1345,14 +1371,20 @@
         // does not put the same modal back on screen fifteen seconds later.
         declinedBreak = window_.breakId;
         say('Break closed. You are back at the live edge — the stream kept going while it was up.');
+      } else if (outcome && asking.early) {
+        say('The store ended this break early. Your view was confirmed — back at the live edge.');
       } else if (outcome) {
         say('View confirmed. Back at the live edge — the stream moved on while the break ran.');
+      } else if (asking.early) {
+        say('The store ended this break early. The network has not confirmed the view yet — you are at the live edge.', 'warning');
       } else {
         say('The network has not confirmed the view yet. Still watching at the live edge.', 'warning');
       }
       seekToLiveEdge();
       video.play().catch(() => {});
     } finally {
+      clearInterval(watcher);
+      asking = null;
       gating = false;
     }
   };

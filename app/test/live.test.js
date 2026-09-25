@@ -154,6 +154,27 @@ test('the state a viewer is handed: the stop, the door, and the reason for each'
   assert.equal(closedLongAgo.coverageUntil, null);
 });
 
+test('a window the store closed early is distinguishable from one that ran out', () => {
+  // §14.6's table is decided from the rows, not from a browser's clock. `ends_at` is the
+  // deadline the window announced; `closed_at` earlier than that is a store ending it.
+  const early = window_({ started: mins(-1), seconds: 600, cue: 4, closed: mins(0) });
+  const ranOut = window_({ started: mins(-20), seconds: 60, cue: 5 });
+  const state = liveState({ breaks: [early, ranOut], cleared: [], unlocked: false, now: NOW });
+  assert.equal(state.lastClosed.breakId, early.id);
+  assert.equal(state.lastClosed.cueIndex, 4);
+  assert.equal(state.lastClosed.early, true, 'a window closed before its own end is an early end');
+  // A window past its deadline with no `closed_at` never appears here at all: nothing was
+  // closed, it simply ran — and the sentence for that case says so.
+  const onlyRanOut = liveState({ breaks: [ranOut], cleared: [], unlocked: false, now: NOW });
+  assert.equal(onlyRanOut.lastClosed, null);
+  // A window the store closed AFTER its own deadline is not an early end either.
+  const closedLate = window_({ started: mins(-30), seconds: 60, cue: 6, closed: mins(-25) });
+  assert.equal(liveState({ breaks: [closedLate], now: NOW }).lastClosed.early, false);
+  // The most recent one wins, whatever order the rows arrive in.
+  const older = window_({ started: mins(-40), seconds: 60, cue: 7, closed: mins(-30) });
+  assert.equal(liveState({ breaks: [older, early], now: NOW }).lastClosed.breakId, early.id);
+});
+
 test('the words are the offer', () => {
   assert.equal(tradeSentence(30), '30 seconds of break buys 10 minutes of clean entries for newcomers.');
   assert.equal(tradeSentence(240), '4 minutes of break buys 60 minutes of clean entries for newcomers.');
