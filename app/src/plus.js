@@ -52,6 +52,10 @@
 import { randomInt } from 'node:crypto';
 
 import { ACCENTS, ACCENT_KEYS, glyphOf } from './memberships.js';
+// The product's one clock: `longDay` reads on the shop's timezone (Asia/Kathmandu) in
+// the same format every other date in this app uses. A second date formatter is how a
+// badge ends up a day out from the invoice beside it.
+import { longDay } from './dates.js';
 
 export const PLUS_CODE = 'plus';
 
@@ -498,6 +502,38 @@ export const EFFECT_MIX_SHARE = { dark: 0.62, light: 0.55 };
 /** Every class this module can emit, for the test that checks each has a rule. */
 export const WEAR_CLASSES = Object.values(WEAR_CLASS).filter(Boolean);
 
+/**
+ * When this person's arrangement started — the fact the blended model's
+ * `member_since` field asks for, and the one thing Discord's own badge shows that
+ * nothing else on a card does.
+ *
+ * Derived from the subscription row and never stored a second time. Two rules make
+ * it honest rather than decorative: a **pending claim has no date**, because
+ * nothing has started yet, and a lapsed arrangement drops the date from the page
+ * with the look — the row keeps `period_start` for whenever the person comes back,
+ * but a badge that still advertised a month that ended would be a claim about now.
+ *
+ * @returns {Date|null}
+ */
+export function memberSince(subscription = null) {
+  if (!subscription) return null;
+  // The SAME gate the look passes through (`plusState`), not a second opinion: an
+  // arrangement whose period end has passed is lapsed even though the row still says
+  // 'active', and a badge still advertising a month that ended is a claim about now.
+  if (plusState({ status: subscription.status, period_end: subscription.period_end }) !== 'active') return null;
+  const start = subscription.period_start ? new Date(subscription.period_start) : null;
+  if (!start || Number.isNaN(start.getTime())) return null;
+  return start;
+}
+
+/** "Since 25 Sep 2026" — on the shop's own clock, like every other date here. */
+export function memberSinceWords(subscription = null, now = new Date()) {
+  const since = memberSince(subscription);
+  if (!since) return null;
+  if (since.getTime() > new Date(now).getTime()) return null;   // a clock skew is not a birthday
+  return `Since ${longDay(since)}`;
+}
+
 /** Days left on an arrangement, or null. Used by the member's own card. */
 export function plusDaysLeft({ period_end = null } = {}) {
   if (!period_end) return null;
@@ -507,17 +543,205 @@ export function plusDaysLeft({ period_end = null } = {}) {
 }
 
 /**
+ * THE BLENDED CATALOGUE, DECIDED — every row of the premium-customization review,
+ * in one list, with its owner and its verdict.
+ *
+ * The review arrived as a union of four systems (Asura+ Basic/Premium, Discord
+ * Nitro, Twitch, Patreon) plus an instanced JSON model. A union is not a decision,
+ * and the failure mode of a cosmetics tier is not the price — it is the row
+ * somebody assumed was included. So every row is written down here with three
+ * facts: **whose it is** (`owner`), **what happened to it** (`state`), and — when
+ * the answer is no or not yet — **why**, in the words the buyer reads.
+ *
+ * ``owner`` is the layer rule this whole document is built on, applied row by row:
+ *
+ *   · `person` — bytebikri grants it with a period, and it travels with the NAME;
+ *   · `store`  — a creator's own arrangement with their own members (layer S);
+ *   · `file`   — the file's owner decides it per file, not a subscription;
+ *   · `none`   — nobody grants it, and that is the decision.
+ *
+ * A `built` row must NAME the thing that delivers it (`delivers`), and
+ * `plus.test.js` resolves every one of those names against the cosmetics catalog —
+ * the same discipline as "every class the views emit has a rule": a perk that
+ * claims to be built and points at nothing is a sentence, not a feature.
+ *
+ * Adding a row is cheap and that is the point: the next review gets answered in one
+ * list, in one commit, instead of in a paragraph somebody has to remember.
+ */
+export const PERK_OWNERS = ['person', 'store', 'file', 'none'];
+export const PERK_STATES = ['built', 'refused', 'deferred'];
+
+export const PERKS = [
+  // ── what a period actually buys: the person's own look (layer P) ─────────────
+  {
+    key: 'paint', owner: 'person', state: 'built', delivers: 'nameplate',
+    name: 'The paint on your name',
+    words: 'Eight palettes, every one checked against both themes. It shows on every page that draws '
+      + 'your name, and inside a store’s band without repainting it.',
+  },
+  {
+    key: 'effect', owner: 'person', state: 'built', delivers: 'effect',
+    name: 'The effect around it',
+    words: 'Six treatments, from none to a slow halo. Motion happens on intent — a page nobody pointed '
+      + 'at does not animate — and reduced motion keeps the look, still.',
+  },
+  {
+    key: 'ring', owner: 'person', state: 'built', delivers: 'ring',
+    name: 'The ring around your initial',
+    words: 'Six rings. This is what the blend calls an animated avatar: there is no picture to upload '
+      + 'here, so what moves is the ring, drawn rather than hosted.',
+  },
+  {
+    key: 'frame', owner: 'person', state: 'built', delivers: 'frame',
+    name: 'The edge of your card',
+    words: 'Six edges on the card that carries your name — on a store’s roster, in the seller’s member '
+      + 'list, and on your own page. The edge is yours; the surface under it belongs to the page.',
+  },
+  {
+    key: 'band', owner: 'person', state: 'built', delivers: 'own-band',
+    name: 'Your own band on your own page',
+    words: 'The blend calls it a profile banner or theme. It is your palette’s own surface on /library, '
+      + 'and nowhere else: a store keeps its band, and your name keeps its paint inside it.',
+  },
+  {
+    key: 'badge', owner: 'person', state: 'built', delivers: 'badge-date',
+    name: 'Your badge, with the date you started',
+    words: 'The month is not just a look — the arrangement carries the day it started, the way Discord’s '
+      + 'own badge shows the subscription start date.',
+  },
+
+  // ── the creator's own arrangement with their own members (layer S) ────────────
+  {
+    key: 'tier-chip', owner: 'store', state: 'built', delivers: 'glyph',
+    name: 'A store’s tier chip, beside a member’s name',
+    words: 'The creator names the tiers and chooses the shape; the chip is painted in the tier’s own '
+      + 'colour. bytebikri cannot grant it and a member cannot buy it here.',
+  },
+  {
+    key: 'early-access', owner: 'store', state: 'built', delivers: 'members-only',
+    name: 'A file a creator opens to members first',
+    words: 'The blend’s “early access”. The creator decides which files, and when they open to everybody '
+      + 'else — that is what a membership is for.',
+  },
+  {
+    key: 'member-room', owner: 'store', state: 'built', delivers: 'member-room',
+    name: 'The creator’s own room',
+    words: 'The blend’s “exclusive channel”. One page per store, for the people whose dues are standing.',
+  },
+  {
+    key: 'store-plan', owner: 'store', state: 'built', delivers: 'store-plan',
+    name: 'What a store’s plan buys it',
+    words: 'Published files, ad slots per page, custom sections, its own band. The blend files “bigger '
+      + 'uploads” under a person’s subscription; here it belongs to the shop’s own plan, paid to it.',
+  },
+  {
+    key: 'gift', owner: 'person', state: 'built', delivers: 'gift-rail',
+    name: 'Give a period to somebody else',
+    words: 'One code, one period, one person — the one social feature of a cosmetics product that never '
+      + 'drew a backlash, and the only acquisition channel that needs no card.',
+  },
+
+  // ── and the rows the answer is no to, each with its reason ────────────────────
+  {
+    key: 'ad-free', owner: 'none', state: 'refused',
+    name: 'No ads',
+    reason: 'The ads on a store’s page are paid to that store by the ad network. Selling “no ads” would '
+      + 'be selling something that belongs to a creator and making them pay for it.',
+    notLine: 'It does not remove ads. The ads on a store\'s page are paid to that store by the ad network, and bytebikri cannot give away what a creator earns.',
+  },
+  {
+    key: 'opens-content', owner: 'none', state: 'refused',
+    name: 'Opening files',
+    reason: 'A file opens by an ad, by a membership, or by nothing. A cosmetic that could open one would '
+      + 'be a hole in every creator’s paywall at once.',
+    notLine: 'It does not open files. A file opens by an ad, by membership, or by nothing — never by paying us.',
+  },
+  {
+    key: 'priority-rank', owner: 'none', state: 'refused',
+    name: 'Moving up a list',
+    reason: 'Buying a position in a public list is read as manufactured scarcity the moment the mechanism '
+      + 'is visible, and a creator’s roster is the creator’s ordering, not a payer’s.',
+    notLine: 'It does not move you up any list. The ranking code does not read it, and a store\'s own roster does not order by it.',
+  },
+  {
+    key: 'see-engagement', owner: 'none', state: 'refused',
+    name: 'Seeing who opened your files',
+    reason: 'The reading bookmark is the reader’s own and the store is never shown it. A perk that revealed '
+      + 'readers would sell a creator’s own audience to the payers.',
+    notLine: 'It does not change what a store sees about you. A seller learns that you are a member of their store the way they always did, by confirming your dues.',
+  },
+  {
+    key: 'offline-download', owner: 'file', state: 'refused',
+    name: 'Offline downloads',
+    reason: 'The treatment — download with your reference burned in, or play-only — is the file’s own '
+      + 'setting, chosen by the store that owns it. A subscription cannot override somebody else’s file.',
+  },
+  {
+    key: 'priority-comments', owner: 'none', state: 'refused',
+    name: 'Highlighted comments',
+    reason: 'There is no comment surface, and if one is built, a store may highlight a member’s question '
+      + 'inside its own room — labelled, in the store’s own space. Not sold here.',
+  },
+  {
+    key: 'animated-uploads', owner: 'none', state: 'refused',
+    name: 'Uploading an animated picture or banner',
+    reason: 'The avatar here is an initial and there is nothing to upload; an upload brings a moderation '
+      + 'pipeline this product has refused twice. What moves is drawn — the ring, the edge, the effect.',
+  },
+  {
+    key: 'beta-opt-in', owner: 'none', state: 'refused',
+    name: 'Beta access',
+    reason: 'There is no flag system, and a paid tier is not how features get tested. Selling a beta '
+      + 'before the beta exists is the same class of promise as “ad-free”.',
+  },
+  {
+    key: 'custom-reactions', owner: 'none', state: 'deferred',
+    name: 'A reaction pack of your own',
+    reason: 'Emoji are a social surface, and this product has none yet. Deferred rather than refused: the '
+      + 'day there is a place to react, the pack belongs to the person who made it, not to us.',
+  },
+];
+
+/**
+ * Anything wrong with the catalogue above, as sentences a test can print.
+ *
+ * The three rules are the ones that keep a catalogue honest: a closed set of states,
+ * a reason on every row that is not built, and a `delivers` name on every built row
+ * (resolved against the real catalog by the test, because a perk pointing at nothing
+ * is a sentence).
+ */
+export function perkProblems() {
+  const problems = [];
+  const seen = new Set();
+  for (const perk of PERKS) {
+    if (seen.has(perk.key)) problems.push(`duplicate perk key: ${perk.key}`);
+    seen.add(perk.key);
+    if (!PERK_OWNERS.includes(perk.owner)) problems.push(`${perk.key}: owner ${perk.owner} is not one of ${PERK_OWNERS.join(', ')}`);
+    if (!PERK_STATES.includes(perk.state)) problems.push(`${perk.key}: state ${perk.state} is not one of ${PERK_STATES.join(', ')}`);
+    if (!perk.name || (!perk.words && !perk.reason)) problems.push(`${perk.key}: a perk says what it is, or why it is not`);
+    if (perk.state === 'built' && !perk.delivers) problems.push(`${perk.key}: a built perk names what delivers it`);
+    if (perk.state !== 'built' && !perk.reason) problems.push(`${perk.key}: a refusal or a deferral carries its reason`);
+    if (perk.state !== 'built' && perk.delivers) problems.push(`${perk.key}: nothing delivers what was not built`);
+  }
+  return problems;
+}
+
+/** The rows a buyer is offered, and the rows they are told about. */
+export function perksByState(state) {
+  return PERKS.filter((p) => p.state === state);
+}
+
+/**
  * The honest list of what the money does NOT buy, printed on the page that takes
  * it. This is the paragraph the researched record says to write first: the
  * complaint that damages a cosmetics tier is never "it costs money", it is "I
  * thought it would also do X".
+ *
+ * Derived from `PERKS` rather than kept beside it: every refusal that is written
+ * down in the catalogue is printed on the page, and a row cannot be added to one
+ * without appearing in the other.
  */
-export const PLUS_NOT = [
-  'It does not remove ads. The ads on a store\'s page are paid to that store by the ad network, and bytebikri cannot give away what a creator earns.',
-  'It does not open files. A file opens by an ad, by membership, or by nothing — never by paying us.',
-  'It does not move you up any list. The ranking code does not read it, and a store\'s own roster does not order by it.',
-  'It does not change what a store sees about you. A seller learns that you are a member of their store the way they always did, by confirming your dues.',
-];
+export const PLUS_NOT = PERKS.filter((perk) => perk.notLine).map((perk) => perk.notLine);
 
 /** The other direction, in one line, for anyone who arrives from a store page. */
 export const PLUS_SEPARATION_LINE =

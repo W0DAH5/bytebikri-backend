@@ -3613,3 +3613,56 @@ every segment carried four bytes of garbage where its PPS belonged. The fix is o
 guards in the generator, and the walk above is the proof that the segments now decode.
 
 Suite **782/782/0**.
+
+## 44. The blended catalogue (§11): every row of the premium review, decided — and the badge's date
+
+**What arrived.** A second review, this time with the customization layer *itself*: a verified Asura+
+Basic/Premium table unioned with Discord Nitro, Twitch and Patreon, plus an instanced data model
+(`tier`, `badge`, `perks`, `member_since`). Twenty rows. A union of four systems is not a decision, and
+the failure mode of a cosmetics tier is never the price — it is the row somebody assumed was included.
+
+**The framework step, again first.** `PREMIUM_LOOK.md` §11 answers all twenty rows — layer, verdict, and
+for every no, the reason — before a line of code changed. Then the verdicts moved into the product as
+`PERKS` in `src/plus.js`: one declared list, each row with `owner` (`person` / `store` / `file` / `none`),
+`state` (`built` / `refused` / `deferred`), the words a buyer reads, and — where the answer is no — the
+reason. `perkProblems()` is the catalogue's own consistency check, and `plus.test.js` resolves every
+built row's `delivers` name against the REAL thing (the cosmetics catalog's slots, the member-room route,
+the store plan's caps, the gift code) — so a perk that claims to be built and points at nothing fails the
+suite instead of shipping as copy. `PLUS_NOT`, the page's "what this is not" list, is now DERIVED from
+those rows: a refusal cannot be written down in one place and forgotten in the other.
+
+**The one thing it added.** `member_since` — the fact Discord's own badge shows that nothing else on a
+card does. It is `customer_subscriptions.period_start`, derived and never stored twice, gated on the same
+`plusState()` the look passes through: a **pending** claim has no date because nothing started, and a
+month that has ended drops the date with the look, even though the row still says `active`. Rendered on
+the arrangement table as *Member since · Since 25 Sept 2026*.
+
+**The page grew two lists, and they are the correction of the whole premium round.** "What a period
+opens" (eleven rows) and "What this is not" (nine, each with its reason): every row names its OWNER before
+it names the thing — *Yours* for a ring, *The store's* for a tier chip, *Nobody's* for what is not for
+sale. A page that listed a person's ring and a store's chip in one column without saying so would be the
+exact confusion this document exists to end.
+
+**The refusals, in one place for good:** no ad-free tier (the network pays the creator, so selling "no
+ads" sells somebody else's money); offline downloads belong to the FILE and its owner, never to a
+subscription; priority comments and buying a position in a public list — with the store's own room left
+as the one place a creator may highlight a member, labelled, because there they own the conversation; a
+perk that revealed who read a file ("see who engaged") would sell a creator's own readers; beta access
+sold before a beta exists; an uploadable animated avatar, refused because the avatar here is an initial
+and an upload brings the moderation pipeline this product has refused twice. What moves is DRAWN — the
+ring, the edge, the effect.
+
+**Why the person's plan stays one plan.** The blend is right that Discord splits its own subscription —
+`PREMIUM_LOOK.md` §11.4 records the three reasons this one does not: a second price point would withhold
+half of the cosmetics already built rather than add anything; every period here is a manual reference an
+operator matches against a bank statement, so two tiers is double the queue for the same look; and it
+flips when there are items that are EARNED rather than bought, which is §10's phase 4 and needs a
+grantor that does not exist yet.
+
+**What the browser proved.** `ci/eyes/premium-walk.mjs` §17, two new screenshots
+(`docs/evidence/round40/premium-{26-catalogue,27-what-it-is-not}.png`): the page prints eleven opened rows
+and nine refusals, every one with its owner tag read off the rendered DOM (`Yours`, `The store's`,
+`Not sold`, `Not yet`), the ring tagged as the person's and the chip as the store's, the badge's date read
+off the arrangement as `Since 25 Sept 2026`, and the page's visible TEXT searched for an ad-free promise
+(the only allowed use is inside quotes, where the refusal for beta access names what it is comparing
+itself to). Console errors none. Suite **787/787/0**.

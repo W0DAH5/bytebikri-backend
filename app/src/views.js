@@ -99,6 +99,7 @@ import { stepLabel, gateSentence } from './pages.js';
 // it is worn at all (`plusWear()` — active only, decided in SQL).
 import {
   PLUS_NAME, PLUS_NOT, PLUS_SEPARATION_LINE, EFFECTS, EFFECT_KEYS, effectOf, wearClass, composeName,
+  PERKS, perksByState, memberSinceWords,
   WEAR_OWNER_LINE, CHIP_OWNER_LINE,
   plateOf, PLATE_KEYS, plusState, plusWear, plusDaysLeft, plusMoneyLine,
   // Gifting: the four states a code can be in, said separately to the buyer and to
@@ -7274,6 +7275,62 @@ export function plusPage({
       </div>
     </form>`;
 
+  /*
+   * THE CATALOGUE, ON THE PAGE, IN TWO LISTS.
+   *
+   * The blended review arrived as a union of four systems, and a union is not a
+   * decision — so the page separates the two kinds of row the blend mixed together:
+   * what a period OPENS, and what it does not. Each row says WHO it belongs to,
+   * because that is the correction the whole premium-look round was about: a
+   * store's tier chip and a person's ring are unrelated, and a page that lists them
+   * in one column without saying so is the page that confuses them.
+   */
+  const ownerTag = { person: 'Yours', store: 'The store’s', file: 'The file’s', none: 'Nobody’s' };
+  const perkRow = (perk) => `
+      <li class="perk" data-perk="${esc(perk.key)}" data-owner="${esc(perk.owner)}">
+        <span class="perk-owner">${esc(ownerTag[perk.owner] || '')}</span>
+        <span class="perk-body">
+          <strong>${esc(perk.name)}</strong>
+          <span class="fine">${esc(perk.words || perk.reason)}</span>
+        </span>
+      </li>`;
+  // A refusal's own sentence where the catalogue carries one — the same words the
+  // page's "what this is not" list has always printed — and its reason otherwise.
+  const offRow = (perk) => `
+      <li class="perk perk-off" data-perk="${esc(perk.key)}" data-state="${esc(perk.state)}">
+        <span class="perk-owner">${perk.state === 'deferred' ? 'Not yet' : 'Not sold'}</span>
+        <span class="perk-body">
+          <strong>${esc(perk.name)}</strong>
+          <span class="fine">${esc(perk.notLine || perk.reason)}</span>
+        </span>
+      </li>`;
+
+  const opensPanel = `
+<section class="section" id="opens">
+  <div class="section-head"><h2>What a period opens</h2>
+    <p class="fine">Every row of the catalogue, with its owner named. Nothing here is a second charge: the
+    person’s rows are inside the one price, and a store’s rows are not for sale on this page at all.</p>
+  </div>
+  <div class="panel"><div class="panel-body">
+    <ul class="perk-list">
+      ${perksByState('built').map(perkRow).join('')}
+    </ul>
+  </div></div>
+</section>`;
+
+  const notPanel = `
+<section class="section" id="not">
+  <div class="section-head"><h2>What this is not</h2>
+    <p class="fine">Written before the price, and printed after it, because the only complaint that damages
+    a cosmetics tier is the one about what somebody assumed it included.</p>
+  </div>
+  <div class="panel"><div class="panel-body">
+    <ul class="perk-list perk-list-off">
+      ${[...perksByState('refused'), ...perksByState('deferred')].map(offRow).join('')}
+    </ul>
+  </div></div>
+</section>`;
+
   const arrangement = active ? `
     <div class="panel"><div class="panel-head"><h2>Your arrangement</h2></div>
       <div class="panel-body">
@@ -7282,6 +7339,7 @@ export function plusPage({
           <dt>Price</dt><dd>${npr(price)} a month</dd>
           <dt>Runs until</dt><dd>${esc(longDay(subscription?.period_end))}${days !== null ? ` · ${plural(days, 'day')} left` : ''}</dd>
           <dt>Worn now</dt><dd>${wear ? `${esc(EFFECTS[wear.effect].label)} in ${esc(plateOf(wear.plate).label)}` : 'nothing yet — pick a look above'}</dd>
+          ${memberSinceWords(subscription) ? `<dt>Member since</dt><dd>${esc(memberSinceWords(subscription))}</dd>` : ''}
         </dl>
         <p class="fine" style="margin-top:var(--space-4)">
           Paid to bytebikri on the manual rail. There is no card on file and nothing renews by itself:
@@ -7461,17 +7519,9 @@ ${flashNote(flash)}
 
 ${giftPanel}
 
-<section class="section" id="not">
-  <div class="section-head"><h2>What this is not</h2>
-    <p class="fine">Written before the price, and printed after it, because the only complaint that damages
-    a cosmetics tier is the one about what somebody assumed it included.</p>
-  </div>
-  <div class="panel"><div class="panel-body">
-    <ul class="plus-not">
-      ${PLUS_NOT.map((line) => `<li>${esc(line)}</li>`).join('')}
-    </ul>
-  </div></div>
-</section>`,
+${opensPanel}
+
+${notPanel}`,
   });
 }
 

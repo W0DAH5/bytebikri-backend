@@ -661,3 +661,92 @@ top-tier light still alight, and the person's ring and edge around both — the 
 teal while the tile under it stays the store's violet, and the aurora **at rest**, since a page nobody
 pointed at must not animate. Finally it saves the pair it found and puts them back, so the walk leaves the
 state it started in.
+
+## 11. The blended catalogue — every row of it decided, in one place
+
+A review arrived with a blended perk set: the verified **Asura+** two-tier table (Basic/Premium), unioned with
+**Discord Nitro**, **Twitch** and **Patreon**, plus an instanced JSON model (`tier`, `badge`, `perks`,
+`member_since`). This section is the framework step for it: **each row gets a layer, a verdict, and — where the
+answer is no — the reason.** The verdicts then live in code (`PERKS` in `src/plus.js`), so the page a buyer reads,
+the tests and this document cannot drift apart.
+
+The blend also settled a question this document had left open in words: **what the badge is.** Discord's own
+badge "shows the subscription start date". So `member_since` is not decoration — it is the one fact a paid tier
+has that nothing else on the page does, and it is adopted.
+
+### 11.1 The instanced model, mapped field by field
+
+| The model's field | This product's equivalent | State |
+|---|---|---|
+| `tier` | a **store's** member tier (`membership_tiers`, creator-named, creator-priced, ≥2 tiers) for layer S; `customer_plans` code for layer P | built |
+| `badge.label` / `badge.color` / `badge.icon` | the store's **tier chip**: `glyph` slot (six shapes) painted in the tier's own `currentColor` | built |
+| `badge.animated` | `moves` on a slot value — motion on intent only, and `prefers-reduced-motion` keeps the look, still | built |
+| `perks.animated_avatar` | the **ring** around the initial (six values, some of them move). There is no picture to animate | built, adapted |
+| `perks.profile_banner` | the person's **own band** on `/library` — their palette's deep stop as the surface | built |
+| `perks.custom_accent_color` | the **nameplate** palette (eight, contrast-checked on both themes) | built |
+| `perks.early_access` | a file the store puts behind `members` — the creator's own tier, the creator's own decision | built |
+| `perks.exclusive_channel_access` | the member room at `/s/:slug/members` | built |
+| `perks.gift_eligible` | the gift rail: a code, claimed by the person it was meant for | built |
+| `member_since` | `customer_subscriptions.period_start` — **adopted this round**, shown on the badge | **new** |
+| `perks.offline_download` | owner of the thing: the **file's** own treatment, chosen by the store | refused (11.3) |
+| `perks.ad_free` | never — see `plus.js`'s own header for the three reasons | refused |
+| `perks.priority_comments`, `perks.see_engagement` | buying position in a public list; and un-naming viewers the design keeps un-named | refused |
+| `perks.custom_reactions` | no comment or reaction surface exists to react on | deferred |
+| `beta feature opt-in`, `unrestricted uploads` | store-plan capabilities (`max_assets`, `custom_sections`) | layer S, built |
+| `Basic`/`Elite` split of the person's plan | one plan, everything inside | refused (11.4) |
+
+### 11.2 What this round adopts
+
+1. **`PERKS`** — one declared list in `src/plus.js`: every row above with `owner` (`person` / `store` / `file` /
+   `none`), `state` (`built` / `refused` / `deferred`), the words a buyer reads, and — for anything that is not
+   built — **the reason, in the same sentence the document gives**. The `/plus` page renders it, so a buyer reads
+   what a period is *and what it is not* before paying, and `plus.test.js` asserts the closed set of states, that
+   every refusal carries its reason, and that the two capabilities the plan may never have stay `false`.
+2. **`member_since`** — the subscription's `period_start`, rendered on the badge as "Since 25 Sep 2026". Derived
+   from the row, never stored twice; a pending claim has no date, because it has not started.
+3. Nothing else is added. Everything else in the table is either already built or refused, and adding a second
+   thing that does the same job as a built one is how a catalogue starts contradicting itself.
+
+### 11.3 The refusals, with their reasons
+
+- **`ad_free` is not for sale, at any price or in any tier.** Restated here only because the blend carries it in
+  from Twitch: the networks pay the *store's* own account, so "no ads" is selling something that belongs to
+  somebody else and making the creator pay for it. `plus.js` has the full argument and the two live lawsuits
+  behind it.
+- **`offline_download` belongs to the file, not to a subscription.** The treatment ("Download — your reference
+  burned in" / "Plays here, no download offered") is the *store's* choice per file, and the bytes are minted per
+  account. A person's subscription that overrode either one would be layer P standing in for the file's owner —
+  the exact confusion this document exists to end. A store that wants downloads offers them; a store that does not
+  is not overruled by somebody else's receipt.
+- **`priority_comments` / highlighted comments** are refused on the shape of the product as well as on the
+  evidence. There is no comment surface, and if one is ever built, buying a position in a public list is the thing
+  this platform does not do — the researched pattern is that "priority access" framing is read as manufactured
+  scarcity the moment users can see the mechanism (2026's loudest example is an AI product telling free users the
+  service is busy and offering an upgrade). A **store's own** tier may highlight its member's question inside its
+  own member room, labelled as such, because there the store is the owner of the conversation and nothing about
+  the arrangement is hidden. That is layer S's decision and its own later slice.
+- **`see_engagement`** is refused because it would break a promise already shipped: the reading bookmark is the
+  reader's own and **the store is never shown it**. A perk that revealed who opened a creator's file would sell
+  the creators' own readers to the payers, which is a second business model wearing this one's clothes.
+- **Beta opt-in** is refused while there is no flag system: a paid tier is not how features get tested, and
+  "beta access" sold before the beta exists is the same class of promise as "ad-free".
+- **An uploadable animated avatar or banner** (a GIF the person picks) is refused for a reason the engine already
+  states: there is nothing to upload here — the avatar is an initial, and an upload brings a moderation pipeline
+  this product has refused twice. What the blend calls "animated" is delivered as **motion on the ring, the edge
+  and the effect**, which is drawn, not hosted, and therefore cannot carry somebody else's file.
+
+### 11.4 The one shape question: why the person's plan stays ONE plan
+
+Discord really does split its own subscription (Basic $2.99 / Nitro $9.99, animated avatar and banner in the
+higher one) — the blend is right about the market. It is still refused here, for three reasons that are specific
+to this product rather than to taste:
+
+1. **A second price point buys nothing new; it withholds something that exists.** The catalogue is four person
+   slots with 8+6+6+6 values. Splitting it would not add a feature, it would hide half of the ones already built
+   behind a second payment — and the researched backlash (Discord's own shop, "should be free with Nitro") is
+   exactly against paying a second time for the same layer.
+2. **A second manual rail is a second queue.** There is no card processor here; every period is a reference an
+   operator matches by hand against a statement. Two tiers double the operator work to sell the same cosmetics.
+3. **It flips when the catalogue is big enough that "everything inside" stops being true** — when there are
+   collectible items that are *earned* rather than *bought* (Discord's Shop, quests, drops). That is phase 4 in
+   §10, it needs a grantor that does not exist yet, and until then one plan is the honest number.

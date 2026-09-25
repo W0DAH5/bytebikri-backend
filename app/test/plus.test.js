@@ -20,7 +20,7 @@
  */
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 
 process.env.DATABASE_URL ||= 'postgres://postgres:postgres@127.0.0.1:55432/bytebikri_test';
 
@@ -34,7 +34,10 @@ const {
   plusYearPrice, plusYearNote, PLUS_YEAR_CODE, PURCHASABLE_PLAN_CODES,
   // The person's own band: the second band recipe, and the bound it is measured at.
   personBand, OWN_BAND_LINE, OWN_BAND_MIX,
+  // The blended catalogue (§11) and the one fact it added to the badge.
+  PERKS, PERK_OWNERS, PERK_STATES, perkProblems, perksByState, memberSince, memberSinceWords,
 } = await import('../src/plus.js');
+const { slotOf } = await import('../src/cosmetics.js');
 const { ACCENTS } = await import('../src/memberships.js');
 const views = await import('../src/views.js');
 const { railDetails } = await import('../src/billing.js');
@@ -741,4 +744,147 @@ test('the stylesheet mixes no more than the measured bound, and one blob only', 
   const bandRegion = css.slice(paintAt, css.indexOf('/* Choosing the look', paintAt));
   assert.equal((bandRegion.match(/animation:/g) || []).length, 1,
     'the band declares its motion more than once — the reduce path is the one that loses');
+});
+
+// ---------------------------------------------------------------------------
+// The blended catalogue (§11) — every row of the review, decided
+// ---------------------------------------------------------------------------
+
+/**
+ * What each `delivers` name has to resolve to.
+ *
+ * A perk that claims to be built and points at nothing is a sentence, not a
+ * feature — the same failure the stylesheet test catches from the other direction
+ * ("every class the views emit has a rule"). So every built row's `delivers` is
+ * resolved HERE, against the real thing, and a new row that names something
+ * imaginary fails this test rather than shipping as copy.
+ */
+const DELIVERS = {
+  nameplate: () => { const s = slotOf('nameplate'); assert.ok(s && s.owner === 'person' && s.grant === 'plus'); },
+  effect: () => { const s = slotOf('effect'); assert.ok(s && s.owner === 'person'); },
+  ring: () => { const s = slotOf('ring'); assert.ok(s && s.owner === 'person'); },
+  frame: () => { const s = slotOf('frame'); assert.ok(s && s.owner === 'person'); },
+  'own-band': () => assert.ok(personBand({ plus_active: true, nameplate: 'teal', plus_effect: 'halo' }), OWN_BAND_LINE),
+  'badge-date': () => assert.equal(
+    memberSinceWords({ status: 'active', period_start: '2026-09-25T00:00:00Z', period_end: '2099-01-01T00:00:00Z' }),
+    'Since 25 Sept 2026',
+  ),
+  glyph: () => { const s = slotOf('glyph'); assert.ok(s && s.owner === 'store' && s.grant === 'creator'); },
+  'members-only': () => {
+    // The unlock vocabulary itself, in the migration that defines it: a perk that
+    // claims a creator may open a file to members has to be a mode the schema knows.
+    const dir = new URL('../../db/migrations/', import.meta.url).pathname;
+    const found = readdirSync(dir).filter((f) => f.endsWith('.sql'))
+      .some((f) => /'members'/.test(readFileSync(dir + f, 'utf8')));
+    assert.ok(found, 'no migration declares the members unlock mode');
+  },
+  'member-room': () => {
+    const server = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
+    assert.match(server, /\/s\/:slug\/members/, 'the member room route is gone');
+  },
+  'store-plan': () => {
+    const plans = readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
+    assert.match(plans, /max_assets/, 'the store plan no longer caps published files');
+  },
+  'gift-rail': () => assert.match(giftCode(() => 0), /^BKP-/),
+};
+
+test('every row of the blended catalogue is decided, and every built row points at something real', () => {
+  assert.deepEqual(perkProblems(), [], 'the catalogue contradicts itself');
+  for (const perk of PERKS) {
+    assert.ok(PERK_OWNERS.includes(perk.owner), `${perk.key}: ${perk.owner} is not a layer`);
+    assert.ok(PERK_STATES.includes(perk.state), `${perk.key}: ${perk.state} is not a verdict`);
+    if (perk.state !== 'built') continue;
+    const check = DELIVERS[perk.delivers];
+    assert.ok(check, `${perk.key} is built by "${perk.delivers}", which nothing in this product resolves`);
+    check();
+  }
+  // The blend's own rows, by name, so a future edit cannot quietly drop one.
+  for (const expected of [
+    'paint', 'effect', 'ring', 'frame', 'band', 'badge', 'tier-chip', 'early-access',
+    'member-room', 'store-plan', 'gift', 'ad-free', 'opens-content', 'priority-rank',
+    'see-engagement', 'offline-download', 'priority-comments', 'animated-uploads',
+    'beta-opt-in', 'custom-reactions',
+  ]) {
+    assert.ok(PERKS.some((p) => p.key === expected), `the catalogue no longer answers "${expected}"`);
+  }
+});
+
+test('the refusals the blend dragged in stay refused, with their reasons', () => {
+  const byKey = Object.fromEntries(PERKS.map((p) => [p.key, p]));
+  for (const key of ['ad-free', 'offline-download', 'priority-rank', 'see-engagement', 'priority-comments', 'beta-opt-in']) {
+    assert.notEqual(byKey[key].state, 'built', `${key} became a thing we sell`);
+    assert.ok(byKey[key].reason.length > 40, `${key} refuses without saying why`);
+  }
+  // The two that are refused for a reason that is not taste but somebody else's
+  // property: the creator's ad revenue, and the file's own treatment.
+  assert.match(byKey['ad-free'].reason, /paid to that store/);
+  assert.equal(byKey['offline-download'].owner, 'file');
+  // And the layer rule, on the rows the blend mixed together.
+  assert.equal(byKey['ring'].owner, 'person');
+  assert.equal(byKey['tier-chip'].owner, 'store');
+  assert.equal(byKey['gift'].owner, 'person');
+  assert.equal(perksByState('deferred').length, 1, 'deferrals are named one by one, not accumulated');
+  assert.equal(perksByState('deferred')[0].key, 'custom-reactions');
+});
+
+test('"what this is not" is the catalogue\'s own refusals, not a second list', () => {
+  const notLines = PERKS.filter((p) => p.notLine).map((p) => p.notLine);
+  assert.deepEqual(PLUS_NOT, notLines, 'the printed list and the catalogue disagree');
+  assert.ok(PLUS_NOT.length >= 4);
+  // The sentence the lawsuits are about is in the catalogue, not only on the page.
+  assert.ok(PLUS_NOT.some((line) => line.includes('does not remove ads')));
+});
+
+test('member since is the month that started, and nothing when nothing did', () => {
+  const active = { status: 'active', period_start: '2026-09-25T00:00:00Z', period_end: '2099-01-01T00:00:00Z' };
+  assert.match(memberSinceWords(active), /^Since \d+ Sept? \d{4}$/);
+  assert.ok(memberSince(active) instanceof Date);
+  // A claim is not a month: pending has no date, because nothing started.
+  assert.equal(memberSinceWords({ ...active, status: 'pending_payment' }), null);
+  // A month that ended is not a claim about now, even though the row still says active.
+  assert.equal(memberSinceWords({ ...active, period_end: '2020-01-01T00:00:00Z' }), null);
+  // Cancelled, none, and a missing row are the same answer.
+  assert.equal(memberSinceWords({ ...active, status: 'cancelled' }), null);
+  assert.equal(memberSinceWords(null), null);
+  // A clock skew is not a birthday: a start in the future prints nothing.
+  assert.equal(memberSinceWords({ ...active, period_start: '2099-06-01T00:00:00Z' }), null);
+});
+
+test('the page prints the catalogue, the owners, and the date', () => {
+  const html = views.plusPage({
+    user: { id: '1', email: 'nima@test.local', display_name: 'Nima', nameplate: 'sky', plus_effect: 'edge' },
+    plan: { code: PLUS_CODE, name: PLUS_NAME, price_npr: 149, period_months: 1 },
+    subscription: {
+      plan_name: PLUS_NAME, status: 'active',
+      period_start: '2026-09-25T00:00:00Z', period_end: '2099-01-01T00:00:00Z',
+    },
+    state: 'active', rails: railDetails({}), railsReady: false,
+    look: { nameplate: 'sky', effect: 'edge' }, wear: { plate: 'sky', effect: 'edge' },
+  });
+  const plain = html.replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/&quot;/g, '"');
+  // The date, on the badge's own line, in the table the arrangement prints.
+  assert.match(plain, /Member since/);
+  assert.match(plain, /Since 25 Sept 2026/);
+  // The catalogue, with the owner of each row named beside it.
+  for (const perk of perksByState('built')) {
+    assert.ok(html.includes(`data-perk="${perk.key}"`), `the page omits ${perk.key}`);
+    assert.ok(plain.includes(perk.name), `the page omits the name of ${perk.key}`);
+  }
+  assert.match(html, /data-perk="ring" data-owner="person"/);
+  assert.match(html, /data-perk="tier-chip" data-owner="store"/);
+  // The rows we do not sell are on the page too, each with its reason.
+  for (const perk of [...perksByState('refused'), ...perksByState('deferred')]) {
+    assert.ok(html.includes(`data-perk="${perk.key}"`), `the page omits the refusal ${perk.key}`);
+  }
+  assert.match(html, /data-perk="offline-download" data-state="refused"/);
+  assert.match(plain, /The treatment — download with your reference burned in/);
+  // And no shipped copy ever says the tier is ad-free. The assertion is on the TEXT
+  // rather than on the markup, because the catalogue's own key is an attribute
+  // (`data-perk="ad-free"`) and the thing being forbidden is a promise, not a label.
+  const text = plain.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+  // A promise, not a mention: the one place the phrase may appear is inside curly
+  // quotes, where the refusal for beta access names the thing it is comparing itself
+  // to. Anywhere else it is a claim the tier does not make.
+  assert.doesNotMatch(text, /(?<!“)\bad-?free\b(?!”)/i, 'the page promises an ad-free tier');
 });

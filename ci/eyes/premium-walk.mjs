@@ -1367,6 +1367,69 @@ if (review.palette !== '#0f766e') {
 await shotOf(reader.p, '.review-list', 'premium-25-review-name');
 await reader.ctx.close();
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 17. The catalogue, on the page that sells it — and the date on the badge
+// ─────────────────────────────────────────────────────────────────────────────
+// §11 turned the blended review into one declared list, and the claim that matters is
+// the one only a browser can read: the page a buyer is looking at prints EVERY row,
+// each with the owner named, and the refusals are printed with their reasons rather
+// than left to be discovered afterwards. The date is checked here too, because a
+// `period_start` that never reaches the page is a field, not a fact.
+say(17, 'the catalogue is on the page with its owners, and the badge carries the date');
+await outer.p.goto(`${BASE}/plus`);
+await consent(outer.p);
+const catalogue = await outer.p.evaluate(() => {
+  const rows = [...document.querySelectorAll('.perk')].map((li) => ({
+    key: li.dataset.perk,
+    owner: li.dataset.owner || null,
+    state: li.dataset.state || 'built',
+    ownerTag: li.querySelector('.perk-owner')?.textContent.trim() || '',
+    name: li.querySelector('strong')?.textContent.trim() || '',
+    words: li.querySelector('.fine')?.textContent.trim() || '',
+  }));
+  const kv = [...document.querySelectorAll('dl.kv dt')].map((dt) => dt.textContent.trim());
+  const since = kv.includes('Member since')
+    ? document.querySelector('dl.kv dt:nth-of-type(1)') && [...document.querySelectorAll('dl.kv dt, dl.kv dd')]
+      .map((el) => el.textContent.trim())
+    : null;
+  return {
+    rows,
+    kv,
+    since: since ? since[since.indexOf('Member since') + 1] : null,
+    // The promise the lawsuits are about, searched in the TEXT the page renders.
+    adFreePromise: /(?<!\u201c)\bad-?free\b(?!\u201d)/i.test(document.body.innerText),
+  };
+});
+const openedRows = catalogue.rows.filter((r) => r.state === 'built');
+const offRows = catalogue.rows.filter((r) => r.state !== 'built');
+console.log(`  the catalogue : ${openedRows.length} opened, ${offRows.length} refused`);
+console.log('  owners named  :', JSON.stringify([...new Set(catalogue.rows.map((r) => r.ownerTag))]));
+console.log('  member since  :', JSON.stringify(catalogue.since));
+if (openedRows.length < 10) throw new Error(`the page prints only ${openedRows.length} of the opened rows`);
+if (offRows.length < 7) throw new Error(`the page prints only ${offRows.length} refusals`);
+for (const key of ['ring', 'band', 'badge', 'tier-chip', 'member-room', 'gift']) {
+  const row = catalogue.rows.find((r) => r.key === key);
+  if (!row) throw new Error(`the catalogue is missing ${key}`);
+  if (!row.words || row.words.length < 40) throw new Error(`${key} is listed without saying what it is`);
+}
+// The layer rule, read off the rendered page: the person's ring says "Yours" and the
+// store's chip does not — a list that mixed the two owners would be the very confusion
+// this round exists to end.
+const byKey = Object.fromEntries(catalogue.rows.map((r) => [r.key, r]));
+if (!/^yours$/i.test(byKey.ring.ownerTag)) throw new Error(`the ring is tagged "${byKey.ring.ownerTag}"`);
+if (!/store/i.test(byKey['tier-chip'].ownerTag)) throw new Error(`the tier chip is tagged "${byKey['tier-chip'].ownerTag}"`);
+for (const key of ['ad-free', 'offline-download', 'priority-rank', 'see-engagement']) {
+  const row = byKey[key];
+  if (!row) throw new Error(`the page does not answer "${key}"`);
+  if (row.words.length < 60) throw new Error(`"${key}" is refused without a reason a buyer can read`);
+}
+if (catalogue.adFreePromise) throw new Error('the page promises an ad-free tier');
+if (!/^Since \d{1,2} [A-Za-z]{3,4} \d{4}$/.test(catalogue.since || '')) {
+  throw new Error(`the badge's date is not on the arrangement: ${catalogue.since}`);
+}
+await shotOf(outer.p, '#opens', 'premium-26-catalogue', { full: true });
+await shotOf(outer.p, '#not', 'premium-27-what-it-is-not', { full: true });
+
 // Put back exactly what was worn before, so the walk leaves the state it found.
 await outer.p.goto(`${BASE}/plus`);
 await consent(outer.p);
