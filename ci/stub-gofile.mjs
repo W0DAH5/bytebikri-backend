@@ -20,8 +20,17 @@
  *     picture advances instead of only proving a redirect exists.
  *
  *   node ci/stub-gofile.mjs [port] [--tier=free|premium]
- *   VIDEO_DRIVER=gofile FILEMOON_API_BASE=http://127.0.0.1:4001 \
- *     GOFILE_TOKEN=stub-token npm test --prefix app
+ *   VIDEO_DRIVER=gofile GOFILE_API_BASE=http://127.0.0.1:4001 \
+ *     GOFILE_UPLOAD_BASE=http://127.0.0.1:4001 GOFILE_TOKEN=stub-token \
+ *     npm test --prefix app
+ *
+ * The walk needs one more variable, because a MEDIA origin is not an API origin: the
+ * direct link this host hands back is `https://store.gofile.io/…` in production (covered
+ * by the CSP's `https:` allowance for media) but plain `http` here, and CSP judges a
+ * redirect's destination. Without it the player never makes the request at all — see
+ * `ci/eyes/video-host-walk.mjs` and `VIDEO_STORAGE.md` §10.4.
+ *
+ *   VIDEO_MEDIA_ORIGINS=http://127.0.0.1:4001 node scripts/boot.mjs
  */
 import http from 'node:http';
 import crypto from 'node:crypto';

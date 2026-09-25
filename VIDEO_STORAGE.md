@@ -272,6 +272,33 @@ Range is the one unverifiable-from-here behaviour that a viewer will notice: a h
 gives a video that plays but cannot be scrubbed. The doctor probes it and reports the answer rather than
 assuming one, because "our player, their delivery" is a claim about seeking as much as about bytes.
 
+**The walk has now been run against all three stubs**, and the runs produced the exact recipes below — plus
+two facts that are easy to get wrong when setting an instance up. Both were found by running it, not by
+reading it:
+
+| driver | stub | instance needs, beyond the driver's own variables |
+| --- | --- | --- |
+| Filemoon | `node ci/stub-filemoon.mjs 3999 [--hls]` | `VIDEO_MEDIA_ORIGINS=http://127.0.0.1:3999` |
+| GoFile | `node ci/stub-gofile.mjs 4001 --tier=premium` | `GOFILE_UPLOAD_BASE`, and `VIDEO_MEDIA_ORIGINS=http://127.0.0.1:4001` |
+| Catbox | `node ci/stub-catbox.mjs 4002` | `CATBOX_FILE_BASE=http://127.0.0.1:4002` |
+
+1. **A media origin is not an API origin.** CSP judges a redirect's destination (§10.4), so a stub serving
+   media over plain `http` must be named in `VIDEO_MEDIA_ORIGINS` — production is covered by `media-src
+   https:` because both hosts hand back `https` urls. The failure mode without it is the nastiest one in
+   this document: `MediaError` code 4, `networkState` 3, **no network request at all**, which reads like a
+   dead stub rather than a policy.
+2. **`CATBOX_FILE_BASE` is a second host, and leaving it out fails quietly.** The client rebuilds the
+   playback url from the file base instead of reusing the upload's answer (deliberately — see
+   `video-catbox.js`), so an unset base points a sandbox walk at the real CDN.
+
+Both stubs' own usage lines and `ci/eyes/video-host-walk.mjs`'s header now carry the full recipes, because
+a half-configured instance reads as a broken client and costs more time than this table took to write.
+
+**Changing `VIDEO_DRIVER` is a reseed, not a restart.** The provider is part of the storage key (§10.2), so
+an instance pointed at GoFile still reads the demo's `catbox/…` files from Catbox — which is the design
+working. `node scripts/test-db.mjs` first, then boot; a reseed also invalidates the harness's saved session,
+so `/tmp/eyes-host` goes with it.
+
 ### 10.4 The CORS wall, measured
 
 The playback step of `ci/eyes/video-host-walk.mjs` was written to prove the last claim of §5 — that a

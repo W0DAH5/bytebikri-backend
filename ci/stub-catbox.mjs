@@ -14,6 +14,15 @@
  *   node ci/stub-catbox.mjs [port] [--cap=bytes]
  *   VIDEO_DRIVER=catbox CATBOX_API_BASE=http://127.0.0.1:4002 \
  *     CATBOX_USERHASH=stub-userhash npm test --prefix app
+ *
+ * An instance that has to PLAY from this stub needs `CATBOX_FILE_BASE` as well, and it
+ * is easy to leave out: the api host and the file host are different on the real
+ * service, so the client rebuilds the url from the file base rather than reusing the
+ * upload's answer. Leave it unset and playback quietly points at
+ * `https://files.catbox.moe/…` — the real CDN, which this sandbox cannot reach — and the
+ * walk fails with `MediaError code 4` and no network request to show for it.
+ *
+ *   CATBOX_FILE_BASE=http://127.0.0.1:4002 node scripts/boot.mjs
  */
 import http from 'node:http';
 import { readFileSync } from 'node:fs';

@@ -14,18 +14,47 @@
  *
  * The main dev server must not be pointed at a video host: it would send its own demo
  * fixtures there, and the sandbox this was written in cannot reach the real one at all.
- * So this runs against a SECOND instance, on the TEST database, configured to talk to
- * the stub:
+ * So this runs against a SECOND instance, on the TEST database, configured to talk to the
+ * stub. The three recipes below are the ones that were actually run, and each has one
+ * variable that is easy to leave out — every omission here produces a failure that looks
+ * like a broken client rather than a half-configured instance:
  *
+ *   # Filemoon  (progressive; add `--hls` to the stub for the playlist branch)
  *   node ci/stub-filemoon.mjs 3999 &
  *   cd app && node scripts/test-db.mjs
- *   cd app && PORT=3100 DATABASE_URL=postgres://postgres:postgres@127.0.0.1:55432/bytebikri_test \
+ *   PORT=3100 DATABASE_URL=postgres://postgres:postgres@127.0.0.1:55432/bytebikri_test \
  *     VIDEO_DRIVER=filemoon FILEMOON_API_BASE=http://127.0.0.1:3999 \
- *     FILEMOON_TOKEN='147|stub-token-abcdefghijklmnop' node scripts/boot.mjs
+ *     FILEMOON_TOKEN='147|stub-token-abcdefghijklmnop' \
+ *     VIDEO_MEDIA_ORIGINS=http://127.0.0.1:3999 node scripts/boot.mjs
+ *
+ *   # GoFile  (premium tier — a free one cannot produce a playable link, §10.1)
+ *   node ci/stub-gofile.mjs 4001 --tier=premium &
+ *   PORT=3100 … VIDEO_DRIVER=gofile GOFILE_API_BASE=http://127.0.0.1:4001 \
+ *     GOFILE_UPLOAD_BASE=http://127.0.0.1:4001 GOFILE_TOKEN=stub-token \
+ *     VIDEO_MEDIA_ORIGINS=http://127.0.0.1:4001 node scripts/boot.mjs
+ *
+ *   # Catbox  (no token: a userhash; the FILE base is a second host, §10.1)
+ *   node ci/stub-catbox.mjs 4002 &
+ *   PORT=3100 … VIDEO_DRIVER=catbox CATBOX_API_BASE=http://127.0.0.1:4002 \
+ *     CATBOX_FILE_BASE=http://127.0.0.1:4002 CATBOX_USERHASH=stub-userhash \
+ *     node scripts/boot.mjs
+ *
  *   node ci/eyes/video-host-walk.mjs                     # http://127.0.0.1:3100 by default
  *
- * Add `--hls` to the stub to check the other branch of the player (a playlist url):
- *   node ci/stub-filemoon.mjs 3999 --hls
+ * WHY `VIDEO_MEDIA_ORIGINS` IS THERE. CSP judges a redirect's DESTINATION, so a media url
+ * on another origin has to be named before the element may follow it. In production
+ * Filemoon's and GoFile's media urls are `https` and the policy's `media-src https:` covers
+ * them; a stub on plain `http` is not, and the failure is silent — `MediaError` code 4,
+ * `networkState` 3, and NOT ONE network request, which reads exactly like a dead stub. The
+ * variable is the same one an operator uses when a deployment's CDN needs naming (§10.4).
+ *
+ * Re-seeding the test database invalidates the saved browser session, and a stale session
+ * scores a 401 on the unlock: remove `/tmp/eyes-host` and re-run. This walk creates that
+ * directory itself.
+ *
+ * A driver change is a RESEED, not a restart: the provider is part of the storage key, so
+ * an instance pointed at GoFile still reads the demo's `catbox/…` files from Catbox (which
+ * is §10.2 working exactly as designed). Run `node scripts/test-db.mjs` first.
  *
  * The demo password is the one the seeder prints — the instance seeds itself on an
  * empty database, which is what puts four videos at the host before this walk starts.

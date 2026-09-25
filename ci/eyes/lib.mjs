@@ -53,7 +53,8 @@ export async function login(p, email, password = 'bytebikri-demo', base = 'http:
 const STORE_SLUG = { nima: 'nima-crafts', alice: 'alice', bob: 'bob' };
 
 export async function sessionFor(browser, who, { dir = '/tmp/eyes', base = 'http://127.0.0.1:3000' } = {}) {
-  const { existsSync, readFileSync, writeFileSync } = await import('node:fs');
+  const { existsSync, mkdirSync, readFileSync, writeFileSync } = await import('node:fs');
+  const { dirname } = await import('node:path');
   // Any demo account, not just the two this started with: bob is the seller the
   // demo keeps near his plan's file ceiling, so his dashboard is the one that
   // exercises the usage meter.
@@ -94,6 +95,10 @@ export async function sessionFor(browser, who, { dir = '/tmp/eyes', base = 'http
     throw new Error(`sign-in did not take (${proof.status()}) — rate limited? restart the web process and retry`);
   }
   const state = await ctx.storageState();
+  // The directory is the caller's to name (`{ dir }`), and on a rebuilt workspace it may
+  // not exist yet — a write that throws ENOENT after a successful sign-in reads as an
+  // auth failure and wastes the one thing a rate limit makes scarce.
+  mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(state));
   await ctx.close();
   return state;
