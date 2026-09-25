@@ -105,7 +105,9 @@ are run after the seeder rather than being self-contained:
 ```bash
 node ci/demo-state.mjs              # the demo state, and the restore
 node ci/eyes/member-walk.mjs        # three sessions, the attention door, 11 shots
-node ci/eyes/premium-walk.mjs       # two payers, two schemes, motion on intent; 25 shots (21 design, 4 gifting)
+node ci/eyes/premium-walk.mjs       # two payers, two schemes, motion on intent; 25 shots of its own
+                                    # (21 design, 4 gifting — the folder prints one higher, for the
+                                    # 4×-DPR closeup kept from §15)
 node ci/eyes/reset-rent.mjs alice   # puts the rent invoice back to issued
 node ci/eyes/rent-walk.mjs          # the seller's invoice, the reference, the operator's match; 5 shots
 ```

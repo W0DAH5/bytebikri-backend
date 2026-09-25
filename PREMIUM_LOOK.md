@@ -561,22 +561,28 @@ The two slots the review called frames are a different matter, because a ring an
 surfaces, and they were built:
 
 * **The avatar frame is the ring.** The avatar here is an initial, not an upload, so what a person decorates
-  is what is drawn around it: `none`, `hairline`, `orbit` (the ring the product has always drawn) and
-  `double`. It is a person's slot, it travels with their name, and — deliberately — it draws on the
-  avatar's pseudo-elements rather than on `box-shadow`, because a store's own top-tier light lands on the
-  same avatar and one owner's decoration must not be able to put out the other's.
+  is what is drawn around it: `none`, `hairline`, `beaded`, `orbit` (the ring the product has always drawn),
+  `split` and `double` — six, each described in words that say whether it moves. It is a person's slot, it
+  travels with their name, and — deliberately — it draws on the avatar's pseudo-elements rather than on
+  `box-shadow`, because a store's own top-tier light lands on the same avatar and one owner's decoration
+  must not be able to put out the other's. The ring also paints from its own pair of custom properties
+  (`--wear-a`/`--wear-b`, falling back to the plate's), so a ring worn on a store's roster comes out in the
+  WEARER's colours even though the tile around it is painted in the store's.
 * **The profile frame is the card's edge.** The card is a rendering of the person, so the edge of it is
   theirs to decorate wherever the card is drawn: a store's roster, the seller's member list, their own
-  stage. `hairline`, `double` and `glow`, and no more than that: an edge, never the surface, never the ink,
-  never the store's chip — and a test reads the stylesheet and fails if a frame rule ever names a
-  background or a colour.
+  stage. `none`, `hairline`, `bevel`, `double`, `glow` and `aurora` — six, and still an edge, never the
+  surface, never the ink, never the store's chip. `aurora` is the one value that needs a gradient, and it
+  is the reason the rule is written as a gate rather than a ban: a frame rule may set a background only if
+  it is masked, subtracts the content box, and sits inside `@supports (mask-composite: exclude)` — so where
+  the mask is not supported the fallback is a plain edge, never a repainted card. The statement test reads
+  the stylesheet and fails on all three conditions.
 
 ### The review's eight slots, one by one
 
 | The review proposed | What this product does | Why |
 |---|---|---|
-| **Profile frame** | Built as the **card's edge**: `frame` — `none`, `hairline`, `double`, `glow`, on the person's own card wherever it is drawn. The page's *surface* stays the page owner's (a store's band, §6; the person's band, §9) | An edge is a decoration of the person's card; a surface would be a claim about somebody else's page |
-| **Avatar frame** | Built as the **ring**: `ring` — `none`, `hairline`, `orbit`, `double`, drawn on the initial, everywhere the person's look is rendered | The avatar here is an initial, not an upload; a "frame" in this product is a ring |
+| **Profile frame** | Built as the **card's edge**: `frame` — `none`, `hairline`, `bevel`, `double`, `glow`, `aurora`, on the person's own card wherever it is drawn. The page's *surface* stays the page owner's (a store's band, §6; the person's band, §9) | An edge is a decoration of the person's card; a surface would be a claim about somebody else's page |
+| **Avatar frame** | Built as the **ring**: `ring` — `none`, `hairline`, `beaded`, `orbit`, `split`, `double`, drawn on the initial, everywhere the person's look is rendered | The avatar here is an initial, not an upload; a "frame" in this product is a ring |
 | **Name effect** | `effect` — six, four of which move, each described in words that say so | Already built, and the words exist because choosing on a phone should not be a surprise |
 | **Badge** | The store's **tier chip** (creator-defined, layer S), the **plan mark** on a paid store, the **verification badge** on a store an operator checked | Three badges, three owners, three meanings — and none of them granted by a store to a person |
 | **Card background** | The surface, as above | Same reason as the profile frame; it is the same slot by another name |
@@ -645,9 +651,13 @@ through the new path: choose prism, save, switch palette to rose, save back to t
 
 The round that added the ring and the frame is the engine's own test: the catalog gained two entries, the
 schema gained two checked columns, the picker gained one control kind — and `premium-walk.mjs` §15 proves
-the whole chain in a browser. That section reads both groups of tiles, chooses a coin ring and a glow,
-watches them arrive on the stage's avatar and on the stage itself without a round trip, saves them, checks
-the account chip in the header, and then reads the person's card **through carol's session** on a store's
-roster — because the roster does not name the reader's own row, and what matters is what another person
-sees: the creator's chip still there, the store's top-tier light still alight, and the person's ring and
-edge around both.
+the whole chain in a browser. That section reads both groups of tiles and requires **six of each, every
+one of them drawn** (a control whose tile does not wear the class the product renders for that value is a
+promise the picker does not keep), chooses the round's two new treatments — a `split` ring and an `aurora`
+edge — and watches them arrive on the stage's own avatar and card with no round trip at all. Then it reads
+the person's card **through carol's session** on a store's roster, because the roster does not name the
+reader's own row and what matters is what another person sees: the creator's chip still there, the store's
+top-tier light still alight, and the person's ring and edge around both — the ring painted in the wearer's
+teal while the tile under it stays the store's violet, and the aurora **at rest**, since a page nobody
+pointed at must not animate. Finally it saves the pair it found and puts them back, so the walk leaves the
+state it started in.
