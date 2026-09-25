@@ -3141,13 +3141,20 @@ export const store = {
   // ---- pending ad views (awaiting a signed postback) ----------------------
   async createPendingView(v) {
     return one(
+      // Where this attempt's stop is, recorded when the attempt is MADE rather than
+      // derived when its view is claimed: the plan that built the cue list is the only
+      // thing that knows whether this is a mid-roll or a chapter boundary, and a plan
+      // edited mid-watch would make a later guess wrong. The ledger groups by these two
+      // columns, so getting them at the source is the difference between a count and an
+      // opinion (ASSET_ECONOMY.md §12).
       `insert into pending_views
          (nonce, asset_id, channel_id, user_id, connection_id, provider_id, required_ads,
-          ad_min_seconds, break_index, break_at_sec)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          ad_min_seconds, break_index, break_at_sec, placement, surface)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        returning *`,
       [v.nonce, v.asset_id, v.channel_id, v.user_id, v.connection_id, v.provider_id,
-       v.required_ads ?? 1, v.ad_min_seconds ?? 15, v.break_index ?? null, v.break_at_sec ?? null],
+       v.required_ads ?? 1, v.ad_min_seconds ?? 15, v.break_index ?? null, v.break_at_sec ?? null,
+       v.placement ?? null, v.surface ?? null],
     );
   },
 
@@ -3228,8 +3235,8 @@ export const store = {
       `insert into ad_view_events
          (channel_id, user_id, asset_id, connection_id, provider_id, external_id,
           kind, state, completed, duration_sec, revenue_usd, meta, signature_ok,
-          pending_view_id)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, true, $13)
+          pending_view_id, placement, surface)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, true, $13, $14, $15)
        on conflict (connection_id, external_id) do nothing
        returning *`,
       [
@@ -3240,6 +3247,9 @@ export const store = {
         // provider that echoes a user id instead of our view id still produces a
         // billable event, and dropping it would be dropping the creator's money.
         e.pending_view_id ?? null,
+        // Where it sat, in the same statement that says it happened — a second
+        // write could fail apart from this one and leave a view with no place.
+        e.placement ?? null, e.surface ?? null,
       ],
     );
     // No row returned means the unique index rejected it: already claimed.
@@ -3515,6 +3525,104 @@ export const store = {
         where channel_id = $1 and day > current_date - 30`,
       [channelId],
     ));
+  },
+
+  // ---- the attention ledger (ASSET_ECONOMY.md §12) ------------------------
+  /**
+   * Count the positions a page actually drew.
+   *
+   * Called at render with the slots that survived to the markup, never with the
+   * slots that were allocated: a storefront hides an empty store slot, and a box
+   * that did not reach the page is not an impression. One upsert per page render,
+   * with SQL doing the adding — the same shape and the same reason as
+   * `bumpPageView`.
+   *
+   * `side` comes from the slot's own `payoutParty`, so whose inventory a position
+   * is stays one rule in one place. `channelId` is null for the platform's own
+   * pages, which have no store to attribute a position to.
+   *
+   * This is a count of RENDERED POSITIONS, not of people: a refresh counts, and so
+   * does the owner looking at their own shop. The page says so in words, which is
+   * what keeps the number evidence rather than a claim.
+   */
+  async recordPositions(channelId, rows = []) {
+    const counted = rows.filter((r) => r && r.surface && r.placement);
+    if (!counted.length) return 0;
+    // Grouped by the table's own grain first, so the two boxes of one page with the
+    // same shape are one increment rather than a race between two upserts of the
+    // same key inside one statement.
+    const byKey = new Map();
+    for (const r of counted) {
+      const key = [r.surface, r.placement, r.side].join('\u0000');
+      byKey.set(key, (byKey.get(key) ?? 0) + (Number(r.impressions) || 1));
+    }
+    const surfaces = [], placements = [], sides = [], counts = [];
+    for (const [key, n] of byKey) {
+      const [surface, placement, side] = key.split('\u0000');
+      surfaces.push(surface); placements.push(placement); sides.push(side); counts.push(n);
+    }
+    await query(
+      `insert into ad_position_daily (channel_id, day, surface, placement, side, impressions)
+       select $1, current_date, s.surface, s.placement, s.side, s.n
+         from unnest($2::text[], $3::text[], $4::text[], $5::bigint[])
+              as s(surface, placement, side, n)
+       on conflict (channel_id, day, surface, placement, side) do update
+         set impressions = ad_position_daily.impressions + excluded.impressions`,
+      [channelId ?? null, surfaces, placements, sides, counts],
+    );
+    return counted.length;
+  },
+
+  /**
+   * The ledger, in the two blocks the page renders (ASSET_ECONOMY.md §12).
+   *
+   * `watched` — verified views on this store's files, by page kind and placement.
+   * A network's own postbacks, so this is the store's inventory and the number the
+   * network pays on; the seconds are the players' reported durations and are blank
+   * for a view that never reported one.
+   *
+   * `drawn` — positions rendered on this store's pages, by page kind, placement and
+   * side. It is our count of our own drawing, kept apart from the block above and
+   * never added to it: a rendered position is not a view, ours is not theirs, and a
+   * total of the two would be a number with no meaning behind it.
+   */
+  async attentionLedger(channelId, { days = 30 } = {}) {
+    const watched = await many(
+      `select surface, placement,
+              count(*)::int as views,
+              coalesce(sum(duration_sec), 0)::int as seconds,
+              count(*) filter (where duration_sec is null)::int as unmeasured
+         from ad_view_events
+        where channel_id = $1 and completed = true
+          and created_at > now() - ($2::int * interval '1 day')
+        group by surface, placement
+        order by views desc, surface, placement`,
+      [channelId, days],
+    );
+    const drawn = await many(
+      `select surface, placement, side, sum(impressions)::bigint as impressions
+         from ad_position_daily
+        where channel_id = $1 and day > current_date - $2::int
+        group by surface, placement, side
+        order by side, impressions desc, surface, placement`,
+      [channelId, days],
+    );
+    const totals = await one(
+      `select (select count(*)::int from ad_view_events
+                where channel_id = $1 and completed = true
+                  and created_at > now() - ($2::int * interval '1 day')) as views,
+              (select coalesce(sum(duration_sec), 0)::int from ad_view_events
+                where channel_id = $1 and completed = true
+                  and created_at > now() - ($2::int * interval '1 day')) as seconds,
+              (select coalesce(sum(impressions), 0)::bigint from ad_position_daily
+                where channel_id = $1 and side = 'platform'
+                  and day > current_date - $2::int) as platform_impressions,
+              (select coalesce(sum(impressions), 0)::bigint from ad_position_daily
+                where channel_id = $1 and side = 'store'
+                  and day > current_date - $2::int) as store_impressions`,
+      [channelId, days],
+    );
+    return { days, watched: watched ?? [], drawn: drawn ?? [], totals: totals ?? {} };
   },
 
   /**

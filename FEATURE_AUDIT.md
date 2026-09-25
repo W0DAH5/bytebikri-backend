@@ -3449,3 +3449,49 @@ The rule for the next surface is therefore not "add the join" but "ask what the 
 the query return it": `plusWear()` reads `row.nameplate` and refuses to dress anybody whose plan it cannot
 prove from `plus_status`/`plus_period_end`, so a missing column is silent, and silence here looks exactly
 like a member who never paid.
+
+## §41 — The ledger: two numbers that are not the same number
+
+Slice 5 of the asset economy (`ASSET_ECONOMY.md` §12). §5.5's fifth rule — *prove it before invoicing
+it* — needed a count, and the count needed one distinction held firmly: **a verified view is not a
+rendered position.** The first is a network's postback saying a person finished an ad; the second is a
+box this application drew. Only the first can be the store's inventory and only the network pays it. Only
+the second can count the platform's own slot at all, because nothing verifies a house message. They are
+kept in separate blocks on the page and are never added.
+
+**The verified view learns where it sat.** `ad_view_events` gained `placement` and `surface`, both
+nullable (every view recorded before today happened somewhere, and the ledger cannot invent where) and
+both checked against the catalogues that own those words. They are written by the `INSERT` in
+`claimAdView` — the one statement allowed to say a view happened — and they come from the attempt:
+`pending_views` gained its own pair, written when the attempt is created, because the plan that built the
+cue list is the only thing that knows whether this stop is a mid-roll or a chapter boundary. Wiring this
+up found that the claim path already had the attempt row in hand (`lockPendingView`), so the words travel
+with the event rather than being guessed at the end.
+
+**The rendered position is counted at render.** `ad_position_daily(channel_id, day, surface, placement,
+side, impressions)` is upserted once per page render with the boxes that actually reached the page —
+filtered through `views.drawnSlots()`, which mirrors `renderSlot()`'s own early return, because a store's
+empty position is hidden from visitors and counting it would inflate our own numbers with boxes nobody
+saw. `side` comes from `payoutParty`, the same field that decides whose money a slot is; `channel_id` is
+null on our own pages, with a `unique nulls not distinct` key so the platform's pages get one row a day
+like every store.
+
+**What the browser proved.** `ci/eyes/ledger-walk.mjs` loads a storefront as a stranger, then opens the
+owner's ledger: the storefront render appears in both blocks, on the store's side and on ours, and the
+numbers are the ones those renders produced. The page carries the sentence *"The statement is the
+network's, not ours"*, labels our position *"This is our inventory, not yours"*, prints **no rupee figure
+anywhere**, and refuses to price our own positions in words. The phone read stacks with nothing
+overflowing. Three screenshots in `docs/evidence/round37`.
+
+**The fixture's own discovery.** The demo store has 224 verified views recorded before this slice could
+say where a view sat. They land in a single *Not recorded* row — and the page says why (*"N of those views
+were recorded before this ledger counted where a view sat"*), because an unlabelled "Not recorded" reads
+like a fault in the page instead of a fact about history. A test inserts one such view and asserts both
+the row and the sentence.
+
+**The refusal is asserted against Postgres, not written in a comment.** A test reads
+`information_schema.columns` and fails if any column in the ledger's tables matches
+`payout|amount|rate|cpm|rpm|earn|price|invoice|paid|revenue|money|cut`. When leg 6 has real revenue,
+pricing it is a new decision with its own record — not a column that quietly appeared here first.
+
+Suite **736/736/0** (four new tests); the walk is green, no console errors.

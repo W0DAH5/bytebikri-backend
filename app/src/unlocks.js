@@ -149,6 +149,11 @@ export async function startUnlock({ assetId, userId, providerId, personalised = 
     provider_id: connection.provider_id,
     required_ads: policy.ads_required || 1,
     ad_min_seconds: policy.ad_min_seconds || 15,
+    // The ledger's two words for this stop: the door is the catalogue's `pre` (the
+    // ask before anything plays) and it is asked on the file's own page. Recorded at
+    // creation, because the plan is what knows (ASSET_ECONOMY.md §12).
+    placement: 'pre',
+    surface: 'asset',
   });
   const viewsRequired = Math.max(1, Number(view.required_ads) || 1);
   const viewsDone = Math.min(await store.completedViewsForPendingView(view.id), viewsRequired);
@@ -242,6 +247,9 @@ export async function startBreak({ assetId, userId, cueIndex, providerId, person
   const plan = await store.adPlanFor(asset, { membersOnly: asset.unlock_mode === 'members' });
   const cue = breakCues(plan).find((c) => c.index === wanted);
   if (!cue) return { ok: false, error: 'no such break in this file' };
+  // The planner's own cue, so the ledger's word for this stop comes from the thing
+  // that placed it rather than from the wrapper that indexes it.
+  const rawCue = (plan.cues ?? [])[wanted] ?? null;
 
   const connections = await store.connectionsOf(asset.channel_id);
   const usable = connections.filter((c) => getAdapter(c.provider_id) && c.callback_secret);
@@ -264,6 +272,11 @@ export async function startBreak({ assetId, userId, cueIndex, providerId, person
     // Snapshotted so a plan edited mid-watch cannot move the break under somebody
     // who is already sitting through it.
     break_at_sec: cue.atSec,
+    // From the planner's own cue, not spelled again here: `breakCues` only ever hands
+    // back a mid-roll today, and reading `kind` off the cue is what keeps that true
+    // when the reader and live surfaces arrive (slices 6 and 7).
+    placement: rawCue?.kind ?? 'mid',
+    surface: 'asset',
   });
 
   return {
@@ -460,6 +473,10 @@ export async function handlePostback({ providerId, connectionId, ctx }) {
       meta: event.meta ?? {},
       // Which attempt this delivery belongs to, so the count below can find it.
       pending_view_id: view.id,
+      // And where it sat, from the attempt rather than from a guess made here. The
+      // ledger groups by these two and the store's page prints them (ASSET_ECONOMY §12).
+      placement: attempt?.placement ?? view.placement ?? null,
+      surface: attempt?.surface ?? view.surface ?? null,
     }, client);
 
     if (!claim.claimed) {

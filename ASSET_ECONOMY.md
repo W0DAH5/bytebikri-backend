@@ -360,7 +360,7 @@ seconds" is currently a sentence, not a gate.
 | 2 Enforcement | **Built** — the grant is `count(completed views) >= the attempt's own ask`; progress is reported, not guessed; an attempt survives a reload; 8 tests (`adviews.test.js`), 5 screenshots from a real two-ad walk (`docs/evidence/round35`, harness `ci/eyes/walk-ads.mjs`). Suite 628/628/0 |
 | 3 Placement | **Built** — planner, seller controls, measured runtime, seller panel, and the player gate. 33 tests (`placement.test.js`, `adplan.test.js`, `breakgate.test.js`), 12 screenshots from two real browser walks (`docs/evidence/round36`, harnesses `ci/eyes/break-walk.mjs` and `ci/eyes/breaks-seller-walk.mjs`). Suite 663/663/0 |
 | 4 Attention door | **Built** — `join_mode`/`ad_mode` per tier, `member_standing`, `joinByAttention` (with the extension), `memberDoorFor` + the `unlocks.js` refusal, the member room at `/s/:slug/members`, the seller's two pickers, and one `watchingDoor()` control. 5 tests in `members.test.js` (21 in that file), 11 screenshots from a real three-session walk (`ci/eyes/member-walk.mjs`). Suite 668/668/0 |
-| 5 Ledger | Not started |
+| 5 Ledger | **Built** — `ad_view_events` gained `placement`/`surface` (written by the claim, from the attempt's own snapshot); `ad_position_daily` counts rendered positions by page, placement and side; `/dashboard/:slug/attention` prints the two blocks and never their sum. 4 tests (`attention.test.js`), 3 screenshots from a real browser walk (`ci/eyes/ledger-walk.mjs`, `docs/evidence/round37`). §12 is the design |
 | 6 Reader | Not started |
 | 7 Live | Not started |
 
@@ -456,3 +456,68 @@ room with the card naming the journey; the seller's roster says "by watching —
 views" and the dues queue stays empty; the seller flips the tier to `supporter` and
 the member is told why a membership is being asked for a view; and the member
 watches four more to buy the next period (30 days → 61). Console errors: none.
+
+---
+
+## 12. The ledger — the two numbers that are not the same number
+
+§5.5's fifth rule is *prove it before invoicing it*: impressions per surface and per placement, counted,
+because a flat monthly rate for a direct deal is only defensible with a number behind it. This section is
+that count, and the whole of its design is one distinction the product has been careful about everywhere
+else and would be easy to blur here:
+
+| | A **verified view** | A **rendered position** |
+|---|---|---|
+| What it is | A network's own postback saying a person completed an ad | A box this application drew on a page |
+| Who can prove it | the network | us, and only to ourselves |
+| Where it lives | `ad_view_events` — written by `claimAdView`, the one statement allowed to say a view happened | `ad_position_daily` — written at render, incremented by SQL |
+| Whose inventory | the store's; the network pays the store directly and we are not a party | either side's: the platform's slot is ours, the store's boxes are theirs |
+| The money question | answered at the network's own statement | **not answerable here, and not answered here** |
+
+**They are never added up.** A store's "watched on your files" and a platform slot's "positions drawn on
+your pages" measure different acts by different parties, and a total of the two would be a number that
+means nothing while looking like it means something. The page keeps them in separate blocks with their own
+headings, and the platform's block carries the sentence that makes it honest: this is our inventory, it is
+not your inventory, and it is not your revenue.
+
+**Where the numbers come from, in code.**
+
+1. **The verified view learns where it sat.** `ad_view_events` gains `surface` (the page kind) and
+   `placement` (a key from the catalogue in §5.2). They are written by the same `INSERT` that records the
+   view — not by a second statement that could fail apart from it — and they come from the attempt:
+   `pending_views` gains its own `placement`, written when the attempt is created, because the plan that
+   built the cue list is the only thing that knows whether the person is being stopped at a mid-roll or at
+   a chapter boundary. A claim that guesses would put the wrong word on the ledger.
+2. **The rendered position is counted at render.** `ad_position_daily(channel_id, day, surface, placement,
+   side, impressions)` is upserted once per page render with the positions that page actually drew — the
+   same shape as `page_view_daily`, and incremented the same way (`impressions = impressions + n` in SQL,
+   never read-modify-write). `channel_id` is null for the platform's own pages: our landing page and the
+   Plus page have no store to attribute a position to, and inventing one would be worse than a null.
+3. **`side` is a column, not an inference.** `store` or `platform`, decided by `payoutParty` — the same
+   field that decides who the slot's money belongs to. A future surface that renders both can then be
+   counted correctly without anybody re-deriving the rule from a slot rank.
+4. **Seconds only where a player reported them.** A mid-roll's duration comes from the verified view's own
+   `duration_sec`, so the ledger's "seconds" column is blank for positions that were merely drawn. Blank is
+   the true value; zero would be a claim.
+
+**What the page says.** It is the store's page (`/dashboard/:slug/attention`), linked from earnings,
+covering the last 30 days by default: the verified views and the seconds watched on the store's own files,
+**grouped by surface and by placement** (so a seller can see whether a mid-roll is worth its interruption,
+and whether between-chapter reads better than the door); then, separately, the positions we drew on their
+pages, by page and by placement, labelled as ours. No rupee figure appears in the platform's block, because
+there is no number we could honestly put there: a flat deal is priced by conversation, and §5.5 already says
+what that conversation is for (a surface, a month, share of voice).
+
+**What the ledger refuses, and why.**
+
+- **No money columns.** Not a rate, a payout, an amount, an earned_total. The schema test asserts the
+  ledger's tables have no such column, so the refusal survives the next person who thinks a `cpm` column
+  would be convenient. When leg 6 has real revenue (§5.5), pricing it is a new decision with its own record,
+  not a column that quietly appeared here first.
+- **No mixing the two sides in one number**, for the reason the table above exists.
+- **No third-party measurement.** First-party counting only: the number is ours, the page says so, and it
+  does not pretend to be an auditor's.
+- **No claim about a person.** A rendered position is a page load, refreshes included, and the page says so
+  in words. We count what we drew, which is exactly why the count is evidence and not a bill.
+- **No per-person ledger.** The events already carry who watched what (they have to: that is how a view is
+  credited). The ledger aggregates them, and adds no new tracking of its own.

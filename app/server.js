@@ -405,6 +405,36 @@ async function requireOwnChannel(req, res) {
  * something in their empty space, a visitor gets a sentence that is not
  * addressed to them, and a visitor never gets a link into somebody's dashboard.
  */
+/**
+ * Count the positions a page is about to draw (ASSET_ECONOMY.md §12).
+ *
+ * Called with the slots the view is handed, and filtered through the view's OWN rule
+ * for what reaches a visitor (`drawnSlots`), so the ledger counts boxes that were
+ * rendered rather than positions that were allocated. `side` is read off
+ * `payoutParty` — the same field that decides whose money a slot is — because the
+ * page's whole honesty rests on our inventory and the store's never being added
+ * together.
+ *
+ * Never awaited into the response path's failure modes: a ledger that can take a
+ * storefront down is worse than a ledger with a gap, and the same is true of a page
+ * view (`bumpPageView` is called the same way). Failures here are counted by the
+ * route's own error handler and are visible in the log rather than silent.
+ */
+async function countPositions(channel, surface, slots = []) {
+  const drawn = views.drawnSlots(slots);
+  if (!drawn.length) return;
+  try {
+    await store.recordPositions(channel?.id ?? null, drawn.map((slot) => ({
+      surface,
+      // A page box is the catalogue's `aside`: "on the page", never a break.
+      placement: 'aside',
+      side: slot.payoutParty === 'platform' ? 'platform' : 'store',
+    })));
+  } catch (err) {
+    console.error('ledger: positions not counted', err?.message || err);
+  }
+}
+
 async function slotsFor(channel, { viewer = null, surface = 'storefront', surfaces = ['web'] } = {}) {
   const slots = await buildSlots(channel, surfaces);
   const isOwner = Boolean(viewer) && viewer.id === channel.owner_id;
@@ -1688,6 +1718,7 @@ APP.get('/s/:slug', async (req, res, next) => {
     // shopper — so it is rendered where it can be acted on, and here it is not.
     const allSlots = await slotsFor(channel, { viewer: req.user, surface: 'storefront' });
     const slots = allSlots.filter((s) => s.creative);
+    await countPositions(channel, 'storefront', slots);
     const rawAssets = await store.assetsOf(channel.id);
     // Two decisions are applied here and not in the view: the file's own state
     // (a removed file is not on the public web) and the country rule that
@@ -2097,6 +2128,12 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
       }
       : null;
 
+    // The positions this page will draw, counted once, and then narrowed for the page
+    // itself: `countPositions` applies the view's own rule for what reaches a
+    // visitor, while the `app_native` positions are not drawn on a web page at all.
+    const assetSlots = await slotsFor(channel, { viewer: req.user, surface: 'asset' });
+    await countPositions(channel, 'asset', assetSlots);
+
     res.send(views.assetPage({
       channel, asset, files, unlocked, user: req.user, consent: req.consent,
       placement,
@@ -2149,6 +2186,7 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
         const hasMembers = (await store.membershipTiers(channel.id)).length > 0;
         return { ...rungFor(attempts), attempts, hasMembers };
       })(),
+
       // The ask as the pipeline will enforce it — the stored pair, not a recomputed
       // one. If a file asks for 2 × 30 s, the page says 2 × 30 s, whatever the value
       // ladder would derive today; the seller's page is where a drift is explained.
@@ -2157,8 +2195,7 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
         seconds: Number(unlockPolicy?.ad_min_seconds) || 15,
         level: unlockPolicy?.ask_level === 'light' ? 'light' : 'standard',
       },
-      slots: (await slotsFor(channel, { viewer: req.user, surface: 'asset' }))
-        .filter((s) => s.creative && s.surface !== 'app_native'),
+      slots: assetSlots.filter((s) => s.creative && s.surface !== 'app_native'),
     }));
   } catch (err) { next(err); }
 });
@@ -4032,6 +4069,26 @@ async function earningsState(channel, days = 30) {
     days,
   };
 }
+
+/**
+ * The attention ledger (ASSET_ECONOMY §12, slice 5).
+ *
+ * Owner-only, like every dashboard page, and read-only: two counters, no post route,
+ * no money. It exists so that a flat rate for a direct deal has a number behind it and
+ * so a seller can see whether a mid-roll is worth its interruption — while the block
+ * that is OURS stays visibly ours.
+ */
+APP.get('/dashboard/:slug/attention', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    const days = [7, 30, 90].includes(Number(req.query.days)) ? Number(req.query.days) : 30;
+    const ledger = await store.attentionLedger(channel.id, { days });
+    res.send(views.attentionLedger({
+      channel, user: req.user, consent: req.consent, ledger, days,
+    }));
+  } catch (err) { return next(err); }
+});
 
 APP.get('/dashboard/:slug/earnings', async (req, res, next) => {
   try {

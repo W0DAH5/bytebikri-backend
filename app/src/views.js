@@ -87,7 +87,7 @@ import {
 // look picker below is this list, drawn — see the module for the ownership rule.
 import { personSlots } from './cosmetics.js';
 import {
-  PLACEMENT_BOUNDS, planFor, stamp, placementSentence, breakCues, breakSentence, breaksSupported,
+  PLACEMENT_BOUNDS, PLACEMENTS, planFor, stamp, placementSentence, breakCues, breakSentence, breaksSupported,
 } from './placement.js';
 // The person's own premium: what a name may wear, and the gate that decides whether
 // it is worn at all (`plusWear()` — active only, decided in SQL).
@@ -4975,6 +4975,26 @@ function placeSlots(slots = []) {
   };
 }
 
+/**
+ * Which slots actually reach the page — the ledger's question, answered in one place.
+ *
+ * `renderSlot()` has exactly one early return, and it is a rule about what a VISITOR
+ * is shown rather than a rendering detail: a store's own unfilled position is hidden
+ * from shoppers and drawn only for the owner. The counter must obey the same rule,
+ * because an impression is a box that was drawn — counting allocated-but-hidden
+ * positions would inflate the platform's numbers with boxes nobody ever saw, which is
+ * the one thing a ledger that exists to be defensible cannot do (ASSET_ECONOMY §12).
+ *
+ * Kept beside `renderSlot` on purpose: two copies of this condition is how the count
+ * and the page stop agreeing.
+ */
+export function drawnSlots(slots = []) {
+  return slots.filter((slot) => {
+    const owner = slot.owner === 'platform' ? 'platform' : 'channel';
+    return !(!slot.creative && owner === 'channel' && !slot.isOwner);
+  });
+}
+
 export function renderSlot(slot) {
   const h = Math.min(slot.maxHeightPx || slot.max_height_px || 250, 280);
   const owner = slot.owner === 'platform' ? 'platform' : 'channel';
@@ -9669,6 +9689,129 @@ ${byMonth.length ? `<section class="section">
  * disagrees in, because rent is priced from the same model that produced the
  * estimate.
  */
+/**
+ * THE ATTENTION LEDGER — what was watched, and what was drawn (ASSET_ECONOMY §12).
+ *
+ * Two blocks, and the whole design of the page is that they are never added together.
+ * The first counts VIEWS A NETWORK VERIFIED on this store's files, by page and by
+ * placement: that is the store's own inventory, the network pays them directly, and
+ * this page is not the authority on what they were paid — the statement is.
+ *
+ * The second counts POSITIONS WE DREW on the store's pages, split by whose position it
+ * was. Ours is labelled as ours and carries no rupee figure, because there is no honest
+ * one to print: a flat direct deal is priced by conversation (§5.5), and a rate invented
+ * here would be a number nobody agreed to, sitting where a reader would take it for an
+ * invoice.
+ *
+ * Nothing on this page is a promise about money, which is why it can be shown to a
+ * seller at all while the product still moves no money in-app.
+ */
+export function attentionLedger({
+  channel, user, consent = null, ledger = {}, days = 30,
+}) {
+  const watched = ledger.watched ?? [];
+  const drawn = ledger.drawn ?? [];
+  const totals = ledger.totals ?? {};
+
+  // The words come from the catalogues: a placement is labelled by `placement.js` and a
+  // page kind by the list below, so a new placement arrives here named rather than coded.
+  const placeLabel = (key) => (key ? (PLACEMENTS[key]?.label ?? key) : 'Not recorded');
+  const pageLabel = (key) => ({
+    storefront: 'Storefront', asset: 'File page', member_room: 'Members’ room',
+    library: 'Library', plus: 'Plus page', platform: 'Our own pages',
+  }[key] ?? (key ? key : 'Not recorded'));
+
+  const watchedRows = watched.map((r) => `
+    <tr>
+      <td>${esc(pageLabel(r.surface))}</td>
+      <td>${esc(placeLabel(r.placement))}</td>
+      <td class="num" data-label="Views">${num(r.views)}</td>
+      <td class="num" data-label="Seconds">${r.seconds ? num(r.seconds) : '<span class="fine">not reported</span>'}</td>
+    </tr>`).join('');
+
+  /*
+   * The drawn block is grouped by SIDE, and each side gets its own heading. The store's
+   * own boxes are theirs; the platform slot is ours. A single list would invite the
+   * reader to total it, and the total would be a number that means nothing.
+   */
+  const sideRows = (side) => drawn.filter((r) => r.side === side).map((r) => `
+    <tr>
+      <td>${esc(pageLabel(r.surface))}</td>
+      <td>${esc(placeLabel(r.placement))}</td>
+      <td class="num" data-label="Positions drawn">${num(r.impressions)}</td>
+    </tr>`).join('');
+  const mineDrawn = sideRows('store');
+  const oursDrawn = sideRows('platform');
+
+  /*
+   * Views recorded before this page counted placement sit in one honest row rather than
+   * being spread across placements they may never have had — and the reader is told
+   * which row that is, because "Not recorded" with no explanation reads like a fault in
+   * the page instead of a fact about history.
+   */
+  const unplacedViews = watched
+    .filter((r) => !r.surface || !r.placement)
+    .reduce((n, r) => n + (Number(r.views) || 0), 0);
+
+  const table = (head, rows, empty) => (rows
+    ? `<div class="table-scroll"><table class="table">
+        <thead><tr>${head}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>`
+    : `<p class="fine">${esc(empty)}</p>`);
+
+  return layout({
+    title: 'The attention ledger', user, activeChannel: channel, consent, current: 'dashboard',
+    body: `
+    <div class="section">
+      <h1>The attention ledger</h1>
+      <p class="lede">What was watched on your files, and what was drawn on your pages — counted, kept
+      apart, and not a statement of money.</p>
+      <p class="fine" style="margin-top:var(--space-3)">The money itself — who pays you, and what we
+      charge — is on the <a href="/dashboard/${esc(channel.slug)}/earnings">earnings page</a>.</p>
+    </div>
+
+    <div class="card card-pad-lg">
+      <div class="section-head">
+        <h2>Watched on your files</h2>
+        <p class="small">Verified views in the last ${num(days)} days, by page and by placement. A view
+        counts here when the network's own postback says somebody finished an ad — the same event that
+        credits your standing and that the network pays you for. <strong>The statement is the network's,
+        not ours.</strong></p>
+      </div>
+      ${table('<th>Page</th><th>Placement</th><th class="num">Views</th><th class="num">Seconds</th>',
+        watchedRows, 'No verified view yet in this period. A view appears here only after the network confirms it.')}
+      <p class="fine" style="margin-bottom:0">${num(totals.views)} views · ${num(totals.seconds)} seconds
+      watched. Seconds are what the player reported; a view that reported none shows
+      <em>not reported</em> rather than a zero, because a guess is not a count.</p>
+      ${unplacedViews ? `<p class="fine">${num(unplacedViews)} of those views were recorded before this
+      ledger counted where a view sat. They are listed as <em>not recorded</em> rather than filed under a
+      placement they may not have had.</p>` : ''}
+    </div>
+
+    <div class="card card-pad-lg">
+      <div class="section-head">
+        <h2>Drawn on your pages</h2>
+        <p class="small">Positions this application actually rendered, counted once per page load. A
+        rendered position is not a person: refreshes count, and so do your own visits. That is why this
+        number is evidence of what we drew and never a bill.</p>
+      </div>
+      <h3 style="margin-top:var(--space-5)">Your own boxes</h3>
+      ${table('<th>Page</th><th>Placement</th><th class="num">Positions drawn</th>',
+        mineDrawn, 'Your own positions have not been drawn in this period.')}
+      <h3>Our slot, on your pages</h3>
+      <p class="small">This is our inventory, not yours — it is not your ad space, it is not your
+      revenue, and nothing about it reduces what the network pays you. We count it because a position
+      that is sold to somebody has to be provable before it is invoiced.</p>
+      ${table('<th>Page</th><th>Placement</th><th class="num">Positions drawn</th>',
+        oursDrawn, 'Our slot has not been drawn on your pages in this period.')}
+      <p class="fine" style="margin-bottom:0">No rupee figure is printed for our own positions. A flat
+      deal for a surface is priced by conversation, and a rate shown here would be a number nobody has
+      agreed to.</p>
+    </div>`,
+  });
+}
+
 export function earnings({
   channel, user, consent = null, flash = null, summary, byAsset = [], days = 30,
   connections = [], providers = [], suggestions = [], sandboxIds = [], payoutAccounts = [], reports = [], rent = null, plan = null,
@@ -9868,6 +10011,9 @@ ${flashNote(flash)}
       </p>
     </div>
   </div>
+
+  <p class="small" style="margin-top:var(--space-4)">Counts rather than money — what was watched, and
+  what was drawn — live on the <a href="/dashboard/${esc(channel.slug)}/attention">attention ledger</a>.</p>
 
   <div class="panel" style="margin-top:var(--space-6)">
     <div class="panel-head">

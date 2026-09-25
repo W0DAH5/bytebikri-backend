@@ -110,6 +110,7 @@ node ci/eyes/premium-walk.mjs       # two payers, two schemes, motion on intent;
                                     # 4×-DPR closeup kept from §15)
 node ci/eyes/reset-rent.mjs alice   # puts the rent invoice back to issued
 node ci/eyes/rent-walk.mjs          # the seller's invoice, the reference, the operator's match; 5 shots
+node ci/eyes/ledger-walk.mjs alice  # a storefront render, then the owner's attention ledger; 3 shots
 ```
 
 `rent-walk.mjs` is the walk for the one money path that had never been walked. It needs the invoice to
