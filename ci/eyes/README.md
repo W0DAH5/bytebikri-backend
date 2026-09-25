@@ -106,7 +106,18 @@ are run after the seeder rather than being self-contained:
 node ci/demo-state.mjs              # the demo state, and the restore
 node ci/eyes/member-walk.mjs        # three sessions, the attention door, 11 shots
 node ci/eyes/premium-walk.mjs       # two payers, two schemes, motion on intent; 20 shots (16 design, 4 gifting)
+node ci/eyes/reset-rent.mjs alice   # puts the rent invoice back to issued
+node ci/eyes/rent-walk.mjs          # the seller's invoice, the reference, the operator's match; 5 shots
 ```
+
+`rent-walk.mjs` is the walk for the one money path that had never been walked. It needs the invoice to
+be OPEN, so it has its own reset — a paid invoice is the right outcome for a seller and a dead end for a
+harness, and a walk that reset its own subject could pass without leaving the state it started in. The
+fixture is Alice's store: a paid plan with two store slots, one platform slot, and traffic above the
+billing floor, so the invoice exists and is small (NPR 36 for the year) rather than zero. It runs two
+sessions — the seller's and the operator's — and its four steps are the four claims the flow makes: the
+invoice shows its own working, submitting a reference changes nothing by itself, the operator sees the
+same reference and matches it, and the seller's page and history agree that it is paid.
 
 Section 14 is the person's own band, which is a SECOND recipe for the store band's box
 and therefore a second set of numbers: the walk reads the painted surface, the ink the

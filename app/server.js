@@ -3264,6 +3264,11 @@ const SUCCESS_FLASH = {
   published: (v) => `Published “${String(v).slice(0, 80)}”. It is live on your storefront now.`,
   saved: () => 'Saved.',
   submitted: () => 'Reference received. An operator matches it against the bank or wallet statement by hand, and your plan changes when it clears.',
+  // Rent's own sentence. It shared `submitted` with the plan flow above, which promised
+  // a PLAN change — and rent is not a plan: the invoice is the platform's, and clearing
+  // it changes nothing about what the store can do. Found by walking the rent payment,
+  // which had never been walked.
+  rent_submitted: () => 'Reference received. An operator matches it against the platform\'s own statement by hand, and the invoice is marked paid when it clears. Rent buys no capability and changes nothing about your plan — it is the price of the traffic the platform brought you.',
   requested: () => 'Upgrade requested. Send the amount to the account shown, then submit the transfer reference.',
   reviewed: () => 'Thank you — your review is on the page.',
   saved_slot: () => 'Saved. It is on your pages now.',
@@ -3937,7 +3942,9 @@ APP.post('/dashboard/:slug/billing/rent-payment', async (req, res, next) => {
     await store.audit('rent.payment_submitted', {
       channelId: channel.id, invoiceId: invoice.id, amountNpr: invoice.amount_npr, reference,
     });
-    return res.redirect(`${back}?submitted=1`);
+    // Its own key, not the plan flow's `submitted`: that sentence promises a plan
+    // change, and rent does not change the plan.
+    return res.redirect(`${back}?rent_submitted=1`);
   } catch (err) { return next(err); }
 });
 

@@ -3125,7 +3125,7 @@ what the whole ladder is built on: the platform counts what it could not confirm
 
 - **Walking the rent payment in the browser.** Its refusal keys are now rendered (they share the fixed
   view) but the rent invoice itself needs a page with three or more slots and traffic above the billing
-  floor before the flow can be walked end to end.
+  floor before the flow can be walked end to end. — **DONE in §35.**
 - **Flat vs scaled pricing for the person's premium**, and **whether the platform's own row may
   disappear for a paying viewer** — both unchanged, both the user's call.
 - **A real ad-network integration** (unchanged, credential-gated).
@@ -3182,8 +3182,8 @@ A period that ended is a state the product already has, so the seeder ends her p
 
 ### Still open (unchanged this round)
 
-- **Walking the rent payment in the browser** — needs a store with the slots and traffic the invoice
-  requires.
+- **Walking the rent payment in the browser** — done in §35 (`rent-walk.mjs`, with Alice's store as the
+  fixture: 2 store slots, 1 platform slot, ~380 views in 30 days → NPR 36 for the year).
 - **Flat vs scaled pricing for the person's premium**, and **whether the platform's own ad row may
   disappear for a paying viewer** — both the user's call.
 - **Bob's Free-plan panel copy**, checked against the plans the table actually holds.
@@ -3210,6 +3210,25 @@ delays the first thing a visitor looks at. The seller's banner preview is differ
 down a list of forms that a seller scrolls to, and the demo store's banner is a real upload. It is
 `loading="lazy"` now, and a test asserts both halves of that judgement, so a later sweep that adds the
 attribute everywhere fails on the banner the storefront cannot defer.
+
+**The rent payment, walked at last — and the sentence it was rendering was the wrong one.** This was
+the last money path with no browser walk, and the reason is that it needs three things at once: a paid
+plan with enough slots to spare one for the platform, traffic above the floor that bills, and the
+channel's own anniversary. The dev fixture has all three, so `ci/eyes/rent-walk.mjs` now takes Alice's
+invoice from `issued` to `submitted` to `paid` across two accounts — she sees a bill that shows its own
+working (trailing views, slots on the page, slots that rent, the assumed rate) and produces the amount
+from it; she submits a reference through the real form; the operator's queue shows the same reference
+beside the same amount and one action, "Mark paid"; and her page and her history row agree that it is
+paid. `ci/eyes/reset-rent.mjs` puts the invoice back so the walk is repeatable, separately from the walk,
+for the same reason `member-walk` has one.
+
+What the walk found is the kind of thing only a browser finds: **the flash after submitting rent was the
+PLAN flow's sentence** — *"…and your plan changes when it clears."* Both routes reported `?submitted=1`
+and the vocabulary is keyed by parameter, so rent had been promising a plan change since the day the two
+flows were written. Rent buys no capability; it is the platform's own invoice. The route now reports
+`?rent_submitted=1` with its own sentence ("Rent buys no capability and changes nothing about your
+plan"), and the walk asserts all three claims: that it says when the invoice clears, that it does NOT
+promise a plan change, and that it says what rent is not.
 
 **The roster's empty sentence**, and the seller's pricing bullet that called the store's chips "your own
 plates", were already fixed in §34 — rechecked this round against the two-layer rule and left as they
