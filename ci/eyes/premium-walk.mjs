@@ -856,14 +856,139 @@ console.log('  the console   :', JSON.stringify(tally));
 if (!tally.hasRows) throw new Error('the console does not report the third charge’s own numbers');
 if (!tally.ceiling) throw new Error('the console does not say what the recurring figure is a ceiling of');
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 14. The page that is yours, in your own colours
+// ─────────────────────────────────────────────────────────────────────────────
+// The person's band is the SECOND recipe for the same box as the store's, and this
+// section exists because a second recipe is a second set of numbers. The deep stop is
+// the surface, the lighter stop is a bounded aurora, and the ink is the same white the
+// store band's arithmetic governs — so the measurement here is the same measurement.
+say(14, 'a paying person’s own page wears the band, and a store’s page never does');
+
+const own = await openCtx({ scheme: 'dark', who: 'alice' });
+await own.p.goto(`${BASE}/library`);
+await consent(own.p);
+const bandRead = await own.p.evaluate(() => {
+  const band = document.querySelector('.own-band--themed');
+  if (!band) return { present: false };
+  const cs = getComputedStyle(band);
+  const before = getComputedStyle(band, '::before');
+  const h1 = band.querySelector('h1');
+  const fine = band.querySelector('.fine');
+  const overlay = (colorStr, baseRgb) => {
+    const m = colorStr.match(/rgba?\(([^)]+)\)/);
+    if (!m) return null;
+    const parts = m[1].split(',').map((x) => Number(x.trim()));
+    const a = parts.length === 4 ? parts[3] : 1;
+    return parts.slice(0, 3).map((c, i) => Math.round(c * a + baseRgb[i] * (1 - a)));
+  };
+  const lum = ([r, g, b]) => {
+    const lin = (c) => { const v = c / 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  };
+  const base = (cs.backgroundColor.match(/(\d+)/g) || []).slice(0, 3).map(Number);
+  const ratio = (c1, c2) => {
+    const [a, b] = [lum(c1), lum(c2)].sort((x, y) => y - x);
+    return (a + 0.05) / (b + 0.05);
+  };
+  return {
+    present: true,
+    surface: cs.backgroundColor,
+    ink: getComputedStyle(h1).color,
+    fine: fine ? getComputedStyle(fine).color : null,
+    fineText: fine ? fine.innerText.replace(/\s+/g, ' ').trim().slice(0, 90) : null,
+    white: ratio([255, 255, 255], base).toFixed(2),
+    muted: fine ? ratio(overlay(getComputedStyle(fine).color, base), base).toFixed(2) : null,
+    mesh: before.backgroundImage.includes('radial-gradient'),
+    animation: before.animationName,
+    radius: cs.borderRadius,
+    padding: `${cs.paddingTop}/${cs.paddingLeft}`,
+    edge: cs.boxShadow,
+  };
+});
+console.log('  the band      :', JSON.stringify(bandRead));
+if (!bandRead.present) throw new Error('a paying person’s own library wears no band');
+if (!/rgb\(17, 94, 89\)/.test(bandRead.surface)) {
+  throw new Error(`the band is not the teal palette’s deep stop: ${bandRead.surface}`);
+}
+if (bandRead.ink !== 'rgb(255, 255, 255)') throw new Error(`the band’s words are not the band’s ink: ${bandRead.ink}`);
+if (Number(bandRead.white) < 5.5 || Number(bandRead.muted) < 4.5) {
+  throw new Error(`the band’s own numbers: ${bandRead.white}:1 white, ${bandRead.muted}:1 for the 92% ink`);
+}
+if (!bandRead.mesh) throw new Error('the aurora that makes the band a band is not painted');
+if (bandRead.animation !== 'theme-aurora') throw new Error(`the aurora is not running: ${bandRead.animation}`);
+if (bandRead.radius === '0px' || !/^20px/.test(bandRead.radius)) {
+  throw new Error(`the band is not the store band’s plate: radius ${bandRead.radius}`);
+}
+if (Number.parseFloat(bandRead.padding) < 16) {
+  throw new Error(`the words start inside the edge light: padding ${bandRead.padding}`);
+}
+// Computed form puts the colour first: `color(...) 0px 1px 0px 0px inset`. The shape
+// that must not drift is the one pixel and the two zeroes after it — a blurred or
+// spread light is a light that reaches further than the padding clears.
+if (!/ 0px 1px 0px 0px inset$/.test(bandRead.edge || '')) {
+  throw new Error(`the band’s edge light is not the measured one: ${bandRead.edge}`);
+}
+if (!/Teal · Halo/.test(bandRead.fineText || '')) {
+  throw new Error(`the band does not name the palette it is wearing: ${bandRead.fineText}`);
+}
+await shotOf(own.p, '.own-band', 'premium-19-own-band');
+
+// The same person, on a store's page: the store keeps its theme and the band is absent.
+await own.p.goto(`${BASE}/s/alice`);
+await consent(own.p);
+const onStore = await own.p.evaluate(() => ({
+  own: document.querySelectorAll('.own-band').length,
+  storeBand: !!document.querySelector('.store-head--themed'),
+  heads: document.querySelectorAll('.store-head').length,
+}));
+console.log('  on a store    :', JSON.stringify(onStore));
+if (onStore.own) throw new Error('the person’s band leaked onto a store’s page');
+if (!onStore.storeBand) throw new Error('the storefront lost its own band');
+
+// And somebody with no arrangement gets the plain head — no band, no line, no colour.
+const none = await openCtx({ scheme: 'dark', who: 'bob' });
+await none.p.goto(`${BASE}/library`);
+await consent(none.p);
+const bare = await none.p.evaluate(() => ({
+  own: document.querySelectorAll('.own-band').length,
+  themed: document.querySelectorAll('.own-band--themed').length,
+  head: document.querySelector('h1')?.innerText.trim() ?? null,
+}));
+console.log('  no arrangement:', JSON.stringify(bare));
+if (bare.own || bare.themed) throw new Error('somebody with no arrangement is wearing a band');
+if (bare.head !== 'Your library') throw new Error(`the plain head changed: ${bare.head}`);
+await shotOf(none.p, '.section', 'premium-20-library-plain');
+
+// Reduced motion keeps the band and drops the drift — the same rule as the store band.
+const still = await openCtx({ scheme: 'dark', motion: 'reduce', who: 'alice' });
+await still.p.goto(`${BASE}/library`);
+await consent(still.p);
+const reduced = await still.p.evaluate(() => {
+  const band = document.querySelector('.own-band--themed');
+  if (!band) return { present: false };
+  const before = getComputedStyle(band, '::before');
+  return {
+    present: true,
+    surface: getComputedStyle(band).backgroundColor,
+    mesh: before.backgroundImage.includes('radial-gradient'),
+    animation: before.animationName,
+  };
+});
+console.log('  reduced motion:', JSON.stringify(reduced));
+if (!reduced.present || !reduced.mesh) throw new Error('reduced motion lost the band itself');
+if (reduced.animation !== 'none') throw new Error(`the aurora still runs for a reduce user: ${reduced.animation}`);
+
 const errors = [...dark.p.errors, ...light.p.errors, ...calm.p.errors,
   ...alice.p.errors, ...calmAlice.p.errors, ...nima.p.errors,
-  ...bob.p.errors, ...carolG.p.errors, ...operator.p.errors];
+  ...bob.p.errors, ...carolG.p.errors, ...operator.p.errors,
+  ...own.p.errors, ...none.p.errors, ...still.p.errors];
 console.log('\nconsole errors:', errors.length ? JSON.stringify(errors, null, 1) : 'none');
 if (errors.length) throw new Error(`${errors.length} console error(s)`);
 
 await dark.ctx.close(); await light.ctx.close(); await calm.ctx.close();
 await alice.ctx.close(); await calmAlice.ctx.close(); await nima.ctx.close();
 await bob.ctx.close(); await carolG.ctx.close(); await operator.ctx.close();
+await own.ctx.close(); await none.ctx.close(); await still.ctx.close();
 await browser.close();
-console.log(`\nwalk complete — 18 screenshots in ${OUT}`);
+console.log(`\nwalk complete — 20 screenshots in ${OUT}`);

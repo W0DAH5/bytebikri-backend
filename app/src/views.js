@@ -96,6 +96,9 @@ import {
   // whoever is holding the code, plus the two derived numbers for the second period.
   GIFT_STATE_LINE, GIFT_BUYER_LINE, GIFT_NOT, plusYearPrice, plusYearNote,
   plusConsoleRows,
+  // The person's own band: the one surface a palette bought here is painted on that
+  // belongs to the person rather than to a store.
+  personBand, OWN_BAND_LINE, OWN_BAND_MIX,
 } from './plus.js';
 // The blocker ladder. One module, so the sentence the visitor reads and the
 // sentence the seller's dashboard prints cannot disagree about what was done.
@@ -1827,6 +1830,30 @@ function followedCard(c) {
  * the rows use, so a cap on how many rows are drawn can never make the page read
  * as if files had gone missing.
  */
+/**
+ * THE HEAD OF A PAGE THAT IS YOURS.
+ *
+ * The same box the storefront's band is (`store-head`), wearing the person's own palette
+ * instead of a store's theme — a second recipe for the same component, with its own
+ * measured bound (`OWN_BAND_MIX`, proved in `plus.test.js`).
+ *
+ * Two rules are worth stating where the markup is, because both are easy to get wrong
+ * later: this renders on pages that belong to the person and on NO store's page, and it
+ * is absent — the plain head, exactly as it was — for anybody who is not wearing a look.
+ * A band that appeared for everybody would be a lie about what paying bought.
+ */
+function ownBand({ user, title, lede, note = '' }) {
+  const band = personBand(user);
+  const style = `${band ? band.style : ''}margin-bottom:0`;
+  return `
+<div class="section${band ? ' own-band own-band--themed' : ''}" style="${esc(style)}">
+  <h1>${esc(title)}</h1>
+  <p class="lede" style="margin-top:var(--space-3)">${lede}</p>
+  ${band ? `<p class="fine">${esc(`${band.paletteLabel} · ${band.effectLabel} — ${OWN_BAND_LINE}`)}</p>` : ''}
+  ${note}
+</div>`;
+}
+
 export function library({ user, consent = null, unlocks = [], counts = {}, shelf = [], unwatched = null,
   // The person's own store, when they have one. A seller reading their library is
   // one click from their dashboard everywhere else in the product, and losing that
@@ -1853,11 +1880,13 @@ export function library({ user, consent = null, unlocks = [], counts = {}, shelf
   return layout({
     title: 'Library', user, current: 'library', activeChannel: channel, consent,
     body: `
-<div class="section" style="margin-bottom:0">
-  <h1>Your library</h1>
-  <p class="lede" style="margin-top:var(--space-3)">Everything you have unlocked, and the stores you follow.
+${ownBand({
+    user,
+    title: 'Your library',
+    lede: `Everything you have unlocked, and the stores you follow.
   An unlock is a window, not a purchase: you watch an ad, the network pays the creator directly, and
-  bytebikri takes no cut of it. Nothing here has a price.</p>
+  bytebikri takes no cut of it. Nothing here has a price.`,
+  })}
   ${headline ? `<p style="margin-top:var(--space-3)">${headline}</p>` : ''}
 </div>
 
@@ -6914,6 +6943,9 @@ ${flashNote(flash)}
       <p class="lede">A palette, an edge, a slow halo — worn beside your name on rosters and reviews, everywhere
       this platform shows you to somebody else. This is bytebikri's own product, bought from us, and it is the
       only thing we sell to a person.</p>
+      <p class="fine">It also paints the head of <a href="/library">your own library</a> — the one page here that
+      belongs to you rather than to a store. No store's pages change, and nobody else sees it: a band in your
+      colours is yours, exactly as the name inside it is.</p>
       ${preview}
       <div class="row" style="margin-top:var(--space-5)">
         ${active

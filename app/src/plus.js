@@ -137,6 +137,58 @@ export function effectOf(key) {
   return EFFECTS[key] ?? EFFECTS.solid;
 }
 
+/**
+ * YOUR OWN BAND — the page that is yours, in your own colours.
+ *
+ * The survey's "profile themes" item, answered inside this product's rules. A store's
+ * band is the store's SURFACE and its palettes are built for that: every theme clears
+ * 5.5:1 for white at every point of its gradient with the grain composited
+ * (`themes.test.js`). A person's palette is an INK: eight accents drawn to be read on
+ * the product's own surfaces. Painted as a band, two of the eight fail the store band's
+ * own bar — rose reaches 4.56:1 white and 4.05:1 for the 92% ink, amber 4.72 and 4.26 —
+ * so the naive version was a palette that ships unreadable text, and it was found before
+ * the first line of CSS was written.
+ *
+ * The recipe that passes is still a band: the palette's DEEP stop is the surface and its
+ * lighter stop is the aurora, mixed over it by no more than OWN_BAND_MIX. Measured at
+ * that bound, grain composited, the worst palette (rose) clears 5.52:1 and 4.85:1.
+ *
+ * It shows on the page that is the person's own — `/library` — and nowhere else. A
+ * storefront keeps its theme, and a person's name keeps its paint inside it: a member's
+ * palette repainting a store's page would be layer P standing in for layer S, which is
+ * the confusion this whole file exists to end.
+ */
+export const OWN_BAND_MIX = 0.3;
+
+export const OWN_BAND_LINE =
+  'Your palette and your effect, on the page that is yours. Nobody else sees this band — '
+  + 'a store keeps its own theme, and your name keeps its own paint inside it.';
+
+/**
+ * The band a person's own pages wear, or `null`.
+ *
+ * The decision is `plusWear`'s and nothing else: a running month WITH a look chosen. A
+ * person who has paid and never opened the picker wears no band and no paint, which is
+ * one rule rather than two — the picker is what changes it, and it says so.
+ */
+export function personBand(row = null) {
+  const wear = plusWear(row);
+  if (!wear) return null;
+  const palette = ACCENTS[wear.plate];
+  const effect = effectOf(wear.effect);
+  return {
+    palette: wear.plate,
+    paletteLabel: palette.label,
+    effect: effect.key,
+    effectLabel: effect.label,
+    from: palette.from,
+    to: palette.to,
+    // `from` stays the lighter stop and `to` the deeper one, the same meaning they have
+    // in a store theme, so the ink tokens in the stylesheet apply unchanged.
+    style: `--theme-from:${palette.from};--theme-to:${palette.to};`,
+  };
+}
+
 /** The palettes a member may wear, reusing the plates the memberships shipped. */
 export const PLATE_KEYS = ACCENT_KEYS;
 export function plateOf(key) {

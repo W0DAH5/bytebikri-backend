@@ -20,6 +20,7 @@
  */
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 process.env.DATABASE_URL ||= 'postgres://postgres:postgres@127.0.0.1:55432/bytebikri_test';
 
@@ -31,7 +32,10 @@ const {
   // The gift: the code, the four states, and the second period's price.
   giftCode, normalizeGiftCode, GIFT_ALPHABET, GIFT_STATE_LINE, GIFT_BUYER_LINE, GIFT_NOT,
   plusYearPrice, plusYearNote, PLUS_YEAR_CODE, PURCHASABLE_PLAN_CODES,
+  // The person's own band: the second band recipe, and the bound it is measured at.
+  personBand, OWN_BAND_LINE, OWN_BAND_MIX,
 } = await import('../src/plus.js');
+const { ACCENTS } = await import('../src/memberships.js');
 const views = await import('../src/views.js');
 const { railDetails } = await import('../src/billing.js');
 
@@ -604,4 +608,137 @@ test('the seller’s money map names both periods, at the table’s own numbers'
   // And the answers the row exists for survive the numbers being added.
   assert.match(detail, /opens no file, removes no ad/);
   assert.match(detail, /takes nothing from what you earn/);
+});
+
+// ── the page that is yours ──────────────────────────────────────────────────
+
+const wearer = (extra = {}) => ({
+  id: 'p-band', email: 'band@test.local', display_name: 'Band',
+  plus_status: 'active', plus_period_end: '2099-01-01T00:00:00.000Z',
+  nameplate: 'teal', plus_effect: 'halo', ...extra,
+});
+
+test('a band appears exactly when a look is worn, and on no store’s page', () => {
+  // The decision is `plusWear`'s and nothing else — one rule, not two.
+  assert.equal(personBand(null), null);
+  assert.equal(personBand({ plus_status: 'none', nameplate: 'teal', plus_effect: 'halo' }), null,
+    'no arrangement, no band');
+  assert.equal(personBand({ plus_status: 'active', period_end: '2000-01-01', nameplate: 'teal', plus_effect: 'halo' }), null,
+    'a period that ended wears nothing');
+  assert.equal(personBand(wearer({ nameplate: null, plus_effect: null })), null,
+    'a month running with nothing chosen paints nothing — the picker is what changes it');
+
+  const band = personBand(wearer());
+  assert.equal(band.palette, 'teal');
+  assert.equal(band.paletteLabel, 'Teal');
+  assert.equal(band.effectLabel, 'Halo');
+  assert.equal(band.from, ACCENTS.teal.from);
+  assert.equal(band.to, ACCENTS.teal.to);
+  assert.equal(band.style, `--theme-from:${ACCENTS.teal.from};--theme-to:${ACCENTS.teal.to};`,
+    '`from` stays the lighter stop so the stylesheet’s ink tokens apply unchanged');
+});
+
+test('the band is on the library, absent without it, and never on a storefront', () => {
+  const painted = views.library({ user: wearer(), unlocks: [], counts: {}, shelf: [] });
+  assert.match(painted, /class="section own-band own-band--themed"/);
+  assert.match(painted, /--theme-from:#0f766e/);
+  assert.match(painted, /Teal · Halo — Your palette and your effect/,
+    'the band names the palette and the effect it is painting');
+  assert.match(painted, /Nobody else sees this band/);
+  assert.match(painted, /<h1>Your library<\/h1>/, 'and it is still the page’s own head');
+
+  const plain = views.library({ user: { id: 'p-other', email: 'o@test.local', display_name: 'Other' }, unlocks: [], counts: {}, shelf: [] });
+  assert.ok(!/own-band/.test(plain), 'a person who is not wearing a look gets the plain head, unchanged');
+  assert.match(plain, /<h1>Your library<\/h1>/);
+
+  // The store's page is the store's surface. This is the two-layer rule as an assertion.
+  const storefront = views.storefront({
+    channel: {
+      id: 'c-band', slug: 'bandstore', name: 'Band Store', tagline: 'x', owner_id: 'p-band',
+      banner_url: null, logo_url: null, listing_mode: 'marketplace',
+    },
+    assets: [], slots: [], user: wearer(), estimate: null, pageviews: 0, theme: null, themeStyle: '',
+  });
+  assert.ok(!/own-band/.test(storefront), 'a member’s palette repainted a store’s page');
+});
+
+test('white clears 5.5:1 on the band of every palette a person may wear', () => {
+  // The store band's bar, applied to the SECOND recipe. The person's palettes are inks,
+  // not surfaces — painted as a band straight away, rose reaches 4.56:1 for white and
+  // 4.05:1 for the 92% ink, which is below the body floor. So the deep stop is the
+  // surface and the lighter one is bounded: measured here at `OWN_BAND_MIX`, with the
+  // grain composited, the way the store band is measured — one standard, two recipes.
+  const hexRgb = (hex) => {
+    const h = String(hex).replace('#', '');
+    return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+  };
+  const lum = ([r, g, b]) => {
+    const lin = (c) => {
+      const v = c / 255;
+      return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  };
+  const ratio = (a, b) => {
+    const [l1, l2] = [lum(a), lum(b)].sort((x, y) => y - x);
+    return (l1 + 0.05) / (l2 + 0.05);
+  };
+  const mix = (a, b, t) => a.map((c, i) => Math.round(c * (1 - t) + b[i] * t));
+  const lift = (rgb, share) => rgb.map((c) => Math.round(c * (1 - share) + 255 * share));
+  const over = (rgb, a) => rgb.map((c) => Math.round(255 * a + c * (1 - a)));
+
+  const failures = [];
+  for (const [key, a] of Object.entries(ACCENTS)) {
+    // The WORST point a reader can land on: the base with the full allowance of the
+    // lighter stop mixed in, then the grain — the one layer that lightens.
+    const surface = lift(mix(hexRgb(a.to), hexRgb(a.from), OWN_BAND_MIX), 0.035);
+    const white = ratio([255, 255, 255], surface);
+    const muted = ratio(over(surface, 0.92), surface);
+    if (white < 5.5 || muted < 4.5) {
+      failures.push(`${key}: ${white.toFixed(2)}:1 white, ${muted.toFixed(2)}:1 for the 92% ink`);
+    }
+  }
+  assert.deepEqual(failures, [],
+    'a palette whose own band cannot carry its words at the store band’s own bar is not offered '
+    + 'with that recipe — this is the measurement that made the band a deep stop plus a bounded '
+    + 'aurora instead of the palette’s full gradient');
+});
+
+test('the stylesheet mixes no more than the measured bound, and one blob only', () => {
+  const css = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  const at = css.indexOf('.own-band--themed::before {');
+  assert.ok(at > -1, 'no mesh rule for the person’s band');
+  const block = css.slice(at, css.indexOf('}', at));
+  const mixPct = Number((block.match(/(\d+)%,\s*transparent/) || [])[1]);
+  assert.equal(mixPct / 100, OWN_BAND_MIX,
+    'the stylesheet’s mix and the bound the contrast test measures have drifted apart');
+  assert.equal((block.match(/radial-gradient\(/g) || []).length, 1,
+    'two translucent layers over one pixel are not the bound that was measured');
+  // And the paint itself is NOT inside a motion query — a reduce user gets the colour.
+  const paintAt = css.indexOf('\n.own-band--themed {');
+  assert.ok(paintAt > -1, 'no paint rule for the person’s band');
+  assert.ok(!/@media[^{]*$/.test(css.slice(Math.max(0, paintAt - 300), paintAt)),
+    'the band is painted inside a media query — a reduce user would lose the colour');
+  // The box is the store band's box: a plate with the store head's own radius and
+  // spacing, and an edge light that is one pixel with no blur and no spread — and
+  // therefore one the words cannot reach, because the padding is bigger than it is.
+  const paint = css.slice(paintAt, css.indexOf('}', paintAt));
+  assert.match(paint, /border-radius: var\(--radius-xl\)/,
+    'the person’s band is not the same plate the store’s band is');
+  const shadow = (paint.match(/box-shadow: inset 0 (\d+)px 0[^;]*;/) || []);
+  assert.ok(shadow.length, 'the band lost the edge light that makes it a surface');
+  assert.equal(Number(shadow[1]), 1, 'the edge light grew past the one pixel it was measured at');
+  const pad = (paint.match(/padding:\s*var\(--space-(\d)\)/) || [])[1];
+  const token = Number((css.match(new RegExp(`--space-${pad}:\\s*([\\d.]+)rem`)) || [])[1]) * 16;
+  assert.ok(token >= 16, `the ink starts ${token}px in, which is not clear of the edge light`);
+  // Motion is opt-in, the way the store band does it: the animation is declared inside
+  // the no-preference query and nowhere else, so a reduce user is handed the band with
+  // its colour, its grain and its mesh — standing still — and there is nothing to reset.
+  const optInAt = css.indexOf('@media (prefers-reduced-motion: no-preference) {', paintAt);
+  const animAt = css.indexOf('.own-band--themed::before { animation: theme-aurora', optInAt);
+  assert.ok(optInAt > -1 && animAt > optInAt && animAt < optInAt + 200,
+    'the band’s motion is not declared inside a no-preference query');
+  const bandRegion = css.slice(paintAt, css.indexOf('/* Choosing the look', paintAt));
+  assert.equal((bandRegion.match(/animation:/g) || []).length, 1,
+    'the band declares its motion more than once — the reduce path is the one that loses');
 });

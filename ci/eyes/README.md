@@ -105,8 +105,17 @@ are run after the seeder rather than being self-contained:
 ```bash
 node ci/demo-state.mjs              # the demo state, and the restore
 node ci/eyes/member-walk.mjs        # three sessions, the attention door, 11 shots
-node ci/eyes/premium-walk.mjs       # two payers, two schemes, motion on intent; 18 shots (14 design, 4 gifting)
+node ci/eyes/premium-walk.mjs       # two payers, two schemes, motion on intent; 20 shots (16 design, 4 gifting)
 ```
+
+Section 14 is the person's own band, which is a SECOND recipe for the store band's box
+and therefore a second set of numbers: the walk reads the painted surface, the ink the
+words actually landed in and the mesh behind them, computes white and the 92% ink
+against that surface, and stops if the palette's deep stop is not the surface or the
+aurora is not running. It then visits a store's page as the same paying person to show
+the band is not there, loads `/library` as somebody with no arrangement to show the
+head is unchanged, and repeats the whole thing under `prefers-reduced-motion: reduce`
+where the band must keep its colour and its mesh and lose only the drift.
 
 `premium-walk.mjs` is the one walk whose subject is a DESIGN rather than a flow, and
 it is measured rather than looked at: contrast is computed in the page from the

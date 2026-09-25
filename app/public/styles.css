@@ -2615,6 +2615,65 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   to { transform: translate3d(4%, 3%, 0) scale(1.12); }
 }
 
+/* ── The person's own band ───────────────────────────────────────────────────
+   The SECOND recipe for the same box, and the numbers are why it is a second one.
+
+   A store theme IS a surface: every one of them clears 5.5:1 for white at every point
+   of its gradient with the grain composited. A person's palette is an INK — eight
+   accents drawn to be read on the product's own surfaces — and two of the eight fail
+   the store band's own bar when they are painted as one (rose: 4.56:1 white, 4.05:1
+   for the 92% ink; amber: 4.72 and 4.26). So here the palette's DEEP stop is the
+   surface and its lighter stop is the aurora, mixed over it at no more than
+   `OWN_BAND_MIX` — 30%, measured, grain composited, where the worst palette (rose)
+   still clears 5.52:1 and 4.85:1.
+
+   ONE blob, not two: two 30% layers over the same pixel are 51%, and the bound is the
+   contract. The blur, the transform-only drift and the motion rule are the store
+   band's, unchanged — including the pattern that makes this need no reduce block at
+   all: the animation is declared INSIDE `prefers-reduced-motion: no-preference`, so a
+   reduce user gets the band with its colour, its grain and its mesh, standing still.
+
+   It renders on `/library` and on no store's page — see `ownBand()` in views.js. */
+.own-band--themed {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  /* The same box the store's band is: a plate, not a highlighter stroke laid over a
+     paragraph. The store head's own radius and inner spacing, so the two bands are
+     recognisably the same object worn by two different owners. */
+  border-radius: var(--radius-xl);
+  padding: var(--space-6) var(--space-6) var(--space-5);
+  /* Lit from where the light is, one pixel, at the very edge: no word sits inside it —
+     the padding above is what keeps the ink away from it. It costs the arithmetic
+     nothing because it is not under any letter, and it is what stops a flat rectangle
+     of colour reading as a swatch rather than a surface. */
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--theme-from, var(--indigo-600)) 35%, transparent);
+  background-color: var(--theme-to, var(--indigo-700));
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='own-n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23own-n)' opacity='0.035'/%3E%3C/svg%3E");
+  background-size: 160px 160px;
+  background-repeat: repeat;
+  background-blend-mode: soft-light;
+  color: var(--theme-ink, #ffffff);
+}
+.own-band--themed::before {
+  content: '';
+  position: absolute;
+  inset: -35%;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    radial-gradient(46% 54% at 30% 40%, color-mix(in srgb, var(--theme-from, var(--indigo-600)) 30%, transparent) 0%, transparent 72%);
+  filter: blur(28px);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .own-band--themed::before { animation: theme-aurora 13s ease-in-out infinite alternate; }
+}
+.own-band--themed :is(.lede, .fine) { color: var(--theme-muted, rgba(255, 255, 255, 0.92)); }
+.own-band--themed a { color: var(--theme-ink, #ffffff); text-decoration-color: color-mix(in srgb, var(--theme-ink, #fff) 60%, transparent); }
+.own-band--themed :is(a, button, input, select, textarea):focus-visible {
+  outline-color: var(--theme-ink, #ffffff);
+}
+
 /* The chooser's stage: the storefront band, full width, above the grid. It carries
    the real `.store-head--themed` class so the seller is looking at the component
    rather than at a picture of it — aurora, grain and all — and the dashed edge is

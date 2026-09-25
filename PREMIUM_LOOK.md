@@ -420,3 +420,104 @@ The store already chooses two colours; the mark wears those.
   shape is the advice attached to their own spec.
 * The chip's existing rule is untouched: the top tier is the only one that glints, and a
   glyph is available to both tiers — it is the tier's identity, not its shine.
+
+### Slice 9 — the person's own colours, on the page that is theirs
+
+Taken from the premium-feature survey's *Identity & Profile Customization* category: **"profile
+themes"** — the one item in that list this product had not answered. Discord's version colours the
+profile card; the survey's other example (Slack's icon packs, "custom app icon or colour scheme") is the
+same idea pointing at the app itself. The question here was where a PERSON's theme can live, and the
+answer came from the two-layer rule rather than from the survey.
+
+**It cannot go where a store's band goes.** A storefront's band is the store's surface: a member's
+palette repainting it would be layer P standing in for layer S, which is the exact confusion this
+document exists to prevent — and it would put a page's whole contrast plan at the mercy of a colour
+somebody else chose. So the band goes on **the page that is the person's own**: `/library`, their shelf.
+A store keeps its theme; a person's name keeps its paint inside that store's pages. The band is
+self-only, and the line inside it says so.
+
+**The arithmetic found something before any code was written.** The store themes are *surfaces*: each one
+is built so white clears 5.5:1 at every point of its gradient with the grain composited
+(`themes.test.js`). The person's palettes are *inks*: eight accents drawn to be read ON the product's
+surfaces. Painted as a band — the palette's lighter stop to its deeper one, white text — two of them
+fail:
+
+| palette | white on the gradient (worst point, grain in) | the 92% secondary ink |
+|---|---|---|
+| indigo | 5.88 | 5.26 |
+| sky | 5.55 | 4.96 |
+| violet | 5.35 | 4.79 |
+| emerald | 5.11 | 4.60 |
+| teal | 5.10 | 4.57 |
+| **amber** | **4.72** | **4.26** |
+| **rose** | **4.56** | **4.05** |
+| slate | 9.30 | 8.16 |
+
+(Rose's 4.05 on the smaller line is below the body floor, so the naive design was not "slightly thin" —
+it was a palette that ships unreadable text.)
+
+**The recipe that passes, and it is still a band.** The palette's **deep stop is the surface**, and the
+lighter stop is the **aurora**, mixed over it at no more than **30%**. Measured at that bound, with the
+grain composited, every one of the eight palettes clears the store band's own bars: worst case is rose at
+**5.52:1 white** and **4.85:1** for the 92% ink. So the person's band is a deep palette with a slow
+lighter drift through it, the same ink tokens (`--theme-ink`, `--theme-muted`), and the same numbers to
+beat — one standard, two recipes, both measured.
+
+**One blob, not two.** The store band's aurora is two radials because its base is an opaque surface that
+was picked to carry white. Here the base is the deep stop and the mesh is the *lighter* stop; two 30%
+layers over the same pixel are **51%**, and the bound is the contract. So the person's band has exactly
+one radial, at the bound the table above is computed at, and `plus.test.js` counts the `radial-gradient(`
+occurrences in the rule to keep it that way.
+
+**The box is the store band's box.** A band that spans the container with no radius reads as a swatch of
+colour laid behind a paragraph — the first screenshot of it, in a browser, is what said so. It is now the
+same plate the store's head is: the store head's own radius (`--radius-xl`, 20px), its own inner spacing
+(`--space-6` top and sides, `--space-5` under), and a **one-pixel inner light** along the top edge in the
+palette's lighter stop at 35% — no blur, no spread, and no word within 16px of it, so it is decoration the
+arithmetic never has to carry. The two bands are then recognisably one object worn by two different
+owners, which is the whole point of the layer-P / layer-S split.
+
+* Where: `/library` — the head becomes the band, with the page's own words in band ink and one line
+  naming what it is. `/plus` states it in words beside the picker rather than wrapping the shop's hero:
+  the hero contains the picker, the stage and the chip sample, and putting a moving surface behind all of
+  them would mean auditing every colour inside it in both schemes for a decorative gain.
+* When: exactly when the person wears a look (`plusWear`), which is the same decision point that paints
+  their name — one rule, not two. A running month with no palette chosen shows no band, because there is
+  nothing chosen to paint; the picker is what changes that.
+* What it is not: not on a store's page, not on the header, not a second paint of the name inside the
+  band (their plate ink on their own band is a pair nobody measured: teal's `#2dd4bf` on teal's deep
+  stop is **2.9:1**), and not a free-form colour picker.
+* Motion: the same aurora keyframes as the store band, declared the same way — inside
+  `prefers-reduced-motion: no-preference` and nowhere else, so a reduce user is handed the band with its
+  colour, its grain and its mesh, standing still, and there is no reset rule that can fall out of step
+  with the declaration.
+
+**What slice 9 measures.** Three layers, because the recipe is arithmetic, the arithmetic is CSS, and the
+CSS is a page. (`themes.test.js` already does this for the store band; this is the second recipe under
+the same discipline.)
+
+| layer | what it asserts | what it found |
+|---|---|---|
+| `plus.test.js`, arithmetic | all eight palettes, deep stop + the lighter stop at `OWN_BAND_MIX` + grain composited, worst point | rose worst: **5.52:1** white, **4.85:1** for the 92% ink; every palette clears 5.5 / 4.5 |
+| `plus.test.js`, stylesheet | the mix in the CSS equals `OWN_BAND_MIX`; exactly one radial; exactly one `animation:` and it sits inside a `no-preference` query; the paint rule is not inside any media query; radius, padding and the 1px edge light | all hold — the mix and the measured bound cannot drift apart, and the reduce path cannot lose the colour |
+| `premium-walk.mjs` §14, browser | the painted surface, the ink the words landed in and the mesh behind them, computed from computed styles with every fallback applied; then the same page as a store, as somebody with no arrangement, and under `prefers-reduced-motion: reduce` | alice, dark: surface `rgb(17, 94, 89)`, **7.58:1** white, **6.70:1** for the 92% ink, mesh painted, `theme-aurora` running, radius **20px**, padding **24px**, edge `0px 1px 0px 0px inset`; a store's page: **0** `.own-band`; no arrangement: no band and the old head, byte for byte; reduce: band and mesh kept, `animationName: none` |
+
+The walk is the layer that would have caught the *sandwich* error — a reduce user losing the colour
+because the paint itself was declared inside a motion query — and the layer that proved the quiet case
+this slice was most likely to get wrong: `GET /library` hands `personBand()` a row that really does carry
+`nameplate`, `plus_effect` and the arrangement, so the band renders for a wearer and silently does not
+for everybody else. If that had been wrong, nothing would have errored; the page would simply have been
+the old page.
+
+**Still discarded this round, with the reason.** Chat/emoji surfaces (there is no chat), upload
+pipelines and CDN (no uploads, by the same reasoning as the store mark), HD streaming and WebRTC, server
+boosts and platform-side currency (a flow in the wrong direction), priority support (an operating cost
+this plan has none of), app-store IAP and tax handling (nothing is sold in an app store), feature flags
+and A/B infrastructure (one operator; the rollout is a page reload), an MRR/churn pipeline (the console
+prints the ledger), server-side caching of entitlements (the entitlement join is indexed and the
+correctness risk of a stale cache is worse than the query), Lottie-class animation runtimes (a
+200 KB runtime for a nameplate, and they do not honour reduced motion by default), group/family plans
+and referral rewards (both are money movement, which this product does not do), a paid badge next to a
+member's name on a store's roster (layer S wearing layer P), and per-page analytics for the platform's
+own pages (the traffic table exists to price a store's rent; a conversion rate computed from three
+visits is a number nobody can act on).
