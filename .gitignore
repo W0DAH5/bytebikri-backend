@@ -1,3 +1,7 @@
+# `node_modules` without a slash is not redundant: the trailing-slash pattern only
+# matches a real directory, and ci/eyes/setup.sh links one in at the repository root
+# so the documented run command (node ci/eyes/<harness>.mjs) can resolve playwright.
+node_modules
 node_modules/
 uploads/
 .env

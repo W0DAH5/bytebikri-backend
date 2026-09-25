@@ -40,6 +40,22 @@ for f in "$HERE"/*.mjs; do
 done
 echo "scripts: $(cd "$DIR" && ls ./*.mjs | wc -l) copied from ci/eyes"
 
+# And the modules they import, where the repository can see them.
+#
+# The README runs the harnesses from the REPOSITORY root (`node ci/eyes/sweep.mjs`),
+# which is also where their screenshots land — and Node resolves `playwright` by
+# walking up from the script's own directory, so without this the documented command
+# answers Cannot find module. It was run from $DIR instead for a while, which works
+# and quietly puts the shots in /tmp: this round's four gifting screenshots landed
+# there while the repository kept the previous round's fourteen, and they were nearly
+# committed as evidence. A symlink is enough, and it is left alone if the repository
+# has a node_modules of its own (a real install always wins).
+ROOT="$(cd "$HERE/../.." && pwd)"
+if [ ! -e "$ROOT/node_modules" ] && [ -d "$DIR/node_modules" ]; then
+  ln -s "$DIR/node_modules" "$ROOT/node_modules"
+  echo "modules: $ROOT/node_modules -> $DIR/node_modules (so the repo root can run them)"
+fi
+
 export LD_LIBRARY_PATH="$DIR/al2023/lib"
 echo -n "chromium: "; /tmp/chromium --version
 echo "run:  cd $DIR && export LD_LIBRARY_PATH=$DIR/al2023/lib && node <harness>.mjs"
