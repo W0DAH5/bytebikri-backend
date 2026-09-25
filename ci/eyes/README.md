@@ -138,6 +138,12 @@ carol's session, because the roster does not name the reader's own row — the p
 on a store's roster, where the store's chip and the store's own top-tier light must both
 still be there beside the person's ring and edge.
 
+`premium-26-card-closeup.png` is that card at four device pixels to the CSS pixel, and it
+is evidence of a thing a 1:1 screenshot cannot show: a two-pixel ring's colour. The tile is
+the store's violet (its tier accent, and its top-tier glint), the chip is the store's violet,
+and the ring, the card's edge and the name are all the member's teal — two owners on one
+row, drawn at a size where a person can actually check it.
+
 Two things that section learned the hard way. **Whose colours the ring is:** the tile on a
 store's roster carries the store's palette (the tier accent, and the glint drawn from it)
 AND the person's ring, so the walk reads the computed PAINT and requires the ring in the
