@@ -856,7 +856,8 @@ function plateStyleAttr(accentKey) {
  * plate is about the name anyway.
  */
 function memberPlate({
-  name, accent = 'indigo', tier = null, tierNo = 0, joined = null, me = false, plusRow = null,
+  name, accent = 'indigo', tier = null, tierNo = 0, glyph = null,
+  joined = null, me = false, plusRow = null,
 }) {
   const label = String(name || 'Member');
   const initial = label.trim().slice(0, 1).toUpperCase() || 'M';
@@ -873,7 +874,15 @@ function memberPlate({
    * beside it is always the creator's, drawn from the tier, and always present when
    * the person holds one.
    */
-  const layers = composeName({ plus: plusRow, tier: tierNo ? { tier_no: tierNo, name: tier, accent } : null });
+  // `glyph` travels with the tier because it belongs to the same owner. It is easy to
+  // forget here — this call rebuilt the tier object from three fields, and the mark
+  // then rendered on the tier CARD and not on the roster, which is the one page the
+  // shape exists for. The browser check is what caught it: a unit test that only
+  // asks "is there a `data-glyph` somewhere on this page" is answered by the card.
+  const layers = composeName({
+    plus: plusRow,
+    tier: tierNo ? { tier_no: tierNo, name: tier, accent, glyph } : null,
+  });
   const top = layers.chip?.style === 'gradient';
   const namePalette = layers.name?.palette ?? accent;
   const nameClass = ['member-name', layers.name?.className ?? 'wear-solid'].filter(Boolean).join(' ');
@@ -972,6 +981,7 @@ function memberRoster(roster = []) {
   return `<ul class="member-roster">
     ${roster.map((m) => memberPlate({
     name: m.display_name, accent: m.accent, tier: m.tier_name, tierNo: m.tier_no,
+    glyph: m.glyph,
     joined: `since ${longDay(m.joined_at)}`,
     // Their own look, if they have one and it is current. Two payments to two
     // different parties can be on one plate; neither can impersonate the other,
@@ -6421,6 +6431,7 @@ ${flashNote(flash)}
     return `<tr>
       <td data-label="Member">${memberPlate({
         name: m.display_name, accent: m.accent, tier: m.tier_name, tierNo: m.tier_no,
+        glyph: m.glyph,
         // The member's own look rides on the plate here too. The seller's queue is
         // where names are read most carefully, so a name has to look the same on it
         // as it does on the storefront.

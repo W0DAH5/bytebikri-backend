@@ -188,6 +188,8 @@ sells nothing about the membership.
 | 4 | Verified in a browser: both schemes, reduced motion, and a roster wearing both layers at once | **built** — `ci/eyes/premium-walk.mjs`, 8 sections, run green |
 | 5 | The shop window: the member's own name in both layers, updating as they choose | **built** |
 | 6 | The aurora band: a mesh in the theme's own stops, a bounded grain layer, and the seller's own stage | **built** |
+| 7 | The store's mark: two initials derived from the name, painted in the band's own two colours, on the header, the stage and every card in Explore | **built** — `identity.test.js` (7 tests) + walk §12 |
+| 8 | The tier's glyph: six shapes from a closed vocabulary, painted in `currentColor` inside the chip, chosen in the seller's picker | **built** — migration 0041, `identity.test.js` (6 tests) + walk §12 |
 
 ### What slices 5 and 6 measure
 

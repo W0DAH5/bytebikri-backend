@@ -457,18 +457,24 @@ if (memberStore) {
   // dues are what the CREATOR asks — the platform is not in this number.
   const TIERS = [
     {
-      tierNo: 1, name: 'Friend', duesNpr: 150, periodMonths: 1, accent: 'teal',
+      tierNo: 1, name: 'Friend', duesNpr: 150, periodMonths: 1, accent: 'teal', glyph: null,
       perks: 'Every new template a week early, and the notes behind it',
     },
     {
-      tierNo: 2, name: 'Elite', duesNpr: 600, periodMonths: 3, accent: 'violet',
+      // The top tier wears a shape — a peak, which is the one silhouette in the
+      // vocabulary that could only belong to a shop in this country — and the entry
+      // tier wears none, so the demo shows both states of the picker at once.
+      tierNo: 2, name: 'Elite', duesNpr: 600, periodMonths: 3, accent: 'violet', glyph: 'peak',
       perks: 'Everything above, plus the workshop recordings and a file a month only elites open',
     },
   ];
   for (const t of TIERS) {
     await store.saveMembershipTier({
       channelId: memberStore.id, tierNo: t.tierNo, actorId: nimaOwner,
-      value: { name: t.name, duesNpr: t.duesNpr, periodMonths: t.periodMonths, perks: t.perks, accent: t.accent },
+      value: {
+        name: t.name, duesNpr: t.duesNpr, periodMonths: t.periodMonths,
+        perks: t.perks, accent: t.accent, glyph: t.glyph,
+      },
     });
   }
   const note = 'eSewa 9800000009 (Nima Crafts). Put your username in the remark so I can find you — '

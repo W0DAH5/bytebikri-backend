@@ -205,9 +205,12 @@ test('the chip carries the store’s glyph inside it, before the tier’s name',
       { profile_id: 'p3', display_name: 'Bob', tier_no: 1, tier_name: 'Friend', accent: 'teal', glyph: null, joined_at: '2026-09-02T00:00:00Z' },
     ],
   });
+  // INSIDE THE ROSTER, not merely somewhere on the page: the tier CARD carries a
+  // sample chip of its own, so an unscoped assertion here is answered by the card and
+  // the one surface the shape exists for — a member's name — can be missing it.
   assert.match(html,
-    /class="store-chip store-chip--top"[^>]*><span class="tier-glyph" data-glyph="peak" aria-hidden="true"><\/span>Elite<\/span>/,
-    'the top tier’s chip wears its shape');
+    /<ul class="member-roster">[\s\S]*?class="store-chip store-chip--top"[^>]*><span class="tier-glyph" data-glyph="peak" aria-hidden="true"><\/span>Elite<\/span>/,
+    'the top tier’s chip wears its shape on the roster');
   // The tier with no glyph renders exactly the chip it rendered before this slice.
   assert.match(html, /<ul class="member-roster">[\s\S]*?store-chip[^>]*>Friend<\/span>[\s\S]*?<\/ul>/,
     'a tier with no mark is unchanged, in the roster');

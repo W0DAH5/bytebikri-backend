@@ -30,6 +30,13 @@
  * The motion is read through `getAnimations()` on the real element, so what is
  * asserted is the browser's animation tree rather than the stylesheet: paused at
  * rest, running under the pointer, and gone entirely under `prefers-reduced-motion`.
+ *
+ * Section 12 closes the identity round: the mark's two colours are read off the
+ * rendered tile and compared with the palette's own values, the tier's glyph is
+ * required to be the SAME computed colour as the chip's ink (which is the whole of
+ * its contrast argument), and the shape is then chosen in the seller's own picker,
+ * saved, and read back off the storefront's roster — because a picker that cannot
+ * round-trip is a picker that lies.
  */
 import { chromium } from 'playwright-core';
 import { mkdirSync } from 'node:fs';
@@ -608,12 +615,122 @@ await alice.p.locator('form.plus-look button[type=submit]').click();
 await alice.p.waitForLoadState('domcontentloaded');
 console.log('  saved back    :', (await alice.p.locator('[data-look-line]').textContent()).replace(/\s+/g, ' ').trim().slice(0, 60));
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 12. Identity — the store's mark, and the shape the tier wears
+// ─────────────────────────────────────────────────────────────────────────────
+say(12, 'the store has a mark in its own two colours, and a tier has a shape of its own');
+const nima = await openCtx({ scheme: 'dark', who: 'nima' });
+
+// The mark on the storefront's own band. A themed store's tile is the band's
+// INVERSION — the band's ink as the surface, the band's deep stop as the letter — so
+// both colours here are read off the page and compared with the palette's own values.
+await alice.p.goto(`${BASE}/s/alice`);
+await consent(alice.p);
+const storeMark = await alice.p.evaluate(() => {
+  const el = document.querySelector('.store-head .store-mark');
+  if (!el) return null;
+  const cs = getComputedStyle(el);
+  const box = el.getBoundingClientRect();
+  return {
+    text: el.textContent.trim(),
+    surface: cs.backgroundColor,
+    ink: cs.color,
+    radius: cs.borderRadius,
+    themed: el.classList.contains('store-mark--themed'),
+    w: Math.round(box.width), h: Math.round(box.height),
+    heading: document.querySelector('.store-head h1')?.textContent.trim(),
+  };
+});
+console.log('  the store mark :', JSON.stringify(storeMark));
+if (!storeMark) throw new Error('the storefront has no mark');
+if (storeMark.text !== 'AS') throw new Error(`the mark is "${storeMark.text}" for Alice’s Studio`);
+if (!storeMark.themed) throw new Error('a themed store’s mark did not paint itself as themed');
+if (storeMark.surface !== 'rgb(255, 255, 255)') throw new Error(`the mark’s tile is ${storeMark.surface}, not the band’s ink`);
+if (storeMark.ink !== 'rgb(30, 58, 138)') throw new Error(`the mark’s letter is ${storeMark.ink}, not the theme’s deep stop`);
+if (storeMark.radius === '999px') throw new Error('the mark is a circle — in this product a circle is a person');
+await shotOf(alice.p, '.store-head', 'premium-12-store-mark');
+
+// The tier's shape, inside the chip, on the roster. `currentColor` is the claim: the
+// glyph's fill and the chip's ink must be the SAME computed colour, which is what
+// makes "it cannot be less readable than the word beside it" a measurement rather
+// than a comment.
+await nima.p.goto(`${BASE}/s/nima-crafts`);
+await consent(nima.p);
+const glyph = await nima.p.evaluate(() => {
+  const g = document.querySelector('ul.member-roster .store-chip .tier-glyph');
+  if (!g) return null;
+  const chip = g.closest('.store-chip');
+  const gs = getComputedStyle(g);
+  const cs = getComputedStyle(chip);
+  const box = g.getBoundingClientRect();
+  return {
+    key: g.dataset.glyph, fill: gs.backgroundColor, ink: cs.color,
+    clip: gs.clipPath.slice(0, 46), w: Math.round(box.width * 10) / 10,
+    chip: chip.textContent.trim(),
+    // One tier chose a shape and the other chose none, so the tier cards are where
+    // both states are visible at once — the roster holds a single member today.
+    samples: [...document.querySelectorAll('.plate-sample .store-chip')].map((c) => ({
+      text: c.textContent.trim(),
+      key: c.querySelector('.tier-glyph')?.dataset.glyph ?? null,
+    })),
+  };
+});
+console.log('  the glyph     :', JSON.stringify(glyph));
+if (!glyph) throw new Error('the elite tier’s chip has no shape on the roster');
+if (glyph.fill !== glyph.ink) throw new Error(`the glyph is ${glyph.fill} while its chip’s ink is ${glyph.ink}`);
+if (!/^polygon\(/.test(glyph.clip)) throw new Error(`the glyph is not drawn as a shape: ${glyph.clip}`);
+if (glyph.w < 6 || glyph.w > 16) throw new Error(`the glyph measures ${glyph.w}px beside a name`);
+const decorated = glyph.samples.filter((c) => c.key).length;
+if (decorated !== 1) throw new Error(`a store's two tiers show ${decorated} shape(s) — one chose one and one chose none`);
+if (!glyph.samples.some((c) => c.key === 'peak')) throw new Error('the elite card does not show the shape its tier wears');
+await shotOf(nima.p, 'ul.member-roster', 'premium-13-tier-glyph');
+
+// And the seller's own picker, which is where the shape is chosen: the tiles are the
+// shapes, the saved one is the chosen one, and pressing another and saving must reach
+// the roster. A picker that cannot round-trip is a picker that lies.
+await nima.p.goto(`${BASE}/dashboard/nima-crafts/members`);
+await consent(nima.p);
+await nima.p.locator('form.tier-editor[action$="/tier/2"] .glyph-choice').first().waitFor(WAIT);
+const picker = await nima.p.evaluate(() => ({
+  tiles: document.querySelectorAll('form.tier-editor[action$="/tier/2"] .glyph-choice').length,
+  noMark: document.querySelectorAll('form.tier-editor[action$="/tier/2"] .glyph-choice input[value=""]').length,
+  chosen: document.querySelector('form.tier-editor[action$="/tier/2"] .glyph-choice--on input')?.value ?? null,
+}));
+console.log('  the picker    :', JSON.stringify(picker));
+if (picker.tiles !== 7) throw new Error(`the picker offers ${picker.tiles} tiles, not six shapes and none`);
+if (picker.noMark !== 1) throw new Error('“no mark” is not offered as a tile like the others');
+if (picker.chosen !== 'peak') throw new Error(`the saved shape is not the chosen one (${picker.chosen})`);
+await shotOf(nima.p, 'form.tier-editor[action$="/tier/2"]', 'premium-14-glyph-picker');
+
+// The label, not the input: the radio is transparent and sits under the shape it
+// draws, so Playwright's actionability check refuses to click it — a person clicks
+// the tile, and so does this.
+await nima.p.locator('form.tier-editor[action$="/tier/2"] label.glyph-choice:has(input[value="star"])').click();
+await Promise.all([
+  nima.p.waitForNavigation(),
+  nima.p.locator('form.tier-editor[action$="/tier/2"] button[type=submit]').click(),
+]);
+await nima.p.goto(`${BASE}/s/nima-crafts`);
+const afterSave = await nima.p.evaluate(() => document.querySelector('ul.member-roster .tier-glyph')?.dataset.glyph ?? null);
+console.log('  after saving  :', afterSave);
+if (afterSave !== 'star') throw new Error(`the saved shape did not reach the roster: ${afterSave}`);
+
+// Back to the shape the seeder leaves, so the demo is where it was found.
+await nima.p.goto(`${BASE}/dashboard/nima-crafts/members`);
+await nima.p.locator('form.tier-editor[action$="/tier/2"] label.glyph-choice:has(input[value="peak"])').click();
+await Promise.all([
+  nima.p.waitForNavigation(),
+  nima.p.locator('form.tier-editor[action$="/tier/2"] button[type=submit]').click(),
+]);
+await nima.p.goto(`${BASE}/s/nima-crafts`);
+console.log('  put back      :', await nima.p.evaluate(() => document.querySelector('ul.member-roster .tier-glyph')?.dataset.glyph ?? null));
+
 const errors = [...dark.p.errors, ...light.p.errors, ...calm.p.errors,
-  ...alice.p.errors, ...calmAlice.p.errors];
+  ...alice.p.errors, ...calmAlice.p.errors, ...nima.p.errors];
 console.log('\nconsole errors:', errors.length ? JSON.stringify(errors, null, 1) : 'none');
 if (errors.length) throw new Error(`${errors.length} console error(s)`);
 
 await dark.ctx.close(); await light.ctx.close(); await calm.ctx.close();
-await alice.ctx.close(); await calmAlice.ctx.close();
+await alice.ctx.close(); await calmAlice.ctx.close(); await nima.ctx.close();
 await browser.close();
-console.log(`\nwalk complete — 11 screenshots in ${OUT}`);
+console.log(`\nwalk complete — 14 screenshots in ${OUT}`);

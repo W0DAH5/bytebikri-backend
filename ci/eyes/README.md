@@ -105,7 +105,7 @@ are run after the seeder rather than being self-contained:
 ```bash
 node ci/demo-state.mjs              # the demo state, and the restore
 node ci/eyes/member-walk.mjs        # three sessions, the attention door, 11 shots
-node ci/eyes/premium-walk.mjs       # two payers, two schemes, motion on intent, 11 shots
+node ci/eyes/premium-walk.mjs       # two payers, two schemes, motion on intent, 14 shots
 ```
 
 `premium-walk.mjs` is the one walk whose subject is a DESIGN rather than a flow, and
@@ -126,6 +126,16 @@ palette arithmetic that proves white is readable still covers the whole surface 
 for the same claim the CSS makes: under `prefers-reduced-motion: reduce` the band keeps
 its gradient, its grain and its mesh, and nothing moves.
 
+Two of those sections are about IDENTITY rather than about a look, and both are
+measured off the rendered page rather than read from the stylesheet: the store's mark
+is required to have the band's ink as its surface and the band's deep stop as its
+letter (the pair the palette arithmetic already covers) on a plate rather than a
+circle, and a tier's glyph is required to be *the same computed colour* as the chip's
+ink — which is the whole of its contrast argument, since `currentColor` means there is
+no second colour to check. It then chooses a different shape in the seller's own
+picker, saves it, and reads it back off the storefront's roster, because a picker that
+cannot round-trip is a picker that lies. The demo is put back the way it was found.
+
 Three lessons it paid for on its first runs, all worth reusing:
 
 - **`Element.getAnimations()` does not return pseudo-element animations.** The ring's
@@ -138,6 +148,14 @@ Three lessons it paid for on its first runs, all worth reusing:
 - **`scrollIntoViewIfNeeded` puts a subject UNDER the sticky header**, and the first
   shot of the theme stage had the store's own name sliced in half by the navigation.
   The capture helper now scrolls back up ~96px after bringing the subject into view.
+- **A radio you styled yourself is not clickable at its own coordinates.** The glyph
+  picker's inputs are transparent and sit under the shape they draw, so Playwright's
+  actionability check refuses the click ("`<span data-glyph="star">` intercepts pointer
+  events"). Click the LABEL — which is what a person does anyway.
+- **`getBoundingClientRect()` on an SVG-shaped element reports the border box, not the
+  ink.** The star's polygon hand-written from geometry measures 14×13 while the hexagon's
+  measures 11×17 against a 1em box; assert on the ORDER of the sizes, never on the pixels
+  of a hand-written shape.
 
 `member-walk.mjs` starts from zero standing and no membership — that state belongs to
 the seeder because it is also the state the preview should be found in — and it clears
