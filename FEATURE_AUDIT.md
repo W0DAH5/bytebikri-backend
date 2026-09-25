@@ -3401,3 +3401,51 @@ choosing Split right after Orbit painted both (`ring-split ring-split`, and both
 that) — the pattern is derived from the naming rule now, and the walk switches rings twice and requires
 exactly one ring class on the avatar. Runs are green from the seeded state (`orbit`, the second-run
 condition that used to fail) and from the walk's own output.
+
+## §40 — One page, one person, one colour, and the four queries that never handed the look over
+
+**The seller's members page draws the same member twice.** Once above, in "Waiting on you" — a claim
+nobody has confirmed yet — and once below, on the roster. The waiting row was the last surface still
+printing a bare name, and the reason was upstream of the renderer: `pendingMemberships` selected the
+member's name, their tier and its dues, and nothing else, so the row arrived with no look to draw and no
+`PLUS_JOIN` to say whether the person was paying bytebikri at all. It now selects what the renderer reads
+— `p.nameplate`, the effect and the two outer layers, `pl.plus_status`, `pl.plus_period_end` — and the row
+goes through the same `nameTag()` the roster uses. The dues' status is not consulted: whether a store has
+confirmed a member's transfer has nothing to do with whether that member pays bytebikri for a look, which
+is the ownership correction stated as code.
+
+**Handing the row over exposed the fault underneath it, and this one a screenshot would not have caught.**
+With the row wired up, the payload for a member who has bought nothing is a name and no look — and the
+renderer's fallback for a look-less name is its own default, indigo. The roster below paints the same
+person in the palette of the tier they hold there, teal. One page, one person, two colours, and the only
+symptom was a queue that disagreed with the row directly beneath it. The rule is the one this round has
+been applying everywhere else: **a name with no look of its own takes the colour of the page it is drawn
+on** — on a store's card, the tier accent the store's own roster already uses. `nameTag()` grew an
+optional `accent` for exactly this, and `members.test.js` renders a look-less member in both places and
+requires the two `<span>`s to come out byte-identical; the walk's §16 compares the waiting row's class and
+computed palette against the same person's roster row and fails if they disagree. Removing the accent
+fallback fails the test, which is how it was checked.
+
+**The systemic version: a query must return the fields its renderer reads.** This was the fourth time the
+same bug class has been found, and the four have nothing in common except the shape — an alias or an
+omission that renders a paying person plain. `membersOfChannel` aliased `p.nameplate` to something the
+renderer does not read, so every dressed member on a roster fell back to indigo while their palette sat in
+the row beside it; `reviewsOfAsset` carried the reviewer's name without their look, so every paying
+reviewer was drawn in the fallback; the seller's member list returned bare rows; the pending queue
+returned no look at all. All four are now audited against the surfaces that exist, and the two that are
+deliberately plain are plain for a reason:
+
+| What draws a person's name | Row comes from | The look |
+|---|---|---|
+| The account chip in the header | `userById` (`p.*`, `plus_status`, `plus_period_end`) | carried |
+| A storefront's public roster | `publicRoster` (look fields + `PLUS_JOIN`) | carried |
+| The seller's member list | `membersOfChannel` | carried (§38) |
+| The seller's **waiting queue** | `pendingMemberships` | carried (this round) |
+| A review, read by a stranger | `reviewsOfAsset` | carried (§38) |
+| The person's own stage, and their band on `/library` | `userById` | carried |
+| The operator's Plus queue, the admin users table | rows with no look join | **plain on purpose** — an operator work queue is a list of receipts, not a place a person is being shown to somebody |
+
+The rule for the next surface is therefore not "add the join" but "ask what the renderer reads, and make
+the query return it": `plusWear()` reads `row.nameplate` and refuses to dress anybody whose plan it cannot
+prove from `plus_status`/`plus_period_end`, so a missing column is silent, and silence here looks exactly
+like a member who never paid.
