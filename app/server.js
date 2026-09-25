@@ -18,6 +18,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { store, storage, SLOT_DEFS, slugify, PLANS, nextPlan } from './src/store.js';
+// The cosmetics engine: the look picker's slots, declared once. This route validates a
+// submitted look against the catalog rather than against a list typed here.
+import { personSlots } from './src/cosmetics.js';
 import {
   METHODS, DEFAULT_MONTHS, LAPSE_WINDOW_DAYS, stateOf, requestability, lapseOf, lapseNotice,
   withinNoticeWindow,
@@ -79,7 +82,7 @@ import { THEMES, THEME_KEYS, THEME_NOTE, THEME_FREE_LINE, NO_THEME, canTheme, th
 // Both pure modules, so the route layer decides nothing they have not already
 // written down in one place.
 import {
-  plusState, plusWear, PLATE_KEYS, EFFECT_KEYS, PLUS_NAME, PLUS_CODE, PLUS_YEAR_CODE,
+  plusState, plusWear, PLUS_NAME, PLUS_CODE, PLUS_YEAR_CODE,
   // The codes a person may actually buy, from the module that owns the plan keys —
   // the routes check a submitted code against THIS list rather than against strings
   // typed into the handler.
@@ -1272,11 +1275,19 @@ APP.post('/plus/look', limitUnlock, async (req, res, next) => {
     // An allowlist, not a free-text colour. Every palette here is contrast-checked
     // against both themes, and a member typing #ff00ff is how a readable product
     // becomes an unreadable one.
-    const plate = PLATE_KEYS.includes(String(req.body.nameplate)) ? String(req.body.nameplate) : null;
-    const effect = EFFECT_KEYS.includes(String(req.body.effect)) ? String(req.body.effect) : null;
-    if (!plate || !effect) return res.redirect('/plus?error=plus-look-bad');
-    await store.setPlusLook({ profileId: req.user.id, nameplate: plate, effect });
-    await store.audit('plus.look_set', { profileId: req.user.id, plate, effect });
+    //
+    // The allowlist is the CATALOG's, not a second list typed here: every slot a person
+    // wears must be answered with one of that slot's own values, so adding a slot in
+    // `cosmetics.js` cannot leave this route accepting a form that no longer matches the
+    // picker. A field that is not a person slot is not read at all.
+    const look = {};
+    for (const slot of personSlots()) {
+      const value = String(req.body?.[slot.key] ?? '');
+      if (!slot.values.some((v) => v.key === value)) return res.redirect('/plus?error=plus-look-bad');
+      look[slot.key] = value;
+    }
+    await store.setPlusLook({ profileId: req.user.id, ...look });
+    await store.audit('plus.look_set', { profileId: req.user.id, ...look });
     return res.redirect('/plus?saved=plus-look');
   } catch (err) { return next(err); }
 });

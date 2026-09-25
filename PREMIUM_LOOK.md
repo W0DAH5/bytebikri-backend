@@ -521,3 +521,98 @@ and referral rewards (both are money movement, which this product does not do), 
 member's name on a store's roster (layer S wearing layer P), and per-page analytics for the platform's
 own pages (the traffic table exists to price a store's rent; a conversion rate computed from three
 visits is a number nobody can act on).
+
+## 10. The cosmetics engine — slots with owners, and what a shop would require
+
+The brief for this section came as a design review of one card: the roster plate, with its ringed
+initial, the member's name, "since 25 Sept 2026" and a store's `ELITE` chip. The review's argument was
+that this is one badge doing the work of a system, and that the system should be a **cosmetics engine** —
+an inventory of slots (profile frame, avatar frame, name effect, badge, card background, aura, entrance
+effect), separated from the profile, so that "ELITE is just one cosmetic, not the entire visual system",
+and so a fifth phase of the product needs no redesign of the first. The phases it proposed ran from
+entitlements and a renderer, through visual slots and animation, to a cosmetic shop, bundles, seasonal
+passes, rarity and a creator marketplace.
+
+Most of that diagnosis is right, and this codebase had already made the two moves that matter. What it
+had not made is the one the review is really asking for, and this section records what was built, what
+was already there, and what was refused — with reasons, because the refusals are the part that keeps the
+engine coherent.
+
+### The rule that decides every slot: who owns the surface
+
+A decoration belongs to the owner of the thing it decorates. That single line decides every slot here,
+and it is the ownership correction from the earlier rounds extended from badges to whole surfaces:
+
+* **A person's slots decorate the person's own identity** — the paint on their name, the effect around
+  it. They travel with the person, they are worn anywhere that person's name is rendered, and only
+  bytebikri grants them (a Plus period). A store cannot grant one, cannot take one away, and its theme
+  never stands in for one.
+* **A store's slots decorate the store's own surface** — the band its pages are painted in, the shape its
+  tiers wear. They belong to the creator, they are paid for on the store's own plan, and they never
+  appear beside a member's name as if they were that member's.
+
+That is why there is no `cardBackground` and no `profileFrame` slot in the engine. On a store's page the
+surface belongs to the store (it has themes); on a person's own page it belongs to the person (their own
+band on `/library`, §9). A slot that let either repaint the other's surface is the exact confusion the
+earlier correction was about — and the researched record says the same thing from the other side:
+*if every role shimmers, none feel special*.
+
+### The review's eight slots, one by one
+
+| The review proposed | What this product does | Why |
+|---|---|---|
+| **Profile frame** | The **page's surface**, owned by the page's owner: a store's band on its pages (§6), the person's own band on `/library` (§9) | A frame around a card that a stranger owns is a claim about somebody else's page |
+| **Avatar frame** | Already there in one form: the ring that arrives with a look (`.plus-avatar`, `.wear-ring`). A **chosen ring treatment** is the next slot this engine would carry — one column, one control, one renderer branch | The avatar here is an initial, not an upload; a "frame" in this product is a ring |
+| **Name effect** | `effect` — six, four of which move, each described in words that say so | Already built, and the words exist because choosing on a phone should not be a surprise |
+| **Badge** | The store's **tier chip** (creator-defined, layer S), the **plan mark** on a paid store, the **verification badge** on a store an operator checked | Three badges, three owners, three meanings — and none of them granted by a store to a person |
+| **Card background** | The surface, as above | Same reason as the profile frame; it is the same slot by another name |
+| **Aura / particles** | Refused | Bandwidth on a Nepal-first product, a second design to audit under `prefers-reduced-motion`, and the surest way to make every plate in a roster shimmer |
+| **Entrance / hover animation** | Hover and focus on intent is what exists (the ring spins, effects drift, `:focus-visible` included). Entrance animations on lists refused | A roster of forty people animating in is noise, and motion here is deliberately something you ask for |
+| **Multiple cosmetics combined** | A look already is a combination: eight palettes × six effects, composed by one decision point (`composeName()`), with the store's chip beside it | This is the review's own point, answered before it was made |
+
+### The engine, as data
+
+`app/src/cosmetics.js` is the declaration. A slot has a `key` (the form field and the column), an
+`owner` (`person` or `store`), a `grant` (`plus`, `creator`, `store-plan`), a `kind` (which picker
+control draws it), a `label`, the question it answers, and its `values` — each with a label, and with
+`moves` and one sentence of words wherever a person can choose it. Four slots today: two a person wears
+(`nameplate`, `effect`) and two a store sets (`glyph`, `theme`).
+
+What makes it an engine rather than a table is that nothing else keeps a second list:
+
+* the **picker** is the catalog drawn — `views.plusPage` iterates the person slots, so a new slot appears
+  with its own control and its own words;
+* the **route** validates against the catalog — `/plus/look` refuses a submission whose values are not
+  that slot's own;
+* the **tests** hold all four ends together: the catalog against the database's own check constraints
+  (`profiles.plus_effect`, `membership_tiers.glyph`) read out of Postgres, against the picker's markup,
+  against the write path's SQL, and against the schema — every person slot's column must live on
+  `profiles`, and no store slot's column may.
+
+A new slot therefore costs: one entry in `SLOTS`, one column with its check, one renderer branch — and
+`test/cosmetics.test.js` fails until the database, the picker and the write path all agree. That is the
+review's actual ask, and it is the property that makes the fifth phase cheap instead of a redesign.
+
+### The review's phases, and where the line is
+
+**Phase 1 (entitlements, inventory, equipped, renderer):** built — `plusWear()` decides what is worn
+from the database's own clock, `profiles` holds what is chosen, `composeName()` is the renderer.
+
+**Phases 2 and 3 (visual slots, animation):** partly built and partly refused above. The next honest
+addition is the ring treatment, because it is the one visual slot with an existing render and a clear
+owner.
+
+**Phases 4 and 5 (shop, individual purchases, bundles, seasonal passes, rarity, collections, creator
+marketplace):** all of them are **money movement**, and the standing instruction is that moving money
+inside the application is a later feature this product does not have. There is nothing to sell until
+there is a rail to sell it on, and inventing prices for entitlements no rail can charge for would put a
+shop on a page whose own footer says there is no checkout. Rarity is a property of a shop, so it arrives
+with the shop, if it ever does. A creator marketplace would add an upload pipeline, a moderation queue
+and a payout path, each already refused on its own grounds.
+
+### What this section changed in the product
+
+The picker no longer keeps its own list of slots: it draws the catalog, the route reads the catalog, and
+the catalog is checked against the database it has to agree with. The look a member saves is byte for
+byte the look they see in the preview, and the walk that proves it (`premium-walk.mjs` §11) still passes
+through the new path: choose prism, save, switch palette to rose, save back to teal and halo.

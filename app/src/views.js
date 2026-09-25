@@ -83,6 +83,9 @@ import {
 import {
   ASK_LEVELS, ASK_PROMISE, ASK_INPUT_LINE, resolveAsk, askLabel, askReason, bandFor, descriptionAskClaim,
 } from './adscale.js';
+// The cosmetics engine: every look slot, its owner and its values, declared once. The
+// look picker below is this list, drawn — see the module for the ownership rule.
+import { personSlots } from './cosmetics.js';
 import {
   PLACEMENT_BOUNDS, planFor, stamp, placementSentence, breakCues, breakSentence, breaksSupported,
 } from './placement.js';
@@ -6679,40 +6682,61 @@ export function plusPage({
     return `<span class="plus-swatch" style="${plateStyleAttr(key)}" title="${esc(p.label)}"></span>`;
   }).join('');
 
-  const lookForm = `
-    <form method="post" action="/plus/look" class="plus-look">
+  /*
+   * THE PICKER IS THE CATALOG, DRAWN.
+   *
+   * Every field here comes out of `personSlots()` and its values, not out of a list
+   * typed into this function. That is what makes the second slot cost one entry: a
+   * palette is a `swatch` control and an effect is a `card`, and a slot of either kind
+   * appears here with its own name, its own question and its own words. A slot kind
+   * with no control is a programming error and renders nothing — the test that every
+   * person slot appears in this form is what stops a silent omission.
+   */
+  const chosen = { nameplate: chosenPlate, effect: chosenEffect };
+  const pickerField = (slot) => {
+    const current = chosen[slot.key];
+    const head = `<span class="field-label" id="plus-${esc(slot.key)}-label">${esc(slot.label)}</span>`;
+    if (slot.kind === 'swatch') {
+      return `
       <div class="field">
-        <span class="field-label" id="plus-plate-label">Your palette</span>
-        <div class="plus-swatches" role="radiogroup" aria-labelledby="plus-plate-label">
-          ${PLATE_KEYS.map((key) => `
-            <label class="plus-swatch-label${chosenPlate === key ? ' is-on' : ''}" style="${plateStyleAttr(key)}"
-                   data-plate-key="${esc(key)}" data-plate-label="${esc(plateOf(key).label)}">
-              <input type="radio" name="nameplate" value="${esc(key)}" ${chosenPlate === key ? 'checked' : ''}>
+        ${head}
+        <div class="plus-swatches" role="radiogroup" aria-labelledby="plus-${esc(slot.key)}-label">
+          ${slot.values.map((v) => `
+            <label class="plus-swatch-label${current === v.key ? ' is-on' : ''}" style="${plateStyleAttr(v.key)}"
+                   data-plate-key="${esc(v.key)}" data-plate-label="${esc(v.label)}">
+              <input type="radio" name="${esc(slot.key)}" value="${esc(v.key)}" ${current === v.key ? 'checked' : ''}>
               <span class="plus-swatch" aria-hidden="true"></span>
-              <span class="sr-only">${esc(plateOf(key).label)}</span>
+              <span class="sr-only">${esc(v.label)}</span>
             </label>`).join('')}
         </div>
-        <span class="hint">Eight checked palettes. Every one is contrast-checked against both the light and the dark theme.</span>
-      </div>
+        <span class="hint">${esc(slot.hint)}</span>
+      </div>`;
+    }
+    if (slot.kind === 'card') {
+      return `
       <div class="field">
-        <span class="field-label" id="plus-effect-label">Your effect</span>
-        <div class="plus-effects" role="radiogroup" aria-labelledby="plus-effect-label">
-          ${EFFECT_KEYS.map((key) => {
-    const e = EFFECTS[key];
-    return `
+        ${head}
+        <div class="plus-effects" role="radiogroup" aria-labelledby="plus-${esc(slot.key)}-label">
+          ${slot.values.map((v) => `
             <label class="choice plus-effect-choice"
-                   data-effect-key="${esc(key)}" data-effect-label="${esc(e.label)}" data-effect-moves="${e.moves ? 'yes' : 'no'}">
-              <input type="radio" name="effect" value="${esc(key)}" ${chosenEffect === key ? 'checked' : ''}>
+                   data-effect-key="${esc(v.key)}" data-effect-label="${esc(v.label)}" data-effect-moves="${v.moves ? 'yes' : 'no'}">
+              <input type="radio" name="${esc(slot.key)}" value="${esc(v.key)}" ${current === v.key ? 'checked' : ''}>
               <span>
-                <strong>${esc(e.label)}</strong>
-                <span class="fine">${esc(e.hint)}</span>
+                <strong>${esc(v.label)}</strong>
+                <span class="fine">${esc(v.hint)}</span>
               </span>
-              <span class="plus-effect-demo">${nameTag('Aa', { plus_active: true, nameplate: chosenPlate, plus_effect: key })}
-                <span class="sr-only">${e.moves ? 'this effect moves' : 'this effect never moves'}</span></span>
-            </label>`;
-  }).join('')}
+              <span class="plus-effect-demo">${nameTag('Aa', { plus_active: true, nameplate: chosenPlate, plus_effect: v.key })}
+                <span class="sr-only">${v.moves ? 'this effect moves' : 'this effect never moves'}</span></span>
+            </label>`).join('')}
         </div>
-      </div>
+      </div>`;
+    }
+    return '';
+  };
+
+  const lookForm = `
+    <form method="post" action="/plus/look" class="plus-look">
+      ${personSlots().map(pickerField).join('')}
       <button class="btn btn-primary" type="submit">Save the look</button>
       <p class="fine">Your look is saved whether or not an arrangement is running — the palette is yours, and only the wearing of it depends on the month.</p>
       <div class="note note-info" role="note">
