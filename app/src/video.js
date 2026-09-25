@@ -90,6 +90,35 @@ export function hostFacts(env = process.env) {
 }
 
 /**
+ * Which kinds of media a host is FOR — asked before bytes ever move.
+ *
+ * The first version of this registry had one question in it ("is the driver set?") and
+ * three providers, which quietly implied they were three ways of doing the same job.
+ * They are not, and `VIDEO_STORAGE.md` §10.5 records what each is actually designed for:
+ * Filemoon is a video host whose non-video uploads are download-only; GoFile is a
+ * generalist whose playable links are Premium; Catbox is a small-file host whose own
+ * terms forbid being a service's CDN. So a kind a host does not declare stays on our
+ * disk, and the answer is data rather than a coincidence of one boolean.
+ *
+ * `mediaKind` lives in `media.js` (video/audio/image/archive/document/…) and is imported
+ * by `store.js` already; this takes the kind it returns rather than re-deriving it, so
+ * one definition of "what is this file" serves the router, the doctor and the tests.
+ */
+export function hostAccepts(kind, provider, env = process.env) {
+  const host = isHost(provider) ? provider : videoDriver(env);
+  if (!isHost(host)) return false;
+  const caps = PROVIDERS[host].capabilities || {};
+  return Array.isArray(caps.kinds) && caps.kinds.includes(kind);
+}
+
+/** Whether this deployment may send a store's bytes to a host at all (policy, §10.5). */
+export function hostSuitability(provider, env = process.env) {
+  const host = isHost(provider) ? provider : videoDriver(env);
+  if (!isHost(host)) return { host, commercial: 'local', note: 'nothing is configured, so nothing leaves' };
+  return { host, ...(PROVIDERS[host].capabilities?.policy || { commercial: 'unknown' }) };
+}
+
+/**
  * The credential a host needs, in the operator's words.
  *
  * `capabilities.needs` names the environment variable; this turns that into the sentence

@@ -210,6 +210,11 @@ and the honest summary of the research is that they are **not interchangeable**.
 places the product depends on, so the differences are recorded here before a line of client code, and then
 encoded in the registry, the doctor and the seller's own copy.
 
+**And they are not three video hosts.** That was the first version's other mistake, and §10.5 is the
+correction: each of these services is *designed* for a different kind of file, and the registry now carries
+that as data (`capabilities.kinds`, `capabilities.policy`) with the router consulting it — because routing a
+kind to a host that is not for it is not a graceful degradation, it is a file a viewer cannot open.
+
 ### 10.1 The facts as documented, per host
 
 | | Filemoon | GoFile | Catbox |
@@ -332,3 +337,40 @@ be limited to progressive sources, or the playlist and its segments can be proxi
 which works but puts every hosted byte through this server, which is what §5 was written to avoid. Until
 one of those is chosen, a hosted **HLS** file is a file a viewer cannot watch in a browser, and both the
 walk and the doctor say so in those words rather than reporting a broken player.
+
+### 10.5 What each host is FOR — the question that decides routing
+
+Researched rather than assumed, because the first draft of this document called all three "video hosts" and
+set one boolean for the whole registry. They are three different services that happen to share an HTTP
+shape, and the difference is exactly the thing the product's own surfaces depend on: whether a viewer can
+**watch or read the file in our page**, or only download it.
+
+| | Filemoon | GoFile | Catbox |
+| --- | --- | --- | --- |
+| what it is designed to be | a **video host**: twelve video formats (MP4, MKV, AVI, WEBM, MOV, FLV, WMV, 3GP, TS, MPG, MPEG, VOB), every upload encoded for streaming, HLS delivery, subtitles, posters, an embeddable player, remote and FTP intake | a **general file host**: no file-type restrictions at all, "files, images, music, videos", previews for common media inside its own UI, direct links for embedding | a **small-file hotlink host**: images, audio, short video, served from a static url, kept forever, no account needed to serve |
+| non-video files | accepted, then **download-only** — its own words: "stream supported videos online **or download allowed files**" | first-class, previewed in its own page | first-class (except executables, `.doc*`, and `.html`/`.php`, which it serves as text) |
+| what a page needs from it | an HLS or progressive url per file | **both are Premium**: the listing and the direct link | the upload's answer *is* the url |
+| capacity | free: 1 GB guest / 2 GB registered per file; premium: uncapped | no published cap; free tier is bandwidth-throttled | **200 MB hard**; GIF 20 MB |
+| retention | until deleted | free: **~10 days idle**; premium: permanent | permanent |
+| **may we use it this way** | yes — a streaming host for websites, which is what we are doing with it | yes, and the paid tier is the intended way to serve | **no**: its operator's own blog (July 2026) names "social spaces or other user generated content sites that are using Catbox for file uploads" as not allowed by the Terms of Service and Acceptable Use Policy, and states that "uploads from datacenter/non-residential IP addresses will be heavily filtered and/or purged". A store platform with ads, uploading from a server, is that description. Its paid Spaces product exists for creators who want to publish |
+
+So the registry answers two questions instead of one, and both answers are data:
+
+```js
+capabilities.kinds        // the kinds this host is FOR — ['video'] for Filemoon
+capabilities.policy       // { commercial: 'allowed' | 'premium' | 'prohibited', note }
+hostAccepts(kind, host)   // the router's gate, asked before bytes move
+hostSuitability(host)     // the verdict the doctor prints
+```
+
+**What that changes concretely:** nothing for video on Filemoon, which is the host the product deploys with
+and the kind it is for. What it prevents is the tempting edit — "audio is playable by the same predicate, let
+it go to the host" — landing an audio file at a host that would serve it as a download, or at Catbox, whose
+terms forbid the use. Audio, images, archives and documents stay on our disk, where they already were, but
+now for a *stated reason per kind* rather than because a boolean happened to be named after video.
+
+**And one honest gap.** GoFile is the only one of the three whose design fits audio and images as well as
+video. It is not used for them because its playable links are Premium and its free storage expires — an
+economic answer, not a technical one. A future round that wants hosted audio or a hosted image library
+should price that host first, and §2's third refusal ("audio does not leave this round") is the line to
+revisit before anything else.

@@ -45,6 +45,41 @@ export const capabilities = {
   lists: false,
   needs: 'CATBOX_USERHASH',
   note: 'permanent, direct progressive urls; 200 MB per file; no listings, no playlists',
+  /*
+   * WHAT THIS HOST IS FOR (§10.5) — and the one finding that decides its role here.
+   *
+   * Technically it is the best fit of the three for small media: permanent storage,
+   * direct hotlinkable urls for images, audio and short video, no account needed to
+   * serve them, and a size cap far above anything the product's own upload limit
+   * allows. It is what imageboards and forums have used it for since 2016.
+   *
+   * Its own operator's blog post (July 2026) rules that use out for us, in as many
+   * words: commercial uploaders using Catbox "as a Content Delivery Network to host
+   * their images/videos (something that is already not allowed by the Terms of
+   * Service and Acceptable Use Policy) for a profit" are the problem, and it
+   * explicitly includes "social spaces or other user generated content sites that
+   * are using Catbox for file uploads" — with the consequence spelled out:
+   * "uploads from datacenter/non-residential IP addresses will be heavily filtered
+   * and/or purged". A store platform with ads, uploading from a server, is that
+   * description. Its Spaces paid product exists precisely for creators who want to
+   * publish content.
+   *
+   * So this host is for development, tests and a single self-hoster's own files —
+   * never a store's delivery path in production. The flag is data so the doctor can
+   * say it out loud rather than leaving it in a comment nobody reads.
+   *
+   * Also structural, and worth knowing before trusting a url: executables are
+   * refused (.exe, .scr, .cpl, .jar), `.doc*` is refused, GIFs are capped at 20 MB,
+   * and `.html`/`.php` are served as plain text.
+   */
+  kinds: ['video', 'audio', 'image', 'archive'],
+  blockedExtensions: ['exe', 'scr', 'cpl', 'jar', 'doc', 'docx', 'html', 'php'],
+  policy: {
+    commercial: 'prohibited',
+    note: "the operator's own blog: CDN use by a service with uploaders is not allowed, and "
+      + 'datacenter uploads "will be heavily filtered and/or purged" — fine for development, '
+      + "not for a store's delivery path",
+  },
 };
 
 /** Configured means the credential this host needs is present. */

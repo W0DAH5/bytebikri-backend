@@ -7342,7 +7342,18 @@ APP.post('/api/assets', upload.single('file'), async (req, res, next) => {
     });
 
     if (req.file) {
-      const key = await storage.put(req.file.buffer, req.file.originalname);
+      /*
+       * The type travels with the call, and this route used not to pass it — which is
+       * the whole difference between a video landing at the configured host and landing
+       * on our disk. The router falls back to the filename when the type is absent
+       * (`mediaKind`), so a client that sends `clip.mp4` was fine either way and the
+       * bug hid; what breaks is the case the app's own comment calls the one that
+       * actually happens — a phone that sends `video/mp4` under a name with no
+       * extension, which then silently stayed local while every other upload path
+       * (`POST /dashboard/…/assets`, the seeder) sent video to the host. Two doors to
+       * the same bytes must not disagree about where the bytes are.
+       */
+      const key = await storage.put(req.file.buffer, req.file.originalname, { mimeType: req.file.mimetype });
       await store.addFile({
         assetId: asset.id, storageKey: key, filename: req.file.originalname,
         mimeType: req.file.mimetype, sizeBytes: req.file.size,

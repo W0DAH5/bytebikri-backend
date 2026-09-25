@@ -68,7 +68,7 @@ import {
 // driver is configured at all, how to put bytes there, how to tell a remote key
 // from a local one, and how to delete one. `VIDEO_STORAGE.md` is the reasoning.
 import {
-  videoHostEnabled, upload as videoUpload, remove as videoRemove,
+  videoHostEnabled, hostAccepts, videoDriver, upload as videoUpload, remove as videoRemove,
   isRemoteKey, remoteId, remoteProvider,
 } from './video.js';
 // `mediaKind` is the product's own answer to "what is this file", and the router
@@ -127,17 +127,30 @@ const KEY_RE = /^[a-z]+\/[0-9a-f-]{36}\.[a-z0-9]{1,5}$/i;
 
 export const storage = {
   /**
-   * Should these bytes go to the video host?
+   * Should these bytes go to the host?
    *
    * Exported so a test can assert the refusal directly instead of inferring it
    * from where a file happened to land. `mimeType` is optional because the
    * adapter's signature predates it: a caller that does not say what it is
    * sending gets the local disk, which is the safe answer and the old answer.
+   *
+   * Two questions, and the second one is the correction this round makes: IS a host
+   * configured, and does that host take this KIND of media at all (`hostAccepts`,
+   * VIDEO_STORAGE.md §10.5). The three providers are not three ways of doing one job —
+   * Filemoon is for video, GoFile's playable links are Premium, Catbox's terms forbid
+   * being a service's CDN — so a kind the configured host does not declare stays here
+   * rather than being sent somewhere it will not be served from.
+   *
+   * The whitelist above this line is unchanged and still absolute: `kyc` never leaves,
+   * `public` never leaves, and neither does anything a viewer reads rather than plays
+   * (a reader's archive is offset-addressed by our own reader).
    */
   routesToHost({ namespace = 'private', mimeType = '', filename = '' } = {}) {
     if (!videoHostEnabled()) return false;
     if (namespace !== 'private') return false;
-    return mediaKind(mimeType, filename) === 'video';
+    const kind = mediaKind(mimeType, filename);
+    if (kind !== 'video') return false;
+    return hostAccepts(kind, videoDriver());
   },
 
   async put(buffer, filename, { namespace = 'private', mimeType = '' } = {}) {

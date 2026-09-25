@@ -40,6 +40,26 @@ export const capabilities = {
   needs: 'GOFILE_TOKEN',
   note: 'uploads work on any tier, but a playable link needs Premium; free content is '
     + 'removed after ~10 days of inactivity',
+  /*
+   * WHAT THIS HOST IS FOR (§10.5). This is the generalist of the three: no file-type
+   * restrictions at all, "store and share data of all types — files, images, music,
+   * videos", with previews for common media inside its own web UI. If this product
+   * ever wanted a host for AUDIO, images and documents rather than video alone, this
+   * is the one whose design fits — and the reason it still is not used for them is
+   * economic, not technical: the two things a page needs (a listing, and a direct
+   * link a media element can follow) are both Premium, and free storage is
+   * temporary by design.
+   *
+   * `streamsInPage: 'premium'` is the honest flag: on a free account nothing this
+   * host returns can be played by a viewer, which is why `upload()` refuses before
+   * it sends bytes rather than storing a file nobody can watch.
+   */
+  kinds: ['video', 'audio', 'image', 'archive', 'document'],
+  streamsInPage: 'premium',
+  policy: {
+    commercial: 'premium',
+    note: 'direct links are the paid feature; using them commercially is what the plan is for',
+  },
 };
 
 /** Nothing static: direct links arrive from `/directlinks` on a storage host of theirs. */

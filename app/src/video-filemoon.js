@@ -29,6 +29,26 @@ export const capabilities = {
   lists: true,
   needs: 'FILEMOON_TOKEN',
   note: 'plays playlists or progressive files; the token is <id>|<secret>',
+  /*
+   * WHAT THIS HOST IS FOR (VIDEO_STORAGE.md §10.5, researched rather than assumed).
+   *
+   * Filemoon is a video host and says so in its own words: twelve video formats
+   * (MP4, MKV, AVI, WEBM, MOV, FLV, WMV, 3GP, TS, MPG, MPEG, VOB), every upload
+   * encoded for streaming, HLS delivery, a subtitle manager, posters, an embeddable
+   * player, remote and FTP intake. Its marketing does mention taking "documents,
+   * images, audio and large files" — and then says what happens to them: "stream
+   * supported videos online **or download allowed files**". Non-video is a download
+   * there, not a preview.
+   *
+   * So `kinds` is one entry long, and that is not a limitation we are working around:
+   * sending an image or an audio file here would mean giving up the inline playback
+   * this product's own surfaces are built on, in exchange for nothing.
+   */
+  kinds: ['video'],
+  policy: {
+    commercial: 'allowed',
+    note: 'a streaming host for websites; no CDN clause against the use this product makes of it',
+  },
 };
 
 /**

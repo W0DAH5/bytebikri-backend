@@ -570,3 +570,110 @@ test('the router is provider-agnostic: a catbox key is remote, and asking for it
     assert.equal(storage.isRemote('kyc/aaaa-bbbb.mp4'), false, 'the whitelist does not depend on which host is configured');
   }, { driver: 'catbox' });
 });
+
+// ── the client's type, and the door that used to drop it ────────────────────
+//
+// `POST /api/assets` is the JSON upload path a mobile client uses; the dashboard's
+// publish form is the other door to the same bytes. The form always handed the router
+// the mime type, the JSON route did not — and because the router falls back to the
+// filename, the difference is invisible for a client that names its file `clip.mp4`.
+// It only shows for the case `mediaKind`'s own comment calls the one that actually
+// happens: a phone sending a correct `video/mp4` under a name with no extension.
+
+test('the filename is a fallback, not a substitute for the type the client sent', async () => {
+  await withDriver(async () => {
+    // No type, no extension: nothing on earth can call this a video, and the safe
+    // answer — our disk — is the right one.
+    const anonymous = await storage.put(Buffer.from('bytes'), 'upload', {});
+    assert.doesNotMatch(anonymous, /^filemoon\//, `a guess is not a routing decision: ${anonymous}`);
+
+    // The SAME bytes with the type the client actually sent. This is the assertion the
+    // old `/api/assets` failed, and it is deliberately about the key rather than about
+    // a mock: the key is the promise about where the bytes are.
+    const typed = await storage.put(Buffer.from('bytes'), 'upload', { mimeType: 'video/mp4' });
+    assert.match(typed, /^filemoon\//, `the type the client sent must decide: ${typed}`);
+
+    // And the lie browsers tell, which worked even before the fix — kept here so the
+    // two cases are read together and neither is mistaken for the other.
+    const lying = await storage.put(Buffer.from('bytes'), 'clip.MP4', { mimeType: 'application/octet-stream' });
+    assert.match(lying, /^filemoon\//, `an extension is a fallback for a bad type: ${lying}`);
+  });
+});
+
+test('every door that stores a seller\'s bytes hands the router the type', async () => {
+  /*
+   * A source guard, in the style `reports.test.js` uses for rules that live in
+   * `server.js` and nowhere else. The bug this exists to prevent was not a wrong
+   * decision anywhere — it was one call site dropping an argument it already had, in a
+   * route no screen or walk exercises any more (`/api/assets` is the mobile contract;
+   * the Android upload screen is gone). The next edit to add a third door gets told
+   * here instead of by a seller whose video quietly stayed on our disk.
+   */
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
+
+  const handler = src.slice(src.indexOf("APP.post('/api/assets'"), src.indexOf('// Ops'));
+  assert.ok(handler.length > 200, 'the /api/assets handler was not found — this guard needs updating');
+  assert.match(
+    handler,
+    /storage\.put\(req\.file\.buffer,\s*req\.file\.originalname,\s*\{\s*mimeType:\s*req\.file\.mimetype\s*\}\)/,
+    'the JSON upload route must pass the file\'s mime type to the router (VIDEO_STORAGE.md §2)',
+  );
+  assert.equal(
+    /storage\.put\(\s*[^)]*\)/.test(handler), true,
+    'the guard expects a storage.put in this handler — has the route been rewritten?',
+  );
+});
+
+// ── what each host is FOR (§10.5) ───────────────────────────────────────────
+//
+// The correction this round makes: three providers are not three ways of doing one job.
+// These assertions are the researched facts, in code, so that a future edit cannot drift
+// back to "a video host is a video host".
+
+test('a host is asked whether it takes this KIND of media, and only one of them is video-only', () => {
+  const kindsOf = (host) => video.providers[host].capabilities.kinds;
+  assert.deepEqual(kindsOf('filemoon'), ['video'],
+    'Filemoon is a video host: its non-video uploads are download-only, which is a downgrade for us, not a feature');
+  assert.ok(kindsOf('gofile').includes('audio') && kindsOf('gofile').includes('image'),
+    'GoFile is the generalist — no file-type restrictions, previews inside its own UI');
+  assert.ok(kindsOf('catbox').includes('image'), 'Catbox takes images, which is what most of the web uses it for');
+
+  // The predicate the router consults.
+  assert.equal(video.hostAccepts('video', 'filemoon'), true);
+  assert.equal(video.hostAccepts('audio', 'filemoon'), false, 'audio must never be sent to a video-only host');
+  assert.equal(video.hostAccepts('audio', 'catbox'), true, 'Catbox declares audio; whether we MAY use it is the policy question below');
+  assert.equal(video.hostAccepts('video', 'local'), false, 'no host means no host');
+});
+
+test('the router keeps a kind the configured host does not take on our disk', async () => {
+  // Not a hypothetical: this is the guard that stops a future "let audio go to the host"
+  // edit from silently sending it to a host that would serve it as a download.
+  await withDriver(async () => {
+    assert.equal(storage.routesToHost({ namespace: 'private', mimeType: 'audio/mpeg' }), false);
+    assert.equal(storage.routesToHost({ namespace: 'private', mimeType: 'image/png' }), false);
+    assert.equal(storage.routesToHost({ namespace: 'private', mimeType: 'video/mp4' }), true,
+      'the one kind Filemoon is for still goes');
+  });
+});
+
+test('the policy each host is used under is data, not a footnote', () => {
+  // Catbox is the finding that matters: capable, and prohibited for exactly our use. Its
+  // operator's own blog names "social spaces or other user generated content sites that
+  // are using Catbox for file uploads" and says datacenter uploads will be filtered or
+  // purged. A store platform is that description, so this flag has to exist and has to
+  // say so — the doctor prints it and §10.5 records it.
+  const catbox = video.providers.catbox.capabilities;
+  assert.equal(catbox.policy.commercial, 'prohibited');
+  assert.match(catbox.policy.note, /purged|CDN/i);
+  assert.ok(catbox.blockedExtensions.includes('exe'), 'its own refusals are part of the picture');
+
+  assert.equal(video.providers.filemoon.capabilities.policy.commercial, 'allowed');
+  assert.equal(video.providers.gofile.capabilities.policy.commercial, 'premium');
+  assert.equal(video.providers.gofile.capabilities.streamsInPage, 'premium',
+    'on a free GoFile account nothing it returns is playable — which is why upload() refuses first');
+
+  const verdict = video.hostSuitability('catbox');
+  assert.equal(verdict.commercial, 'prohibited');
+  assert.equal(video.hostSuitability('local').commercial, 'local');
+});

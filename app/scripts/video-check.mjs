@@ -66,6 +66,26 @@ if (flag('drivers')) {
     console.log(`  ${facts.host.padEnd(9)} ${facts.configured ? 'configured' : 'not configured'} · ${cap}`
       + ` · ${facts.hls ? 'playlists' : 'progressive'} · ${facts.durable ? 'permanent' : 'EXPIRES when idle'}`);
     console.log(`            ${facts.note}`);
+    /*
+     * WHAT IT IS FOR, and what its terms say about our use of it.
+     *
+     * `VIDEO_STORAGE.md` §10.5 exists because the first version of this registry implied
+     * three interchangeable video hosts. They are not: one is a video host whose
+     * non-video uploads are download-only, one is a generalist whose playable links are
+     * paid, and one is prohibited from being a service's CDN by its own operator. An
+     * operator choosing a driver should meet those three facts here, once, rather than
+     * in a failure a month later.
+     */
+    const kinds = (facts.kinds || []).join(', ') || 'nothing declared';
+    const policy = facts.policy || {};
+    const verdict = {
+      allowed: "fine for a store's delivery path",
+      premium: 'usable, on a paid plan',
+      prohibited: 'DEVELOPMENT ONLY — terms forbid this use',
+      unknown: 'policy not established' }[policy.commercial] || 'policy not established';
+    console.log(`            serves: ${kinds} · ${verdict}`);
+    if (facts.streamsInPage === 'premium') console.log('            (a free account cannot produce a playable link)');
+    if (policy.note) console.log(`            terms: ${policy.note}`);
   }
   console.log('');
   process.exit(process.exitCode || 0);
