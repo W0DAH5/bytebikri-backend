@@ -287,6 +287,16 @@ export function planBenefits(plan, { availableSlots = null } = {}) {
   if (c.remove_footer === true) {
     out.push('Your storefront without bytebikri\u2019s name on it — the legal notices stay, because those are not a store\u2019s to remove');
   }
+  /*
+   * The member perk. `ad_free` is read by `slots.js` as the release condition for the
+   * platform's OWN position, and it was false on every plan until now — a capability
+   * with a hook, a test and no seller. The sentence has to say which position, because
+   * "no ads" without an object is the promise this platform has spent three documents
+   * refusing to make: it releases bytebikri's box, never the store's.
+   */
+  if (c.ad_free === true) {
+    out.push('Your members see pages without bytebikri\u2019s own ad position — your own ad slots and the breaks in your files are untouched, and bytebikri takes nothing from them either way');
+  }
   if (c.verified_badge) {
     out.push('A checked-seller badge: a person looks at one identity document, records what they saw, and keeps no copy');
   }

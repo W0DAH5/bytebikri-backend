@@ -115,7 +115,26 @@ node ci/eyes/reset-unlock.mjs bob kathmandu-sketchbook   # clear one viewer's un
 node ci/eyes/reader-walk.mjs alice kathmandu-sketchbook bob   # the reader: pages, the seam, the bookmark, the withheld seam; 9 shots
 node ci/eyes/live-walk.mjs alice friday-night-stream bob      # the stream, the break, the clean entry, the withheld ask; 8 shots
 node ci/eyes/cue-rung-walk.mjs                                # the cue INSIDE a player, and the rung there; 7 shots
+node ci/eyes/member-adfree-walk.mjs                           # the member perk, four viewers on one storefront; 8 shots
 ```
+
+`member-adfree-walk.mjs` is the walk for the plan capability that takes the PLATFORM's own ad position
+off a store's pages for that store's current members (`REVENUE_ARCHITECTURE`, "The one thing a plan may do
+to our position"). Its subject is not a route but a BRANCH, so it puts four people in front of the same
+storefront — a stranger, a live member, a claimant whose dues are unconfirmed, and a member of a different
+store — and asserts the box for each, because every one of those assertions counts something that is NOT
+there and a page that failed to render also has nothing on it. The step that makes it worth running is the
+one that reads the page and the source side by side: the house creative's rendered sentence must equal the
+constant in `creatives.js` character for character (the platform clipped its own sentence at 220 characters
+here — `…No cut of what the` on every storefront in the product — and no unit test could see it), and the
+member's own paragraph must be the released state of `MEMBER_AD_LINE`, which named our position on the one
+page whose whole subject is that it is gone. Both were found by this walk and by nothing else.
+
+The demo's stores are on the `store` plan, so the walk moves the member's store onto `pro` for the length
+of the run and puts it back in a `finally`, then proves the restore by re-reading the stranger's page. Do
+not pipe it into `head` or `grep -m`: a SIGPIPE kill lands before the restore. It prints the plan it found
+and the plan it left behind on the last line, and `update subscriptions set plan_code='store'` is the whole
+repair if a run is killed.
 
 `cue-rung-walk.mjs` takes no arguments and needs no seeder: it drives the demo's own four-minute file
 (`/s/alice/a/poster-kit-session`), and it puts the file back the way it found it. Its subject is the

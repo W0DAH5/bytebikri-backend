@@ -569,6 +569,22 @@ test('plan benefits read as sentences, with no negative sentinel showing through
     assert.ok(planBenefits(plan).some((l) => /storefront theme/i.test(l)),
       `${plan.code} can theme and says so on the pricing page`);
   }
+  // The member perk, the same way round: the capability is on exactly one plan, and
+  // the plan that carries it is the only one sold the sentence. The bullet has to name
+  // the POSITION — "your members see no ads" would promise away the store's own slots
+  // and the breaks in its files, neither of which is bytebikri's to give.
+  const proAdFree = planBenefits(PLANS.pro).filter((l) => /members see pages without/i.test(l));
+  assert.equal(proAdFree.length, 1, 'the Pro page sells the member perk, exactly once');
+  assert.ok(/bytebikri\u2019s own ad position/.test(proAdFree[0]), 'and names WHICH position goes');
+  assert.ok(/your own ad slots and the breaks in your files are untouched/.test(proAdFree[0]),
+    'and says what is not touched, in the same sentence');
+  for (const plan of [PLANS.free, PLANS.store]) {
+    assert.equal(plan.capabilities.ad_free, false, `${plan.code} does not carry ad_free`);
+    assert.ok(!planBenefits(plan).some((l) => /members see pages without/i.test(l)),
+      `${plan.code} is not sold the member perk`);
+  }
+  assert.equal(PLANS.pro.capabilities.ad_free, true);
+
   assert.equal(PLANS.free.capabilities.can_theme, false);
   assert.ok(!planBenefits(PLANS.free).some((l) => /theme/i.test(l)),
     'a Free plan is not sold a look it cannot pick');

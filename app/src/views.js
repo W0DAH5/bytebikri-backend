@@ -69,7 +69,7 @@ import {
 // The ad arrangement and the seller's revenue rows: the membership's promise to the
 // member and the seller's own two-line model, written once in memberships.js.
 import {
-  MEMBER_AD_LINE, ADS_AROUND_LINE, SELLER_DUES_LINE, revenueRows,
+  MEMBER_AD_LINE, memberAdLine, ADS_AROUND_LINE, SELLER_DUES_LINE, revenueRows,
   // The attention door: which doors a tier has, what a join by watching costs,
   // where somebody is against that price, and the sentences both of them are told.
   doorsOf, adModeOf, attentionProgress, attentionLine, attentionStandingLine,
@@ -1122,7 +1122,15 @@ function memberRoster(roster = []) {
  * never joined. Collapsing these into "your membership" is how a paid feature
  * turns into a support queue.
  */
-function myMembershipCard({ channel, membership, tiers, rosterSize = 0, standing = 0 }) {
+function myMembershipCard({
+  channel, membership, tiers, rosterSize = 0, standing = 0,
+  // Does this store's plan release bytebikri's own ad position for its members? The
+  // sentence at the foot of this panel names the positions on the page, and on the one
+  // plan this platform sells FOR that release, naming ours would be false. The fact is
+  // passed in because this module reads no tables; it is the same fact `slotsPage` is
+  // given, from the same place (`store.plan(channel).capabilities.ad_free`).
+  platformPositionReleased = false,
+}) {
   const state = membershipState(membership);
   const tier = tierByNo(tiers, membership?.tier_no);
   const accent = tier?.accent || 'indigo';
@@ -1197,7 +1205,8 @@ function myMembershipCard({ channel, membership, tiers, rosterSize = 0, standing
       + 'for the tier you hold. It appears on this store’s pages and nowhere else. Hiding your name changes nothing else.'
     : 'You are hidden from the member list. Your files stay open either way.'}
       ${rosterSize ? ` ${plural(rosterSize, 'person', 'people')} are named here.` : ''}</p>
-    <p class="fine">${esc(adModeOf(membership) === 'supporter' ? SUPPORTER_LINE : MEMBER_AD_LINE)}</p>
+    <p class="fine">${esc(adModeOf(membership) === 'supporter'
+    ? SUPPORTER_LINE : memberAdLine({ released: platformPositionReleased }))}</p>
   </div>`;
 }
 
@@ -1382,7 +1391,7 @@ function joinPanel({ channel, user, tiers, membership, assets = [], standing = 0
  */
 export function memberRoom({
   channel, user, consent = null, tiers = [], membership = null, standing = 0,
-  assets = [], roster = [], flash = null, membershipsOn = false,
+  assets = [], roster = [], flash = null, membershipsOn = false, platformPositionReleased = false,
 }) {
   const state = membershipState(membership);
   const inRoom = state === 'active';
@@ -1435,6 +1444,7 @@ export function memberRoom({
     // membership. `inRoom` drops the card's link back to this page.
     ? `<div style="margin-top:var(--space-5)">${myMembershipCard({
       channel, membership, tiers, rosterSize: roster.length, standing, inRoom: true,
+      platformPositionReleased,
     })}</div>`
     : ''}
 </div>
@@ -1544,6 +1554,7 @@ function watchingDoor({ channel, tier, standing = 0, user, membership = null, pr
  */
 function membersSection({
   channel, user, tiers, membership, roster, membershipsOn, assets = [], standing = 0, flash = null,
+  platformPositionReleased = false,
 }) {
   if (!tiers.length) return '';
   const named = roster.filter((m) => m.profile_id !== user?.id);
@@ -1558,7 +1569,7 @@ function membersSection({
   </div>
   ${flash ? `<div class="note note-${flash.kind === 'danger' ? 'warning' : 'success'}" role="status">${esc(flash.message)}</div>` : ''}
   ${memberRoster(named)}
-  ${membership ? myMembershipCard({ channel, membership, tiers, rosterSize: named.length, standing }) : ''}
+  ${membership ? myMembershipCard({ channel, membership, tiers, rosterSize: named.length, standing, platformPositionReleased }) : ''}
   ${membershipsOn ? joinPanel({ channel, user, tiers, membership, assets, standing }) : ''}
 </section>`;
 }
@@ -2058,7 +2069,12 @@ ${placed.head}
 </section>
 
 
-${membersSection({ channel, user, tiers, membership, roster, membershipsOn, assets, standing, flash: memberFlash })}
+${membersSection({
+  channel, user, tiers, membership, roster, membershipsOn, assets, standing, flash: memberFlash,
+  // The storefront already holds the plan (the header marks it), so the member's own
+  // paragraph reads the same entitlement the slot allocator reads.
+  platformPositionReleased: plan?.capabilities?.ad_free === true,
+})}
 
 ${placed.mid}
 ${placed.foot}`,
@@ -6122,9 +6138,15 @@ export function slotsPage({
   // migration 0034). Listed rather than hidden: a seller's words disappearing with
   // no explanation is the kind of silence this product is built against.
   retiredSlots = [],
+  // Does this store's plan carry the member perk, and does it have tiers to give it
+  // to? Both facts come from the server, because this module reads no tables — and
+  // both are needed for the sentence to be worth printing: a store with no
+  // membership tiers has nobody to release the position FOR.
+  memberAdFree = false, hasTiers = false, planName = 'your',
 }) {
   const own = slots.filter((s) => s.owner === 'channel');
   const rented = slots.filter((s) => s.owner === 'platform');
+
 
   const card = (slot) => `
   <div class="card card-pad-lg" id="slot-${esc(slot.slotKey || slot.key)}">
@@ -6135,7 +6157,7 @@ export function slotsPage({
       </div>
       <span class="spacer"></span>
       ${slot.owner === 'platform'
-    ? pill('Platform · rented to ByteBikri', 'warning')
+    ? pill('Platform · covered by your rent', 'warning')
     : slot.serves ? pill('Filled by you', 'success') : pill('Yours · empty', '')}
     </div>
 
@@ -6145,9 +6167,10 @@ export function slotsPage({
 
     ${slot.owner === 'platform' ? `
     <p class="fine">
-      This is the space the store rents to ByteBikri. You do not fill it: the space itself is what is
-      being rented, and it stays in the same position on every page load. Nothing about it follows a
-      visitor around the web, and no buyer behaviour is sold.
+      This is the position the platform keeps for itself, and it is what your rent covers — priced from
+      the traffic this store actually got, on your <a href="/dashboard/${esc(channel.slug)}/earnings">earnings page</a>.
+      You do not fill it: ByteBikri does, and it stays in the same position on every page load. It never
+      takes rank 1, and nothing about it follows a visitor around the web or sells buyer behaviour.
     </p>` : `
     <form method="post" action="/dashboard/${esc(channel.slug)}/slots">
       <input type="hidden" name="slotKey" value="${esc(slot.slotKey || slot.key)}">
@@ -6205,9 +6228,10 @@ ${flash ? `<div class="note note-${flash.kind}" role="status">${esc(flash.messag
   <strong>Two kinds of space, and one rule about position.</strong>
   <ul class="list-steps" style="margin-top:var(--space-3)">
     <li><strong>Rank 1 is always yours.</strong> The platform never takes the top position — by
-      allocation, not by promise. The slot you rent out is the last one on the page.</li>
-    <li><strong>Rent is one slot.</strong> One per page, never more, and a page too short to spare a
-      slot is never charged for one.</li>
+      allocation, not by promise. The position it keeps for itself is the last one on the page.</li>
+    <li><strong>Rent is one position.</strong> One per page, never more, and a page too short to spare one
+      is never charged for it. You pay it; ByteBikri fills it and keeps what the advertising inside it
+      earns. That is the whole of the arrangement — there is no other place your money and ours meet.</li>
     <li><strong>Networks fill their own space.</strong> When a network is connected to a slot, the
       network serves the ad inside it. We keep no third-party script in our database, and we never run
       a tag from a network we have not verified.</li>
@@ -6225,12 +6249,25 @@ ${flash ? `<div class="note note-${flash.kind}" role="status">${esc(flash.messag
 
 <section class="section">
   <div class="section-head">
-    <h2>Rented to the platform</h2>
-    <p>The space you are paid for. You can see what is in it; you cannot put anything in it.</p>
+    <h2>The position your rent covers</h2>
+    <p>ByteBikri's own space, not yours — you pay rent for it, you cannot fill it, and you can always see
+      what is in it.</p>
   </div>
   ${rented.length ? rented.map(card).join('') : `<div class="note"><p class="small">None of your pages
     has a rent position right now. One is placed only when a page has at least one position of yours
     to sit beneath, so a page is never taxed for space it does not have.</p></div>`}
+  ${memberAdFree ? `<div class="note note-success" data-member-ad-free="true">
+    <p><strong>Your members do not see it.</strong> The ${esc(planName)} plan releases this position for
+      the people who currently hold a membership of this store — your own ${esc(hasTiers ? 'tiers' : 'membership')}
+      are unaffected, and they see every page without ByteBikri's box on it. Nothing else changes: your own
+      positions stay exactly where they are, the breaks inside your files are still yours, your rent is
+      unchanged, and a visitor who is not a member sees the page as everybody else does.</p>
+    <p class="fine" style="margin-top:var(--space-2)">
+      ByteBikri cannot pay this to your members as money — the platform is not in the path of anything you
+      earn, and it never sends money to a person. Releasing its own position is the one thing it can give
+      them that costs you nothing.
+    </p>
+  </div>` : ''}
 </section>
 
 <section class="section">
@@ -7379,6 +7416,7 @@ ${flashNote(flash)}
     planName: plan?.name || 'Free',
     planPrice: plan?.priceNpr ? `${npr(plan.priceNpr)} a year` : 'free, permanently',
     slotCount: plan?.capabilities?.slot_count ?? 0,
+    releasesPosition: plan?.capabilities?.ad_free === true,
   }).map((r) => `<dt>${esc(r.term)}</dt><dd>${esc(r.text)}</dd>`).join('')}
       </dl>
       <p class="fine" style="margin-top:var(--space-4)">

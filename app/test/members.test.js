@@ -41,7 +41,8 @@ const { store, PLANS } = await import('../src/store.js');
 const views = await import('../src/views.js');
 const {
   membershipState, memberRefusal, tierDraft, duesLine, plateStyle, opensFor, revenueRows,
-  MONEY_LINE, LAPSE_LINE, FREE_PLAN_LINE, MEMBER_AD_LINE, ADS_AROUND_LINE, ACCENTS,
+  MONEY_LINE, LAPSE_LINE, FREE_PLAN_LINE, MEMBER_AD_LINE, MEMBER_AD_LINE_RELEASED,
+  memberAdLine, ADS_AROUND_LINE, ACCENTS,
   // The attention door: the second way in, priced by the platform and paid in views.
   doorsOf, attentionViews, attentionProgress, attentionLine, attentionStandingLine,
   attentionBankedLine, adModeOf, doorFor, ATTENTION_MONEY_LINE, SUPPORTER_LINE,
@@ -635,6 +636,40 @@ test('the member is told where the ads are before they are asked for money', asy
     // platform's slot is the LAST position on a page, and it is the only one it takes.
     assert.match(MEMBER_AD_LINE, /opens because your dues are current/);
     assert.ok(owner.id && member.id, 'sanity');
+
+    /*
+     * AND THE SAME PAGE ON THE PLAN THAT RELEASES OUR POSITION.
+     *
+     * `MEMBER_AD_LINE` names two kinds of position and says both are on the page. On a
+     * store carrying `ad_free` ours is not, and the member reading that sentence is
+     * looking at the empty space it describes — the sentence became false in the same
+     * release that made the perk real. The storefront now chooses between two
+     * sentences on the plan it already holds, and this asserts both, because a
+     * two-branch sentence with one branch rendered is one branch tested.
+     */
+    assert.match(MEMBER_AD_LINE_RELEASED, /releases the one ad position bytebikri keeps/);
+    assert.match(MEMBER_AD_LINE_RELEASED, /none of them gates a download or interrupts one/,
+      'the promise that matters is word for word the same in both states');
+    assert.doesNotMatch(MEMBER_AD_LINE_RELEASED, /the one bytebikri rents/,
+      'the released sentence must not claim our position is on the page');
+    assert.equal(memberAdLine({}), MEMBER_AD_LINE, 'the default is the sentence for a store that did not buy it');
+    assert.equal(memberAdLine({ released: true }), MEMBER_AD_LINE_RELEASED);
+
+    // The seller's own panel prints the member's sentence, so it cannot disagree with
+    // the member's page about which positions are on it.
+    const released = revenueRows({ planName: 'Pro', planPrice: 'NPR 1999 a year', slotCount: 2, releasesPosition: true });
+    assert.match(released[3].text, /releases the one ad position bytebikri keeps/);
+    assert.doesNotMatch(revenueRows({ planName: 'Pro', planPrice: 'x', slotCount: 2 })[3].text,
+      /releases the one ad position/);
+    const releasedPage = views.storefront({
+      channel, assets: [], slots: [], user: { id: member.id, display_name: 'A Buyer' },
+      membershipsOn: true, membership, roster: [], tiers,
+      plan: { code: 'pro', name: 'Pro', capabilities: { ad_free: true } },
+    });
+    assert.match(releasedPage, /releases the one ad position bytebikri keeps/,
+      'a Pro store’s member is told the position is not on their page');
+    assert.doesNotMatch(releasedPage, /the one bytebikri rents/,
+      'and is not told the opposite on the page above it');
   } finally { await cleanup(channel, owner, member); }
 });
 

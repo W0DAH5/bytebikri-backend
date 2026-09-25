@@ -176,7 +176,16 @@ export const PLANS = {
     capabilities: {
       max_assets: -1, slot_count: 2, can_theme: true, custom_sections: -1,
       remove_footer: true, marketplace_listed: true, analytics_level: 'full',
-      verified_badge: true, featured_eligible: true, ad_free: false, memberships: true,
+      verified_badge: true, featured_eligible: true, memberships: true,
+      // `ad_free` is the ONE capability that changes a page the way the platform
+      // renders it: it releases the platform's own ad position (`slots.js`
+      // `POLICY.releasedBy`) for this store's CURRENT members, and for nobody else.
+      // Pro carries it; Store and Free do not, and the allocator checks the
+      // capability before it ever looks at a membership row, so a Free store cannot
+      // grant it with a tier. See REVENUE_ARCHITECTURE.md — "the one thing a plan
+      // may do to our position" — for why the store pays rather than the member,
+      // and for what it deliberately leaves alone.
+      ad_free: true,
       ad_ask_max_ads: 3, ad_ask_max_seconds: 60,
     },
   },

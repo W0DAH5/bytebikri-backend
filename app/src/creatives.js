@@ -33,15 +33,35 @@
  * with our domain on it.
  */
 
-/** The house creative. What bytebikri runs in a rent slot when nothing else can. */
+/**
+ * The house creative. What bytebikri runs in a rent slot when nothing else can.
+ *
+ * THE DIRECTION WAS WRITTEN BACKWARDS, and this is where it was corrected. The copy
+ * said the space was "rented FROM the store" and that "the store rents it to
+ * ByteBikri" — the store as landlord, being paid — while the ledger does the
+ * opposite in three places at once: `billing.js` invoices the STORE rent for this
+ * position, `MONEY_MAP.toPlatform` lists it under "What you pay bytebikri" with
+ * `payer: 'You'`, and `rent_invoices`'s own comment says bytebikri receives it.
+ * A shopper reading a footer is the last person who can check, which is why a
+ * sentence nobody could falsify sat there wrong for this long.
+ *
+ * So the words now say whose space it is and who pays for it, in the order a
+ * visitor meets them, and they leave out nothing a seller could be surprised by.
+ */
 export const HOUSE_CREATIVE = {
-  headline: 'This space is rented from the store',
+  headline: 'This space is ByteBikri\u2019s own',
   // "No cut of the store's sales — there are no sales" was true while nothing here
   // was sold. Members pay dues now, and a sentence printed in a footer on every
   // storefront is the worst place in the product to leave one that has stopped
   // being true — so it says what the arrangement actually is: whatever a store
   // earns, in whatever form, bytebikri takes no part of it.
-  body: 'ByteBikri sells the least valuable slot on a storefront back to itself, and pays for the servers with it. No cut of what the store earns — dues included.',
+  // THE CAP IS 220 (`normaliseCreative`), AND IT APPLIES TO US. The first draft of this
+  // sentence ran 252 characters and was silently cut to "…No cut of what the" by this
+  // module's own clamp — on every storefront in the product, in the one box the platform
+  // writes itself. A house creative is not exempt from the rule a seller's creative is
+  // held to; the sentence is written to fit instead, and `test/creatives.test.js` now
+  // asserts that it survives the trip through the normaliser unchanged.
+  body: 'One position on every page is ours — always the cheapest, never the first. The store pays rent for it, and we take no cut of what the store earns, dues included.',
   linkUrl: '/',
   linkLabel: 'What ByteBikri is',
 };
@@ -72,7 +92,9 @@ export function slotFraming(owner, { channelName = 'this store' } = {}) {
     return {
       label: 'Advertisement',
       purpose: SLOT_PURPOSE.footer_native,
-      byline: 'Platform space. The store rents it to ByteBikri; the store is not the advertiser.',
+      // Whose space, in one line — which is this function's whole job. The money
+      // direction is NOT restated here: it was restated once and got reversed.
+      byline: 'Platform space. Not the store\u2019s, and the store is not the advertiser.',
     };
   }
   // Short. The shopper needs to know whose voice this is; the paragraph about

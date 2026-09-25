@@ -113,6 +113,31 @@ test('the web slot says which surface it is, and that it is not the auction', ()
   assert.equal(composeSlot({ slot: slot({ surface: 'app_native' }) }).rtbNote, null);
 });
 
+test('the platform’s own message survives the platform’s own clamp', () => {
+  // The house creative is written in this repository and rendered on every storefront,
+  // and it is normalised by the same function that normalises a seller's creative —
+  // including its 220-character body cap. The first draft of the corrected sentence ran
+  // 252 characters and shipped clipped ("…No cut of what the"), which is the worst
+  // possible place for this product to print half a sentence: our own box, on somebody
+  // else's page. Exemption would be the wrong fix — the platform's copy obeys the rule a
+  // seller's copy obeys, so what is asserted here is that the sentence FITS.
+  const house = normaliseCreative({ ...HOUSE_CREATIVE, owner: 'platform', is_house: true });
+  assert.equal(house.body, HOUSE_CREATIVE.body,
+    'the platform’s own line is being cut by its own normaliser');
+  assert.ok(HOUSE_CREATIVE.headline.length <= 90 && HOUSE_CREATIVE.body.length <= 220,
+    `the house creative is over the cap: headline ${HOUSE_CREATIVE.headline.length}/90, body ${HOUSE_CREATIVE.body.length}/220`);
+  assert.ok(HOUSE_CREATIVE.linkLabel.length <= 40);
+
+  // And the direction, in the words a visitor reads: the STORE pays rent for this
+  // position. It read "rented to ByteBikri" — the arrangement, exactly backwards — on
+  // every storefront for three rounds.
+  assert.ok(/The store pays rent for it/.test(HOUSE_CREATIVE.body));
+  assert.ok(!/rented to ByteBikri/i.test(HOUSE_CREATIVE.body));
+  // The store's own space is never for sale in our copy either: one sentence naming the
+  // two owners is the whole model, and half of it is missing without this.
+  assert.ok(/no cut of what the store earns/i.test(HOUSE_CREATIVE.body));
+});
+
 test('the framing names the party, not a colour', () => {
   assert.equal(slotFraming('platform').label, 'Advertisement');
   assert.match(slotFraming('platform').byline, /store is not the advertiser/);

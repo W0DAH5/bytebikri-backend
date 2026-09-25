@@ -264,7 +264,7 @@ single-asset management, and search.
 | KYC verification flow | **built in §29** — the document is handed over, stripped of metadata before it is stored, destroyed the moment a decision is recorded, and after seven days either way |
 | A storefront theme (the plans' `can_theme`) | **built in §31** — six curated palettes, each proven at ≥5.5:1 for white at both ends of its gradient and at the middle, a live preview on the seller's own store name, motion that is opt-in per device, and the capability read from the plan rather than restated |
 | Per-store fonts, free-form colours, seller CSS | absent **on purpose**: each is a claim about readability that no test can keep, and each can be priced and proven on its own later |
-| A member-paid ad-free experience, charged to the seller | **still open** — the revenue-side sibling of the theme round. It cannot be sold by withholding ad money (the networks pay the store directly), so it needs a seller-side capability, a price, and a rule about the platform's rented slot. Researched, deliberately not half-built |
+| A member ad-free experience, charged to the seller | **built** — Pro carries `ad_free`, and the platform's own rented position is released for that store's CURRENT members and nobody else: the store's own positions and its own cue breaks are untouched, the rent is unchanged, and no money moves between the platform and a creator. The price question answered itself — the capability rides on the plan that exists rather than becoming a third charge. `db/migrations/0050_member_ad_free.sql`, `memberships.js memberAdFreeFor()`, `ci/eyes/member-adfree-walk.mjs` (4 viewers on one storefront), `REVENUE_ARCHITECTURE` §"The one thing a plan may do to our position" |
 | Per-store footer removal (`remove_footer`) | **built in §33** — a paid store's storefront and file pages lose bytebikri's name; the legal notices stay on every page of every plan, because those are not a store's to remove. Sold on the pricing page in the same words, and pinned in two test files |
 | Paying a creator directly | **built in §30** — members: two tiers the store names, dues the member sends the creator and the creator alone confirms, a roster with plates, and files that open with no ad while the period runs |
 | Following a store | **built in §28** — a shelf at `/library`, a count of what appeared since you last looked, and no notification promised anywhere, because this product sends buyers none |
@@ -2812,10 +2812,11 @@ had a console error or a horizontal overflow.
 
 ### Still open, recorded rather than half-built
 
-- **A seller-paid ad-free experience for their members** (the fee the platform would charge to drop
-  its own rented slot and the store's positions on a member's pages). It needs a capability, a price
-  and a rule about the platform's rent; it cannot be done by withholding revenue bytebikri never
-  receives.
+- ~~**A seller-paid ad-free experience for their members**~~ **Built** (§43): the capability is on
+  Pro, the rule is that it releases the PLATFORM's own rented position only — never the store's positions,
+  never the store's own cue breaks — and the rent is unchanged, because the traffic is the same traffic.
+  The half of this note that said "the store's positions" was the part that could not be done, and it was
+  the right instinct: giving away a store's inventory is not a perk, it is somebody else's revenue.
 - **A dues-based rent component** — whether a store with a large paying roster should pay more rent
   than the flat traffic-priced one, which is the same open question as §30's roster pricing.
 - **Which region's viewers actually monetise the rented slot at all** — Nepal's display fill is real
@@ -3677,3 +3678,49 @@ and nine refusals, every one with its owner tag read off the rendered DOM (`Your
 off the arrangement as `Since 25 Sept 2026`, and the page's visible TEXT searched for an ad-free promise
 (the only allowed use is inside quotes, where the refusal for beta access names what it is comparing
 itself to). Console errors none. Suite **787/787/0**.
+
+## §43 — The one thing a plan may do to our position, and the four things building it found
+
+`plans.capabilities.ad_free` had been in the table since `0001` and false on every plan: `slots.js` carried
+`POLICY.releasedBy = 'ad_free'` as an unread hook, and one test kept it from becoming dead code. It is sold
+now, on Pro, and the shape is the one `REVENUE_ARCHITECTURE` settled: a store buys the capability, and the
+store gives the perk to its own current members. What it releases is **the platform's own rented position
+and nothing else** — the store's positions are the store's, the breaks the store placed inside its own files
+are the store's, the rent is unchanged (the traffic is the same traffic), and no money moves between the
+platform and a creator in either direction.
+
+**Why the seller pays rather than the creator absorbing it.** Twitch ships this exact feature and the
+streamer eats it — with "Ad-Free Viewing for subscribers" on, subscribers stop counting as impressions, and
+Twitch's own guidance calls it "a minimal change in ad revenue… balanced by higher subscription rates".
+YouTube refuses it for channel memberships (pay a creator monthly, still get ads) because its Premium removes
+ads by **pooling subscription revenue and paying creators out of the pool** — a mechanism this platform has
+no version of and will not acquire. Neither model fits, so the cost is a published price on a plan.
+
+**Four defects, each invisible to the check that would seem obvious:**
+
+1. **The entitlement was read as an instruction.** `buildSlots` spread the plan's `capabilities` into the
+   allocator, so a Pro store's pages dropped the platform position for EVERYBODY — the rent leg gone on the
+   top plan, strangers handed an ad-free store. `test/slots.test.js`'s oldest assertion caught it. The flag
+   is now set explicitly, never inherited, and a new assertion loops every plan for a signed-out visitor.
+2. **`views.js` reads no tables.** The seller's panel called `store.plan(channel)` in a module with no store
+   import — a `ReferenceError` on a page. The fact comes from the route, as every other fact in that file does.
+3. **The platform clipped its own sentence.** The corrected house creative ran 252 characters against
+   `normaliseCreative`'s 220-character cap, so every storefront rendered "…No cut of what the" — half a
+   sentence in our own box on somebody else's page. Unit tests passed throughout: the module held the whole
+   string and the page held most of it.
+4. **The member was told our position was on their page.** `MEMBER_AD_LINE` names two positions and says both
+   are present — true of every plan until this one, and false on the only plan whose point is removing ours.
+   It printed in the member's own panel, above the empty space it described. The sentence has a second state
+   now (`MEMBER_AD_LINE_RELEASED`), chosen by the same entitlement the allocator reads, and the seller's
+   "What your members see" row reads whichever one is true of the store being sold.
+
+The last two were found in a browser by `ci/eyes/member-adfree-walk.mjs` and by nothing else — both were
+correct code printing a false or truncated sentence, which no unit test in this repository can see. The walk
+puts four people in front of one storefront (stranger, live member, unconfirmed claimant, member of another
+store), asserts the rendered house line equals the constant character for character, asserts the member's
+paragraph is the released state, and proves its own temporary plan move was the cause by putting the plan
+back and finding the position again. Shots `docs/evidence/round43/member-adfree-1..5`. Suite **807/807/0**,
+sweep **66 clean / 0 findings**, and migration `0050_member_ad_free.sql` applies on a fresh database.
+
+**Still open, unchanged by this round:** a minimum rent floor on the paid plans, and whether a store with a
+large paying roster should pay a rent that reflects it.

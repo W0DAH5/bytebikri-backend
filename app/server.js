@@ -73,7 +73,7 @@ import {
   TIERS_MAX, PERIODS, CLAIM_METHODS, ACCENTS, ACCENT_KEYS, MONEY_LINE, FREE_PLAN_LINE,
   PLATE_COPY, tierDraft, paymentNoteDraft, membershipState, membershipCurrent, memberBadge,
   doorsOf, adModeOf, attentionProgress, standingOf, attentionViews, JOIN_MODES, AD_MODES,
-  duesLine, tierByNo,
+  duesLine, tierByNo, memberAdFreeFor,
 } from './src/memberships.js';
 // Storefront themes: curated palettes, and the plan capability that has been in
 // the plans table since migration 0001 without a single reader until now.
@@ -368,11 +368,35 @@ async function decorateChannels(channels) {
   }));
 }
 
-async function buildSlots(channel, surfaces = ['web']) {
+/**
+ * The page's positions, for one plan — and, when the VIEWER is a member of this store
+ * on a plan that carries it, without the platform's own.
+ *
+ * `releasePlatformSlot` defaults to false, which is what every owner-facing and
+ * platform-facing caller wants: the seller's own panel must show the position they pay
+ * rent for, and the counter must count what the visitor's page actually drew. Only
+ * `slotsFor` — the function that renders a page for a person — passes true, and only
+ * after `memberAdFreeFor` has answered yes for that person on that store.
+ */
+async function buildSlots(channel, surfaces = ['web'], { releasePlatformSlot = false } = {}) {
   const plan = store.plan(channel);
+  /*
+   * The flag is SET, never inherited — and that distinction is the whole reason this
+   * line is written out rather than spread.
+   *
+   * `plans.capabilities.ad_free` is an ENTITLEMENT: "this store may release the
+   * platform's position for its members". `allocateSlots` reads the same key as an
+   * INSTRUCTION: "release it, for this page, for this viewer". Passing the plan's blob
+   * straight through — which is what this function did for one draft — made a Pro store
+   * lose the position for everybody, not just for its members: the entitlement became a
+   * site-wide release, the rent leg quietly stopped existing on the top plan, and every
+   * page on that store went advertising-free for strangers too. Caught by a test that
+   * asserts a position exists on every plan, which is exactly what that test is for.
+   */
+  const capabilities = { ...plan.capabilities, [POLICY.releasedBy]: releasePlatformSlot === true };
   return allocateSlots({
     slotDefs: SLOT_DEFS,
-    capabilities: plan.capabilities,
+    capabilities,
     connections: await store.connectionsOf(channel.id),
     surfaces,
   });
@@ -493,7 +517,16 @@ async function countPositions(channel, surface, slots = []) {
 }
 
 async function slotsFor(channel, { viewer = null, surface = 'storefront', surfaces = ['web'] } = {}) {
-  const slots = await buildSlots(channel, surfaces);
+  // The one place the member's own page is decided. A signed-out visitor, the owner
+  // and the operator all read the plan's capabilities as they are; a signed-in member
+  // of a store whose plan carries `ad_free` reads them with the platform's position
+  // released. Both conditions live in `memberAdFreeFor` — this call site only supplies
+  // the two facts it cannot look up for itself.
+  const membership = viewer ? await store.membershipFor(viewer.id, channel.id) : null;
+  const release = memberAdFreeFor({
+    capabilities: store.plan(channel).capabilities, membership,
+  });
+  const slots = await buildSlots(channel, surfaces, { releasePlatformSlot: release });
   const isOwner = Boolean(viewer) && viewer.id === channel.owner_id;
   return composeSlots(slots, await store.creativesForChannel(channel.id), {
     channelName: channel.name,
@@ -1013,6 +1046,9 @@ APP.get('/s/:slug/members', limitWatch, async (req, res, next) => {
       roster: await store.publicRoster(channel.id, { limit: 24 }),
       flash: flashFor(req.query),
       membershipsOn: true,
+      // The member room prints the same paragraph about where the ads are, so it needs
+      // the same entitlement the storefront and the slot allocator read.
+      platformPositionReleased: store.plan(channel).capabilities?.ad_free === true,
     }));
   } catch (err) { return next(err); }
 });
@@ -2668,8 +2704,16 @@ APP.get('/dashboard/:slug/slots', async (req, res, next) => {
       .filter((d) => d.creative && (d.creative.headline || d.creative.body))
       .map((d) => ({ label: d.label, headline: d.creative.headline || d.creative.body }));
 
+    const plan = store.plan(channel);
+    const tiers = await store.membershipTiers(channel.id);
     res.send(views.slotsPage({
       channel, user: req.user, consent: req.consent,
+      // The panel is told both facts rather than reading them: `views.js` reads no
+      // tables, and a capability whose only visible effect is a box NOT appearing for
+      // somebody else is one a seller cannot tell they bought.
+      memberAdFree: plan.capabilities?.ad_free === true,
+      hasTiers: tiers.length > 0,
+      planName: plan.name,
       slots: await slotsFor(channel, { viewer: req.user, surface: 'dashboard' }),
       blockedCount: await store.blockSignalCountOfChannel(channel.id, { hours: SIGNAL_WINDOW_HOURS }),
       blockedHours: SIGNAL_WINDOW_HOURS,

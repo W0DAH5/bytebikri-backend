@@ -25,7 +25,17 @@ const { close, query } = await import('../src/db.js');
 
 after(async () => { await close(); });
 
-const webCaps = (code, over = {}) => ({ ...PLANS[code].capabilities, ...over });
+/*
+ * The allocator's own view of a plan — and the release flag is a PARAMETER here, not an
+ * inheritance, for the same reason `buildSlots` sets it explicitly: the plan table holds
+ * an entitlement ("this store may release our position for its members"), while
+ * `allocateSlots` reads the key as an instruction for one page and one viewer. A test
+ * that spread the plan's blob would be asserting that a Pro store's pages carry two
+ * boxes for everyone, which is the bug this helper exists to keep visible.
+ */
+const webCaps = (code, over = {}) => ({
+  ...PLANS[code].capabilities, [POLICY.releasedBy]: false, ...over,
+});
 const run = (code, over = {}) => allocateSlots({
   slotDefs: SLOT_DEFS, capabilities: webCaps(code, over),
   connections: [{ id: 'c1', provider_id: 'x', status: 'active', slot_keys: null }],
@@ -77,6 +87,55 @@ test('a page with no position of its own is never taxed', () => {
   assert.equal(released.filter((s) => s.owner === 'channel').length, PLANS.store.capabilities.slot_count);
 });
 
+test('the member perk releases OUR position only, and only for a member of that store', async () => {
+  const { memberAdFreeFor } = await import('../src/memberships.js');
+  const caps = (code) => PLANS[code].capabilities;
+  const active = { status: 'active', period_end: new Date(Date.now() + 86400000) };
+  const lapsed = { status: 'active', period_end: new Date(Date.now() - 86400000) };
+
+  // The capability is the FIRST condition: a membership row on a plan that does not
+  // carry it releases nothing, which is the guard the allocator has always had.
+  assert.equal(memberAdFreeFor({ capabilities: caps('free'), membership: active }), false);
+  assert.equal(memberAdFreeFor({ capabilities: caps('store'), membership: active }), false);
+  assert.equal(memberAdFreeFor({ capabilities: caps('pro'), membership: active }), true);
+  // The period is the second: a lapsed membership is not a member, and neither is a
+  // visitor who has none.
+  assert.equal(memberAdFreeFor({ capabilities: caps('pro'), membership: lapsed }), false);
+  assert.equal(memberAdFreeFor({ capabilities: caps('pro'), membership: null }), false);
+  assert.equal(memberAdFreeFor({}), false, 'no arguments must not release anything');
+
+  // And what it does to the page: ours goes, theirs stays, on every plan.
+  const proReleased = run('pro', { ad_free: true });
+  assert.equal(proReleased.filter((s) => s.owner === 'platform').length, 0,
+    'the platform position survived its own release');
+  assert.equal(proReleased.filter((s) => s.owner === 'channel').length, PLANS.pro.capabilities.slot_count,
+    'releasing our position also took one of the store\u2019s');
+  // Nothing else about the page changes: same keys, same ranks, same order.
+  const normal = run('pro');
+  assert.deepEqual(
+    proReleased.filter((s) => s.owner === 'channel').map((s) => s.slotKey),
+    normal.filter((s) => s.owner === 'channel').map((s) => s.slotKey),
+  );
+  // And it is not a way to raise the cap: releasing ours can only ever make the page
+  // carry one FEWER box, never a different set of the store's own.
+  assert.equal(proReleased.length, normal.length - 1);
+
+  // THE ENTITLEMENT IS NOT THE INSTRUCTION. A store on the plan that carries `ad_free`
+  // still shows the position to everybody who is not a current member of it — including
+  // a signed-out visitor. The draft that spread the plan's blob through the allocator
+  // released it for the entire world, which would have deleted the rent leg on the top
+  // plan and handed strangers an ad-free store; this assertion is the one that failed.
+  for (const code of Object.keys(PLANS)) {
+    const forAStranger = run(code);
+    if (PLANS[code].capabilities.slot_count === 0) {
+      assert.equal(forAStranger.length, 0);
+      continue;
+    }
+    assert.equal(forAStranger.filter((s) => s.owner === 'platform').length, 1,
+      `${code}: a visitor who is not a member lost the platform's position`);
+  }
+});
+
 test('the positions that were cut cannot be allocated, and are still named', () => {
   const allocated = new Set(run('pro').map((s) => s.slotKey));
   for (const key of ['in_content_2', 'footer_native']) {
@@ -98,7 +157,20 @@ test('the plan capability, the policy and the seller’s panel agree', async () 
       `${row.code}: the table and the app disagree about how many positions a store owns`,
     );
     assert.ok(row.capabilities.slot_count <= POLICY.maxTotalSlots);
+    // And the release capability, which is now SOLD rather than dormant: the table
+    // and the app have to agree about who carries it, because the allocator reads the
+    // table through `store.plan()` on every page and the pricing page reads the app's
+    // copy to describe it.
+    assert.equal(
+      row.capabilities[POLICY.releasedBy] === true, PLANS[row.code].capabilities[POLICY.releasedBy] === true,
+      `${row.code}: the table and the app disagree about ${POLICY.releasedBy}`,
+    );
   }
+  // It is carried by exactly one plan, and that plan is the top one: a capability
+  // every store has is not a capability, and one no store has is dead code.
+  const carriers = Object.values(PLANS).filter((p) => p.capabilities[POLICY.releasedBy] === true);
+  assert.equal(carriers.length, 1, `${carriers.length} plans carry ${POLICY.releasedBy}`);
+  assert.equal(carriers[0].code, 'pro');
   // `minTenantSlotsBeforeTax` has to be reachable: a threshold above the cap would
   // mean the platform is never placed anywhere, and the rent leg would quietly stop
   // existing while every test that checked the split kept passing.

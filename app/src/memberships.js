@@ -137,6 +137,35 @@ export function adModeOf(tier) {
 }
 
 /**
+ * ── THE PLATFORM'S OWN POSITION, FOR A MEMBER ────────────────────────────────
+ *
+ * `slots.js` has carried one release condition since the density revision:
+ * `POLICY.releasedBy = 'ad_free'` — a plan capability that takes the platform's
+ * position off a page WITHOUT touching any of the store's. It was read by no plan,
+ * and one test kept the hook from being dead code. This is the function that reads
+ * it, and it is here rather than in `slots.js` for a plain reason: `slots.js`
+ * imports nothing and `memberships.js` already imports `slots.js`, so the decision
+ * lives on the side of the arrow that has no cycle.
+ *
+ * TWO conditions, and both are load-bearing:
+ *
+ *   1. the store's plan carries the capability — the store bought it. Checked
+ *      first, so a membership row on a Free store releases nothing.
+ *   2. the viewer holds a CURRENT membership of that store. The perk is the
+ *      store's to give to its own members, and only while the period runs; a
+ *      lapsed membership is not a member.
+ *
+ * What this does NOT decide: whether the store's own positions are rendered (they
+ * are, always — they are the store's, filled by the store's own ad connections),
+ * and whether the store's own break inside its own file is skipped (that is the
+ * tier's `ad_mode`, above). Ours is a different box on a different page.
+ */
+export function memberAdFreeFor({ capabilities, membership, now = new Date() } = {}) {
+  if (capabilities?.[POLICY.releasedBy] !== true) return false;
+  return membershipCurrent(membership, now);
+}
+
+/**
  * The one rule about who opens a members-only file, and what happens next.
  *
  *   covered  — their membership opens it, now, with no ad
@@ -417,6 +446,30 @@ export const MEMBER_AD_LINE =
   + 'something first. The page around it carries the same ad positions as the rest of the store, the shop’s own '
   + 'and the one bytebikri rents, and none of them gates a download or interrupts one.';
 
+/**
+ * The same paragraph, on a store whose plan releases OUR position for its members.
+ *
+ * The line above names two positions and claims both are on the page. On a store that
+ * carries `ad_free` — the plan this platform sells for exactly this — one of them is
+ * not, and the sentence was rendered to the one person who can see the difference: the
+ * member whose pages it is about. A member browsing a storefront and reading "the one
+ * bytebikri rents" above empty space is the smallest version of a promise that stopped
+ * being true, and this product treats that as a defect rather than a rounding error.
+ *
+ * What does NOT change: the store's own positions are still there, and the promise that
+ * actually matters — nothing sits between a member and the file — is identical.
+ */
+export const MEMBER_AD_LINE_RELEASED =
+  'Nothing is placed between you and the file: it opens because your dues are current, not because you watched '
+  + 'something first. This store’s plan releases the one ad position bytebikri keeps, so our box is not on the pages '
+  + 'you read at all — the shop’s own positions are, where the shop put them, and none of them gates a download or '
+  + 'interrupts one.';
+
+/** Whichever of the two is true of the store this member is reading. */
+export function memberAdLine({ released = false } = {}) {
+  return released === true ? MEMBER_AD_LINE_RELEASED : MEMBER_AD_LINE;
+}
+
 /** The same arrangement, said to a seller, who is deciding whether to sell memberships. */
 export const ADS_AROUND_LINE =
   'Ad positions sit around a member’s content and never inside it. That is deliberate: what a member paid for is '
@@ -439,7 +492,9 @@ export const SELLER_DUES_LINE =
  * from `slots.js`, so if that policy changes this panel changes with it instead of
  * going quietly out of date.
  */
-export function revenueRows({ planName = 'Free', planPrice = 'free', slotCount = 0 } = {}) {
+export function revenueRows({
+  planName = 'Free', planPrice = 'free', slotCount = 0, releasesPosition = false,
+} = {}) {
   const slots = Number(slotCount) || 0;
   const takesSlot = slots >= POLICY.minTenantSlotsBeforeTax;
   return [
@@ -468,7 +523,9 @@ export function revenueRows({ planName = 'Free', planPrice = 'free', slotCount =
     },
     {
       term: 'What your members see',
-      text: MEMBER_AD_LINE,
+      // The same sentence the member reads, chosen by the same fact — this row and the
+      // member's own page cannot disagree about which positions are on it.
+      text: memberAdLine({ released: releasesPosition }),
     },
     {
       // The third charge, stated to the seller who is not paying it. A seller reading

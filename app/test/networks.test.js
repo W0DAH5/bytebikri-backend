@@ -228,15 +228,60 @@ test('the slots page states the rule, the rent slot, and the web\'s real limit',
     }],
   });
   assert.ok(/Rank 1 is always yours/.test(html));
-  assert.ok(/Rent is one slot/.test(html));
+  assert.ok(/Rent is one position/.test(html));
   assert.ok(/We keep no third-party script in our database/.test(html));
+  // WHICH WAY THE MONEY GOES. The panel used to be headed "Rented to the platform"
+  // over the line "The space you are paid for", and the rule list said "the slot you
+  // rent out is the last one on the page" — every one of those sentences had the
+  // arrangement backwards. The store pays rent for ByteBikri's position and ByteBikri
+  // keeps what the advertising inside it earns; the direction is asserted rather than
+  // implied, because it was wrong in this exact file's subject for three rounds.
+  assert.ok(/You pay it; ByteBikri fills it/.test(html), 'the seller is told which way the rent goes');
+  assert.ok(/The position your rent covers/.test(html), 'and the panel is headed in that direction');
+  assert.ok(!/Rented to the platform|space you are paid for/.test(html),
+    'the reversed direction is gone from the panel, not merely joined by a correction');
   assert.ok(/display-class space/.test(html) && /runs in the app/.test(html),
     'the web is never sold as the app: rewarded video is the app\'s format');
-  assert.ok(/you cannot put anything in it/i.test(html), 'the rent slot is not editable by the seller');
+  assert.ok(/you cannot fill it/i.test(html), 'the rent position is not editable by the seller');
   // The store's own space has no price. "not an ad slot for sale" is the denial,
   // so the test looks for a price TAG rather than for the word.
   assert.ok(!/NPR\s?[\d,]+/.test(html), 'the store\'s own space is never given a price');
   assert.ok(/not\s+an ad slot for sale/.test(html), 'and it says so rather than leaving it implied');
+});
+
+test('a store whose plan releases our position is told so, and told which position', () => {
+  // `ad_free` releases the PLATFORM's own position for a store's current members. The
+  // copy rule this file already enforces — one sentence, and the sentence names its
+  // object — matters most here: "your members see no ads" would be a promise this
+  // product refuses to make, because the store's own positions and the breaks inside
+  // its files are the store's and are untouched. So the panel says WHICH box goes.
+  const withPerk = slotsPage({
+    channel: CHANNEL, user: null, flash: null, slots: [], memberAdFree: true,
+    hasTiers: true, planName: 'Pro',
+  });
+  assert.ok(/data-member-ad-free="true"/.test(withPerk));
+  assert.ok(/Your members do not see it/.test(withPerk));
+  assert.ok(/Pro plan releases this position/.test(withPerk));
+  assert.ok(/the people who currently hold a membership of this store/.test(withPerk),
+    'the release is scoped to that store\u2019s own members, and says so');
+  assert.ok(/your own\s+tiers/.test(withPerk), 'and it names what is NOT touched');
+  assert.ok(/the breaks inside your files are still yours/.test(withPerk),
+    'the store\u2019s own cue breaks are its own and are never part of this');
+  assert.ok(/your rent is\s+unchanged/.test(withPerk), 'the rent leg does not move');
+  // Not money. The platform is not in the path of anything the store earns, so a perk
+  // that pays a person would contradict the whole architecture in one sentence.
+  assert.ok(/cannot pay this to your members as money/.test(withPerk));
+
+  const withoutPerk = slotsPage({ channel: CHANNEL, user: null, flash: null, slots: [] });
+  assert.ok(!/data-member-ad-free/.test(withoutPerk), 'a plan that does not carry it is not told about it');
+  assert.ok(!/releases this position/.test(withoutPerk));
+
+  // And the seller on a Pro store with no tiers is not told their "members" are spared:
+  // there is nobody holding anything, so the sentence would describe a state, not a fact.
+  const noTiers = slotsPage({
+    channel: CHANNEL, user: null, flash: null, slots: [], memberAdFree: true, hasTiers: false, planName: 'Pro',
+  });
+  assert.ok(/the people who currently hold a membership/.test(noTiers));
 });
 
 test('the seller is shown what the platform refuses to do, from the one list that says it', () => {

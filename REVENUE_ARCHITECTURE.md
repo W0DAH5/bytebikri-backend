@@ -58,6 +58,110 @@ arithmetic of this leg rather than its principle:
 5. Price: `POLICY.assumedRpmUsd = 0.2`, `usdToNpr = 133`, `annualRentNpr = estNpr × 12`, floored at 0.
 6. **A zero invoice is normal.** No traffic → no rent → no invoice issued at all.
 
+### The one thing a plan may do to our position: member ad-free
+
+The rent section above describes the position as fixed. It is fixed in *where it goes* — never rank 1, never
+more than one per page, never on a page with no position of its own — and there is exactly one condition
+under which it is not rendered at all, which was designed in from the first version of `slots.js` and left
+unsold until now:
+
+```
+POLICY.releasedBy = 'ad_free'   // capability flag; all plans default false for now
+```
+
+`allocateSlots()` reads it, and a plan that carries it loses the platform's position **without touching any
+of the store's**. `test/slots.test.js` has asserted the hook since the density revision, with a comment
+saying it is read by no plan today and that the assertion is what keeps it from becoming dead code. This is
+the round that sells it, so the hook earns its keep.
+
+**What is sold, and to whom.** Pro (NPR 2,499) may release the platform's position **for that store's
+current members** — nobody else. The buyer is the store, because the money cannot come from anywhere else
+without breaking a rule this platform has already written down:
+
+- Not from the person. `Plus` is cosmetics only, and a person's premium may never remove a creator's ads
+  (`AD_ECONOMY.md`, and the class actions YouTube Premium is defending over the words "ad-free"). A paid
+  tier that made ads disappear would be exactly the product this platform refused to build.
+- Not from the platform's ad revenue. Leg 1 is network → store's own account; bytebikri is not a party to
+  it and has no mechanism to pay anybody a share. Releasing our own position costs us our own line, not the
+  creator's — and it is the only ad on the page that is ours to give away.
+
+So a store buys the capability on its plan, and gives the perk to its own members. That is the layer split
+the model already holds: **the platform sells capability to a store, the store sells relationship to a
+person** (`ASSET_EVOLUTION` §5.4's two doors), and neither party can grant what belongs to the other.
+
+**Why the store pays, when Twitch makes the creator pay instead.** Twitch ships the same feature and the
+streamer eats it: with "Ad-Free Viewing for subscribers" on, subscribers stop counting as impressions, and
+Twitch's own guidance is that this is "a minimal change in ad revenue… balanced by higher subscription
+rates". YouTube refuses it outright for channel memberships — you can pay a creator monthly and still get
+ads — and the reason is structural: its Premium does remove ads, because Google pools subscription revenue
+and pays creators out of the pool. This platform has no pool, no path to a creator's money, and no
+intention of acquiring one. Twitch's model needs the creator to absorb an invisible cost; YouTube's needs
+revenue sharing. We do neither: **the cost is a price, on a plan, published on the pricing page.**
+
+**Four things it does not do**, each because the alternative contradicts something already written:
+
+1. **It does not touch the store's own positions.** Those are the store's, filled by the store's own ad
+   connections, and they are leg 1. Releasing them would be giving away somebody else's revenue.
+2. **It does not touch the breaks the store's own plan placed inside their files** (`breaks` mode, §10).
+   A cue break is the *store's* ad in the *store's* file, and the tier-level `ad_mode: 'ad_free'` already
+   covers the member's own file opening. Our position is a different thing from their break, and this
+   capability moves only ours.
+3. **It does not release the position for everyone.** Rent is priced off the traffic the platform brought
+   (measured pageviews), not off impressions, and the position still renders for every visitor who is not a
+   current member. A store that wanted our position gone for its whole audience does not exist as an option:
+   that would forfeit this leg entirely for a store whose traffic we are still paying to serve.
+4. **It cannot be granted by a plan that does not carry it.** The capability is checked first, so a
+   membership row on a Free store releases nothing. That is the guard on the hook, kept in the allocator
+   where the hook has always been.
+
+**The rent is unchanged**, and the arithmetic is not adjusted for it. A member's pageview still counts — the
+traffic is the same traffic — and the invoice still prices one rent position. What changes is which boxes are
+drawn for that one viewer: the ledger counts what was drawn (`drawnSlots`), so the numbers stay true rather
+than flattering.
+
+**One sentence was wrong before this was built.** The seller's slots page called the position *"Platform ·
+rented to ByteBikri"* and said *"the store rents it to ByteBikri"*, while `billing.js` invoices the store
+rent for it, `MONEY_MAP` lists it as money the store pays, and the table's own comment says bytebikri
+*receives* it. The direction was reversed in the copy: the store pays for the position, the platform fills
+it and keeps what it earns. Corrected in the same round, in both the seller's panel and the shopper's.
+
+### What building it found, in the order the checks found it
+
+Four defects, all of them in the gap between *a capability that exists* and *a page that is right*. Recorded
+because each one was invisible to the check that would seem obvious:
+
+1. **The entitlement was read as an instruction.** `plans.capabilities.ad_free` means *"this store may
+   release our position for its members"*; `allocateSlots` reads the same key as *"release it, for this
+   page, for this viewer"*. `buildSlots` spread the plan's blob straight through, which made a Pro store's
+   pages carry no platform position for **anybody** — the rent leg deleted on the top plan, and strangers
+   handed an ad-free store. Caught by `test/slots.test.js`'s oldest assertion ("a page with a position of
+   its own still carries one of ours"), which is the assertion that exists for exactly this. The flag is
+   now set explicitly, never inherited, and a new assertion loops every plan for a signed-out visitor.
+2. **`views.js` has no database.** The first draft of the seller's panel called `store.plan(channel)` in a
+   module that reads no tables — a `ReferenceError` on the page. The fact is passed in from the route, the
+   way every other fact in that file is.
+3. **The platform clipped its own sentence.** The corrected house creative ran 252 characters and
+   `normaliseCreative` caps a body at 220, so every storefront in the product rendered *"…No cut of what
+   the"* — half a sentence, in our own box, on somebody else's page. Unit tests passed the whole time: the
+   module held the whole string and the page held part of it. `test/creatives.test.js` now asserts the
+   sentence survives the normaliser, and `ci/eyes/member-adfree-walk.mjs` asserts the **rendered** text
+   equals the constant, character for character.
+4. **The member was told our position was on their page.** `MEMBER_AD_LINE` names two positions and says
+   both are present — true of every plan until this one, and false on the only plan whose whole point is
+   taking ours away. It printed in the member's own panel, on the page with the empty space it described.
+   The sentence now has a second state (`MEMBER_AD_LINE_RELEASED`) chosen by the same entitlement, and the
+   seller's "What your members see" row reads whichever one is true of the store they are selling to.
+
+The last two were found in a browser and by nothing else, which is the argument for the walk: both were
+correct code printing a false or truncated sentence, and no unit test in this repository can see a page.
+
+**Walked end to end** in `ci/eyes/member-adfree-walk.mjs`: a stranger sees the position; the store's live
+member does not, and is told so in their own words; a claimant whose dues are unconfirmed still sees it; a
+member of a *different* store sees it on the other store's page; a store on a plan without the capability
+is not told about it at all, while the seller who bought it is told exactly which position goes and what is
+untouched; and after the walk's temporary plan move is restored, the stranger's page carries the position
+again — proving the capability was the cause rather than a cache. Shots 1–5 of `docs/evidence/round43`.
+
 ## What memberships changed in the model: nothing in our column
 
 `plans.capabilities.memberships` is `true` on Store/Pro and `false` on Free. So memberships:
@@ -265,9 +369,14 @@ platform position per page, a cap of three, and the last rank, never the first.
 
 ## Still open (yours to call)
 
-1. **Member-paid ad-free, charged to the seller** — a capability, a price, and a rule about our rent. It
-   cannot be sold by withholding ad money (the networks pay the store directly), so it needs a
-   seller-side capability rather than a buyer-side promise.
+1. ~~**Member ad-free, charged to the seller.**~~ **Built and walked** — see "The one thing a plan may do to
+   our position" above and "What building it found" under it. Pro carries `ad_free`, and the platform's
+   position is released for that store's current members; the store's own positions and its own cue breaks
+   are untouched, the rent is unchanged, and nothing moves between the platform and a creator. The price
+   question answered itself: the capability rides on the plan that already exists rather than becoming a
+   third charge, which is what the density revision argued for when it refused to sell density. Migration
+   `0050_member_ad_free.sql` sells it; `REVENUE_ARCHITECTURE` §"The one thing…" holds the research it rests
+   on (Twitch's creator-absorbed version, YouTube's revenue pool, and why neither fits here).
 2. **A minimum rent floor on the paid plans**, if the question above ever stops being rhetorical. Flat,
    charged the same to every paid store, published on the pricing page — the failure mode to avoid is a
    floor that quietly scales with a store's success.
