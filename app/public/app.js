@@ -827,3 +827,101 @@
 
   clear();
 })();
+
+// ── The Plus stage: your own name, updating as you choose ────────────────────
+//
+// The shop window for a name effect. Every palette and every effect is a radio in
+// the form the page already renders, so this reads the CHOICE off the DOM and the
+// WORDS off the labels — there is no second copy of the palette table or the effect
+// table here to drift out of date. Picking up a radio repaints the stage: the four
+// palette custom properties, the effect class on the name, the caption line.
+//
+// Progressive enhancement, deliberately: with no JavaScript the stage still shows
+// the saved look and the form still saves, because the markup is the state and this
+// only re-draws it a little faster.
+(() => {
+  const stage = document.querySelector('[data-look-stage]');
+  const form = document.querySelector('form.plus-look');
+  if (!stage || !form) return;
+  const nameEl = stage.querySelector('[data-look-name]');
+  const line = stage.querySelector('[data-look-line]');
+  if (!nameEl || !line) return;
+
+  const checked = (field) => form.querySelector(`input[name=${field}]:checked`);
+  const plateLabel = (input) => input?.closest('[data-plate-key]');
+  const effectLabel = (input) => input?.closest('[data-effect-key]');
+
+  const draw = () => {
+    const plate = plateLabel(checked('nameplate'));
+    const effect = effectLabel(checked('effect'));
+    if (!plate || !effect) return;
+
+    // The palette is four custom properties written on the label by the server — the
+    // same string the swatch beside it paints with, so the stage and the swatch can
+    // never disagree.
+    stage.setAttribute('style', plate.getAttribute('style') || '');
+    const demo = effect.querySelector('.plus-effect-demo [class*="wear-"]');
+    nameEl.className = demo ? demo.className : 'member-name wear-solid';
+    const moving = effect.dataset.effectMoves === 'yes';
+    line.textContent = `${effect.dataset.effectLabel} in ${plate.dataset.plateLabel}`
+      + (moving
+        ? ' · moving in front of you, and still for anyone whose device asks for less motion'
+        : ' · completely still');
+  };
+
+  form.addEventListener('change', draw);
+  form.addEventListener('input', draw);
+})();
+
+// ── The theme chooser's stage: see the band before you keep it ───────────────
+//
+// The cards below already show each palette, but a 58-pixel card cannot show what a
+// whole BAND does — and the interesting half of a paid theme is that it moves. So
+// pointing at a card (or tabbing to it) paints the storefront's own band, above the
+// grid, with the seller's real name and tagline on it.
+//
+// Nothing about saving changes: the card is still a submit button, one click, no
+// confirmation step added to a decision that used to be one press. This only makes
+// the press informed. The stage restores the CURRENT theme when the pointer leaves,
+// so the page never lies about what the store looks like right now.
+(() => {
+  const stage = document.querySelector('[data-theme-stage]');
+  const band = stage?.querySelector('[data-theme-stage-band]');
+  const line = stage?.querySelector('[data-theme-stage-line]');
+  const cards = [...document.querySelectorAll('[data-theme-card]')];
+  if (!stage || !band || !line || !cards.length) return;
+
+  const current = { style: stage.dataset.currentStyle || '', label: stage.dataset.currentLabel || 'Default' };
+  const draw = ({ style, label, preview }) => {
+    band.setAttribute('style', style || '');
+    band.classList.toggle('store-head--themed', Boolean(style));
+    // textContent, not innerHTML: presentation code writes text, never markup. The
+    // server's first paint bolds the label; a repaint by a pointer moving says the
+    // same sentence without it, which costs nothing and keeps the rule this codebase
+    // already holds itself to.
+    line.textContent = preview
+      ? `Previewing ${label} — press the card to keep it, or move away to leave things as they are.`
+      : `Showing ${label} — point at a card to see it here, and press the card to keep it.`;
+  };
+
+  let showing = 'current';
+  const show = (card, preview) => {
+    if (!card) { showing = 'current'; draw({ ...current, preview: false }); return; }
+    const style = card.dataset.themeStyle || '';
+    const label = card.dataset.themeLabel || 'Default';
+    // The "Default" card has no palette: the stage has to drop the themed class, not
+    // paint an empty gradient, or the preview would show a band the store cannot have.
+    showing = card.dataset.themeCard;
+    draw({ style, label, preview });
+  };
+
+  for (const card of cards) {
+    card.addEventListener('mouseenter', () => show(card, true));
+    card.addEventListener('focusin', () => show(card, true));
+  }
+  const grid = cards[0].closest('.theme-grid') || document;
+  grid.addEventListener('mouseleave', () => show(null, false));
+  grid.addEventListener('focusout', (event) => {
+    if (!grid.contains(event.relatedTarget)) show(null, false);
+  });
+})();

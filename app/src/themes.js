@@ -102,6 +102,24 @@ export const THEMES = {
 
 export const THEME_KEYS = Object.keys(THEMES);
 
+/**
+ * How much light the band's own decoration is allowed to add, as a fraction.
+ *
+ * The band's surface carries a grain layer (an inline `feTurbulence`, the cheapest
+ * cure for the banding a large soft gradient shows on an 8-bit display) and two
+ * drifting mesh layers. The mesh introduces NO new colour — it is painted out of the
+ * theme's own two stops, so every point of it is a point of the interpolation the
+ * palette test already measures. The grain is the only thing that can lift the
+ * surface, and it is bounded here: the test composites this much white over every
+ * sampled point of every palette and requires white text to still clear 5.5:1 and the
+ * 92% secondary ink to still clear 4.5:1.
+ *
+ * It is not a taste decision. A decoration that lightens a band by an unbounded
+ * amount is a decoration that can drop a heading below the floor on somebody's
+ * screen at one particular frame of one particular loop.
+ */
+export const BAND_NOISE = 0.035;
+
 /** The storefront as it has always looked. Not a theme: the absence of one. */
 export const NO_THEME = 'plain';
 

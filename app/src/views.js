@@ -5726,7 +5726,8 @@ function themeChooser({ channel, themes, canTheme }) {
   const current = channel.theme ?? null;
   const card = (key, label, note, style, animated) => {
     const active = key === current;
-    return `<form method="post" action="/dashboard/${esc(channel.slug)}/theme" class="theme-card${active ? ' theme-card--on' : ''}">
+    return `<form method="post" action="/dashboard/${esc(channel.slug)}/theme" class="theme-card${active ? ' theme-card--on' : ''}"
+            data-theme-card="${esc(key)}" data-theme-label="${esc(label)}" data-theme-style="${esc(style)}">
       <input type="hidden" name="theme" value="${esc(key)}">
       <button class="theme-pick" type="submit"${canTheme ? '' : ' disabled'}
               aria-pressed="${active ? 'true' : 'false'}">
@@ -5744,7 +5745,41 @@ function themeChooser({ channel, themes, canTheme }) {
   const plain = card(NO_THEME, 'Default', 'The storefront every store has: no tint, no motion, nothing to decide.',
     '', false);
 
-  return `<div class="theme-grid">
+  /*
+   * THE STAGE: the real band, at full width, before anything is saved.
+   *
+   * The cards below are already previews of their own palette — but a 58-pixel card
+   * cannot show a seller what a whole band does, and the interesting part of a paid
+   * theme is that it MOVES. So the stage is the storefront's own band markup: the same
+   * `.store-head--themed` class, the same aurora and grain, the store's own name and
+   * tagline on it. Pointing at a card (or tabbing to it) paints the stage; pressing the
+   * card saves as it always did, in one click.
+   *
+   * The stage is not a second implementation of anything. It is the band component
+   * rendered here with the seller's own words, which is the only kind of preview that
+   * cannot drift from the thing it previews.
+   */
+  const currentLabel = current ? (themeOf(current)?.label ?? 'Default') : 'Default';
+  const stage = `<div class="theme-stage" data-theme-stage
+      data-current-style="${esc(themeStyle(current) || '')}" data-current-label="${esc(currentLabel)}"
+      data-slug="${esc(channel.slug)}">
+    <div class="store-head${current ? ' store-head--themed' : ''}" data-theme-stage-band style="${themeStyle(current) || ''}">
+      <div class="row">
+        <h1>${esc(channel.name)}</h1>
+        ${pill('Preview', 'accent')}
+      </div>
+      <p class="lede" style="margin-top:var(--space-3)">${esc(channel.tagline || 'A store on ByteBikri.')}</p>
+      <div class="store-meta">
+        <span>Your header, at the size your store shows it</span>
+      </div>
+    </div>
+    <p class="fine" data-theme-stage-line>Showing <strong>${esc(currentLabel)}</strong>${canTheme
+    ? ' — point at a card to see it here, and press the card to keep it.'
+    : ' — the plan includes the rest of the list.'}</p>
+  </div>`;
+
+  return `${stage}
+  <div class="theme-grid">
     ${plain}
     ${themes.map((t) => card(t.key, t.label, t.note, themeStyle(t.key), t.animated)).join('')}
   </div>
@@ -6438,11 +6473,38 @@ export function plusPage({
    * block is declared after the running state — so somebody who asked for less
    * motion sees the full look, still, including in the shop window for it.
    */
-  const preview = `<div class="plus-preview is-live">
-    <span class="plus-preview-avatar wear-ring" style="${plateStyleAttr(chosenPlate)}" aria-hidden="true">${esc((name || 'Y').slice(0, 1).toUpperCase())}</span>
-    <div>
-      ${nameTag(name, previewRow)}
-      <div class="fine" style="margin-top:var(--space-2)">${esc(EFFECTS[chosenEffect].label)} in ${esc(plateOf(chosenPlate).label)}${active ? '' : ' — this is a preview, not something you are wearing yet'}${EFFECTS[chosenEffect].moves ? ' · moving in front of you, and still for anyone whose device asks for less motion' : ' · completely still'}</div>
+  /*
+   * THE STAGE: your name, your look, AND a store's chip beside it.
+   *
+   * The picker used to preview on "Aa", which is the one string that tells a person
+   * nothing — the effect is being bought for their OWN name, and the whole correction
+   * this round is that a name and a chip are two different owners. So the stage shows
+   * both: the name wearing whatever is chosen, and beside it a chip drawn the way a
+   * store draws one, with a caption that says whose it is and that nothing bought here
+   * can replace it.
+   *
+   * The chip is deliberately in the DEFAULT store palette rather than the chosen one: a
+   * chip in your own colours would look like part of your look, which is the confusion
+   * this page exists to end.
+   *
+   * `is-live` is the one place in the product where an effect animates without being
+   * hovered, and it is deliberate: seeing the motion is what is being sold. The
+   * stylesheet's reduced-motion block is declared after the running state, so somebody
+   * who asked for less motion sees the full look, still — including here.
+   *
+   * `data-look-*` is what the page's own script reads to update all of this as the
+   * member chooses, without a round trip and without a second copy of the effect table
+   * in JavaScript: the words and the classes come out of the picker's own markup.
+   */
+  const preview = `<div class="plus-preview is-live" data-look-stage style="${plateStyleAttr(chosenPlate)}">
+    <span class="plus-preview-avatar wear-ring" aria-hidden="true">${esc((name || 'Y').slice(0, 1).toUpperCase())}</span>
+    <div class="plus-preview-body">
+      <span class="plus-preview-row">
+        <span class="${plusNameClasses({ effect: chosenEffect }, 'member-name')}" data-look-name>${esc(name)}</span>
+        <span class="store-chip" style="${plateStyleAttr('indigo')}" data-look-chip>Member</span>
+      </span>
+      <div class="fine" style="margin-top:var(--space-2)" data-look-line>${esc(EFFECTS[chosenEffect].label)} in ${esc(plateOf(chosenPlate).label)}${active ? '' : ' — this is a preview, not something you are wearing yet'}${EFFECTS[chosenEffect].moves ? ' · moving in front of you, and still for anyone whose device asks for less motion' : ' · completely still'}</div>
+      <div class="fine" style="margin-top:var(--space-1)">The chip beside your name is a <strong>store’s</strong>, in the creator’s colour — it belongs to them, and nothing bought here can replace it.</div>
     </div>
   </div>`;
 
@@ -6457,7 +6519,8 @@ export function plusPage({
         <span class="field-label" id="plus-plate-label">Your palette</span>
         <div class="plus-swatches" role="radiogroup" aria-labelledby="plus-plate-label">
           ${PLATE_KEYS.map((key) => `
-            <label class="plus-swatch-label${chosenPlate === key ? ' is-on' : ''}" style="${plateStyleAttr(key)}">
+            <label class="plus-swatch-label${chosenPlate === key ? ' is-on' : ''}" style="${plateStyleAttr(key)}"
+                   data-plate-key="${esc(key)}" data-plate-label="${esc(plateOf(key).label)}">
               <input type="radio" name="nameplate" value="${esc(key)}" ${chosenPlate === key ? 'checked' : ''}>
               <span class="plus-swatch" aria-hidden="true"></span>
               <span class="sr-only">${esc(plateOf(key).label)}</span>
@@ -6471,7 +6534,8 @@ export function plusPage({
           ${EFFECT_KEYS.map((key) => {
     const e = EFFECTS[key];
     return `
-            <label class="choice plus-effect-choice">
+            <label class="choice plus-effect-choice"
+                   data-effect-key="${esc(key)}" data-effect-label="${esc(e.label)}" data-effect-moves="${e.moves ? 'yes' : 'no'}">
               <input type="radio" name="effect" value="${esc(key)}" ${chosenEffect === key ? 'checked' : ''}>
               <span>
                 <strong>${esc(e.label)}</strong>

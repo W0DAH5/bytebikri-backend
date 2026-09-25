@@ -39,6 +39,7 @@ const {
 } = await import('../src/plus.js');
 const { ACCENTS, ACCENT_KEYS, plateStyle } = await import('../src/memberships.js');
 const views = await import('../src/views.js');
+const themesModule = await import('../src/themes.js');
 
 const CSS = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
 
@@ -289,6 +290,68 @@ test('every moving effect rests paused, runs on intent, and stops for reduced mo
   // The avatar ring is the same shape of promise: paused, running on intent.
   assert.match(CSS, /\.wear-ring::after \{ animation: wear-spin 12s linear infinite paused; \}/);
   assert.match(CSS, /\.wear-ring:hover::after/);
+});
+
+// ── 5. the two shop windows ───────────────────────────────────────────────────
+
+test('the Plus stage shows the member’s own name AND a store’s chip beside it', () => {
+  // The complaint that started this round was a sentence. This is the page that
+  // replaced it: the merchant is your own name, and the shop window shows both things
+  // a member of a store can be wearing at once, with the caption saying who owns which.
+  const html = views.plusPage({
+    user: { id: '1', email: 'alice@test.local', display_name: 'Alice', nameplate: 'teal', plus_effect: 'halo' },
+    plan: { code: 'plus', name: 'ByteBikri Plus', price_npr: 149, period_months: 1 },
+    subscription: { period_end: new Date(Date.now() + 86400000).toISOString() }, state: 'active',
+    rails: [], railsReady: true,
+    look: { nameplate: 'teal', effect: 'halo' }, wear: { plate: 'teal', effect: 'halo' },
+  });
+  assert.match(html, /data-look-stage/, 'the stage is on the page');
+  assert.match(html, /data-look-name>Alice</, 'and it wears the member’s own name, not "Aa"');
+  assert.match(html, /class="member-name wear-halo"[^>]*data-look-name/, 'with the saved effect on it');
+  assert.match(html, /data-look-chip[^>]*>Member</, 'and a store’s chip beside it');
+  // The chip is drawn in the DEFAULT palette, never the member's own: a chip in their
+  // colours would read as part of their look, which is the confusion this page ends.
+  const chipStyle = /class="store-chip" style="([^"]+)"/.exec(html)?.[1] ?? '';
+  const nameStyle = /data-look-stage style="([^"]+)"/.exec(html)?.[1] ?? '';
+  assert.ok(chipStyle.includes('--plate-ink'), 'the chip has its own palette');
+  assert.notEqual(chipStyle, nameStyle, 'and it is not the member’s palette');
+
+  // The picker carries the words and the effect class, so the page's own script never
+  // holds a second copy of the effect table to drift from.
+  for (const key of EFFECT_KEYS) {
+    const label = new RegExp(`data-effect-key="${key}" data-effect-label="[^"]+" data-effect-moves="(?:yes|no)"`);
+    assert.match(html, label, `the picker does not carry the words for ${key}`);
+  }
+  for (const key of ACCENT_KEYS) {
+    assert.match(html, new RegExp(`data-plate-key="${key}" data-plate-label="[^"]+"`),
+      `the picker does not carry the label for ${key}`);
+  }
+  assert.match(html, /nothing bought here can replace it/,
+    'the stage says whose the chip is');
+});
+
+test('the seller’s chooser previews the real band, with the store’s own words on it', () => {
+  const channel = { slug: 'alice', name: 'Alice’s Studio', tagline: 'Design templates.', theme: 'everest' };
+  const html = views.storeSettings({
+    channel, user: { id: '1', email: 'alice@test.local', display_name: 'Alice' },
+    plan: { code: 'store', name: 'Store', capabilities: { can_theme: true, memberships: true } },
+    themes: Object.values(themesModule.THEMES), canTheme: true, stats: {},
+    subscription: null, capabilities: { can_theme: true, memberships: true },
+  });
+  assert.match(html, /data-theme-stage/, 'the stage is on the page');
+  assert.match(html, /data-theme-stage-band style="--theme-from:#1e3a8a;--theme-to:#4f46e5;"/,
+    'and it is painted in the store’s CURRENT theme');
+  assert.match(html, /Alice’s Studio/, 'with the store’s own name on it');
+  assert.match(html, /Design templates\./, 'and its tagline');
+  // Each card carries what the page needs to paint the stage on hover, including the
+  // default card, which carries no palette at all — painting an empty gradient there
+  // would preview a band the store cannot have.
+  for (const key of ['plain', ...themesModule.THEME_KEYS]) {
+    assert.match(html, new RegExp(`data-theme-card="${key}"[^>]*data-theme-label="[^"]*" data-theme-style="[^"]*"`),
+      `the ${key} card does not carry its preview data`);
+  }
+  assert.match(html, /data-theme-card="plain"[^>]*data-theme-style=""/,
+    'the default card previews the absence of a theme');
 });
 
 test('the two ownership sentences exist, and each names its layer', () => {

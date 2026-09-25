@@ -37,7 +37,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import {
-  THEMES, THEME_KEYS, BAND_ALPHA, BAND_INK, NO_THEME,
+  THEMES, THEME_KEYS, BAND_ALPHA, BAND_INK, BAND_NOISE, NO_THEME,
   canTheme, themeDraft, themeStyle, motionNote,
 } from '../src/themes.js';
 
@@ -73,21 +73,42 @@ function ratio(a, b) {
   return (l1 + 0.05) / (l2 + 0.05);
 }
 
-/** Every point of a two-stop gradient a reader can land on. */
-function gradientPoints(from, to) {
+/**
+ * Every point of a two-stop gradient a reader can land on — sampled, not guessed.
+ *
+ * Three points (the two ends and the middle) was enough while the band was one
+ * linear gradient. It is not enough now: the band's aurora is painted out of the same
+ * two stops in soft radial blobs, so a reader can land anywhere along the
+ * interpolation, at any blend the browser's compositing produces. Sampling it is what
+ * makes "the mesh adds no colour" a checked claim rather than a comment.
+ */
+function gradientPoints(from, to, steps = 20) {
   const a = hexRgb(from);
   const b = hexRgb(to);
-  const mid = a.map((c, i) => Math.round((c + b[i]) / 2));
-  return [['from', a], ['mid', mid], ['to', b]];
+  const out = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    out.push([i === 0 ? 'from' : i === steps ? 'to' : `at ${Math.round(t * 100)}%`,
+      a.map((c, k) => Math.round(c * (1 - t) + b[k] * t))]);
+  }
+  return out;
 }
 
-test('white clears 5.5:1 on every palette, at both ends and the middle of its gradient', () => {
+/** What the grain layer is allowed to do to the surface, composited in. */
+const lift = (rgb, share) => rgb.map((c) => Math.round(c * (1 - share) + 255 * share));
+const asHex = (rgb) => `#${rgb.map((c) => c.toString(16).padStart(2, '0')).join('')}`;
+
+test('white clears 5.5:1 on every palette, at every point of its gradient', () => {
   const failures = [];
   for (const key of THEME_KEYS) {
     const t = THEMES[key];
+    // The grain is the ONE layer that lightens the surface, and it is bounded by
+    // BAND_NOISE — so every palette is measured with that much white already
+    // composited over it. A palette that only passes when the noise is ignored is a
+    // palette that fails on the screen it ships to.
     for (const [where, rgb] of gradientPoints(t.from, t.to)) {
-      const r = ratio(hexRgb(BAND_INK), rgb);
-      if (r < 5.5) failures.push(`${key} (${where}): ${r.toFixed(2)}:1`);
+      const r = ratio(hexRgb(BAND_INK), lift(rgb, BAND_NOISE));
+      if (r < 5.5) failures.push(`${key} (${where}): ${r.toFixed(2)}:1 with the grain`);
     }
   }
   assert.deepEqual(failures, [],
@@ -101,9 +122,10 @@ test('the 92% ink in the band still clears the body floor', () => {
   for (const key of THEME_KEYS) {
     const t = THEMES[key];
     for (const [where, rgb] of gradientPoints(t.from, t.to)) {
-      const ink = composite(BAND_INK, `#${rgb.map((c) => c.toString(16).padStart(2, '0')).join('')}`, BAND_ALPHA);
-      const r = ratio(ink, rgb);
-      if (r < 4.5) failures.push(`${key} (${where}): ${r.toFixed(2)}:1`);
+      const surface = lift(rgb, BAND_NOISE);
+      const ink = composite(BAND_INK, asHex(surface), BAND_ALPHA);
+      const r = ratio(ink, surface);
+      if (r < 4.5) failures.push(`${key} (${where}): ${r.toFixed(2)}:1 with the grain`);
     }
   }
   assert.deepEqual(failures, [],
@@ -216,19 +238,82 @@ test('every drifting rule lives inside a reduced-motion guard', () => {
   }
 });
 
+test('the aurora is painted out of the theme’s own stops, behind the words', () => {
+  const css = read('public/styles.css');
+  const base = css.slice(css.indexOf('.store-head--themed {'), css.indexOf('.store-head--themed :is(.lede'));
+  // The base is still the opaque gradient the contrast arithmetic governs, and the
+  // grain is the only extra layer on it — nothing else may join the background stack
+  // without being measured.
+  assert.ok(base.includes('linear-gradient(135deg, var(--theme-from'), 'the base gradient is the two stops');
+  const layers = base.slice(base.indexOf('background-image:'), base.indexOf('background-size:'));
+  // Counted as top-level layers rather than by every `url(` in the text: the grain IS
+  // a data URI and contains one of its own (`filter='url(#n)'`), so a naive count
+  // reads three layers where there are two.
+  const stack = layers.slice(layers.indexOf(':') + 1).split(/,(?=\s*\n?\s*(?:url|linear|radial|conic|repeating|-webkit))/);
+  assert.equal(stack.length, 2, `the band’s own background is the grain and the base, not ${stack.length} layers`);
+  assert.ok(/feTurbulence/.test(stack[0]), 'the grain is an inline SVG turbulence');
+  assert.ok(/linear-gradient\(135deg, var\(--theme-from/.test(stack[1]), 'and under it the opaque base');
+
+  // The grain's share in the stylesheet IS the share the test proved above. Two
+  // places by necessity (CSS cannot import JavaScript); the drift is what is tested.
+  const grain = Number((layers.match(/opacity='([\d.]+)'/) || [])[1]);
+  assert.ok(grain > 0, 'the grain layer has no opacity in it');
+  assert.equal(grain, BAND_NOISE, 'the grain spends more light than the palette test proved');
+
+  // The mesh: two layers, both out of the theme's own stops, both behind the content.
+  const mesh = css.slice(css.indexOf('.store-head--themed::before'),
+    css.indexOf('@keyframes theme-aurora'));
+  assert.ok(/radial-gradient/.test(mesh), 'the mesh is built from radial gradients');
+  assert.ok(!/255|#fff|white/i.test(mesh.replace(/--theme-(from|to)[^;]*/g, '')),
+    'the mesh must not lighten the band with a colour of its own — that colour is unmeasured');
+  assert.ok(/z-index: -1/.test(mesh), 'the mesh sits behind the words');
+  assert.ok(/blur\(/.test(mesh), 'and is soft, which is what reads as light rather than as a shape');
+
+  // Motion: transform only, never a colour, and only for people who have not asked
+  // for less. A keyframe that touched colour could walk a word off its ratio.
+  const keyframes = css.slice(css.indexOf('@keyframes theme-aurora'), css.indexOf('@keyframes theme-aurora') + 200);
+  assert.ok(keyframes.includes('transform'), 'the aurora moves by transform, not by repainting');
+  assert.ok(!/color|background|opacity|text-shadow|filter/.test(keyframes.split('{').slice(1).join('{').split('}')[0]),
+    'and touches nothing but the transform');
+  assert.ok(!/@keyframes theme-drift/.test(css), 'the full-layer repaint is gone, not left beside the new one');
+  // Declared inside a no-preference block — and it has to be the block that WRAPS it,
+  // not merely one somewhere earlier in the file. Searching backwards from the
+  // declaration is the only reading that cannot be satisfied by an unrelated media
+  // query further up.
+  const declares = css.indexOf('.store-head--themed::before { animation: theme-aurora');
+  const gate = css.lastIndexOf('@media (prefers-reduced-motion: no-preference)', declares);
+  assert.ok(declares > 0 && gate > 0 && gate < declares, 'the aurora is declared outside any motion gate');
+  const meshRule = css.indexOf('.store-head--themed::before,\n.store-head--themed::after');
+  assert.ok(meshRule > 0 && meshRule < gate,
+    'and the gate wraps the animation rather than the layer: a reduce user still gets the mesh, still');
+});
+
 test('the band is opaque, and the theme reaches nothing under it', () => {
   const css = read('public/styles.css');
   const band = css.slice(css.indexOf('.store-head--themed {'), css.indexOf('/* Choosing the look'));
-  assert.ok(band.includes('background-image: linear-gradient'), 'the band is a gradient of the two stops');
+  assert.ok(/linear-gradient\(135deg, var\(--theme-from/.test(band),
+    'the band is a gradient of the two stops');
+  assert.ok(/background-blend-mode: soft-light, normal/.test(band),
+    'and the grain is blended over it rather than painted on top of the words');
   assert.ok(!/color-mix\(in srgb, var\(--theme-from[^)]*transparent\)/.test(band.slice(0, band.indexOf('}'))),
     'opaque: a wash would have to be checked against two surfaces and would be invisible on both');
   // What stays out of the band is the point. A theme that could reach a file card's
   // ink is a theme that can break a contrast test nobody re-ran for it.
   assert.ok(!/\.asset-card|\.btn-\.|grid-assets|\.member-name\b|\.member-plate/.test(band),
     'the band stops at the band: files, cards and member plates keep the product colours');
-  // And the drift is a background position, never the text: a moving string of
-  // characters is the one animation that makes a heading hard to read.
-  const keyframes = css.slice(css.indexOf('@keyframes theme-drift'), css.indexOf('@keyframes theme-drift') + 200);
-  assert.ok(keyframes.includes('background-position'), 'the drift moves the gradient');
-  assert.ok(!/color|text-shadow|opacity/.test(keyframes), 'and nothing else');
+  // And the motion is decoration-only: a moving string of characters is the one
+  // animation that makes a heading hard to read. Whatever the band animates, it is
+  // never one of its own words, and no keyframe it uses touches a colour.
+  const declared = [...band.matchAll(/animation:\s*([\w-]+)/g)].map((m) => m[1]);
+  assert.ok(declared.length, 'the band animates nothing at all');
+  for (const name of new Set(declared)) {
+    const from = css.indexOf(`@keyframes ${name} {`);
+    assert.ok(from > 0, `${name} is used but never declared`);
+    const body = css.slice(from, from + 300);
+    assert.ok(/transform/.test(body), `${name} does not move anything by transform`);
+    assert.ok(!/\bcolor\b|text-shadow|background|opacity|filter/.test(body.slice(body.indexOf('{') + 1).split('}')[0]),
+      `${name} touches something other than the transform`);
+  }
+  assert.ok(!/\.store-head--themed[^{]*\b(h1|h2|\.lede|\.store-meta|a)\b[^{]*\{[^}]*animation/.test(band),
+    'no word inside the band is animated');
 });

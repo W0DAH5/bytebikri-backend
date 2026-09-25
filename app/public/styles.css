@@ -2503,9 +2503,19 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   margin-bottom: var(--space-2);
 }
 .store-head--themed {
-  background-image: linear-gradient(135deg, var(--theme-from, var(--indigo-600)), var(--theme-to, var(--indigo-700)));
-  background-size: 190% 190%;
-  background-position: 0% 50%;
+  position: relative;
+  isolation: isolate;   /* keeps the z-index: -1 decorations above the base, below the words */
+  overflow: hidden;
+  /* Two background layers: the grain, then the opaque base. The base is what every
+     word in the band is read against, and it is the thing `themes.test.js` measures —
+     a wash over the page's surface would have to be checked against two surfaces and
+     would be nearly invisible on both. */
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E"),
+    linear-gradient(135deg, var(--theme-from, var(--indigo-600)), var(--theme-to, var(--indigo-700)));
+  background-size: 160px 160px, 100% 100%;
+  background-repeat: repeat, no-repeat;
+  background-blend-mode: soft-light, normal;
   color: var(--theme-ink, #fff);
 }
 .store-head--themed :is(.lede, .store-meta, .fine, .verified-sentence) {
@@ -2523,15 +2533,60 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 .store-head--themed :is(a, button, input, select, textarea):focus-visible {
   outline-color: var(--theme-ink, #fff);
 }
+/* ── The aurora ──────────────────────────────────────────────────────────────
+   What the band does instead of sliding a 190%-wide gradient across itself, which
+   is the technique the 2026 write-ups now flag: animating `background-position` on
+   a huge gradient repaints a full-width layer every frame, and there is a whole
+   storefront scrolling over it.
+
+   The replacement is the mesh everyone moved to, with three rules that are about
+   the arithmetic rather than about taste:
+
+     1. THE MESH ADDS NO COLOUR. Both layers are painted out of `--theme-from` and
+        `--theme-to` — the two stops the palette test already measures white against,
+        at several points of the interpolation. A mesh tinted toward white "for
+        glow" would be a new colour nobody checked.
+     2. THE GRANITE LAYER BOUNDS THE LIGHT. The grain (inline `feTurbulence`, the
+        cheapest cure for banding on an 8-bit display) is the only layer that lifts
+        the surface, and `BAND_NOISE` in `src/themes.js` is what it may spend.
+     3. THE MOVEMENT IS `transform`, ON THE DECORATION ONLY. The words sit on the
+        opaque base and never move; two coprime durations (13 s, 17 s, one reversed)
+        keep the loop from visibly repeating.
+
+   Everything is inside `prefers-reduced-motion: no-preference`, so a reduce user
+   gets the still band — which is the same gradient, grain included. */
+.store-head--themed::before,
+.store-head--themed::after {
+  content: '';
+  position: absolute;
+  inset: -35%;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    radial-gradient(38% 46% at 22% 30%, var(--theme-from, var(--indigo-600)) 0%, transparent 70%),
+    radial-gradient(42% 50% at 78% 66%, var(--theme-to, var(--indigo-700)) 0%, transparent 72%);
+  filter: blur(28px);
+}
 @media (prefers-reduced-motion: no-preference) {
-  .store-head--themed { animation: theme-drift 26s ease-in-out infinite alternate; }
+  .store-head--themed::before { animation: theme-aurora 13s ease-in-out infinite alternate; }
+  .store-head--themed::after { animation: theme-aurora 17s ease-in-out infinite alternate-reverse; }
 }
-/* A slow diagonal cross, not a pulse: the band should look like a surface that
-   happens to be alive, never like something asking for attention. */
-@keyframes theme-drift {
-  from { background-position: 0% 50%; }
-  to { background-position: 100% 50%; }
+/* Drift and breathe, never pulse: a band should look like a surface that happens to
+   be alive, not like something asking for attention. Transform only, so the layer is
+   composited rather than repainted — and nothing here touches a colour, so no frame
+   of the loop can walk a word off the contrast it was measured at. */
+@keyframes theme-aurora {
+  from { transform: translate3d(-3%, -2%, 0) scale(1.04); }
+  to { transform: translate3d(4%, 3%, 0) scale(1.12); }
 }
+
+/* The chooser's stage: the storefront band, full width, above the grid. It carries
+   the real `.store-head--themed` class so the seller is looking at the component
+   rather than at a picture of it — aurora, grain and all — and the dashed edge is
+   what says "this is a preview" without a caption doing all the work. */
+.theme-stage { margin-bottom: var(--space-5); }
+.theme-stage .store-head { margin-bottom: var(--space-3); border: 1px dashed var(--border-strong, var(--border-subtle)); }
+.theme-stage .store-head h1 { font-size: var(--text-2xl); }
 
 /* Choosing the look. The card IS the preview: the band with the store's own name
    on it, at the alpha the storefront uses — because a coloured square tells a
@@ -2628,7 +2683,6 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 
 @media (max-width: 560px) {
   .store-head { padding: var(--space-5) var(--space-4); }
-  .store-head--themed::after { inset-inline: var(--space-4); }
   .theme-grid { grid-template-columns: 1fr 1fr; gap: var(--space-3); }
   .theme-band { block-size: 44px; }
 }
@@ -3026,6 +3080,16 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   color: #fff; font-weight: 700;
   background-image: linear-gradient(140deg, var(--plate-a, var(--indigo-600)), var(--plate-b, var(--indigo-700)));
 }
+/* The stage: the member's own name, the chosen look on it, and a store's chip beside
+   it. Taller and softer than the roster it imitates — this is a shop window, and the
+   chip is set in the DEFAULT store palette on purpose, so it never looks like part of
+   the look being chosen. The .fine under the name is deliberately muted: the name is
+   the merchandise and the caption is the label on it. */
+.plus-preview-body { display: grid; gap: 0; min-inline-size: 0; }
+.plus-preview-row { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
+.plus-preview-row .member-name { font-size: var(--text-xl); }
+.plus-preview .store-chip { align-self: center; }
+
 .plus-swatches { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-top: var(--space-3); }
 .plus-swatch-label { position: relative; cursor: pointer; }
 .plus-swatch-label input { position: absolute; opacity: 0; inline-size: 100%; block-size: 100%; inset: 0; margin: 0; }

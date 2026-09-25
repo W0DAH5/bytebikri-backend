@@ -105,7 +105,7 @@ are run after the seeder rather than being self-contained:
 ```bash
 node ci/demo-state.mjs              # the demo state, and the restore
 node ci/eyes/member-walk.mjs        # three sessions, the attention door, 11 shots
-node ci/eyes/premium-walk.mjs       # two payers, two schemes, motion on intent, 8 shots
+node ci/eyes/premium-walk.mjs       # two payers, two schemes, motion on intent, 11 shots
 ```
 
 `premium-walk.mjs` is the one walk whose subject is a DESIGN rather than a flow, and
@@ -118,7 +118,15 @@ both look still. It walks `prefers-color-scheme` in both directions and
 `prefers-reduced-motion: reduce`, which is the setting a decorative animation most
 often ignores.
 
-Two lessons it paid for on its first runs, both worth reusing:
+It walks the two SHOP WINDOWS as well as the looks: the Plus page's stage (a member's
+own name, updating as they choose) and the seller's chooser (pointing at a theme card
+paints the real band above the grid). The store's band is checked for the claim that
+makes it safe — every colour in its aurora mesh is one of the theme's two stops, so the
+palette arithmetic that proves white is readable still covers the whole surface — and
+for the same claim the CSS makes: under `prefers-reduced-motion: reduce` the band keeps
+its gradient, its grain and its mesh, and nothing moves.
+
+Three lessons it paid for on its first runs, all worth reusing:
 
 - **`Element.getAnimations()` does not return pseudo-element animations.** The ring's
   motion lives on its `::after`, so it measured as `[]` while visibly turning. It
@@ -127,6 +135,9 @@ Two lessons it paid for on its first runs, both worth reusing:
   navigation.** The first cut collected selectors into one list and walked it after
   navigating to a second page; the roster measurement then found nothing and threw.
   Measure each thing on the page it lives on, in the order you visit them.
+- **`scrollIntoViewIfNeeded` puts a subject UNDER the sticky header**, and the first
+  shot of the theme stage had the store's own name sliced in half by the navigation.
+  The capture helper now scrolls back up ~96px after bringing the subject into view.
 
 `member-walk.mjs` starts from zero standing and no membership — that state belongs to
 the seeder because it is also the state the preview should be found in — and it clears

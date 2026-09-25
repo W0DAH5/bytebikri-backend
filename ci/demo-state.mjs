@@ -654,6 +654,20 @@ if (doorStore) {
     await many(`update assets set member_tier = 1, unlock_mode = 'members', status = 'live' where id = $1`, [doorFile.id]);
   }
 
+  // Alice's own theme. She pays for the Store plan, so the plan's own product — a
+  // themed band with the aurora on it — is part of what the preview is supposed to
+  // show. Everest is the palette whose note reads as "the hour before sunrise", and
+  // it is one of the ones that MOVES, which is the half a card cannot demonstrate.
+  const themeWant = 'everest';
+  if (doorStore.theme !== themeWant) {
+    const themed = await store.setChannelTheme({
+      channel: await store.channelById(doorStore.id),
+      capabilities: store.plan(await store.channelById(doorStore.id)).capabilities,
+      theme: themeWant, actorId: doorStore.owner_id,
+    });
+    say('store theme', themed.ok ? `set — ${themeWant} (moves, and stops for reduced motion)` : `refused: ${themed.reason}`);
+  }
+
   // The restore. Bob and Carol are the two people the walk takes through the
   // watching door: their memberships on this store are removed and their standing is
   // zeroed, so a second run starts at the same sentence as the first and the count

@@ -186,10 +186,33 @@ sells nothing about the membership.
 | 2 | The CSS: `@property` conic ring, painted names, on-intent motion, reduced-motion tiers | **built** |
 | 3 | The store side: plan mark on the storefront, the animated band | **built** |
 | 4 | Verified in a browser: both schemes, reduced motion, and a roster wearing both layers at once | **built** — `ci/eyes/premium-walk.mjs`, 8 sections, run green |
-| 5 | A picker preview that shows the effect on the member's own real name, side by side | not started — the Plus page previews on "Aa" |
+| 5 | The shop window: the member's own name in both layers, updating as they choose | **built** |
+| 6 | The aurora band: a mesh in the theme's own stops, a bounded grain layer, and the seller's own stage | **built** |
 
-The unstarted slice is deliberately the smallest one, and it is the only place where
-this document describes something the product cannot yet show.
+### What slices 5 and 6 measure
+
+Both were built after the research in §7 and both are checked where they run:
+
+* **The stage shows the member's own name, never "Aa"** — and it keeps a store's chip
+  beside it, in the default store palette, with a caption saying whose it is. The walk
+  asserts the name on the stage is the name in the header, that choosing an effect
+  repaints the class and the caption **without navigating**, and that choosing a palette
+  moves the ring and the name together (`--plate-ink` on the stage equals the
+  stylesheet's own value for that palette). Saving still works, and the walk saves the
+  seeded look back so the next run starts where this one did.
+* **The aurora adds no colour.** The walk reads the mesh's computed
+  `background-image` in the browser and refuses any colour that is not one of the
+  theme's two stops (or fully transparent) — so the palette test's arithmetic still
+  covers every pixel of the band, including the parts that move. It also asserts two
+  `theme-aurora` animations are running (13 s and 17 s, one reversed), that the grain
+  layer is present, and that under `reduce` the gradient, grain and mesh are all still
+  painted while nothing moves.
+* **The seller's stage previews without changing the save.** Hovering a card paints the
+  band with the store's own name and tagline on it and says "Previewing"; moving away
+  restores the current theme. The card is still a submit button and still one click.
+* **The default card previews the absence of a theme** — no palette — because a card
+  that painted the first palette's fallback would be previewing a band the store cannot
+  have.
 
 ### What the walk found that the tests could not
 
@@ -234,3 +257,87 @@ of them the WORST stop the browser paints, not the average:
 | Effect picker demo | dark | prism (painted) | 6.48:1 |
 | Effect picker demo | light | gradient (painted) | 7.25:1 |
 | Effect picker demo | light | prism (painted) | 7.25:1 |
+
+---
+
+## 7. The next slice: the shop window and the aurora band
+
+Slice 4 shipped a look that is *correct* — two layers, motion on intent, contrast
+proved. This section is the answer to "the designs seem unenough", and it is split by
+payer for the same reason everything else in this document is: a person buys a look for
+their **name**, a store buys a look for its **shop**.
+
+### What the research adds
+
+**Discord, one level down.** The pattern that matters most for the store side is
+*Enhanced Role Styles*: a role is not a hex code any more, it is **Solid, Gradient or
+Holographic** (a shimmering two-colour treatment), with a small role icon beside the
+name. Two lessons, both of which this product can use honestly:
+
+* a "gradient/holographic" axis is a *style* axis, not a colour picker — the same
+  argument `themes.js` already makes for shopfront palettes;
+* the community advice attached to it repeats the accent rule: *"gradients and
+  holographic roles are accents — if every role shimmers, none of them feel special."*
+  That is the same reason only the top tier glints here.
+
+Discord's server profile also ships **ten built-in gradients or a custom banner**, and
+per-server profiles are a **primary + accent** pair — a shop's identity is two colours
+and an image, not a theme engine.
+
+**The aurora technique, verified.** The current band drifts `background-position` on a
+190%-wide gradient. That works, and it is the technique the 2026 write-ups now flag:
+*"animating background-position on a huge gradient repaints a full-width layer every
+frame... animate a registered property or a transform instead."* The replacement is the
+mesh everyone else has moved to:
+
+* **stacked radial gradients** (3–4 colours maximum — more "creates mud") over a solid
+  base, which is what reads as light rather than as a CSS default;
+* **8–15 second loops**, because *"animation cycles under 6 seconds feel anxious"* —
+  the band's current 26 s alternate is on the slow side of that;
+* **a grain layer at 3–5 % opacity** (an inline `feTurbulence` as a data URI) — *"it is
+  what stops a large soft gradient from showing banding on 8-bit displays, and what
+  makes the surface read as a material"*;
+* **transform, not background-position**, for the movement, and pause it off-screen.
+
+**The one warning that decides this design.** *"Text over a moving gradient can drop
+below 4.5:1 at some frames. Put the text on its own solid or heavily-tinted layer and
+check contrast at several animation offsets."* That is exactly the rule `themes.test.js`
+was written around, and it is why the band's base stays an **opaque** gradient and the
+aurora is built out of *nothing but the theme's own two stops* — no white lift, no
+silver highlight, no new colour for the arithmetic to miss.
+
+### Slice 5 — the shop window (the person's look)
+
+The picker currently previews an effect on "Aa". A person buying a name effect wants to
+see **their own name**, and the effect is sold on motion, so the preview has to move.
+What changes, all on `/plus`:
+
+* one **stage** above the picker: the member's own name, in the chosen palette, wearing
+  the chosen effect, with the ring on the avatar — and the store's chip beside it,
+  labelled as such, because the whole point of this round is that the two are different
+  owners. The stage is `is-live`: the motion *is* the merchandise;
+* it updates **as you choose**, without a round trip, the way Gumroad's design tab does
+  — the palette and the effect both, read from the DOM the picker already renders, so
+  no second copy of the effect table exists in JavaScript;
+* without JavaScript it shows the saved look and still saves. The picker is a form
+  first and a preview second.
+
+### Slice 6 — the aurora band (the store's look)
+
+* the band's **base stays an opaque gradient** of the theme's two stops — the surface the
+  arithmetic already governs;
+* two **drifting mesh layers** (`::before`, `::after`) paint large soft radial gradients
+  **in the theme's own stops**, moving by `transform` on coprime durations (17 s and
+  23 s, one reversed) so the loop never visibly repeats;
+* a **grain layer** at 3.5 % keeps large soft gradients from banding;
+* motion only under `prefers-reduced-motion: no-preference`, and it **stops when the
+  band is off-screen** — a decoration nobody is looking at has no business on the
+  compositor;
+* the seller's chooser gets a **stage** too: pointing at (or focusing) a theme card
+  paints the full-width band with the store's own name and tagline, without changing the
+  one-click save. The card stays the button; the stage is the window.
+
+The floors hold: white ≥ 5.5:1 and the 92 % secondary ink ≥ 4.5:1 at **every point of the
+interpolation**, with the grain's worst-case lightening (3 %) composited in. Any new
+stop, any white lift, or any noise layer with a bigger budget fails the build rather than
+being noticed by a reader on a train.

@@ -67,10 +67,19 @@ async function openCtx({ scheme = 'dark', motion = 'no-preference', who = null }
   return { ctx, p };
 }
 
-/** Screenshot of the subject, not of the top of the page. */
+/**
+ * Screenshot of the subject, not of the top of the page.
+ *
+ * The extra scroll matters and is a capture lesson rather than a product one: the
+ * header is sticky, so an element scrolled to the top of the viewport sits UNDER it —
+ * the band's own name was cut in half by the navigation in the first version of this
+ * shot. Pulling the page up a little after the scroll puts the subject below the header
+ * where a reader would actually see it.
+ */
 async function shotOf(p, selector, name, { full = false } = {}) {
   if (selector && await p.locator(selector).count()) {
     await p.locator(selector).first().scrollIntoViewIfNeeded();
+    await p.evaluate(() => window.scrollBy(0, -96));
     await p.waitForTimeout(350);
   }
   await p.screenshot({ path: `${OUT}/${name}.png`, fullPage: full });
@@ -374,6 +383,29 @@ if (!calmPreviewPaint || calmPreviewPaint.checks.some((c) => c.ratio < 4.5)) {
 }
 await shotOf(calmAlice.p, '.plus-preview', 'premium-5-reduced-motion');
 
+// The STORE's look under the same setting: the aurora stops and the band keeps its
+// gradient, its grain and its mesh — a paying store does not lose what it bought
+// because somebody else's device asked for less motion.
+await calmAlice.p.goto(`${BASE}/s/${SLUG}`);
+await consent(calmAlice.p);
+const calmBand = await calmAlice.p.evaluate(() => {
+  const band = document.querySelector('.store-head--themed');
+  if (!band) return null;
+  return {
+    grain: /feTurbulence/.test(getComputedStyle(band).backgroundImage),
+    mesh: getComputedStyle(band, '::before').backgroundImage.slice(0, 40),
+    animations: band.getAnimations({ subtree: true }).map((a) => ({ name: a.animationName, state: a.playState })),
+  };
+});
+console.log('  the band      :', JSON.stringify(calmBand));
+if (!calmBand) throw new Error('the storefront has no themed band to check');
+if (!calmBand.grain || !/radial-gradient/.test(calmBand.mesh)) {
+  throw new Error('reduced motion cost the band its grain or its mesh — the look must survive the setting');
+}
+if (calmBand.animations.some((a) => a.state === 'running')) {
+  throw new Error('the aurora is moving under prefers-reduced-motion: reduce');
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 6. The store's own mark — the OTHER payer's look
 // ─────────────────────────────────────────────────────────────────────────────
@@ -438,6 +470,144 @@ for (const c of choices) {
 }
 await shotOf(p, '.plus-effects', 'premium-8-effect-picker');
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 10. The store's band — the aurora, and the seller seeing it before keeping it
+// ─────────────────────────────────────────────────────────────────────────────
+say(10, 'a paying store’s band is a mesh of its own colours, and the seller can see it first');
+await alice.p.goto(`${BASE}/dashboard/${SLUG}/settings`);
+await consent(alice.p);
+await alice.p.locator('[data-theme-stage]').waitFor(WAIT);
+// One click, the seller's own action: keep the moving palette. The seeder sets it too,
+// and this still presses the card rather than trusting that — the route is the thing a
+// seller uses, and a walk that assumes a state proves nothing about the button.
+if (!(await alice.p.locator('[data-theme-stage-band]').getAttribute('class') || '').includes('store-head--themed')) {
+  await alice.p.locator('[data-theme-card="everest"] button[type=submit]').click();
+  await alice.p.waitForLoadState('domcontentloaded');
+  await consent(alice.p);
+  await alice.p.locator('[data-theme-stage]').waitFor(WAIT);
+}
+const bandPaint = await alice.p.evaluate(() => {
+  const band = document.querySelector('[data-theme-stage-band]');
+  const cs = getComputedStyle(band);
+  const mesh = getComputedStyle(band, '::before');
+  const stops = [cs.getPropertyValue('--theme-from').trim(), cs.getPropertyValue('--theme-to').trim()];
+  return {
+    themed: band.classList.contains('store-head--themed'),
+    grain: /feTurbulence/.test(cs.backgroundImage),
+    base: /linear-gradient/.test(cs.backgroundImage),
+    gradientStops: stops,
+    meshImage: mesh.backgroundImage,
+    meshColours: [...new Set((mesh.backgroundImage.match(/rgba?\([^)]+\)/g) || []))],
+    meshBlur: mesh.filter,
+    meshAnimations: band.getAnimations({ subtree: false }).map((a) => a.animationName),
+    pseudoAnimations: band.getAnimations({ subtree: true }).map((a) => a.animationName),
+  };
+});
+console.log('  the band      :', JSON.stringify({ themed: bandPaint.themed, grain: bandPaint.grain, base: bandPaint.base, blur: bandPaint.meshBlur }));
+console.log('  the mesh      :', bandPaint.meshColours.join(' · '));
+console.log('  the motion    :', JSON.stringify(bandPaint.pseudoAnimations ?? bandPaint.meshAnimations));
+
+if (!bandPaint.themed) throw new Error('Alice pays for a theme and the stage is not themed');
+if (!bandPaint.grain || !bandPaint.base) throw new Error('the band is missing its grain layer or its base gradient');
+// The mesh introduces NO colour of its own: every colour in it is one of the theme's
+// two stops (or full transparency). This is the claim the palette test rests on — if a
+// tint ever creeps in here, the arithmetic that proves white is readable stops covering
+// the band, and this is the assertion that notices.
+const allowed = new Set([...bandPaint.gradientStops.map((hex) => {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
+}), 'rgba(0, 0, 0, 0)']);
+const strangers = bandPaint.meshColours.filter((c) => !allowed.has(c));
+if (strangers.length) {
+  throw new Error(`the aurora paints colours the palette test never measured: ${strangers.join(', ')}`);
+}
+// And the mesh is only declared to move for people who have not asked for less.
+const aurora = await alice.p.evaluate(() => {
+  const band = document.querySelector('[data-theme-stage-band]');
+  return band.getAnimations({ subtree: true }).map((a) => ({ name: a.animationName, state: a.playState, target: a.effect?.target?.tagName || a.effect?.pseudoElement || '?' }));
+});
+console.log('  running       :', JSON.stringify(aurora));
+if (!aurora.some((a) => a.name === 'theme-aurora')) {
+  throw new Error('the aurora is not running — a paid theme that moves should move in the preview');
+}
+
+// Pointing at a card paints the stage, and moving away puts the store back.
+const himal = alice.p.locator('[data-theme-card="himal"]');
+await himal.hover();
+await alice.p.waitForTimeout(250);
+const previewed = await alice.p.evaluate(() => ({
+  from: document.querySelector('[data-theme-stage-band]').getAttribute('style') || '',
+  line: document.querySelector('[data-theme-stage-line]').textContent.replace(/\s+/g, ' ').trim(),
+}));
+console.log('  on hover      :', JSON.stringify(previewed.from.slice(0, 60)), '·', JSON.stringify(previewed.line.slice(0, 70)));
+if (!/6d28d9|--theme-from/.test(previewed.from)) throw new Error('hovering a card does not repaint the stage');
+if (!/Previewing/i.test(previewed.line)) throw new Error('the stage does not say that it is previewing');
+await shotOf(alice.p, '[data-theme-stage]', 'premium-10-theme-stage');
+await alice.p.locator('.theme-grid h1, .theme-grid, body').first().hover({ position: { x: 5, y: 5 } });
+await alice.p.mouse.move(5, 5);
+await alice.p.waitForTimeout(250);
+const restored = await alice.p.evaluate(() => document.querySelector('[data-theme-stage-line]').textContent.replace(/\s+/g, ' ').trim());
+console.log('  moved away    :', JSON.stringify(restored.slice(0, 70)));
+if (!/Showing/i.test(restored)) throw new Error('the stage does not go back to the store’s own theme');
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 11. The shop window — the person’s own name, updating as they choose
+// ─────────────────────────────────────────────────────────────────────────────
+say(11, 'and the Plus picker shows the member’s own name, in both layers, as they choose');
+await alice.p.goto(`${BASE}/plus`);
+await consent(alice.p);
+await alice.p.locator('[data-look-stage]').waitFor(WAIT);
+const before = await alice.p.evaluate(() => ({
+  name: document.querySelector('[data-look-name]').textContent.trim(),
+  cls: document.querySelector('[data-look-name]').className,
+  chip: document.querySelector('[data-look-chip]')?.textContent.trim(),
+  line: document.querySelector('[data-look-line]').textContent.replace(/\s+/g, ' ').trim(),
+}));
+console.log('  the stage     :', JSON.stringify(before));
+if (!before.name || /^Aa$/.test(before.name)) throw new Error('the stage does not show the member’s own name');
+if (!before.chip) throw new Error('the stage does not show a store’s chip beside the name — the whole point of the round');
+const expectedName = (await alice.p.locator('.who .who-name').textContent()).trim().toLowerCase();
+if (!before.name.toLowerCase().includes(expectedName)) {
+  throw new Error(`the stage shows "${before.name}" for an account named "${expectedName}"`);
+}
+
+// Choosing paints it, with no round trip: the page must not navigate.
+await alice.p.locator('[data-effect-key="prism"] input[type=radio]').check();
+await alice.p.waitForTimeout(200);
+const after = await alice.p.evaluate(() => ({
+  url: location.pathname,
+  cls: document.querySelector('[data-look-name]').className,
+  line: document.querySelector('[data-look-line]').textContent.replace(/\s+/g, ' ').trim(),
+  chip: document.querySelector('[data-look-chip]')?.textContent.trim(),
+}));
+console.log('  after choosing:', JSON.stringify(after));
+if (after.url !== '/plus') throw new Error('choosing an effect navigated — the preview is a round trip');
+if (!/wear-prism/.test(after.cls)) throw new Error(`the stage did not repaint: ${after.cls}`);
+if (!/Prism/.test(after.line)) throw new Error(`the caption did not follow: ${after.line}`);
+if (!after.chip) throw new Error('repainting the stage dropped the store’s chip');
+await shotOf(alice.p, '[data-look-stage]', 'premium-11-look-stage');
+
+// A palette change repaints the ring and the name together — read from the stage's own
+// custom properties, which is what the avatar, the ring and the name all paint from.
+await alice.p.locator('[data-plate-key="rose"] input[type=radio]').check();
+await alice.p.waitForTimeout(200);
+const repainted = await alice.p.evaluate(() => {
+  const stage = document.querySelector('[data-look-stage]');
+  const cs = getComputedStyle(stage);
+  return { ink: cs.getPropertyValue('--plate-ink').trim(), line: document.querySelector('[data-look-line]').textContent.replace(/\s+/g, ' ').trim() };
+});
+const roseInk = await alice.p.evaluate(() => getComputedStyle(document.querySelector('[data-plate-key="rose"]')).getPropertyValue('--plate-ink').trim());
+console.log('  the palette   :', repainted.ink, '·', JSON.stringify(repainted.line.slice(0, 60)));
+if (repainted.ink !== roseInk) throw new Error(`the palette did not reach the stage: ${repainted.ink} vs ${roseInk}`);
+if (!/Rose/i.test(repainted.line)) throw new Error('the caption does not name the chosen palette');
+
+// And putting the choice back leaves the demo where the seeder left it.
+await alice.p.locator('[data-effect-key="halo"] input[type=radio]').check();
+await alice.p.locator('[data-plate-key="teal"] input[type=radio]').check();
+await alice.p.locator('form.plus-look button[type=submit]').click();
+await alice.p.waitForLoadState('domcontentloaded');
+console.log('  saved back    :', (await alice.p.locator('[data-look-line]').textContent()).replace(/\s+/g, ' ').trim().slice(0, 60));
+
 const errors = [...dark.p.errors, ...light.p.errors, ...calm.p.errors,
   ...alice.p.errors, ...calmAlice.p.errors];
 console.log('\nconsole errors:', errors.length ? JSON.stringify(errors, null, 1) : 'none');
@@ -446,4 +616,4 @@ if (errors.length) throw new Error(`${errors.length} console error(s)`);
 await dark.ctx.close(); await light.ctx.close(); await calm.ctx.close();
 await alice.ctx.close(); await calmAlice.ctx.close();
 await browser.close();
-console.log(`\nwalk complete — 9 screenshots in ${OUT}`);
+console.log(`\nwalk complete — 11 screenshots in ${OUT}`);
