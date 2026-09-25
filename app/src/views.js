@@ -4916,6 +4916,7 @@ ${conn ? `
       <dt>Billing</dt><dd><a href="/dashboard/${esc(channel.slug)}/billing">Plans, rent and payments →</a></dd>
       <dt>Store settings</dt><dd><a href="/dashboard/${esc(channel.slug)}/settings">Name, banner, listing →</a></dd>
       <dt>Reviews</dt><dd><a href="/dashboard/${esc(channel.slug)}/reviews">What buyers wrote →</a></dd>
+      <dt>Attention</dt><dd><a href="/dashboard/${esc(channel.slug)}/attention">What was watched, and what we drew →</a></dd>
     </dl>
     ${upgrade ? `
       <div class="note note-info" style="margin-top:var(--space-5)">

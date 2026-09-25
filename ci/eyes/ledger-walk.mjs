@@ -108,16 +108,21 @@ say(3, 'the block that counts views sends the money question to the network');
 const watched = await p.evaluate(() => {
   const card = [...document.querySelectorAll('.card')].find((c) => /Watched on your files/.test(c.textContent));
   if (!card) return null;
+  const full = card.innerText.replace(/\s+/g, ' ').trim();
   return {
-    text: card.innerText.replace(/\s+/g, ' ').trim().slice(0, 420),
-    blank: /not reported/.test(card.innerText),
+    // The whole block for the assertions, and a preview for the log: a check that ran
+    // against the preview passed on a page whose sentence was 40 characters further
+    // down than the cut — the harness's own gap, not the product's.
+    full,
+    text: full.slice(0, 420),
+    blank: /not reported/.test(full),
   };
 });
 console.log('  watched block :', JSON.stringify(watched?.text));
 if (!watched) throw new Error('the watched block vanished between reads');
 if (!/postback/i.test(watched.text)) throw new Error('the block does not say what makes a view count');
 // A view recorded before placements were counted must be explained, not just labelled.
-if (/Not recorded/.test(watched.text) && !/recorded before this ledger counted/.test(watched.text)) {
+if (/Not recorded/.test(watched.full) && !/recorded before this ledger counted/.test(watched.full)) {
   throw new Error('the page shows an unplaced row without saying why it is unplaced');
 }
 await shot('ledger-2-watched-block', { clip: await p.locator('.card').first().boundingBox() });
