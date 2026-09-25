@@ -3125,9 +3125,13 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 .look-frame {
   position: relative;
   display: grid; place-items: center;
-  inline-size: 2.6rem; block-size: 2.1rem;
+  /* Bigger than it looks like it needs to be, and the same radius the real card uses:
+     a frame is a one-pixel difference between two variants, and a demo tile too small
+     to show a hairline against a double rule is a control that asks a person to choose
+     between things they cannot see. */
+  inline-size: 3.4rem; block-size: 2.5rem;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md, 8px);
+  border-radius: var(--radius-lg);
   background: var(--surface-raised);
   color: var(--text-secondary);
   font-size: var(--text-2xs); font-weight: 700;
