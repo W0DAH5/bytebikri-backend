@@ -43,6 +43,48 @@ const themesModule = await import('../src/themes.js');
 
 const CSS = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
 
+// ── the review plate: the row decides, not the template ─────────────────────────
+// Found while wiring the outer slots through the surfaces that carry a look. The review
+// list handed `nameTag` an invented `plus_active: r.plus_status !== null` — entitlement
+// decided by the presence of a column, in a template. It agreed with the gate only
+// because the query's lateral join yields a row for nothing but an active, unexpired
+// subscription, so the rule lived in SQL and nothing pinned the two together. Now the
+// row goes through `plusWear()`, and these assertions are what hold the template to the
+// gate: a claim in the queue wears nothing, a lapsed month wears nothing, and a chosen
+// palette with no subscription wears nothing.
+test('a review wears the look only when the row says the subscription is live', () => {
+  const row = (over) => ({
+    buyer_name: 'Carol',
+    // The field the renderer reads is `nameplate` — the queries hand it over by that
+    // name, and the review list's old `plus_plate` alias was the bug this pins.
+    nameplate: 'rose',
+    plus_effect: 'edge',
+    plus_ring: 'orbit',
+    plus_frame: 'none',
+    plus_status: 'active',
+    plus_period_end: '2099-01-01T00:00:00.000Z',
+    ...over,
+  });
+
+  const live = views.reviewName(row());
+  assert.match(live, /class="member-name wear-edge"/, 'a payer’s review is not dressed at all');
+  assert.match(live, /--plate-a:#e11d48/, 'and not in their own palette');
+
+  const pending = views.reviewName(row({ plus_status: 'pending_payment' }));
+  assert.doesNotMatch(pending, /wear-(?!solid)/, `a claim in the queue is not a look: ${pending}`);
+  assert.doesNotMatch(pending, /--plate-a/, 'nor does it arrive with the palette it has merely chosen');
+
+  const lapsed = views.reviewName(row({ plus_period_end: '2020-01-01T00:00:00.000Z' }));
+  assert.doesNotMatch(lapsed, /wear-(?!solid)/, `a lapsed month wears nothing: ${lapsed}`);
+
+  const never = views.reviewName({ buyer_name: 'Carol', plus_status: null, nameplate: 'rose' });
+  assert.doesNotMatch(never, /wear-(?!solid)/, 'a chosen look with no subscription behind it wears nothing');
+
+  // And a reviewer with no name at all is a real state, not a blank.
+  assert.equal(views.reviewName({ buyer_name: null }), 'A buyer');
+  assert.equal(views.reviewName(null), 'A buyer');
+});
+
 // ── the surfaces, read from the stylesheet rather than restated ─────────────────
 // These are the pages a painted name actually sits on: `--surface-base` in the night
 // theme, and its light-theme override. Reading them here rather than typing two hex

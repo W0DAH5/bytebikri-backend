@@ -39,7 +39,7 @@
  * round-trip is a picker that lies.
  */
 import { chromium } from 'playwright-core';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readdirSync } from 'node:fs';
 import { consent, sessionFor } from './lib.mjs';
 
 const SLUG = process.argv[2] || 'alice';
@@ -185,6 +185,25 @@ function rosterRow(p, who) {
   return p.locator('.member-roster li', { hasText: who }).first();
 }
 
+/**
+ * The painted NAME on a roster row — the element these sections are about.
+ *
+ * They used `li [class*="wear-"]`, which was true while a wear was the only class of its
+ * kind on the row. It is not any more: the tile carries the member's ring, and the tile
+ * comes first in the DOM, so whenever the saved ring is the one every look has always
+ * had (`orbit`, which is also what this walk puts back at the end) the "name" these
+ * sections measured was the AVATAR. The contrast check then measured a white initial on
+ * the light theme's white page and failed at 1:1 — on the second run of the file, never
+ * the first, because the first run starts from whatever the last pick left behind. A
+ * selector that means "the name" has to name it.
+ */
+const NAME_WEAR = '.member-name[class*="wear-"]';
+
+/** The name inside one row, matched by the selector above rather than by first-wear. */
+function nameOf(p, who) {
+  return rosterRow(p, who).locator(NAME_WEAR).first();
+}
+
 async function openRoster(p, slug) {
   await p.goto(`${BASE}/s/${slug}`);
   await consent(p);
@@ -200,7 +219,13 @@ const p = dark.p;
 await openRoster(p, ROSTER_SLUG);
 
 const rowText = (await rosterRow(p, 'Alice').textContent()).replace(/\s+/g, ' ').trim();
-const wear = await rosterRow(p, 'Alice').locator('[class*="wear-"]').first().getAttribute('class');
+// The element, named: `wear-halo` and `wear-ring` are both "a wear" by substring, and the
+// row holds one of each, so a measurement that does not say which one it wants can pass
+// while checking the wrong thing.
+if (!/member-name/.test(await nameOf(p, 'Alice').getAttribute('class') || '')) {
+  throw new Error('the row’s name is not the element this section reads');
+}
+const wear = await nameOf(p, 'Alice').getAttribute('class');
 const chip = await rosterRow(p, 'Alice').locator('.store-chip').first().textContent();
 console.log('  the row       :', JSON.stringify(rowText));
 console.log('  the name wears:', wear, '· the chip says:', JSON.stringify(chip));
@@ -215,7 +240,7 @@ if (!/^Elite$/i.test(chip.trim())) throw new Error(`the chip is not the store’
 // on the row: neither layer may be an ancestor of the other, or one would be
 // decorating the thing the other owns.
 const structure = await rosterRow(p, 'Alice').evaluate((li) => {
-  const w = li.querySelector('[class*="wear-"]');
+  const w = li.querySelector('.member-name');
   const c = li.querySelector('.store-chip');
   return { sameRow: Boolean(w && c), contained: Boolean(w && c && (w.contains(c) || c.contains(w))), tag: w?.tagName };
 });
@@ -229,7 +254,7 @@ await shotOf(p, '.member-roster', 'premium-1-two-layers-dark');
 say(2, 'and it is painted in the day scheme too, not merely inverted');
 const light = await openCtx({ scheme: 'light' });
 await openRoster(light.p, ROSTER_SLUG);
-const lightWear = await rosterRow(light.p, 'Alice').locator('[class*="wear-"]').first().getAttribute('class');
+const lightWear = await nameOf(light.p, 'Alice').getAttribute('class');
 console.log('  the name wears:', lightWear);
 await shotOf(light.p, '.member-roster', 'premium-2-two-layers-light');
 if (lightWear !== wear) throw new Error(`the effect changes with the scheme: ${wear} → ${lightWear}`);
@@ -253,7 +278,7 @@ function checkPaint(scheme, paint, sel, where) {
   if (worst < 4.5) throw new Error(`${scheme} ${sel}: ${worst}:1 is below 4.5:1 — ${paint.colour}`);
 }
 
-const ROSTER_WEAR = '.member-roster li [class*="wear-"]';
+const ROSTER_WEAR = `.member-roster ${NAME_WEAR}`;
 for (const [scheme, ctx] of [['dark', dark], ['light', light]]) {
   checkPaint(scheme, await paintOf(ctx.p, ROSTER_WEAR), ROSTER_WEAR, 'roster');
 }
@@ -277,14 +302,14 @@ for (const [scheme, ctx] of [['dark', dark], ['light', light]]) {
 // ─────────────────────────────────────────────────────────────────────────────
 say(4, 'the look is at rest; pointing at the name is what starts it');
 await openRoster(p, ROSTER_SLUG);   // section 3 left this page on /plus
-const rest = await animationsOn(p, `.member-roster li:has([class*="wear-"]) [class*="wear-"]`);
+const rest = await animationsOn(p, `.member-roster li:has(.member-name) .member-name`);
 console.log('  at rest       :', JSON.stringify(rest));
 if (!rest?.length) throw new Error('the name declares no animation at all — nothing would ever move');
 if (rest.some((a) => a.playState === 'running')) throw new Error('a name is animating before anybody touched it');
 
-await rosterRow(p, 'Alice').locator('[class*="wear-"]').first().hover();
+await nameOf(p, 'Alice').hover();
 await p.waitForTimeout(300);
-const hovered = await animationsOn(p, `.member-roster li:has([class*="wear-"]) [class*="wear-"]`);
+const hovered = await animationsOn(p, `.member-roster li:has(.member-name) .member-name`);
 console.log('  under pointer :', JSON.stringify(hovered));
 if (!hovered?.some((a) => a.playState === 'running')) {
   throw new Error('hovering the name does not start its motion — the effect would be a still sticker');
@@ -375,14 +400,14 @@ await shotOf(alice.p, '.who', 'premium-9-worn-everywhere');
 say(5, 'and a system that asks for less motion gets the same look, standing still');
 const calm = await openCtx({ scheme: 'dark', motion: 'reduce' });
 await openRoster(calm.p, ROSTER_SLUG);
-const calmWear = await rosterRow(calm.p, 'Alice').locator('[class*="wear-"]').first().getAttribute('class');
-const calmAnim = await animationsOn(calm.p, `.member-roster li:has([class*="wear-"]) [class*="wear-"]`);
-const calmPaint = await paintOf(calm.p, `.member-roster li:has([class*="wear-"]) [class*="wear-"]`);
+const calmWear = await nameOf(calm.p, 'Alice').getAttribute('class');
+const calmAnim = await animationsOn(calm.p, `.member-roster li:has(.member-name) .member-name`);
+const calmPaint = await paintOf(calm.p, `.member-roster ${NAME_WEAR}`);
 console.log('  the name wears:', calmWear, '· animations:', JSON.stringify(calmAnim));
 console.log('  still painted :', calmPaint ? JSON.stringify({ painted: calmPaint.painted, stops: calmPaint.stops, textShadow: calmPaint.textShadow }) : null);
-await rosterRow(calm.p, 'Alice').locator('[class*="wear-"]').first().hover();
+await nameOf(calm.p, 'Alice').hover();
 await calm.p.waitForTimeout(300);
-const calmHover = await animationsOn(calm.p, `.member-roster li:has([class*="wear-"]) [class*="wear-"]`);
+const calmHover = await animationsOn(calm.p, `.member-roster li:has(.member-name) .member-name`);
 console.log('  after hover   :', JSON.stringify(calmHover));
 if (calmWear !== wear) throw new Error('reduced motion changed WHICH look is worn — that is a value, not a movement');
 if (calmAnim?.some((a) => a.playState === 'running') || calmHover?.some((a) => a.playState === 'running')) {
@@ -1089,6 +1114,56 @@ if (!/member-avatar--shine/.test(rosterCard.ring)) {
 }
 await shotOf(witness.p, '.member-roster', 'premium-23-roster-frame');
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 16. The look travels to the two surfaces a stranger reads
+// ─────────────────────────────────────────────────────────────────────────────
+// Both of these were found by asking the same question of every surface that renders a
+// name: does the QUERY hand the renderer the field the renderer reads? The two here did
+// not. The seller's member list (a page where names are read most carefully) showed a
+// paying member wearing nothing, and the review list painted every paying reviewer in
+// the fallback indigo while their own palette sat in the row beside it.
+say(16, 'and the seller’s queue and a review both show the look the person actually wears');
+
+const seller = await openCtx({ scheme: 'dark', who: 'nima' });
+await seller.p.goto(`${BASE}/dashboard/${ROSTER_SLUG}/members`);
+await consent(seller.p);
+const queue = await seller.p.evaluate(() => [...document.querySelectorAll('.member-name')].map((n) => ({
+  who: n.textContent.trim(),
+  cls: n.className,
+  palette: getComputedStyle(n).getPropertyValue('--plate-a').trim(),
+})));
+console.log('  the seller’s queue:', JSON.stringify(queue));
+if (!queue.length) throw new Error('the seller’s member list rendered no member rows');
+const dressedRow = queue.find((r) => /wear-(?!solid)/.test(r.cls));
+if (!dressedRow) {
+  throw new Error(`no member is dressed on the seller’s own list: ${JSON.stringify(queue)}`);
+}
+if (dressedRow.palette !== '#0f766e') {
+  throw new Error(`the seller’s queue painted the member in ${dressedRow.palette}, not their own palette`);
+}
+await shotOf(seller.p, '.members-file', 'premium-24-seller-queue');
+await seller.ctx.close();
+
+// A stranger reading a review: the reviewer is somebody the reader has never met, and the
+// name beside their words is the one place the person's look is read by a stranger who is
+// deciding whether to trust the file.
+const reader = await openCtx({ scheme: 'dark' });
+await reader.p.goto(`${BASE}/s/bob/a/studio-print-01`);
+await consent(reader.p);
+const review = await reader.p.evaluate(() => {
+  const name = document.querySelector('.review-list .review-who .member-name');
+  if (!name) return null;
+  return { cls: name.className, palette: getComputedStyle(name).getPropertyValue('--plate-a').trim() };
+});
+console.log('  a review      :', JSON.stringify(review));
+if (!review) throw new Error('the review list rendered no name to read');
+if (!/wear-(?!solid)/.test(review.cls)) throw new Error(`the reviewer is not wearing their look: ${review.cls}`);
+if (review.palette !== '#0f766e') {
+  throw new Error(`the review name is painted in ${review.palette}, which is not the reviewer’s palette`);
+}
+await shotOf(reader.p, '.review-list', 'premium-25-review-name');
+await reader.ctx.close();
+
 // Put back exactly what was worn before, so the walk leaves the state it found.
 await outer.p.goto(`${BASE}/plus`);
 await consent(outer.p);
@@ -1101,7 +1176,8 @@ console.log('  put back      :', startOuter.ring, '/', startOuter.frame);
 const errors = [...dark.p.errors, ...light.p.errors, ...calm.p.errors,
   ...alice.p.errors, ...calmAlice.p.errors, ...nima.p.errors,
   ...bob.p.errors, ...carolG.p.errors, ...operator.p.errors,
-  ...own.p.errors, ...none.p.errors, ...still.p.errors, ...outer.p.errors, ...witness.p.errors];
+  ...own.p.errors, ...none.p.errors, ...still.p.errors, ...outer.p.errors, ...witness.p.errors,
+  ...seller.p.errors, ...reader.p.errors];
 console.log('\nconsole errors:', errors.length ? JSON.stringify(errors, null, 1) : 'none');
 if (errors.length) throw new Error(`${errors.length} console error(s)`);
 
@@ -1109,6 +1185,9 @@ await dark.ctx.close(); await light.ctx.close(); await calm.ctx.close();
 await alice.ctx.close(); await calmAlice.ctx.close(); await nima.ctx.close();
 await bob.ctx.close(); await carolG.ctx.close(); await operator.ctx.close();
 await own.ctx.close(); await none.ctx.close(); await still.ctx.close();
-await outer.ctx.close(); await witness.ctx.close();
+await outer.ctx.close(); await witness.ctx.close(); await seller.ctx.close(); await reader.ctx.close();
 await browser.close();
-console.log(`\nwalk complete — 23 screenshots in ${OUT}`);
+// Counted from the disk rather than typed: the last three rounds each added sections and
+// the hand-kept total drifted from the evidence on the floor.
+const shotCount = readdirSync(OUT).filter((f) => /^premium-.*\.png$/.test(f)).length;
+console.log(`\nwalk complete — ${shotCount} screenshots in ${OUT}`);

@@ -105,7 +105,7 @@ are run after the seeder rather than being self-contained:
 ```bash
 node ci/demo-state.mjs              # the demo state, and the restore
 node ci/eyes/member-walk.mjs        # three sessions, the attention door, 11 shots
-node ci/eyes/premium-walk.mjs       # two payers, two schemes, motion on intent; 23 shots (19 design, 4 gifting)
+node ci/eyes/premium-walk.mjs       # two payers, two schemes, motion on intent; 25 shots (21 design, 4 gifting)
 node ci/eyes/reset-rent.mjs alice   # puts the rent invoice back to issued
 node ci/eyes/rent-walk.mjs          # the seller's invoice, the reference, the operator's match; 5 shots
 ```
@@ -136,6 +136,23 @@ after the save, and — seen through carol's session, because the roster does no
 reader's own row — the person's card on a store's roster, where the store's chip and the
 store's own top-tier light must both still be there beside the person's ring and edge.
 It puts back exactly what it found, so the walk is re-runnable against its own output.
+
+Section 16 is the two surfaces where a STRANGER reads a person's look, and both of them
+were broken in the same way — a query that did not select the field the renderer reads:
+the seller's own member list (the page where names are read most carefully, where a
+paying member appeared wearing nothing) and a review (where every paying reviewer was
+painted in the fallback indigo). The walk signs in as the seller and reads the queue —
+one member dressed in her own palette, one plain — and then loads a review page signed
+out, because the reader is somebody who has never met the reviewer.
+
+The walk's own selectors are part of the evidence too. Sections 1–3 measure "the painted
+name on a roster row", and they used `li [class*="wear-"]` — which stopped meaning the
+name the moment the avatar carried a ring of its own, because the avatar comes first in
+the DOM and the default ring's class is also a `wear-`. The sections then measured a white
+initial on the light theme's white page and failed at 1:1, but only on the second run —
+the first run started from whatever the last pick left behind, and the walk restores the
+default ring at the end. One named selector (`NAME_WEAR`), one assertion that the element
+read is the name, and two consecutive runs are green.
 
 `premium-walk.mjs` is the one walk whose subject is a DESIGN rather than a flow, and
 it is measured rather than looked at: contrast is computed in the page from the

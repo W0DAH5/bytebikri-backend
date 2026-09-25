@@ -311,6 +311,56 @@ test('the roster hands the renderer the palette the look is painted from', async
   } finally { await cleanup(channel, owner, member); }
 });
 
+test('the seller’s own member list hands the renderer the look too', async () => {
+  // The sibling of the roster test above, and the same bug in a second query. The
+  // seller's members page passes every row to `memberPlate()`, which dresses the name,
+  // the avatar and the card's edge from the member's own look — but `membersOfChannel`
+  // was written before looks existed and selected none of those fields, so on the page
+  // where names are read MOST carefully a paying member appeared wearing nothing at all.
+  // Two pages, one person, two different pictures. The query is the fix; this is the pin.
+  const { owner, channel, member } = await fixture();
+  try {
+    await store.joinMembership({ profileId: member.id, channelId: channel.id, tierNo: 2, claim: claim({ amountNpr: 600 }) });
+    await store.confirmMembership({ profileId: member.id, channelId: channel.id, ownerId: owner.id, actorId: owner.id });
+
+    // A REAL arrangement, so the row the page receives is the row production assembles:
+    // the lateral join is what makes `plus_status` present, and faking it would test the
+    // renderer while leaving the query — the half that was broken — unasserted.
+    const claimed = await store.claimPlus({ profileId: member.id, txnReference: `MEM-PLUS-${Date.now()}` });
+    await store.matchCustomerPlanPayment({ paymentId: claimed.payment.id, actorId: null });
+    await query(`update profiles
+                    set nameplate = 'teal', plus_effect = 'halo',
+                        plus_ring = 'double', plus_frame = 'glow'
+                  where id = $1`, [member.id]);
+
+    const [row] = await store.membersOfChannel(channel.id);
+    assert.equal(row.nameplate, 'teal', 'the seller’s row does not carry the field the look is read from');
+    assert.equal(row.plus_effect, 'halo');
+    assert.equal(row.plus_ring, 'double');
+    assert.equal(row.plus_frame, 'glow');
+    assert.equal(row.plus_status, 'active', 'and the arrangement is not joined, so nothing would be worn');
+    const wear = plusWear(row);
+    assert.equal(wear?.plate, 'teal', 'the row the seller’s page receives is not wearing the member’s palette');
+
+    const html = views.channelMembers({
+      channel, user: owner, members: [row], tiers: await store.membershipTiers(channel.id),
+      membershipsOn: true, plan: PLANS.store,
+    });
+    assert.match(html, /class="member-name wear-halo"/,
+      'the seller’s queue did not dress the member’s name');
+    assert.match(html, /--plate-a:#0f766e/, 'and not in the member’s own palette');
+    assert.match(html, /class="store-chip/, 'the seller’s own chip left the row');
+  } finally {
+    // Payments hang off the subscription, not the profile; the receipt goes before the
+    // arrangement it paid for.
+    await query(`delete from customer_plan_payments
+                  where customer_subscription_id in
+                        (select id from customer_subscriptions where profile_id = $1)`, [member.id]);
+    await query('delete from customer_subscriptions where profile_id = $1', [member.id]);
+    await cleanup(channel, owner, member);
+  }
+});
+
 // ── 4b. the tier card sells the FILES, not the idea of files ────────────────
 
 test('a tier card names the files it opens, and says which tier they sit behind', async () => {

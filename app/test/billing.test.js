@@ -28,7 +28,8 @@ const { store, PLANS, nextPlan } = await import('../src/store.js');
 const { close, query, scalar } = await import('../src/db.js');
 const { annualRentNpr, rentPeriod, upgradeExplanation, planBenefits, planDrift, RENT_TERMS, NOT_CHARGED } = await import('../src/billing.js');
 const { POLICY } = await import('../src/slots.js');
-const { plusYearPrice } = await import('../src/plus.js');
+const views = await import('../src/views.js');
+const { plusYearPrice, plusWear } = await import('../src/plus.js');
 
 after(async () => { await close(); });
 
@@ -368,6 +369,52 @@ test('rent is submitted with a reference and marked paid by an operator', async 
   const paid = await store.matchRentPayment({ invoiceId: invoice.id, actorId: operator.id, note: 'seen on statement' });
   assert.equal(paid.status, 'paid');
   assert.ok(!(await store.openRentInvoices()).some((i) => i.id === invoice.id));
+});
+
+test('a review hands the renderer the palette it paints the reviewer’s name from', async () => {
+  // `reviewsOfAsset` aliased the palette to `plus_plate` while `plusWear()` reads
+  // `nameplate`, so every paying reviewer — on a page where a stranger is deciding
+  // whether to trust the file — wore their effect in the fallback indigo instead of the
+  // colour they chose. The alias was the bug; the query hands over what the renderer
+  // reads, and this is the pin on the third of the three surfaces that carry a look.
+  const { asset, channel, user } = await fixture();
+  const buyer = await store.userByEmailOrCreate(`buyer-rev-${Date.now()}-${seq}@test.local`);
+  try {
+    const unlock = await store.grantUnlock({ assetId: asset.id, channelId: channel.id, userId: buyer.id, method: 'open', adsCompleted: 0 });
+    const claimed = await store.claimPlus({ profileId: buyer.id, txnReference: `REV-PLUS-${Date.now()}` });
+    await store.matchCustomerPlanPayment({ paymentId: claimed.payment.id, actorId: null });
+    await query(`update profiles
+                    set display_name = 'Nima', nameplate = 'rose', plus_effect = 'edge',
+                        plus_ring = 'double', plus_frame = 'glow'
+                  where id = $1`, [buyer.id]);
+    await store.addReview({ unlockId: unlock.id, assetId: asset.id, channelId: channel.id, buyerId: buyer.id, rating: 5, body: 'Worth it.' });
+
+    const [row] = await store.reviewsOfAsset(asset.id);
+    assert.equal(row.nameplate, 'rose', 'the review row does not carry the field the look is read from');
+    assert.equal(row.plus_plate, undefined, 'and it is not handed over under a name nothing reads');
+    assert.equal(plusWear(row)?.plate, 'rose', 'the reviewer is not wearing the palette they chose');
+
+    const html = views.reviewSection({
+      channel, asset, reviews: [row], reviewStats: await store.reviewStatsOfAsset(asset.id),
+      canReview: false, myReview: null, reviewError: null,
+    });
+    assert.match(html, /review-who"><span class="member-name wear-edge"/,
+      'the review name is not dressed by the same call the roster uses');
+    assert.match(html, /--plate-a:#e11d48/, 'and not in the reviewer’s own palette');
+  } finally {
+    await query('delete from reviews where buyer_id = $1', [buyer.id]);
+    await query('delete from unlocks where user_id = $1', [buyer.id]);
+    // Payments hang off the subscription, not the profile.
+    await query(`delete from customer_plan_payments
+                  where customer_subscription_id in
+                        (select id from customer_subscriptions where profile_id = $1)`, [buyer.id]);
+    await query('delete from customer_subscriptions where profile_id = $1', [buyer.id]);
+    await query('delete from profiles where id = $1', [buyer.id]);
+    await query('delete from assets where id = $1', [asset.id]);
+    await query('delete from subscriptions where channel_id = $1', [channel.id]);
+    await query('delete from channels where id = $1', [channel.id]);
+    await query('delete from profiles where id = $1', [user.id]);
+  }
 });
 
 test('a review can only be written where an unlock exists, and the average counts them', async () => {

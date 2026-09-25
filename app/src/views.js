@@ -955,6 +955,29 @@ function plusNameClasses(wear, base = 'member-name') {
   return [base, wearClass(wear.effect)].filter(Boolean).join(' ');
 }
 
+/**
+ * The name on a review, dressed by the SAME call the roster uses — and handed the row
+ * the query actually returned.
+ *
+ * This used to read `{ plus_active: r.plus_status !== null, … }`: the template deciding
+ * entitlement from the presence of a column. That was TRUE only because
+ * `PLUS_SUBSCRIPTION_JOIN` is a lateral subquery that yields a row for nothing except an
+ * active, unexpired subscription — the rule lived in the query and the template merely
+ * happened to agree with it. Change that join (to show a lapsed month, say) and this
+ * page starts painting looks nobody is paying for, silently, on a storefront.
+ *
+ * Now `plusWear()` reads the row itself, through `plusState()`: pending wears nothing,
+ * active-and-unexpired wears the look, lapsed wears nothing, and a row with no
+ * subscription at all wears nothing — the same gate the roster, the account chip and the
+ * card go through, asserted in `wear.test.js`.
+ */
+export function reviewName(row = null) {
+  // A reviewer who is not named is a real state, not a placeholder: the review survives
+  // the account and the name is simply gone.
+  if (!row?.buyer_name) return 'A buyer';
+  return nameTag(row.buyer_name, row);
+}
+
 export function nameTag(name, row = null, { base = 'member-name' } = {}) {
   const label = String(name ?? '');
   if (!label) return '';
@@ -2073,7 +2096,12 @@ function fileTreatment(f) {
  * from two reviews and "4.8" from two hundred are different facts and the page
  * says which one it is.
  */
-function reviewSection({ channel, asset, reviews = [], reviewStats = {}, canReview, myReview, reviewError }) {
+/**
+ * Exported for the test that reads the reviewer's own plate: the review list is the third
+ * surface a person's look travels to, and the assertion is about the markup a stranger
+ * reads rather than about the helper in isolation.
+ */
+export function reviewSection({ channel, asset, reviews = [], reviewStats = {}, canReview, myReview, reviewError }) {
   const count = Number(reviewStats.count) || 0;
   const average = count ? Number(reviewStats.average).toFixed(1) : null;
 
@@ -2082,12 +2110,7 @@ function reviewSection({ channel, asset, reviews = [], reviewStats = {}, canRevi
         <li class="review">
           <div class="review-head">
             <span class="stars" aria-label="${r.rating} out of 5">${'★'.repeat(r.rating)}${'☆'.repeat(5 - r.rating)}</span>
-            <span class="review-who">${r.buyer_name
-    // Their own look, if it is current — the same call the roster uses, so a name
-    // looks the same everywhere it appears. A reviewer who is not named falls back
-    // to "A buyer", which is a real state and not a placeholder.
-    ? nameTag(r.buyer_name, { plus_active: r.plus_status !== null && r.plus_status !== undefined, nameplate: r.plus_plate, plus_effect: r.plus_effect })
-    : 'A buyer'}</span>
+            <span class="review-who">${reviewName(r)}</span>
             <span class="spacer"></span>
             <span class="fine">${relTime(r.created_at)}</span>
           </div>

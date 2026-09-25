@@ -2999,11 +2999,22 @@ export const store = {
   /** Everyone who is in, current or not, for the seller's own page. */
   membersOfChannel(channelId) {
     return many(
-      `select m.*, p.display_name, p.email, t.name as tier_name, t.accent, t.dues_npr, t.glyph
+      // The look rides on this query because the seller's queue RENDERS it: the page
+      // passes each row to `memberPlate()`, and until these columns were selected the
+      // renderer was handed a row with no palette, no effect, no ring and no frame — so
+      // a paying member appeared on the seller's own list wearing nothing, while the
+      // same person wore their whole look on the storefront two pages away. A field the
+      // renderer reads has to be a field the query returns; the aliases here follow the
+      // roster's rule (`nameplate`, because that is the name `plusWear()` reads).
+      `select m.*, p.display_name, p.email, t.name as tier_name, t.accent, t.dues_npr, t.glyph,
+              p.nameplate, p.plus_effect as plus_effect,
+              p.plus_ring as plus_ring, p.plus_frame as plus_frame,
+              pl.plus_status, pl.plus_period_end
          from memberships m
          join profiles p on p.id = m.profile_id
          left join membership_tiers t
            on t.channel_id = m.channel_id and t.tier_no = m.tier_no
+         ${PLUS_JOIN}
         where m.channel_id = $1
         order by m.joined_at desc`,
       [channelId],
@@ -5008,7 +5019,11 @@ export const store = {
   reviewsOfAsset(assetId, { limit = 20 } = {}) {
     return many(
       `select r.*, p.display_name as buyer_name,
-              p.nameplate as plus_plate, p.plus_effect as plus_effect,
+              -- Plain nameplate, NOT plus_plate: plusWear() reads this field by that
+              -- name, and the alias made every paying reviewer wear their effect in the
+              -- fallback indigo while their own palette sat in the row beside it. Same
+              -- rule as the roster above; the renderer is handed what it reads.
+              p.nameplate, p.plus_effect as plus_effect,
               p.plus_ring as plus_ring, p.plus_frame as plus_frame,
               pl.plus_status, pl.plus_period_end
          from reviews r join profiles p on p.id = r.buyer_id

@@ -3311,3 +3311,45 @@ changed that: an edge in the wrong colour is visibly the tier's colour rather th
 regression test now goes through `publicRoster` itself, so the query and the renderer have to agree about
 what the field is called. The walk reads the result on a live roster, in carol's session, where the
 store's chip and the store's top-tier light sit on the same card and must both survive.
+
+---
+
+## §38 — Three queries that did not hand the renderer what the renderer reads
+
+The outer slots (ring, card edge) shipped in `8d4e133`/`7a602a7` with a renderer that reads
+`row.nameplate`, `row.plus_effect`, `row.plus_ring`, `row.plus_frame` and `plus_status` — and three
+queries were written before that vocabulary existed. Each one silently painted the wrong picture, and
+each was found by asking one question of every surface that renders a name: **does the query hand the
+renderer the field the renderer reads?** All three are one line of SQL and one regression test.
+
+**1. The review list (`reviewsOfAsset`).** Still aliased the column `p.nameplate as plus_plate`. The
+alias is from the round where `plusWear()` accepted both names; the acceptance went away and the alias
+did not, so every paying reviewer wore their effect in the fallback indigo while their own palette sat
+in the row beside it — on the page where a stranger decides whether to trust the file. The query now
+selects plain `nameplate`, like the roster, and `billing.test.js` pins the rendered plate (effect class
+and `--plate-a`) rather than the helper.
+
+**2. The seller's member list (`membersOfChannel`).** Selected no look fields at all and did not join
+the subscription, while `views.channelMembers` passes every row to `memberPlate()` and the page's own
+comment says "the member's own look rides on the plate here too — the seller's queue is where names are
+read most carefully". So a paying member appeared on the seller's own list wearing nothing, two pages
+from the same person wearing their whole look on the storefront. The query carries the fields and the
+join now; `members.test.js` asserts a real arrangement (not a faked `plus_active`) reaches the page.
+
+**3. The review name's entitlement.** `reviewSection` computed `plus_active: r.plus_status !== null` in
+the template. It agreed with the gate only because `PLUS_SUBSCRIPTION_JOIN` yields a row for nothing but
+an active, unexpired subscription — the rule lived in SQL and nothing pinned the two together, so any
+change to that join would have started painting looks nobody is paying for. `views.reviewName(row)` now
+hands the row to the same `plusWear()` gate the roster, the account chip and the card go through;
+`wear.test.js` holds it there (pending wears nothing, lapsed wears nothing, no subscription wears
+nothing, an unnamed reviewer is "A buyer").
+
+**And the walk that was only green on alternate runs.** `premium-walk.mjs` §1–§3 asked for
+`li [class*="wear-"]` — "the wear" on a row. That was true while a wear was the only such class on a
+row; once the tile carried the member's ring it stopped being true, and because the tile comes first in
+the DOM the sections measured the AVATAR whenever the saved ring was `orbit` (the value the walk itself
+restores at the end, which is why the file passed on the first run and failed on the second at the light
+theme's white-on-white 1:1). The selector names the element now (`NAME_WEAR`, one definition, read by
+every section), §1 asserts that what it read IS the name, and §16 walks the two surfaces above in a real
+browser: the seller's queue (alice dressed in her own teal, bob plain) and a review read by a stranger.
+Two consecutive runs are green, which is the property the old file did not have.
