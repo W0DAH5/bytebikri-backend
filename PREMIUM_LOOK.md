@@ -209,7 +209,16 @@ the browser the first time it was pointed at a page that was supposed to be movi
    specifically, by name, because "the preview is moving" is a claim about a name and
    a ring rather than about one element.
 
-A third finding was a HARNESS bug worth recording because the shape recurs: the walk
+3. **The header chip wore nothing, and no assertion was looking at the header.** The
+   class resolver took a ROW and `plusWear()` on an already-resolved wear object is
+   always null, so the signed-in person's own avatar — the avatar in the header of
+   every page, the one they see most — silently rendered without its ring. The unit
+   suite passed because no test rendered the header; the walk passed because its
+   sections were about rosters and the Plus page. It now has a section about the
+   header, on a page that is about somebody else's store, and `wear.test.js` renders
+   the real header for both an active arrangement and a lapsed one.
+
+A fourth finding was a HARNESS bug worth recording because the shape recurs: the walk
 collected every selector it wanted to measure into one list and then walked it, by
 which time both pages had navigated to the Plus page — so the roster measurement
 found nothing and threw. Measure each thing on the page it lives on, in visit order.
