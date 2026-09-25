@@ -22,13 +22,36 @@
 import crypto from 'node:crypto';
 import { one, query } from './db.js';
 import { readSecret } from './config.js';
+// Whether a media host is in play at all — the fact the notice's version and its
+// own paragraph both follow (`VIDEO_STORAGE.md` §3, §7).
+import { videoHostEnabled } from './video.js';
 
 /**
  * Bump this whenever the notice changes in a way a person would care about:
  * a new purpose, a new category of recipient, a new retention period. Not for
  * typos. The number is what makes an old agreement stop being an agreement.
+ *
+ * ── AND ONE OF THOSE BUMPS IS CONDITIONAL ────────────────────────────────────
+ *
+ * A video host that DELIVERS a store's video is a new category of recipient: the
+ * viewer's browser asks it for the bytes, so it learns an IP address this
+ * platform never used to give anyone (`VIDEO_STORAGE.md` §7). But it is a
+ * recipient only where a video host is configured — a deployment with
+ * `VIDEO_DRIVER` unset hands nobody anything it did not hand over yesterday, and
+ * asking its visitors to consent again would be asking about something that does
+ * not happen there. That is the mistake the PURPOSES comment above refuses to
+ * make, in the other direction.
+ *
+ * So the version is a function of the same fact the notice's own text is, and the
+ * two cannot drift apart.
  */
-export const POLICY_VERSION = '2026-09-1';
+export const POLICY_VERSION_BASE = '2026-09-1';
+export const POLICY_VERSION_MEDIA_HOST = '2026-09-2';
+
+export const policyVersionFor = ({ videoHost = false } = {}) =>
+  (videoHost ? POLICY_VERSION_MEDIA_HOST : POLICY_VERSION_BASE);
+
+export const POLICY_VERSION = policyVersionFor({ videoHost: videoHostEnabled() });
 
 /**
  * The purposes we ask about. `necessary` is not on the list: it is not a choice.

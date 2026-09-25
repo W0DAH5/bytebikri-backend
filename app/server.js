@@ -18,6 +18,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { store, storage, SLOT_DEFS, slugify, PLANS, nextPlan } from './src/store.js';
+import { videoHostEnabled, mediaOrigins as videoMediaOrigins } from './src/video.js';
 // The cosmetics engine: the look picker's slots, declared once. This route validates a
 // submitted look against the catalog rather than against a list typed here.
 import { personSlots } from './src/cosmetics.js';
@@ -182,7 +183,12 @@ APP.use(helmet({
       // Locked to 'self' for now because no tag is rendered yet; this list grows
       // when component 6 does, and it must be an allowlist, never a wildcard.
       imgSrc: ["'self'", 'data:'],
-      connectSrc: ["'self'"],
+      // Scripts may only talk to us — this is the directive that would otherwise let an
+      // injected script post a session somewhere. A hosted PLAYLIST is fetched by hls.js
+      // through XHR, though, so the origins this deployment's providers serve media from
+      // are named explicitly (`mediaOrigins`: the configured providers that can state
+      // theirs, plus `VIDEO_MEDIA_ORIGINS`). Never `https:` here.
+      connectSrc: ["'self'", ...videoMediaOrigins()],
       // hls.js plays HLS through MediaSource Extensions, and the MediaSource reaches
       // the element as a `blob:` URL owned by this origin — which Chrome does NOT
       // accept under `'self'` for media. It answers "Media load rejected by URL safety
@@ -190,7 +196,25 @@ APP.use(helmet({
       // rectangle in the browser most of them use. The scheme is therefore named, and
       // only the scheme: a blob URL can still only come from this origin's own script.
       // The worker is the same story — hls.js transmuxes inside one when it can.
-      mediaSrc: ["'self'", 'blob:'],
+      // `blob:` because hls.js hands the element a MediaSource through one, which Chrome
+      // refuses under `'self'` — the black rectangle this comment has always been about.
+      //
+      // `https:` because a HOSTED file is delivered by a redirect to the provider's CDN,
+      // and CSP judges the redirect's DESTINATION. Without the scheme the element never
+      // even attempts the request: `networkState` is 3 (NO_SOURCE), the error is code 4
+      // (SRC_NOT_SUPPORTED), no network event fires, and the only person who could see why
+      // is one reading the console. That was a real bug, found by
+      // `ci/eyes/video-host-walk.mjs` in the round that added the second provider — the
+      // server-side 302 was correct and the picture was still black.
+      //
+      // The widening is confined to media, which cannot execute anything, and `codecs`
+      // aside a media element can send nothing anywhere: the directives that could leak
+      // (script-src, connect-src) stay narrow. Kept as a named scheme rather than an
+      // origin list because the CDN's origin is only known once the host answers.
+      // The enumerated origins come first because they are also what makes a development
+      // or staging deployment work when its media host is plain `http` — the scheme
+      // allowance below is https only, and a stub on a LAN should not need a certificate.
+      mediaSrc: ["'self'", 'blob:', ...videoMediaOrigins(), 'https:'],
       workerSrc: ["'self'", 'blob:'],
       frameSrc: ["'none'"],
       objectSrc: ["'none'"],
@@ -574,13 +598,20 @@ APP.post('/consent', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/*
+ * `videoHost` is passed to every document and read by one of them: the privacy notice
+ * is the only page whose text depends on whether this deployment delivers video bytes
+ * through somebody else's CDN, and its date moves with that paragraph
+ * (`VIDEO_STORAGE.md` §7). The consent version moves with the same fact, in
+ * `src/consent.js`, so the two cannot disagree about what changed.
+ */
 const LEGAL_DOCS = { privacy: legal.privacy, terms: legal.terms, cookies: legal.cookies };
 
 APP.get('/legal/:slug', async (req, res, next) => {
   try {
     const build = LEGAL_DOCS[req.params.slug];
     if (!build) return res.status(404).send('Not found');
-    const doc = build({ consent: req.consent });
+    const doc = build({ consent: req.consent, videoHost: videoHostEnabled() });
     res.send(views.legalPage({
       user: req.user, doc, consent: req.consent,
       missingOperatorFields: legal.MISSING_OPERATOR_FIELDS,
@@ -2308,6 +2339,11 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
       return {
         ...f, ...minted, kind,
         playable: isPlayable(f.mime_type, f.filename),
+        // Where these bytes physically are. The view cannot read a storage key's
+        // meaning (it reads no tables and imports no storage) and the SELLER is
+        // entitled to know the difference between our disk and somebody else's CDN
+        // (`VIDEO_STORAGE.md` §8) — so it travels as a fact, like the plan does.
+        hosted: storage.isRemote(f.storage_key),
         // Watermarking covers images only. Saying so here, per file, is what
         // lets the page be accurate instead of claiming a blanket protection.
         marked: kind === 'image',
@@ -2468,7 +2504,12 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
       })
       : new Set();
 
+    // Decided before the view is called, because the view is pure and this is a
+    // fact about somebody else's server (the same rule as the store's plan).
+    const sourceKind = await hostedSourceKind(files);
+
     res.send(views.assetPage({
+      sourceKind,
       channel, asset, files, unlocked, user: req.user, consent: req.consent,
       series: seriesHere,
       watchPosition,
@@ -3580,6 +3621,70 @@ async function resolveContentRequest(req, res, { event }) {
 }
 
 /**
+ * The KIND of source behind the stream route, for a page about to render a player.
+ *
+ * Asked at render time and only for files whose bytes are not ours, because the
+ * player must choose a demuxer before it has a URL (`views.js mediaStage`). A host
+ * that cannot answer must not take the page down with it: the file page renders
+ * with no kind, the element plays whatever the redirect returns, and a genuinely
+ * broken source ends as the player's own error rather than as a 500 on the file
+ * page. `playbackCached` is what keeps this from being a host call per view.
+ */
+async function hostedSourceKind(files = []) {
+  const remote = (files || []).find((f) => storage.isRemote(f.storage_key));
+  if (!remote) return null;
+  try {
+    const { playbackCached } = await import('./src/video.js');
+    // The key says which host holds the bytes; the configured driver is irrelevant here.
+    const found = await playbackCached(storage.remoteId(remote.storage_key), {
+      provider: storage.remoteProvider(remote.storage_key),
+    });
+    return found.kind;
+  } catch (err) {
+    // Logged, not thrown. The sentence a viewer would see from a 500 here is about
+    // us; the one they see from the player is about the file.
+    console.warn(`[video] cannot resolve the source kind for ${remote.storage_key}: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Where a file's bytes actually come from — and the one place that decides it.
+ *
+ * Two possible answers, and the difference is the whole point of the video host
+ * (`VIDEO_STORAGE.md` §1): a LOCAL key is read from this disk exactly as it always
+ * was, and a REMOTE key becomes a redirect to the host, whose own playback url is
+ * minted per open. The door runs before this in both cases and does not know the
+ * difference, which is what keeps the unlock ladder, the memberships and the break
+ * gate working on a file whose bytes are somebody else's.
+ *
+ * A host that cannot answer is a 502 with a sentence rather than a stack trace: the
+ * viewer's player is going to show an error either way, and only one of the two
+ * tells them it is not their connection.
+ */
+async function resolveBytes(file, req, res) {
+  if (!storage.isRemote(file.storage_key)) {
+    return { buf: await storage.get(file.storage_key) };
+  }
+  const id = storage.remoteId(file.storage_key);
+  try {
+    const { playback } = await import('./src/video.js');
+    const found = await playback(id, { provider: storage.remoteProvider(file.storage_key) });
+    return { redirect: found };
+  } catch (err) {
+    if (err.name === 'VideoApiError') {
+      res.status(502).json({
+        ok: false,
+        error: 'the file\u2019s host did not answer',
+        detail: err.message,
+      });
+      return null;
+    }
+    throw err;
+  }
+}
+
+/**
  * Serve bytes with HTTP Range support.
  *
  * A player with no `206` cannot seek: it has to fetch from zero every time the
@@ -3949,6 +4054,7 @@ APP.get('/api/content/:assetId', async (req, res, next) => {
         mimeType: f.mime_type,
         sizeBytes: Number(f.size_bytes),
         kind,
+        hosted: storage.isRemote(f.storage_key),
         // The app needs to know which player to open, and whether the bytes it
         // receives will already carry a mark.
         playable: isPlayable(f.mime_type, f.filename),
@@ -4009,7 +4115,17 @@ APP.get('/api/content/:assetId/file/:fileId', async (req, res, next) => {
       [req.params.assetId, userId],
     );
 
-    let buf = await storage.get(file.storage_key);
+    const source = await resolveBytes(file, req, res);
+    if (!source) return undefined;
+    if (source.redirect) {
+      // The host's own URL, announced as a download because this route is the
+      // download arm. `no-store` on the redirect so a browser does not keep the
+      // decision: the entitlement is checked per request, and a cached 302 would
+      // outlive it.
+      res.setHeader('cache-control', 'private, no-store');
+      return res.redirect(302, source.redirect.url);
+    }
+    let buf = source.buf;
     let type = file.mime_type || 'application/octet-stream';
 
     // An image download carries the same mark as the on-page view. One rule
@@ -4042,7 +4158,29 @@ APP.get('/api/content/:assetId/file/:fileId/stream', async (req, res, next) => {
     if (!access) return undefined;
     const { file, userId } = access;
 
-    let buf = await storage.get(file.storage_key);
+    const source = await resolveBytes(file, req, res);
+    if (!source) return undefined;
+    if (source.redirect) {
+      /*
+       * THE PLAYER KEEPS OUR URL IN THE PAGE AND THE BYTES COME FROM THE HOST.
+       *
+       * A 302 rather than the host's address written into the markup, for three
+       * reasons: the entitlement stays checked on every single request instead of
+       * once at render time; the browser's Range request is re-issued against the
+       * redirect target, so seeking works exactly as it does locally; and the page
+       * has one shape of source whatever is behind it.
+       *
+       * What it costs is stated in VIDEO_STORAGE.md §5 rather than discovered: once
+       * the redirect is followed, the URL the browser holds is a bearer, and anyone
+       * it is copied to can watch without passing this route.
+       */
+      res.setHeader('cache-control', 'private, no-store');
+      // The kind travels to the page so the player can pick its demuxer instead of
+      // guessing from an extension it cannot see behind a redirect (`data-hls`).
+      res.setHeader('x-bytebikri-source', source.redirect.kind);
+      return res.redirect(302, source.redirect.url);
+    }
+    let buf = source.buf;
     let type = file.mime_type || 'application/octet-stream';
 
     if (isWatermarkable(file.mime_type, file.filename) && await hasImageMagick()) {
@@ -4412,6 +4550,19 @@ const SUCCESS_FLASH = {
 };
 
 const ERROR_FLASH = {
+  /*
+   * The platform's own video host refused an upload (VIDEO_STORAGE.md §6).
+   *
+   * The seller is told it was the HOST and not their file, because that is the
+   * difference between retrying and re-encoding: a fixed sentence, not the host's
+   * raw words, because those words travel in a URL here and an arbitrary third
+   * party's message is not something this app puts in an address bar. The host's
+   * own reason is recorded on the audit line beside this code
+   * (`asset.upload_host_failed`), which is where somebody investigating can read it.
+   */
+  host: 'The platform\u2019s video host would not take the file, so nothing was published and nothing was '
+    + 'charged. This is the platform\u2019s storage and not your file: try again in a few minutes, and if it keeps '
+    + 'failing write to us — the address is on the privacy page.',
   // The series panel (§15). Each refusal that the module writes is the module's own
   // sentence, read from `SERIES_REFUSALS` — so the seller who reads it after a redirect
   // and the seller who reads it beside the form are reading one rule, not two copies of
@@ -4790,9 +4941,18 @@ APP.post('/dashboard/:slug/assets', upload.fields([
         : null,
     });
 
+    /*
+     * Where these bytes land is decided by `storage` with the mime type in hand
+     * (`VIDEO_STORAGE.md` §2): video goes to the configured video host, everything
+     * else stays on this disk, and identity documents cannot reach it at all.
+     * Passing the type is the whole contract — without it the router takes the
+     * safe answer, which is local.
+     */
+    const storageKey = await storage.put(media.buffer, media.originalname, { mimeType: media.mimetype });
+
     await store.addFile({
       assetId: asset.id,
-      storageKey: await storage.put(media.buffer, media.originalname),
+      storageKey,
       filename: media.originalname,
       mimeType: media.mimetype,
       sizeBytes: media.size,
@@ -4812,6 +4972,24 @@ APP.post('/dashboard/:slug/assets', upload.fields([
     res.redirect(`${back}?published=${encodeURIComponent(assetSlug)}`);
   } catch (err) {
     if (err.code === 'LIMIT_FILE_SIZE' || err.code === 'LIMIT_UNEXPECTED_FILE') return fail('size');
+    /*
+     * A video host is a dependency, and a dependency fails in its own words. The
+     * seller gets the reason ("the video host refused the upload: …"), not a 500:
+     * an upload that fails silently or unexplained is one a seller retries forever,
+     * and the message is the only place the provider's own explanation can surface.
+     */
+    if (err.name === 'VideoApiError') {
+      // The host's own words go to the AUDIT LINE, and the seller gets the fixed sentence
+      // in `ERROR_FLASH.host`. That split is deliberate (VIDEO_STORAGE.md §6): the flash
+      // travels in a redirect's query string, and a third party's message is not something
+      // this app puts in an address bar. The message was passed to `fail` here for one
+      // round, where `fail = (code) =>` dropped it — so the code read as though the
+      // seller saw the reason when they never did. One place says it, and this is not it.
+      await store.audit('asset.upload_host_failed', {
+        channelId: channel.id, reason: err.message.slice(0, 200), provider: err.provider || null,
+      });
+      return fail('host');
+    }
     next(err);
   }
 });
@@ -5738,7 +5916,9 @@ APP.get('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
       membershipsOn,
       tiers: membershipsOn ? await store.membershipTiers(channel.id) : [],
       planCode: store.effectivePlanCode(channel),
-      files: await store.filesOf(asset.id),
+      // `hosted` is added here for the same reason `planCode` is computed here: the
+      // view renders synchronously and reads no storage key (`VIDEO_STORAGE.md` §8).
+      files: (await store.filesOf(asset.id)).map((f) => ({ ...f, hosted: storage.isRemote(f.storage_key) })),
       // The page count, so the seller's plan panel asks the planner the same
       // question the buyer's page does: a forty-page comic has room for a break
       // after page 13, and the panel used to be told it had one chapter.
@@ -7403,7 +7583,7 @@ async function seed({ force = false } = {}) {
       description: 'Five seconds through the kit — layers, type pairings, and how to export for print.',
     });
     await store.addFile({
-      assetId: videoAsset.id, storageKey: await storage.put(clip, 'store-walkthrough.mp4'),
+      assetId: videoAsset.id, storageKey: await storage.put(clip, 'store-walkthrough.mp4', { mimeType: 'video/mp4' }),
       filename: 'store-walkthrough.mp4', mimeType: 'video/mp4', sizeBytes: clip.length,
       checksum: crypto.createHash('sha256').update(clip).digest('hex'),
     });
@@ -7441,7 +7621,7 @@ async function seed({ force = false } = {}) {
       });
       await store.addFile({
         assetId: sessionAsset.id,
-        storageKey: await storage.put(session, 'poster-kit-session.mp4'),
+        storageKey: await storage.put(session, 'poster-kit-session.mp4', { mimeType: 'video/mp4' }),
         filename: 'poster-kit-session.mp4', mimeType: 'video/mp4', sizeBytes: session.length,
         checksum: crypto.createHash('sha256').update(session).digest('hex'),
       });
@@ -7480,7 +7660,7 @@ async function seed({ force = false } = {}) {
       });
       const longClip = await fs.readFile(path.resolve(__dirname, 'seed-assets/poster-kit-part-one.mp4'));
       await store.addFile({
-        assetId: partOne.id, storageKey: await storage.put(longClip, 'poster-kit-part-one.mp4'),
+        assetId: partOne.id, storageKey: await storage.put(longClip, 'poster-kit-part-one.mp4', { mimeType: 'video/mp4' }),
         filename: 'poster-kit-part-one.mp4', mimeType: 'video/mp4', sizeBytes: longClip.length,
         checksum: crypto.createHash('sha256').update(longClip).digest('hex'),
       });
@@ -7490,7 +7670,7 @@ async function seed({ force = false } = {}) {
         description: 'Paper, ink, and the export settings that survive a print shop.',
       });
       await store.addFile({
-        assetId: partTwo.id, storageKey: await storage.put(clip, 'store-walkthrough.mp4'),
+        assetId: partTwo.id, storageKey: await storage.put(clip, 'store-walkthrough.mp4', { mimeType: 'video/mp4' }),
         filename: 'store-walkthrough.mp4', mimeType: 'video/mp4', sizeBytes: clip.length,
         checksum: crypto.createHash('sha256').update(clip).digest('hex'),
       });
@@ -7846,6 +8026,46 @@ const SERVER = APP.listen(PORT, '0.0.0.0', () => {
   console.log(`\n  ByteBikri  →  http://0.0.0.0:${PORT}`);
   console.log(`  storefront →  /s/alice`);
   console.log(`  dashboard  →  /dashboard/alice   (sign in first)\n`);
+  if (videoHostEnabled()) {
+    /*
+     * Say at boot what a configured host can and cannot do.
+     *
+     * This is the one dependency whose failure is not obvious: the page still renders, the
+     * existing files still play, and the only symptom is that every video upload fails —
+     * with a sentence about a host the operator may not remember configuring. It writes a
+     * warning rather than refusing to start, because a host being down is not a reason to
+     * take the whole platform down with it (VIDEO_STORAGE.md §6).
+     *
+     * GoFile gets one extra line because its failure is not a network problem: a free
+     * account cannot produce a playable link at all (see `src/video-gofile.js`), which is
+     * a fact about the ACCOUNT and has to be said in those words, at boot, before a seller
+     * meets it in the publish form.
+     */
+    import('./src/video.js').then(async (video) => {
+      const driver = video.videoDriver();
+      const facts = video.hostFacts().find((h) => h.host === driver);
+      if (driver === 'catbox') {
+        // No account endpoint and no listing: a userhash is a key, not an identity. The
+        // one honest check is a real upload, which is the doctor's job, not boot's.
+        console.log(`  video host  →  catbox (${facts?.note || 'no account check available'})\n`);
+        return;
+      }
+      const who = await video.account();
+      if (driver === 'gofile' && String(who.tier).toLowerCase() !== 'premium') {
+        console.warn(`\n  VIDEO HOST CANNOT DELIVER — this GoFile account is "${who.tier}":`);
+        console.warn(`    ${video.providers.gofile.PLAYBACK_NEEDS_PREMIUM}`);
+        console.warn('    Every video upload will be refused until this changes.\n');
+        return;
+      }
+      console.log(`  video host  →  ${driver} reachable (${who.email || who.tier || 'ok'})\n`);
+    }).catch((err) => {
+      console.warn('\n  VIDEO HOST UNREACHABLE — VIDEO_DRIVER is set but the host did not answer:');
+      console.warn(`    ${err.message}`);
+      console.warn('    Every video upload will fail until it comes back. Everything else works,');
+      console.warn('    and files already on the host keep playing. Check it with:');
+      console.warn('      npm run video:check --prefix app\n');
+    });
+  }
 });
 
 // Graceful shutdown: stop accepting, let in-flight requests finish, close the

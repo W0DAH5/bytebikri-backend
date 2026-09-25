@@ -810,6 +810,71 @@
   document.querySelectorAll('[data-watch]').forEach((el) => {
     const assetId = el.closest('[data-asset-id]')?.dataset.assetId;
     if (!assetId) return;
+
+    /*
+     * A FILE WHOSE BYTES ARE A PLAYLIST.
+     *
+     * The server marks the element when the storage key says the source is HLS
+     * (`views.js mediaStage`, `VIDEO_STORAGE.md` §5) — it cannot be seen from here,
+     * because the src is this app's own route and the host's answer is behind a
+     * redirect. When it is marked, this element is not a file and the browser's own
+     * `src` would render the black rectangle §14.2 is about: Chromium answers
+     * `maybe` to `canPlayType('application/vnd.apple.mpegurl')` and has no HLS
+     * demuxer at all. So the same vendored hls.js the live stage uses, in VOD mode.
+     *
+     * The differences from the live stage are the point of writing it twice:
+     *
+     *   * no `liveSyncDurationCount` — a VOD playlist is not a moving edge, and
+     *     tuning it like one makes seeking behave like a stream jump;
+     *   * `backBufferLength` and a real duration, so the position this player is
+     *     asked to remember (`data-resume-at`, the bookmark) means what it says;
+     *   * a fatal error says the file stopped rather than saying the stream did,
+     *     because a viewer of a hosted file has no stream to reload.
+     */
+    const loadHls = () => new Promise((resolve, reject) => {
+      if (window.Hls) return resolve(window.Hls);
+      const script = document.createElement('script');
+      script.src = '/vendor/hls.min.js';
+      script.onload = () => (window.Hls ? resolve(window.Hls) : reject(new Error('no player')));
+      script.onerror = () => reject(new Error('no player'));
+      document.head.append(script);
+    });
+
+    if (el.dataset.hls === '1') {
+      const nativeHls = typeof window.ManagedMediaSource !== 'undefined'
+        || typeof window.MediaSource === 'undefined';
+      if (nativeHls) {
+        // Safari and anything else that plays HLS itself: the markup's own `src` is
+        // the player, and there is nothing to attach — the same division of labour
+        // the live stage uses on that engine.
+      } else {
+        const src = el.getAttribute('src');
+        el.removeAttribute('src');
+        loadHls().then((Hls) => {
+          if (!Hls.isSupported()) throw new Error('no MSE');
+          const player = new Hls({ enableWorker: true, backBufferLength: 30 });
+          player.attachMedia(el);
+          player.on(Hls.Events.MEDIA_ATTACHED, () => player.loadSource(src));
+          player.on(Hls.Events.ERROR, (_event, data) => {
+            if (!data?.fatal) return;
+            /*
+             * ONE WAY TO SAY A PLAYER FAILED. The block below this loop already
+             * renders `.stage-error` from an element's `error` event, with a hint the
+             * server can set per file. Adding a second message channel here would mean
+             * two places to look when a viewer says "it went black" — so this sets the
+             * hint and dispatches the event the existing handler listens for.
+             */
+            el.dataset.expiredHint = 'This file stopped playing. Reload the page, and if it does it again the '
+              + 'file’s host is the problem — not your connection.';
+            el.dispatchEvent(new Event('error'));
+          });
+        }).catch(() => {
+          // The vendored file could not be loaded: put the address back, because an
+          // empty stage plus an explanation helps nobody (the live stage's rule).
+          el.setAttribute('src', src);
+        });
+      }
+    }
     const key = `bytebikri:watch:${assetId}`;
     const say = (seconds, force = false) => {
       const at = Math.max(0, Math.floor(Number(seconds) || 0));

@@ -96,6 +96,35 @@ export function checkConfig(env = process.env) {
     warnings.push({ name: 'DATABASE_URL', why: 'points at localhost in production' });
   }
 
+  // The video host, required only when it is switched on.
+  //
+  // A video host is the first dependency this product has that can take a page
+  // down with it, and it is optional by design: absent configuration means every
+  // byte is on our own disk (`VIDEO_STORAGE.md` §3). Requiring the token
+  // unconditionally would break a deployment that has no host — the same class of
+  // mistake as a secret that is required on one path and checked on the other.
+  const videoDriver = String(env.VIDEO_DRIVER || 'local').trim().toLowerCase();
+  if (videoDriver && videoDriver !== 'local' && videoDriver !== 'filemoon') {
+    errors.push({ name: 'VIDEO_DRIVER', why: `unknown driver “${videoDriver}”`,
+      detail: 'Set it to `filemoon` to store video at the host, or leave it unset for local storage.' });
+  }
+  if (videoDriver === 'filemoon') {
+    const token = String(env.FILEMOON_TOKEN || '');
+    if (!token) {
+      errors.push({ name: 'FILEMOON_TOKEN', why: 'missing',
+        detail: 'VIDEO_DRIVER=filemoon sends every video upload to the host, and without the token every one of them fails. Set the token, or unset VIDEO_DRIVER to keep bytes local.' });
+    } else if (!/^\d+\|\S{16,}$/.test(token)) {
+      // The provider issues `id|secret` personal access tokens. A bare secret
+      // pasted without its id authenticates as nobody, and the failure arrives as
+      // a 401 from a stranger's CDN — so it is caught here, where the message can
+      // say what is wrong with the shape.
+      warnings.push({ name: 'FILEMOON_TOKEN', why: 'does not look like an `id|secret` token',
+        detail: 'The host expects the whole token, id included, as a Bearer value.' });
+    }
+  } else if (!prod && videoDriver === 'filemoon') {
+    warnings.push({ name: 'VIDEO_DRIVER', why: 'filemoon' });
+  }
+
   if (prod) {
     if (!env.PUBLIC_BASE_URL) {
       errors.push({ name: 'PUBLIC_BASE_URL', why: 'missing',

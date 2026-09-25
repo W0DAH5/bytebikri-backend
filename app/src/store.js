@@ -64,6 +64,16 @@ import {
   doorsOf, adModeOf, attentionProgress, standingOf,
   JOIN_MODES, AD_MODES, doorFor, glyphOf,
 } from './memberships.js';
+// The video host, and the four things this file needs to know about: whether a
+// driver is configured at all, how to put bytes there, how to tell a remote key
+// from a local one, and how to delete one. `VIDEO_STORAGE.md` is the reasoning.
+import {
+  videoHostEnabled, upload as videoUpload, remove as videoRemove,
+  isRemoteKey, remoteId, remoteProvider,
+} from './video.js';
+// `mediaKind` is the product's own answer to "what is this file", and the router
+// above must use that answer rather than a second opinion about mime types.
+import { mediaKind } from './media.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -77,7 +87,7 @@ export const orderCode = (n = 6) =>
   randomBytes(4).toString('base64url').slice(0, n).toUpperCase();
 
 // ---------------------------------------------------------------------------
-// File storage adapter — replace with the media API later.
+// File storage adapter — now with the media API behind it (VIDEO_STORAGE.md)
 // ---------------------------------------------------------------------------
 /**
  * Storage adapter.
@@ -90,12 +100,52 @@ export const orderCode = (n = 6) =>
  *
  * The namespace is part of the KEY, so a public route can never be coaxed into
  * reading private content: it checks the prefix before it touches the disk.
+ *
+ * ── AND THE ROUTER ON TOP OF IT ──────────────────────────────────────────────
+ *
+ * A third key namespace exists now: `filemoon/<providerId>`, for BYTES THAT ARE
+ * NOT ON THIS DISK. The adapter is therefore not a pipe but a router with a
+ * whitelist, and the whitelist is a privacy promise rather than a convenience
+ * (VIDEO_STORAGE.md §2):
+ *
+ *   * `kyc` NEVER leaves. A person hands over an identity document on the
+ *     promise that the copy is destroyed when the check is decided, and
+ *     `destroyHeldDocument` is built on `remove` being a real unlink. A
+ *     citizenship certificate at a video host would make that sentence false.
+ *   * `public` NEVER leaves. Covers and banners are images, and they are the one
+ *     thing we serve ourselves with no token — the point of a cover.
+ *   * `private` leaves ONLY when the bytes are video and a driver is configured.
+ *     Audio is playable by the same predicate and stays local until there is a
+ *     fixture to prove it against; that is a decision, and it is written down.
+ *
+ * The rule is enforced here rather than at the call sites for the same reason the
+ * KYC deletion has exactly one path: four call sites each remembering a policy is
+ * four chances to forget one, and forgetting this one publishes somebody's
+ * passport to a stranger's CDN.
  */
 const KEY_RE = /^[a-z]+\/[0-9a-f-]{36}\.[a-z0-9]{1,5}$/i;
 
 export const storage = {
-  async put(buffer, filename, { namespace = 'private' } = {}) {
+  /**
+   * Should these bytes go to the video host?
+   *
+   * Exported so a test can assert the refusal directly instead of inferring it
+   * from where a file happened to land. `mimeType` is optional because the
+   * adapter's signature predates it: a caller that does not say what it is
+   * sending gets the local disk, which is the safe answer and the old answer.
+   */
+  routesToHost({ namespace = 'private', mimeType = '', filename = '' } = {}) {
+    if (!videoHostEnabled()) return false;
+    if (namespace !== 'private') return false;
+    return mediaKind(mimeType, filename) === 'video';
+  },
+
+  async put(buffer, filename, { namespace = 'private', mimeType = '' } = {}) {
     if (!/^[a-z]+$/.test(namespace)) throw new Error('bad storage namespace');
+    if (this.routesToHost({ namespace, mimeType, filename })) {
+      const { key } = await videoUpload(buffer, filename, { mimeType });
+      return key;
+    }
     const ext = (path.extname(filename || '') || '').toLowerCase().replace(/[^.a-z0-9]/g, '');
     await fs.mkdir(path.join(UPLOAD_DIR, namespace), { recursive: true });
     const key = `${namespace}/${id()}${ext}`;
@@ -110,14 +160,43 @@ export const storage = {
    * a scan misses encodings and absolute paths.
    */
   async get(key) {
+    if (isRemoteKey(key)) {
+      // Not a disk read, and not a silent undefined: a caller that asks for these
+      // bytes wants a redirect (the content routes do exactly that) and a caller
+      // that does not is a bug worth seeing. The code is named so a route can
+      // branch on it without matching on a sentence.
+      const err = new Error('this file lives at the video host, not on this disk');
+      err.code = 'EREMOTE';
+      err.storageKey = key;
+      throw err;
+    }
     if (!KEY_RE.test(String(key || ''))) throw new Error('bad storage key');
     return fs.readFile(path.join(UPLOAD_DIR, key));
   },
 
   async exists(key) {
+    // A remote key: we know it exists because we are holding its id, and asking
+    // the host would spend a request to learn nothing. The DB row is the record.
+    if (isRemoteKey(key)) return true;
     if (!KEY_RE.test(String(key || ''))) return false;
     try { await fs.access(path.join(UPLOAD_DIR, key)); return true; } catch { return false; }
   },
+
+  /** Where the bytes are, from the key alone — the question a route must ask first. */
+  isRemote: (key) => isRemoteKey(key),
+
+  /** The provider's id inside a remote key, or null for anything on our disk. */
+  remoteId,
+
+  /**
+   * WHICH host holds these bytes, from the key alone.
+   *
+   * A key carries its provider, so a delete or a redirect goes to the host that actually
+   * has the file rather than to whatever `VIDEO_DRIVER` says today. Without this, changing
+   * the driver would silently orphan every file the previous host was holding — playable
+   * from nowhere, deletable from nowhere, and still on the bill.
+   */
+  remoteProvider,
 
   /**
    * Destroy a file, and say whether there was one.
@@ -129,6 +208,17 @@ export const storage = {
    * was nothing there" means, and the caller records the same outcome either way.
    */
   async remove(key) {
+    if (isRemoteKey(key)) {
+      const providerId = remoteId(key);
+      if (!providerId) return false;
+      // `remove` on the host side answers a 404 with a true — the file is not
+      // there, which is what the caller asked for. A FAILURE, though, must not be
+      // swallowed into `false` the way a missing local file is: the local `false`
+      // means "there was nothing to delete", and a host failure means "it is still
+      // there and we could not destroy it" — the one distinction a promise about
+      // deletion rests on. So it propagates.
+      return videoRemove(providerId, { provider: remoteProvider(key) });
+    }
     if (!KEY_RE.test(String(key || ''))) return false;
     try { await fs.unlink(path.join(UPLOAD_DIR, key)); return true; } catch { return false; }
   },

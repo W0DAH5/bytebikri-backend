@@ -37,6 +37,15 @@ export const MISSING_OPERATOR_FIELDS = [
 ].filter(([, value]) => !value).map(([key, , why]) => ({ key, why }));
 
 export const LAST_UPDATED = '21 September 2026';
+/**
+ * The date the notice last changed *for this deployment*.
+ *
+ * The media-host paragraph below is only true where a media host is configured, so a
+ * deployment without one has the notice it had on the 21st and should not claim
+ * otherwise. The lede of this file is the rule: the notice is "written to describe
+ * what the software actually does".
+ */
+export const LAST_UPDATED_MEDIA_HOST = '26 September 2026';
 
 const op = () => OPERATOR.name || 'the operator of ByteBikri';
 const mail = () => OPERATOR.email || '[contact address not configured]';
@@ -74,7 +83,7 @@ export const FACTS = {
 // Privacy
 // ---------------------------------------------------------------------------
 
-export const privacy = () => ({
+export const privacy = ({ videoHost = false } = {}) => ({
   slug: 'privacy',
   title: 'Privacy',
   lede: `How ${op()} handles personal data, written to describe what the software actually does.`,
@@ -111,7 +120,15 @@ export const privacy = () => ({
       body: `<p>A hosting provider that runs the servers and the database, and a storage provider
         that holds uploaded files. Both process data on our instructions. We do not sell personal
         data, and there is no advertising business here beyond the networks a store connects
-        itself.</p>`,
+        itself.</p>
+        ${videoHost ? `<p>Videos are a case of their own, and it is the one place a company other
+        than ours sees somebody who is using this site. A store's video files are stored by that
+        same storage provider, and when you press play your browser fetches the video <strong>from
+        them directly rather than through us</strong> — so they see your IP address, the same thing
+        any video host sees, and we see only that you opened the file. They are not told your name,
+        your email address, or what else you have watched here. Documents you hand over for an
+        identity check are never held there: those stay on our own servers and are destroyed when
+        the check is decided.</p>` : ''}`,
     },
     {
       h: 'How long we keep it',
@@ -152,7 +169,7 @@ export const privacy = () => ({
       h: 'Changes',
       body: `<p>When this notice changes in a way that matters, the version changes with it and the
         consent banner returns — because an old agreement does not cover a new purpose.</p>
-        <p>Last updated: ${LAST_UPDATED}.</p>`,
+        <p>Last updated: ${videoHost ? LAST_UPDATED_MEDIA_HOST : LAST_UPDATED}.</p>`,
     },
   ],
 });

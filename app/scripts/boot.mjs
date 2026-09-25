@@ -12,6 +12,27 @@
  */
 import { assertProductionConfig, formatConfigReport, checkConfig } from '../src/config.js';
 
+/*
+ * `.env`, if there is one.
+ *
+ * Nothing loaded this file until a secret existed that a contributor is expected
+ * to paste in rather than invent — the video host's token (`VIDEO_STORAGE.md` §3).
+ * The three signing secrets have development defaults and the demo values are
+ * exported by `ci/dev-up.sh`, so a local checkout never needed a file; a token
+ * for somebody else's service has no safe default and must not be typed into a
+ * shell history.
+ *
+ * Guarded, because in production the variables arrive from the environment and a
+ * missing file is the normal case. Loaded BEFORE the config check, so a token in
+ * the file is seen by the check rather than one boot later. `.env` is gitignored;
+ * only `.env.example`, with names and no values, is committed.
+ */
+try {
+  process.loadEnvFile(new URL('../.env', import.meta.url));
+} catch {
+  // No file: production, a fresh clone, or a deployment that exports its own.
+}
+
 const report = checkConfig();
 
 if (report.production) {

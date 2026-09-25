@@ -2419,7 +2419,18 @@ ${closed.length ? `<section class="section">
  * make a copy traceable, and the note says exactly that, because a product that
  * claims to be un-copyable and is not is worse than one that never claimed it.
  */
-function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, slug, assetSlug, lockedReason = null, assetId = null, gate = null, blockRung = null, resumeAt = null }) {
+function mediaStage({
+  previewFile, markUri, coverUrl, title, unlocked, needsAd, slug, assetSlug, lockedReason = null,
+  assetId = null, gate = null, blockRung = null, resumeAt = null,
+  // Which KIND of bytes are behind the stream route, when the source is not ours:
+  // 'hls' or 'file', decided by the server from the storage key (`VIDEO_STORAGE.md`
+  // §5). It cannot be guessed from the src, because the src is this app's own route
+  // and the redirect behind it is invisible to the page — and it cannot be guessed
+  // from the mime type either, since a video host hands back a playlist for the same
+  // `video/mp4` it was given. The attribute is the whole interface: absent means the
+  // ordinary element, present means the player must demux.
+  sourceKind = null,
+}) {
   // `data-asset-id` is what lets the player tell the server how long the file is
   // when its metadata loads (slice 3: placement needs a measured runtime, and the
   // player is the only component that has one).
@@ -2473,6 +2484,7 @@ function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, 
         </div>`, 'audio')
       : frame(`
         <video controls playsinline preload="metadata"${poster}${resumeAttr}${watchAttr}
+               ${sourceKind === 'hls' ? 'data-hls="1"' : ''}
                controlslist="nodownload noplaybackrate noremoteplayback"
                disablepictureinpicture disableremoteplayback
                src="${src}"></video>`, 'video');
@@ -2735,6 +2747,8 @@ function reportBlock({ channel, asset, user, alreadyReported = false, reported =
 
 export function assetPage({
   channel, asset, files, unlocked, user, policy, slots, previewFile = null,
+  // See `mediaStage`: 'hls' when the preview's bytes are a hosted playlist.
+  sourceKind = null,
   // The stored ask, so the panel can say "2 ads of 30 seconds" rather than a bare
   // count. Decided on the server; the view only prints it.
   ask = null,
@@ -3097,6 +3111,7 @@ export function assetPage({
       markUri, coverUrl: asset.cover_url, title: asset.title, assetId: asset.id, storeName: channel.name,
     }) : mediaStage({
       previewFile, markUri, coverUrl: asset.cover_url, title: asset.title, unlocked, needsAd, assetId: asset.id,
+      sourceKind,
       gate, blockRung,
       // The stage's own sentence. A members-only file behind an ad-shaped veil
       // reading "Unlocks after the ad" would be the page's one outright lie: no ad
@@ -8625,10 +8640,18 @@ ${notice ? `
             <span class="file-badge" aria-hidden="true">${esc((f.mime_type || 'file').split('/').pop().slice(0, 4).toUpperCase())}</span>
             <span class="dl-body">
               <span class="dl-name">${esc(f.filename)}</span>
-              <span class="dl-meta">${(f.size_bytes / 1024).toFixed(1)} KB · ${esc(f.mime_type || '')}</span>
+              <span class="dl-meta">${(f.size_bytes / 1024).toFixed(1)} KB · ${esc(f.mime_type || '')}${
+    f.hosted ? ' · held and delivered by our media host' : ''}</span>
             </span>
           </li>`).join('')}
         </ul>
+        ${files.some((f) => f.hosted) ? `<p class="fine" style="margin-top:var(--space-4)" data-hosted-note="1">
+          A video is kept and delivered by the platform's media host rather than on this server, so
+          it plays for somebody on a slow connection without us in the middle of every second of it. The file is still yours and the door is still ours: nothing hands it out
+          without the unlock, and the host sees a viewer's address when a video plays — which the
+          <a href="/legal/privacy">privacy notice</a> says in the same words. Everything else a store
+          uploads stays on this server.
+        </p>` : ''}
         <p class="fine" style="margin-top:var(--space-4)">
           A file cannot be swapped for another one here. Replacing bytes behind a URL somebody
           already unlocked is how a store loses the argument about what they bought — publish a
