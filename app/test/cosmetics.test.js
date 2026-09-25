@@ -299,3 +299,81 @@ test('a slot item is looked up by its own keys, and an unknown key is nothing', 
   assert.equal(itemOf('nope', 'solid'), null);
   assert.equal(slotOf('nope'), null);
 });
+
+/**
+ * MOTION IS OPT-IN, FOR THE OUTER LAYERS TOO.
+ *
+ * `wear.test.js` sweeps the six effects for this, and pins the ring the product has
+ * always drawn. That leaves the six rings and six edges added afterwards with their
+ * motion unchecked: a value that declares `animation:` outside the guard would pass
+ * every existing assertion here — the "every ring is drawn" test only asks that a rule
+ * exists, not where its animation lives.
+ *
+ * So the sweep is driven by the catalog's own `moves` flag, and each moving value has to
+ * satisfy the whole pattern: declared inside `prefers-reduced-motion: no-preference`,
+ * resting PAUSED, started by an intent selector, and cancelled by a reduce block that
+ * comes after the running state — because a reduce block placed before it is a reduce
+ * block that loses.
+ */
+test('every outer value that claims to move rests paused, runs on intent, and stops for reduced motion', () => {
+  const css = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  // Where each value's own rule begins, so the search for its animation stays inside it.
+  const ruleAt = (cls) => {
+    const at = css.indexOf(`.${cls} {`);
+    assert.ok(at > 0, `.${cls} has no rule at all`);
+    return at;
+  };
+  // The block a declaration sits in: the nearest media query opened before it that is
+  // still open (its closing brace comes after the declaration).
+  const blockAt = (declAt) => {
+    const opens = [...css.matchAll(/@media \(prefers-reduced-motion: ([a-z-]+)\) \{/g)];
+    let found = null;
+    for (const m of opens) {
+      const close = css.indexOf('\n}', m.index);
+      if (m.index < declAt && close > declAt) found = m[1];
+    }
+    return found;
+  };
+
+  const moving = [];
+  for (const [slot, keys, clsOf] of [['ring', RING_KEYS, ringClass], ['frame', FRAME_KEYS, frameClass]]) {
+    for (const key of keys) {
+      // The item is read through the engine's own lookup rather than from the catalog
+      // directly: if `itemOf` cannot find a value the picker just offered, that is the
+      // bug, and it should surface here as well as in the picker's own test.
+      const item = itemOf(slot, key);
+      if (!item?.moves || key === 'none') continue;
+      const cls = clsOf(key);
+      const at = ruleAt(cls);
+      const animAt = css.indexOf('animation:', at);
+      assert.ok(animAt > at, `${key} claims to move and ${cls} declares no animation`);
+      moving.push({ key, cls, animAt });
+    }
+  }
+  assert.ok(moving.length >= 3, 'the outer layers are supposed to have moving values');
+
+  for (const { key, cls, animAt } of moving) {
+    const guard = blockAt(animAt);
+    assert.equal(guard, 'no-preference',
+      `${key} (${cls}) declares its animation outside the no-preference guard — motion must be opt-in`);
+
+    const anim = css.slice(animAt, css.indexOf(';', animAt));
+    assert.match(anim, /\bpaused\b/, `${key} does not rest paused`);
+
+    const runAt = css.indexOf(`${cls}:hover`, animAt);
+    assert.ok(runAt > animAt, `${key} has nothing that starts it — motion on intent, or no motion`);
+    const runLine = css.slice(runAt, css.indexOf(';', css.indexOf('animation-play-state', runAt)));
+    assert.match(runLine, /animation-play-state: running/, `${key} starts without saying so`);
+
+    const reduceAt = css.indexOf('@media (prefers-reduced-motion: reduce)', animAt);
+    assert.ok(reduceAt > 0, `${key} has no reduce block to stop it`);
+    const ruleEnd = css.indexOf('\n}', reduceAt);
+    const reduceBlock = css.slice(reduceAt, ruleEnd);
+    assert.match(reduceBlock, new RegExp(`\\.${cls.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
+      `${key}'s reduce block does not name it, so a reduce user keeps the spin`);
+    assert.match(reduceBlock, /animation: none/,
+      `${key} is not actually stopped for a reduce user`);
+    assert.ok(reduceAt > runAt,
+      `${key}'s reduce block comes before its running state; a later running rule would win`);
+  }
+});

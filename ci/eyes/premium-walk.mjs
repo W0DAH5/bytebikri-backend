@@ -453,6 +453,40 @@ console.log('  the preview   :', JSON.stringify(calmPreview), '· the ring:', JS
 if (calmPreview?.some((a) => a.playState === 'running') || calmRing?.some((a) => a.playState === 'running')) {
   throw new Error('the live preview moves under reduced motion');
 }
+// THE TWO TREATMENTS THIS ROUND ADDED, under the same setting, ON THE LIVE STAGE — the
+// element that exists to move. A reduced-motion claim is only worth what it covers, and
+// it covered the ring the product has always drawn; `split` and `aurora` are the two that
+// arrived with a spin of their own. The setting must remove the MOVEMENT and keep the
+// PAINT: a still gradient is the look, a missing one is a broken value.
+await calmAlice.p.locator('input[name="ring"][value="split"]').check();
+await calmAlice.p.locator('input[name="frame"][value="aurora"]').check();
+await calmAlice.p.waitForTimeout(250);
+const calmNew = await calmAlice.p.evaluate(() => {
+  const stage = document.querySelector('.plus-preview');
+  const avatar = stage?.querySelector('.ring-split') ?? null;
+  const edge = stage?.classList.contains('frame-aurora') ? stage : null;
+  const after = (el) => (el ? getComputedStyle(el, '::after') : null);
+  return {
+    avatar: avatar?.className ?? null,
+    stage: stage?.className ?? null,
+    ringPaint: after(avatar)?.backgroundImage.slice(0, 22) ?? null,
+    ringMotion: after(avatar)?.animationName ?? null,
+    edgePaint: after(edge)?.backgroundImage.slice(0, 22) ?? null,
+    edgeMotion: after(edge)?.animationName ?? null,
+    running: stage ? stage.getAnimations({ subtree: true }).filter((a) => a.playState === 'running').length : null,
+  };
+});
+console.log('  this round’s two, under the setting:', JSON.stringify(calmNew));
+if (!calmNew.avatar || !calmNew.stage?.includes('frame-aurora')) {
+  throw new Error(`the two new treatments did not reach the calm stage: ${JSON.stringify(calmNew)}`);
+}
+if (calmNew.ringMotion !== 'none' || calmNew.edgeMotion !== 'none') {
+  throw new Error(`reduced motion still declares movement for the new treatments: ${JSON.stringify(calmNew)}`);
+}
+if (!/conic-gradient/.test(calmNew.ringPaint || '') || !/conic-gradient/.test(calmNew.edgePaint || '')) {
+  throw new Error(`reduced motion dropped the paint instead of the movement: ${JSON.stringify(calmNew)}`);
+}
+if (calmNew.running) throw new Error('the calm stage is running animations after all');
 if (!calmPreviewPaint || calmPreviewPaint.checks.some((c) => c.ratio < 4.5)) {
   throw new Error('the preview’s name lost its contrast under reduced motion');
 }
