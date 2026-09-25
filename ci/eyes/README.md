@@ -112,9 +112,17 @@ node ci/eyes/reset-rent.mjs alice   # puts the rent invoice back to issued
 node ci/eyes/rent-walk.mjs          # the seller's invoice, the reference, the operator's match; 5 shots
 node ci/eyes/ledger-walk.mjs alice  # a storefront render, then the owner's attention ledger; 3 shots
 node ci/eyes/reset-unlock.mjs bob kathmandu-sketchbook   # clear one viewer's unlock ON the comic
-node ci/eyes/reader-walk.mjs alice kathmandu-sketchbook bob   # the reader: pages, the seam, the bookmark; 8 shots
-node ci/eyes/live-walk.mjs alice friday-night-stream bob      # the stream, the break, the clean entry; 6 shots
+node ci/eyes/reader-walk.mjs alice kathmandu-sketchbook bob   # the reader: pages, the seam, the bookmark, the withheld seam; 9 shots
+node ci/eyes/live-walk.mjs alice friday-night-stream bob      # the stream, the break, the clean entry, the withheld ask; 8 shots
+node ci/eyes/cue-rung-walk.mjs                                # the cue INSIDE a player, and the rung there; 7 shots
 ```
+
+`cue-rung-walk.mjs` takes no arguments and needs no seeder: it drives the demo's own four-minute file
+(`/s/alice/a/poster-kit-session`), and it puts the file back the way it found it. Its subject is the
+half of §14.7 the other two cannot reach — a break that asks INSIDE a player, where the rung withholds
+the offer rather than the file. It starts by forgetting the file's measured length (`--runtime`), because
+a cue is computed from a runtime and a runtime is measured by a player: the first step is watching that
+happen, which is the one page in this product that has a player and no cue on it yet.
 
 `reader-walk.mjs` is the walk for the reader, and its subject is a file rather than a page: page one is
 drawn out of a real CBZ through the signed route, the seam shows the ask *before* the page it owes, a

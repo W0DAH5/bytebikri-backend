@@ -365,8 +365,9 @@ seconds" is currently a sentence, not a gate. Slice 8 is last because it is the 
 | 3 Placement | **Built** — planner, seller controls, measured runtime, seller panel, and the player gate. 33 tests (`placement.test.js`, `adplan.test.js`, `breakgate.test.js`), 12 screenshots from two real browser walks (`docs/evidence/round36`, harnesses `ci/eyes/break-walk.mjs` and `ci/eyes/breaks-seller-walk.mjs`). Suite 663/663/0 |
 | 4 Attention door | **Built** — `join_mode`/`ad_mode` per tier, `member_standing`, `joinByAttention` (with the extension), `memberDoorFor` + the `unlocks.js` refusal, the member room at `/s/:slug/members`, the seller's two pickers, and one `watchingDoor()` control. 5 tests in `members.test.js` (21 in that file), 11 screenshots from a real three-session walk (`ci/eyes/member-walk.mjs`). Suite 668/668/0 |
 | 5 Ledger | **Built** — `ad_view_events` gained `placement`/`surface` (written by the claim, from the attempt's own snapshot); `ad_position_daily` counts rendered positions by page, placement and side; `/dashboard/:slug/attention` prints the two blocks and never their sum. 4 tests (`attention.test.js`), 3 screenshots from a real browser walk (`ci/eyes/ledger-walk.mjs`, `docs/evidence/round37`). §12 is the design |
-| 6 Reader | **Built** — `archive.js` (a zip read through the central directory, both compression methods, caps that refuse a bomb rather than a big book: 8 tests) and `pages.js` (the page model: natural order, junk filtered, `ComicInfo.xml` not a page; the plan the reader turns, its segments, and the gate sentence: 11 tests). The reader itself is one page at a time or one continuous scroll, left to right or right to left, the store's choice per file; a stop lands **between** pages and the server refuses the bytes behind it (`403 a view is owed before this page`) rather than hiding them with a veil. The bookmark is the reader's own (`reading_progress`, PK (user, file)) and never shown to the store. 8 tests in `reader.test.js`, 8 screenshots from a real browser walk (`ci/eyes/reader-walk.mjs`, `docs/evidence/round38`) that also flips both seller choices and watches the reader obey. §13 is the design. Suite 763/763/0 |
-| 7 Live | **Built** — §14 is the design: a live file is the store's own `https://…m3u8` (no ingest, no re-host, no recording), hls.js 1.7.3 vendored because Chrome and Firefox have no native HLS, and a break is a WINDOW only the store's own POST can open, which buys clean entries for newcomers at the ratio Twitch taught the industry. Built: `live.js` holds the arithmetic and the four caps, `live_breaks` holds the windows (one open per file, enforced by a partial unique index), and the seller's own POST is the only writer. 10 unit tests, 4 fixture tests, and `ci/eyes/live-walk.mjs` in a real browser (6 shots, `docs/evidence/round39`) — the stream plays, a break the seller calls stops it, the view is credited, playback resumes at the EDGE, and a newcomer inside the window walks in clean. Suite 782/782/0. **Later, the viewer's own side of an early end** (§14.6): `liveState` gained `lastClosed` (with `early` derived from `closed_at` vs `ends_at`, one more unit test), the client chooses its sentence from that fact, and the walk holds the network's delivery at the proxy so it can reach the state the sentence is about — the seller ends the break while the viewer's ask is on screen, and the person is told so ("The store ended this break early. Your view was confirmed — back at the live edge."). 7 shots now |
+| 6 Reader | **Built** — `archive.js` (a zip read through the central directory, both compression methods, caps that refuse a bomb rather than a big book: 8 tests) and `pages.js` (the page model: natural order, junk filtered, `ComicInfo.xml` not a page; the plan the reader turns, its segments, and the gate sentence: 11 tests). The reader itself is one page at a time or one continuous scroll, left to right or right to left, the store's choice per file; a stop lands **between** pages and the server refuses the bytes behind it (`403 a view is owed before this page`) rather than hiding them with a veil. The bookmark is the reader's own (`reading_progress`, PK (user, file)) and never shown to the store. 8 tests in `reader.test.js`, 8 screenshots from a real browser walk (`ci/eyes/reader-walk.mjs`, `docs/evidence/round38`) that also flips both seller choices and watches the reader obey — and, since §14.7, a 9th: the seam at the ladder's last rung keeps its reason, keeps the way back to the file and the way to membership, and drops only the offer. §13 is the design. Suite 763/763/0 |
+| 7 Live | **Built** — §14 is the design: a live file is the store's own `https://…m3u8` (no ingest, no re-host, no recording), hls.js 1.7.3 vendored because Chrome and Firefox have no native HLS, and a break is a WINDOW only the store's own POST can open, which buys clean entries for newcomers at the ratio Twitch taught the industry. Built: `live.js` holds the arithmetic and the four caps, `live_breaks` holds the windows (one open per file, enforced by a partial unique index), and the seller's own POST is the only writer. 10 unit tests, 4 fixture tests, and `ci/eyes/live-walk.mjs` in a real browser (6 shots, `docs/evidence/round39`) — the stream plays, a break the seller calls stops it, the view is credited, playback resumes at the EDGE, and a newcomer inside the window walks in clean. Suite 782/782/0. **Later, the viewer's own side of an early end** (§14.6): `liveState` gained `lastClosed` (with `early` derived from `closed_at` vs `ends_at`, one more unit test), the client chooses its sentence from that fact, and the walk holds the network's delivery at the proxy so it can reach the state the sentence is about — the seller ends the break while the viewer's ask is on screen, and the person is told so ("The store ended this break early. Your view was confirmed — back at the live edge."). 7 shots then; **8 shots now**, after §14.7's step: six unconfirmed breaks through the product's own route put the viewer on the last rung, the break the store calls never opens the modal or stops the stream, and clearing the signals makes it ask again — a ladder, not a wall |
+| 2 later — the ladder on every surface | **Built** (§14.7) — one table in `blocked.js` is read by all four places that ask for a view: a file's door, a cue inside a player, a reader's seam, and a break the store called. Each in-player rung carries a tail beside the door's `body` — `player` for a cue and a live break, `reader` for a seam, because a withheld seam really does withhold the file (`403`) while a withheld cue is passed over. All four report `script_blocked` / `no_postback`, and choosing not to watch is `declined` everywhere and never climbs. An ask owns the playhead (pressing play during a break used to resume the file behind the modal). Walks: `ci/eyes/cue-rung-walk.mjs` (7 shots, on the demo's own four-minute `breaks` file — the only demo file a break can legally be placed inside), `reader-walk.mjs` step 8, `live-walk.mjs` step 8. Suite 804/804/0 |
 | 8 Series | **Built** — §15 is the design: `series` (a slug and a closed `mode` per store), `assets.series_id`/`episode_no` with the pair checked as one thing, and `watch_progress` as the person's own bookmark (`0049_series.sql`). `src/series.js` is pure and decides the order, the landing episode, the next one, and *finished* from one place; the storefront collapses a series into one card, the series page lists the store's order, and an episode's page carries the strip, the resume, and a **Next episode** link that appears only when the episode ends — no timer, no autoplay. 14 tests in `series.test.js` and `ci/eyes/series-walk.mjs` in a real browser (`docs/evidence/round41`, 8 shots, including the ad-gated episode's own door cleared through the dev-only network
 simulator and the position route answering `changed: true` then `false`). Suite 801/801/0 |
 
@@ -768,6 +769,67 @@ The rule behind the rows: **an ask that has started is seen through.** Cancellin
 window closed would take a person's attention and hand back nothing — neither the store's ad nor the
 viewer's standing — and the view a break asks for is the viewer's own currency (§12), not the store's.
 So the window closing early changes the words, never the work already underway.
+
+### 14.7 The ladder everywhere a break asks: the cue, the seam and the stream
+
+The blocker ladder (§2 of `blocked.js`, slice 2) was written for a file's door: a view does not arrive,
+the count climbs, and at the sixth attempt the unlock stops being offered — the file is withheld, never
+the page. Everything since asks in a different place: a cue inside a player, a seam in a reader, a break
+the store called on a live stream. Until this section those three never met the ladder — `runBreak`
+reported no signal at all, so an ad that never arrived inside a file was invisible to the ladder,
+invisible to the seller's panel, and answered with a sentence that blamed the network and repeated for
+ever.
+
+**One table, three tails, four surfaces.** Every rung carries the door's `body` and, beside it, the
+words each in-player surface needs: `player` for a cue and a live break, `reader` for a seam. The client
+prints the module's words and reports one of three signals; it decides nothing. The tails are separate
+because the surfaces do not lose the same thing:
+
+* A withheld **cue** is passed over. The file plays, the stream plays, and it says so.
+* A withheld **seam** is not passed over — the reader's gate IS the bytes, and a page behind an uncleared
+  seam is refused with a 403. So the reader's tail is the only one that does not promise "it passes on
+  its own": it says the pages wait with the ask and that nothing was taken from the account. The walk
+  caught the panel printing the player's sentence, which promised a shut seam would open by itself.
+* A withheld **live break** never opens the modal and never touches playback.
+
+Three rules, and they are the same three the door already keeps, applied to the surfaces that ask
+inside a file:
+
+1. **One ladder, every surface that asks.** A break's failed view is recorded through the SAME route
+   (`POST /api/unlock/blocked`, the same signals, the same six-hour window per person and file). A
+   person who blocks at the door and blocks during breaks on the same file has one count, not two; the
+   rungs are the module's, and every surface reads them.
+2. **The harsh end withholds the OFFER, never the file or the stream.** There is no wall to put in
+   front of a live file — stopping it would punish the store's own audience and break §14.2's promise
+   that the stream never waits for our machinery. At the last rung the break stops asking that person
+   at all, the modal never opens, playback is untouched, and the surface says in one line that this
+   break is not asking them for a view. The store's own ledger is unchanged either way — a break with
+   no confirmed view was never credited.
+3. **The sentences are the module's, and they are the surface's.** The door's copy says "nothing was
+   unlocked", which is false inside a player — the file kept playing. The client prints the server's
+   words; it invents none of them. A report's ANSWER carries the tails too, so the sentence a viewer
+   reads after a failed break is the rung that answer just computed rather than whatever the page was
+   rendered with.
+
+**An ask owns the playhead.** Two doors lead into a cue and both have to hold: the playhead reaching it
+(the ordinary path, `timeupdate`) and a person pressing play while the playhead is already sitting on
+it. The second door was, for one round, the only one guarded, and the guard for the first lived on
+resume rather than on the path that actually runs — so a viewer whose playhead crossed the cue
+mid-playback still got the modal, and the rung looked enforced because the test matched the guard that
+existed. The same round found the opposite hole: while an ask was up, the play handler returned early,
+so pressing play resumed the file BEHIND the modal while the countdown ran. A break that can be
+dismissed by ignoring it is not a break.
+
+**A cue exists because a length was measured.** Cues come from `assets.runtime_sec`, which the player
+writes (slice 3) — so the demo's `breaks` file is four minutes long (`scripts/make-demo-media.mjs 240
+<out> 6 30`, 524 KB, committed), because a break may not be placed in the first two minutes or the last
+ninety seconds and a five-second clip has no legal window at all. A freshly seeded database is the
+state a walk has to start from: the file page renders with a player and NO cue, the first player
+measures the file, and the cue appears on the next render.
+
+What a break does NOT do: it does not report a signal for somebody who chooses not to watch. Closing the
+modal is a choice about their own time, and `declined` is recorded exactly as the door records it —
+never counted as blocking, never a rung.
 
 ## 15. The series — a playlist of episodes, and the one place we do NOT take the wheel
 

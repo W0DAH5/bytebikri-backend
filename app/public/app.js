@@ -330,6 +330,16 @@
     const cleared = new Set();
     const nextCue = () => cues.find((c) => !cleared.has(c.index) && el.currentTime + 0.35 >= c.atSec);
     let gating = false;
+    /*
+     * Where this person is on the blocker ladder (§14.7), as rendered by the server on
+     * this stage and refreshed by every report. The harsh rung means the OFFER goes, not
+     * the file: the player stops stopping at cues, and says so once in the rung's own
+     * words. Nothing here decides a rung; it reads one.
+     */
+    let rung = stage.dataset.rungOffers
+      ? { offersUnlock: stage.dataset.rungOffers !== 'false', player: stage.dataset.rungWords || null }
+      : null;
+    let saidWithheld = false;
     // Set while a break is on screen, so the ✕ can end the wait. See the handler.
     let declineBreak = null;
 
@@ -350,6 +360,25 @@
       statusEl.style.color = kind ? `var(--${kind}-text)` : '';
     };
 
+    /*
+     * A failed break is REPORTED, not guessed at — the same rule the door follows, and
+     * the reason a cue break reaches the ladder at all. The client says which of three
+     * things happened; the server decides what it means and answers with the rung.
+     */
+    const reportBlocked = async (signal, viewId = null) => {
+      try {
+        const r = await api('/api/unlock/blocked', {
+          method: 'POST',
+          body: JSON.stringify({ assetId, viewId, signal }),
+        });
+        if (!r.ok || !r.rung) return null;
+        rung = { ...r.rung };
+        return rung;
+      } catch {
+        return null;
+      }
+    };
+
     /** Wait for the network's confirmation — the only thing that releases the player. */
     const waitForCredit = async (viewId) => {
       const deadline = Date.now() + 90_000;
@@ -362,7 +391,25 @@
       return false;
     };
 
+    /*
+     * The last rung, inside a player (§14.7): the OFFER goes, never the file.
+     *
+     * The cue is marked as passed and the rung's own words are said ONCE. This is a
+     * function rather than a branch because there are two doors into an ask — the
+     * playhead reaching the cue, and a person pressing play while it is already at one
+     * — and the withheld rung has to hold at both. It guarded only the second when this
+     * round was written, which the walk below caught: a viewer whose playhead crossed
+     * the cue mid-playback still got the modal, and the rung looked enforced because the
+     * test matched the guard that existed.
+     */
+    const passOver = (cue) => {
+      cleared.add(cue.index);
+      if (!saidWithheld && rung?.player) { saidWithheld = true; say(rung.player); }
+    };
+    const withheldRung = () => Boolean(rung && rung.offersUnlock === false);
+
     const runBreak = async (cue) => {
+      if (withheldRung()) return passOver(cue);
       gating = true;
       // The escape hatch is armed BEFORE anything is asked of the network, so the
       // ✕ works from the first frame the modal is on screen. It was armed after the
@@ -419,7 +466,8 @@
       // integration never calls this: the network calls us. Not awaited, because
       // nothing on this page depends on its answer — the postback is what the wait
       // below is waiting for, and whether it lands in 30ms or three seconds must not
-      // decide whether a person can leave.
+      // decide whether a person can leave. A failure here IS reported, because an ad
+      // that never started is the first thing the ladder exists to notice.
       if (start.adConfig?.devSimulator) {
         api(`/dev/simulate-network/${encodeURIComponent(start.adConfig.providerId)}`, {
           method: 'POST',
@@ -428,7 +476,7 @@
             connectionId: start.adConfig.connectionId,
             durationSec: seconds,
           }),
-        }).catch(() => { /* the wait below decides */ });
+        }).catch(() => { reportBlocked('script_blocked', start.viewId); });
       }
 
       // What releases the playhead is the network, not the countdown — so closing
@@ -468,9 +516,15 @@
         say(`Break ${position} of ${cues.length} dropped. The file keeps playing — the store was `
           + 'not credited for that view.', 'warning');
         el.play().catch(() => {});
+        reportBlocked('declined', start.viewId);
       } else {
-        say('The network has not confirmed that view yet. You can keep watching — reload to try the '
-          + 'break again.', 'danger');
+        // No view arrived. This used to be a sentence that blamed the network, repeated at
+        // every cue for ever, with the store credited for none of them. The failure is
+        // reported now, and the words that come back are the rung's own — including the
+        // last one, which withdraws the ASK rather than the file.
+        const after = await reportBlocked('no_postback', start.viewId);
+        say(after?.player || rung?.player || 'The network has not confirmed that view yet. You can keep '
+          + 'watching — reload to try the break again.', after?.offersUnlock === false ? '' : 'danger');
         el.play().catch(() => {});
       }
     };
@@ -506,7 +560,25 @@
     // server remembers nothing about the modal — which is the right place for that
     // state to live.
     el.addEventListener('play', () => {
-      if (!gating && nextCue()) el.pause();
+      /*
+       * An ask owns the playhead. Pressing play while the modal is up used to fall
+       * straight through this handler — `gating` was set, so nothing paused the file —
+       * and a viewer could dismiss a break by ignoring it, with the countdown still
+       * running: the ask looked enforced and was not. The break resumes playback itself
+       * when it is credited, dropped or passed over, so the right answer here is to
+       * take the playhead back.
+       */
+      if (gating) { el.pause(); return; }
+      const cue = nextCue();
+      if (!cue) return;
+      // Resuming AT a cue: the same pass-over, before the pause rather than instead of
+      // it — `runBreak` would get there, and this saves the modal a frame on screen.
+      if (withheldRung()) return passOver(cue);
+      el.pause();
+      // And the ask itself, so a person who returns to a file at the cue they left it on
+      // is asked again rather than played past: `timeupdate` is not guaranteed to fire
+      // while the playhead sits where it already is.
+      runBreak(cue).catch(() => { gating = false; });
     });
   });
 
@@ -538,8 +610,28 @@
     const askLine = $('#ad-ask-tail');
     let ticker = null;
     let cancelled = false;
+    // The ladder's state for this file, rendered by the server on the button and
+    // refreshed by every report — never decided here (§14.7).
+    let rung = button.dataset.rungOffers
+      ? { offersUnlock: button.dataset.rungOffers !== 'false', words: button.dataset.rungWords || null }
+      : null;
 
     $('#ad-close')?.addEventListener('click', () => { cancelled = true; });
+
+    /* A failed seam is reported like every other failed view, and the answer is a rung. */
+    const reportBlocked = async (signal, viewId = null) => {
+      try {
+        const r = await api('/api/unlock/blocked', {
+          method: 'POST',
+          body: JSON.stringify({ assetId: button.dataset.assetId, viewId, signal }),
+        });
+        if (!r.ok || !r.rung) return null;
+        rung = { ...r.rung };
+        return rung;
+      } catch {
+        return null;
+      }
+    };
 
     button.addEventListener('click', async () => {
       const assetId = button.dataset.assetId;
@@ -582,7 +674,7 @@
             connectionId: start.adConfig.connectionId,
             durationSec: seconds,
           }),
-        }).catch(() => { /* the wait below decides */ });
+        }).catch(() => { reportBlocked('script_blocked', start.viewId); });
       }
 
       // The wait is on the SERVER's answer, never on the countdown — the same rule
@@ -604,9 +696,18 @@
         return;
       }
       button.disabled = false;
-      say(cancelled
-        ? 'Dropped. The page is still where it was, and the store was not credited for that view.'
-        : 'The network has not confirmed that view yet. Reload to try the seam again.', 'warning');
+      if (cancelled) {
+        // A cancellation is a choice about one's own time, recorded and never climbed on.
+        say('Dropped. The page is still where it was, and the store was not credited for that view.', 'warning');
+        reportBlocked('declined', start.viewId);
+        return;
+      }
+      const after = await reportBlocked('no_postback', start.viewId);
+      // The reader's own tail, not the player's: this surface's rung says what a shut
+      // seam costs, which is not what a paused playhead costs.
+      say(after?.reader || rung?.words
+        || 'The network has not confirmed that view yet. Reload to try the seam again.',
+      after?.offersUnlock === false ? '' : 'warning');
     });
   });
 
@@ -1252,6 +1353,35 @@
   let decline = null;
   let declinedBreak = null;
   let declared = null;
+  // Where the server says this person is on the blocker ladder for THIS file. Rendered
+  // onto the element and refreshed by the state route, never decided here: the last rung
+  // changes what is offered, and a client that could decide that for itself could decide
+  // to un-decide it (§14.7).
+  let rung = root.dataset.rungOffers
+    ? { offersUnlock: root.dataset.rungOffers !== 'false', player: root.dataset.rungWords || null }
+    : null;
+
+  /*
+   * A FAILED BREAK IS REPORTED, NOT GUESSED AT — the same rule the door follows.
+   *
+   * The client says which of three things happened (the ad never started, it started and
+   * no postback arrived, the viewer chose not to watch) and the SERVER decides what that
+   * means. `declined` is deliberately not a blocking signal: closing a break is a choice
+   * about your own time, and the ladder must not climb for it.
+   */
+  const reportBlocked = async (signal, viewId = null) => {
+    try {
+      const r = await api('/api/unlock/blocked', {
+        method: 'POST',
+        body: JSON.stringify({ assetId, viewId, signal }),
+      });
+      if (!r.ok || !r.rung) return null;
+      rung = { ...r.rung };
+      return rung;
+    } catch {
+      return null;
+    }
+  };
   try { declared = root.dataset.stop ? JSON.parse(root.dataset.stop) : null; } catch { declared = null; }
 
   document.querySelector('#ad-close')?.addEventListener('click', () => {
@@ -1297,6 +1427,14 @@
 
   const runBreak = async (window_) => {
     if (!window_ || gating) return;
+    // The harsh rung, on a stream: the OFFER is withheld, not the stream. No modal, no
+    // countdown, no time taken — playback is not touched, and the stage says why. The
+    // window is settled for this sitting, so the poller does not try it again.
+    if (rung && rung.offersUnlock === false) {
+      declinedBreak = window_.breakId;
+      if (rung.player) say(rung.player);
+      return;
+    }
     gating = true;
     asking = window_;
     video.pause();
@@ -1348,6 +1486,9 @@
       // The sandbox network, exactly as the door and the timed break drive it. A real
       // integration never calls this: the network calls us.
       if (start.adConfig?.devSimulator) {
+        // The sandbox network, exactly as the door drives it. A real integration never
+        // calls this: the network calls us. A failure here is the ad not arriving, so it
+        // is reported as one rather than swallowed.
         api(`/dev/simulate-network/${encodeURIComponent(start.adConfig.providerId)}`, {
           method: 'POST',
           body: JSON.stringify({
@@ -1355,7 +1496,7 @@
             connectionId: start.adConfig.connectionId,
             durationSec: seconds,
           }),
-        }).catch(() => {});
+        }).catch(() => { reportBlocked('script_blocked', start.viewId); });
       }
 
       const outcome = await Promise.race([waitForCredit(start.viewId), declined]);
@@ -1371,14 +1512,26 @@
         // does not put the same modal back on screen fifteen seconds later.
         declinedBreak = window_.breakId;
         say('Break closed. You are back at the live edge — the stream kept going while it was up.');
+        reportBlocked('declined', start.viewId);
       } else if (outcome && asking.early) {
         say('The store ended this break early. Your view was confirmed — back at the live edge.');
       } else if (outcome) {
         say('View confirmed. Back at the live edge — the stream moved on while the break ran.');
-      } else if (asking.early) {
-        say('The store ended this break early. The network has not confirmed the view yet — you are at the live edge.', 'warning');
       } else {
-        say('The network has not confirmed the view yet. Still watching at the live edge.', 'warning');
+        // No view arrived. The door's explanation was a countdown and a sentence that
+        // blamed the network for ever; here the failure is REPORTED, and the words that
+        // come back are the rung's own — including the last one, which withdraws the ask
+        // rather than the stream.
+        const after = await reportBlocked('no_postback', start.viewId);
+        if (after && !after.offersUnlock) declinedBreak = window_.breakId;
+        const tail = after?.player || rung?.player || null;
+        if (asking.early) {
+          say('The store ended this break early. The network has not confirmed the view yet — you are at the live edge.', 'warning');
+        } else if (tail) {
+          say(tail, after.offersUnlock ? 'warning' : '');
+        } else {
+          say('The network has not confirmed the view yet. Still watching at the live edge.', 'warning');
+        }
       }
       seekToLiveEdge();
       video.play().catch(() => {});
@@ -1397,6 +1550,7 @@
     if (gating) return;
     const state = await api(stateUrl).catch(() => null);
     if (!state || state.ok !== true) return;
+    if (state.rung) rung = state.rung;
     const stop = state.stop;
     if (stop && stop.breakId !== declinedBreak) {
       await runBreak(stop).catch(() => {});

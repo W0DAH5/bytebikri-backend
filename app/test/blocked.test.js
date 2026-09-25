@@ -18,15 +18,25 @@
  *     anything, and `declined` does not climb anything.
  *   * The client cannot grant, and cannot hide. The withheld state is rendered by
  *     the server from a count; the client may only report a signal.
+ *   * EVERY SURFACE THAT ASKS climbs the same ladder (§14.7). The door was the first
+ *     three surfaces' worth of work done once; a cue break, a reader's seam and a live
+ *     break each ask a different way, and each of them used to fail silently — no
+ *     signal, no rung, and a sentence that blamed the network for ever. An in-player
+ *     rung withholds the OFFER, never the file: a stream that stopped for one
+ *     viewer's arithmetic would punish the store's whole audience.
  */
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 process.env.DATABASE_URL ||= 'postgres://postgres:postgres@127.0.0.1:55432/bytebikri_test';
 
 const { store } = await import('../src/store.js');
 const { close, query } = await import('../src/db.js');
-const { LADDER, NEVER_DO, SIGNALS, BLOCKING_SIGNALS, SIGNAL_WINDOW_HOURS, rungFor, signalFrom, blockedSellerNote } = await import('../src/blocked.js');
+const {
+  LADDER, NEVER_DO, SIGNALS, BLOCKING_SIGNALS, SIGNAL_WINDOW_HOURS,
+  rungFor, signalFrom, playerWords, readerWords, blockedSellerNote,
+} = await import('../src/blocked.js');
 const views = await import('../src/views.js');
 
 after(async () => { await close(); });
@@ -102,6 +112,139 @@ test('the copy blames the view, never the visitor, and never names a browser', (
   const explained = LADDER.find((r) => r.key === 'explained');
   assert.match(explained.body, /members only/, 'membership is described by what it does open');
   assert.match(explained.body, /does not open this ad-gated file sooner/, 'and by what it does not');
+});
+
+test('an in-player rung withholds the offer, and says so in the file\'s own terms', () => {
+  // One table, two readings: the door's copy says what did not happen to an UNLOCK, and
+  // an in-player copy says what did not happen to a BREAK. The difference is not style —
+  // "nothing was unlocked" is false inside a player, where the file or the stream kept
+  // playing and only the credit is missing, and a sentence that is false is worse than
+  // no sentence.
+  for (const rung of LADDER) {
+    const words = playerWords(rung);
+    if (rung.key === 'quiet') {
+      assert.equal(words, null, 'a person who has done nothing is told nothing');
+      continue;
+    }
+    assert.ok(words && words.length > 60, `${rung.key} has no in-player tail`);
+    assert.doesNotMatch(words, /brave|chrome|firefox|safari|edge\b|ublock|ghostery/i);
+    assert.doesNotMatch(words, /your ad blocker|you are blocking|disable your|turn off your/i);
+    assert.doesNotMatch(words, /nothing was unlocked|has been unlocked/i,
+      'inside a player nothing was locked in the first place');
+  }
+  // The harsh rung, in the words a player needs: what goes is the ASK, and the sentence
+  // has to say what does NOT change, because that is the fear it is answering.
+  const last = LADDER[LADDER.length - 1];
+  assert.match(playerWords(last), /not asking you for a view/i);
+  assert.match(playerWords(last), /file plays|stream plays/i);
+  assert.match(playerWords(last), /passes on its own|resets/i);
+  // A reader's tail is a DIFFERENT sentence at the rung where the ask goes, because the
+  // two surfaces do not lose the same thing: a withheld cue is passed over and the file
+  // plays on, while a withheld ask at a seam leaves the pages behind it shut. The player's
+  // tail promises "it passes on its own", which is a promise a shut seam cannot keep — the
+  // reader walk caught the panel printing exactly that.
+  for (const rung of LADDER.filter((r) => r.player)) {
+    const words = readerWords(rung);
+    assert.ok(words && words.length > 60, `${rung.key} has no reader tail`);
+    assert.doesNotMatch(words, /brave|chrome|firefox|safari|edge\b|ublock|ghostery/i);
+  }
+  assert.match(readerWords(last), /not asking you for a view/i);
+  assert.doesNotMatch(readerWords(last), /passes on its own/i,
+    'a reader does not pass on — the seam is the only way through');
+  assert.match(readerWords(last), /behind the seam|wait with the ask/i);
+  // And the reader is defensive: a rung the module does not know has no tail rather than
+  // a broken one, and the quiet rung's null is not an accident of the copy.
+  assert.equal(playerWords(null), null);
+  assert.equal(playerWords({ key: 'invented', offersUnlock: true }), null);
+  assert.equal(readerWords(null), null);
+  assert.equal(readerWords({ key: 'invented', offersUnlock: true }), null);
+  // A rung written before the reader tail existed still says something true.
+  assert.equal(readerWords({ player: 'the player\u2019s own tail' }), 'the player\u2019s own tail');
+});
+
+test('every surface that asks for a view reports the same signal, and reads the same rung', () => {
+  // Four places in this product ask a person to watch something before they get the
+  // thing they came for: a file's door, a cue inside an open file, a reader's seam, and a
+  // break the store called on a live stream. Three of them used to fail in silence, and a
+  // failure nobody records is a failure the ladder cannot climb for. Asserted on the
+  // source because that is where "a surface was added and the wiring was not" shows up.
+  const client = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  const server = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
+  const view = readFileSync(new URL('../src/views.js', import.meta.url), 'utf8');
+
+  // One reporter per surface — the door, the cue gate, the reader's seam and the live
+  // break — all four pointed at the same route.
+  const reporters = client.match(/const reportBlocked = async/g) || [];
+  assert.equal(reporters.length, 4, 'one reporter per surface that asks');
+  // (The door reaches the same route through its own button, which carries the URL.)
+  const routes = client.match(/'\/api\/unlock\/blocked'/g) || [];
+  assert.equal(routes.length, 4);
+  // Every surface reports all three, and the count is exact so that a FIFTH surface
+  // cannot be added without this test being told about it. `declined` appears twice per
+  // surface in two of them (a branch and its comment), which is why the assertion is a
+  // minimum there and an equality for the two that fail.
+  for (const signal of ['script_blocked', 'no_postback']) {
+    const calls = client.match(new RegExp(`'${signal}'`, 'g')) || [];
+    assert.equal(calls.length, 4, `${signal} is reported by ${calls.length} of the four surfaces`);
+  }
+  assert.ok((client.match(/'declined'/g) || []).length >= 4, 'every surface records a decline too');
+  // The three in-player surfaces each read the rung from the element they were rendered
+  // with, so a person arriving inside an asking state is decided by the server and not by
+  // what a browser happens to have polled yet.
+  const seeded = new Set(['stage', 'button', 'root'].filter((el) => client.includes(`${el}.dataset.rungOffers`)));
+  assert.equal(seeded.size, 3, 'the cue gate, the reader gate and the live stage read it');
+  assert.match(client, /rung\.offersUnlock === false\) \{[\s\S]{0,200}declinedBreak = window_\.breakId/,
+    'a withheld live rung must settle the window instead of asking');
+  // A withheld cue must be passed over WHERE THE ORDINARY PATH STOPS — inside `runBreak`,
+  // which is what `timeupdate` calls — and not only on the resume path. Round one of this
+  // guard lived in the `play` handler alone, so a viewer whose playhead reached the cue
+  // mid-playback still got the modal; the cue walk caught it. The assertion is anchored on
+  // `runBreak` for that reason.
+  assert.match(client, /const runBreak = async \(cue\) => \{\n\s+if \(withheldRung\(\)\) return passOver\(cue\)/,
+    'a withheld cue must be passed over where the playhead stops, not only on resume');
+  assert.match(client, /const passOver = \(cue\) => \{[\s\S]{0,200}cleared\.add\(cue\.index\)/,
+    'and the pass-over marks the cue so neither door stops at it again');
+  assert.match(client, /el\.addEventListener\('timeupdate'[\s\S]{0,200}runBreak\(cue\)/,
+    'the playhead is the door that matters');
+  // An ask owns the playhead. The play handler used to return early whenever `gating` was
+  // set, so pressing play during a break resumed the file behind the modal while the
+  // countdown ran — an ask a viewer could dismiss by ignoring it. Found in the browser.
+  assert.match(client, /if \(gating\) \{ el\.pause\(\); return; \}/,
+    'pressing play during an ask must give the playhead back to the ask');
+  // And a person who comes back to the cue they stopped on is asked again: the resume puts
+  // the playhead ON the cue, and `timeupdate` is not guaranteed to fire for a position
+  // that has not moved.
+  assert.match(client, /if \(withheldRung\(\)\) return passOver\(cue\);[\s\S]{0,400}runBreak\(cue\)\.catch/,
+    'resuming onto a cue must raise the ask rather than play past it');
+
+  // The server decides the rung for a `breaks` file too — the cue break asks inside the
+  // player, where there is no door for the door's rung to govern.
+  assert.match(server, /\['ad_gated', 'breaks'\]\.includes\(asset\.unlock_mode\)/);
+  assert.match(server, /player: playerWords\(rung\)/);
+  // And the live state route hands the same rung to the poller.
+  assert.match(server, /cleanEntry: cleanEntrySentence\(state\.coverageUntil, new Date\(\)\),[\s\S]{0,500}rung: blockRung,/,
+    'the live stage is rendered with the rung');
+  assert.match(server, /rung: \{[\s\S]{0,300}player: playerWords\(rung\)[\s\S]{0,200}offersUnlock: rung\.offersUnlock/);
+
+  // Both stages render it, so a person who arrives INSIDE an asking state is decided by
+  // the server rather than by what a browser happens to know.
+  assert.equal((view.match(/rungAttrs\(/g) || []).length, 4, 'the helper and its three users');
+  assert.match(view, /data-rung-offers="\$\{rung\.offersUnlock \? 'true' : 'false'\}"/);
+  assert.match(view, /gateWithheld/);
+
+  // The withheld reader panel keeps a way out that is not the ask: the button is what
+  // goes, and the link back to the file is what stays.
+  assert.match(view, /const gateWithheld = Boolean\(gateRung && gateRung\.offersUnlock === false\)/);
+  // The reader's own words on the reader's own surface — and only once: the panel used to
+  // print the rung's headline above the player's tail, which said "not being offered for a
+  // while" twice in a row and promised the file would pass on by itself.
+  assert.match(view, /gateWithheld \? readerWords\(gateRung\) : gate.sentence/);
+  // And the report's answer carries both tails, so a surface can print the rung this very
+  // answer computed instead of the rung its page happened to be rendered with.
+  assert.match(server, /player: playerWords\(rung\),[\s\S]{0,120}reader: readerWords\(rung\),/);
+  assert.match(client, /after\?\.reader \|\| rung\?\.words/,
+    "a reader's failed seam says the reader's own rung, not the player's");
+  assert.match(view, /\$\{gateWithheld\n\s+\? `<a class="btn btn-primary" href="\$\{esc\(assetUrl\)\}">Back to the file<\/a>`/);
 });
 
 test('what the platform refuses to do is written down with its reasons', () => {

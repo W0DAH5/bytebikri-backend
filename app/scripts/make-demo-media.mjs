@@ -45,22 +45,32 @@ const FPS = 12;
  * that is not its own end. So the series episodes are longer, and the extra seconds cost
  * a few hundred kilobytes.
  *
+ * A LONG clip is a different job from a short one, and the difference is not length: a
+ * break can only be placed after the first two minutes and before the last ninety
+ * seconds (`placement.js`), so a file that is to carry a break INSIDE it must run longer
+ * than three and a half minutes. That is why the demo's session clip is four minutes at a
+ * lower rate — it is not meant to be watched end to end, it is meant to be a playhead with
+ * a legal window in it — and why the frame rate and the quantiser are arguments here.
+ *
  *   node scripts/make-demo-media.mjs                 # the 5 s walkthrough clip
  *   node scripts/make-demo-media.mjs 45 <out.mp4>    # a series episode
+ *   node scripts/make-demo-media.mjs 240 <out.mp4> 6 30   # the session clip: 6 fps, q30
  */
 const SECONDS = Number(process.argv[2]) || 5;
 const OUT = process.argv[3]
   ? path.resolve(process.cwd(), process.argv[3])
   : path.resolve(__dirname, '../seed-assets/store-walkthrough.mp4');
+const RATE = Number(process.argv[4]) || FPS;
+const Q = Number(process.argv[5]) || 26;
 
 const enc = await HME.createH264MP4Encoder();
 enc.width = W;
 enc.height = H;
-enc.frameRate = FPS;
-enc.quantizationParameter = 26;   // ~1 Mbps at this size; smaller file, still clean
+enc.frameRate = RATE;
+enc.quantizationParameter = Q;    // ~1 Mbps at this size; smaller file, still clean
 enc.initialize();
 
-const frames = FPS * SECONDS;
+const frames = RATE * SECONDS;
 const rgba = new Uint8Array(W * H * 4);
 const clamp = (v) => Math.max(0, Math.min(255, Math.round(v)));
 

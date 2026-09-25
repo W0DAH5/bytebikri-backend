@@ -61,12 +61,26 @@ export const LADDER = [
     from: 0,
     headline: null,
     body: null,
+    // A break's own tail, for the two surfaces that ask INSIDE a player rather than at
+    // a door (§14.7). Null where the door's copy needs no translation and there is
+    // nothing to say yet — a person who has done nothing is told nothing there either.
+    player: null,
+    reader: null,
     offersUnlock: true,
   },
   {
     key: 'notice',
     from: 1,
     headline: 'The ad did not finish',
+    // Inside a player the same fact is not "nothing was unlocked" — the file or the
+    // stream kept playing, which is the whole difference between a door and a break. What
+    // did not happen is the credit, and the break's own store is who it was for.
+    player: 'That break credited nobody — the view did not confirm. Nothing was taken from you, and the '
+      + 'next break will ask again. Most of the time it is an ad blocker, a lost connection, or the '
+      + 'network having a slow minute.',
+    reader: 'That view did not confirm, so the next page is not open yet. Nothing was taken from you — '
+      + 'the page in front of you is yours, and turning back to the file and in again is the same gate. '
+      + 'Most of the time it is an ad blocker, a lost connection, or the network having a slow minute.',
     body:
       'No view was confirmed, so nothing was unlocked — that is how this works rather than a decision '
       + 'about you. Most of the time it is one of three things: an ad blocker, a lost connection, or the '
@@ -77,6 +91,12 @@ export const LADDER = [
     key: 'explained',
     from: 3,
     headline: 'We cannot unlock this one without the view',
+    player: 'Three breaks in a row have produced no confirmed view. The ad inside a break is what pays the '
+      + 'store that called it, and ByteBikri never sees that money. If a blocker is on, allowing ads for '
+      + 'this page is what fixes it.',
+    reader: 'Three views in a row have not confirmed, so the page behind this seam is still shut. The ad '
+      + 'is what pays the person who drew these pages, and ByteBikri never sees that money. If a blocker '
+      + 'is on, allowing ads for this page is what fixes it.',
     body:
       'This file is unlocked by an ad, and the ad pays the person who made it — ByteBikri never sees that '
       + 'money and cannot hand the file over without it. If your blocker is on, that is why. Two honest '
@@ -89,6 +109,21 @@ export const LADDER = [
     key: 'withheld',
     from: 6,
     headline: 'This file is not being offered for a while',
+    // The harsh end, on the surfaces that cannot be withheld. The OFFER goes, and that is
+    // all: the modal does not open, the player is not stopped, and nothing about the
+    // person changes. A file that stopped for this would take a viewer's attention for an
+    // ad that has failed six times, and a live one would punish the store's whole audience
+    // for one viewer's arithmetic — the mistake §14.2 exists to refuse.
+    player: 'This file is not asking you for a view for a while — six breaks with no confirmed view is not '
+      + 'worth a seventh. Nothing else changes: the file plays, the stream plays, and it passes on its own.',
+    // A reader is the one surface where the ask is not a pause: the seam is the only way
+    // to the pages behind it, so a withheld ask there has to say what it costs and who is
+    // holding what. It does NOT borrow the player's tail — "it passes on its own" is a
+    // promise a shut seam cannot keep, and the walk on this surface caught the panel
+    // printing exactly that sentence.
+    reader: 'This file is not asking you for a view for a while — six breaks with no confirmed view is not '
+      + 'worth a seventh. The pages behind the seam wait with the ask rather than being taken away: the '
+      + 'offer comes back on its own, and nothing has been taken from your account.',
     body:
       'Six attempts in a few hours have not produced a single confirmed view, so the unlock is paused here '
       + 'rather than being offered again and failing again. Everything else still works: the file stays '
@@ -110,6 +145,32 @@ export function rungFor(attempts = 0) {
   let out = LADDER[0];
   for (const rung of LADDER) if (n >= rung.from) out = rung;
   return out;
+}
+
+/**
+ * What a BREAK's tail is at this rung, in the rung's own words.
+ *
+ * The door's copy and a break's copy are different promises about the same fact — nothing
+ * was unlocked, versus the file kept playing and only the credit is missing — so the two
+ * live in one table and this is the one reader of the in-player half. `null` means there is
+ * nothing to add: the first rung, and any rung a caller invents.
+ */
+export function playerWords(rung) {
+  return rung?.player ?? null;
+}
+
+/**
+ * The same rung, said to a reader.
+ *
+ * A separate tail rather than the player's, because the two surfaces do not lose the same
+ * thing: a withheld cue on a player is passed over and the file plays on, while a withheld
+ * ask at a reader's seam leaves the pages behind it shut for as long as the rung lasts. A
+ * rung the module does not know has no reader tail, and neither does one written before
+ * this tail existed — the fallback is the player's, which is true for the rungs where the
+ * two say the same thing and never reached the withheld one.
+ */
+export function readerWords(rung) {
+  return rung?.reader ?? rung?.player ?? null;
 }
 
 /** The signal a failed attempt should be recorded as, from what the client saw. */

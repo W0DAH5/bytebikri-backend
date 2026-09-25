@@ -24,6 +24,11 @@
  *      end of it says the window was closed early rather than that it ran (§14.6).
  *   5. A newcomer walks in with NO ask: the trade, honoured — plus the seller's own
  *      record of the break, including that it was ended early.
+ *   6. THE LADDER REACHES A STREAM (§14.7). After six breaks that produced no confirmed
+ *      view, the break stops ASKING that person at all: no modal, no countdown, no
+ *      paused stream — and the stage says so in the rung's own words. Then the signals
+ *      are cleared and the next break asks again, because a rung that could not be left
+ *      would be a wall rather than a ladder.
  *
  *   node live-walk.mjs [storeSlug] [assetSlug] [viewer] [outDir]
  *
@@ -80,6 +85,25 @@ const look = (p) => p.evaluate(() => {
   };
 });
 
+/*
+ * Start the stream the way a viewer does: their own press on the picture. The demo stream
+ * is a five-second live window pinned at its edge, so a press can land before the player
+ * has attached — the press is simply made again, up to three times, and the walk only
+ * carries on once the picture is decoding, moving, and not paused.
+ */
+const startStream = async (p, label) => {
+  for (let i = 1; i <= 3; i += 1) {
+    await p.locator('[data-live] video').click();
+    const ok = await p.waitForFunction(() => {
+      const v = document.querySelector('[data-live] video');
+      return Boolean(v && v.videoWidth > 0 && v.currentTime > 0.4 && !v.paused);
+    }, null, { timeout: 12_000 }).then(() => true).catch(() => false);
+    if (ok) return;
+    console.log(`  (press ${i} did not take — the player had not attached yet)`);
+  }
+  fail(`${label}: the stream never started playing`);
+};
+
 const fileUrl = `${BASE}/s/${SLUG}/a/${ASSET}`;
 
 // ── 1. the door ─────────────────────────────────────────────────────────────────
@@ -112,11 +136,7 @@ await vp.waitForFunction(() => Boolean(window.Hls), null, { timeout: 30_000 })
   .catch(() => fail('hls.js never loaded from /vendor/hls.min.js'));
 const ownerLine = await vp.locator('.live-owner').innerText();
 if (!/Press play/.test(ownerLine)) fail('the stage does not say what pressing play does');
-await vp.locator('[data-live] video').click();                 // the viewer's own press
-await vp.waitForFunction(() => (document.querySelector('[data-live] video')?.videoWidth || 0) > 0,
-  null, { timeout: 30_000 }).catch(() => fail('no frames decoded — the stream is a black rectangle'));
-await vp.waitForFunction(() => (document.querySelector('[data-live] video')?.currentTime || 0) > 0.4,
-  null, { timeout: 20_000 }).catch(() => fail('playback never advanced past 0.4s'));
+await startStream(vp, 'the door opened and nothing plays');
 const playing = await look(vp);
 console.log('  playing        :', JSON.stringify(playing));
 if (playing.paused) fail('the player is paused four tenths of a second in');
@@ -232,7 +252,117 @@ await shot(sp, 'live-6-the-panel');
 // ── the console, at the end, once ───────────────────────────────────────────────
 const errors = [...viewer.errors, ...newcomer.errors, ...seller.errors];
 console.log('\n  console errors :', errors.length ? JSON.stringify(errors) : 'none');
-console.log(`  shots          : ${OUT}/live-{1-the-door,2-the-ask,3-playing,4-the-break,4-the-break-ended-early,5-after-the-early-end,6-clean-entry}.png`);
+// ── 8. the ladder reaches a stream ──────────────────────────────────────────────
+say(8, 'six unconfirmed breaks later the break stops asking — and the stream never notices');
+/*
+ * The person is put on the last rung through the product's OWN route, six times, exactly
+ * as a browser with an ad blocker would arrive at it. The viewer already holds the file,
+ * which is the case that matters: they are watching, and the question is what a break
+ * does to them now.
+ */
+const assetId = await vp.evaluate(() => document.querySelector('[data-live]')?.dataset.assetId || null);
+if (!assetId) fail('the stage is gone — there is nothing to be asked for');
+for (let i = 1; i <= 6; i += 1) {
+  const rung = await vp.evaluate(async (id) => {
+    const r = await fetch('/api/unlock/blocked', {
+      method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ assetId: id, signal: 'no_postback' }),
+    });
+    return r.json();
+  }, assetId);
+  if (i === 6) console.log('  six signals   :', JSON.stringify({ attempts: rung.attempts, rung: rung.rung.key, offers: rung.rung.offersUnlock }));
+  if (i === 6 && rung.rung.offersUnlock !== false) fail('six unconfirmed views did not reach the last rung');
+}
+// The stage is re-rendered by the server with the rung on it: a person who arrives INSIDE
+// a break is decided by the server rather than by what a poll has taught the browser.
+await vp.goto(fileUrl);
+await vp.locator('[data-live]').waitFor();
+const attrs = await vp.evaluate(() => {
+  const el = document.querySelector('[data-live]');
+  return { offers: el?.dataset.rungOffers, words: el?.dataset.rungWords || null };
+});
+console.log('  the stage says:', JSON.stringify({ offers: attrs.offers, words: (attrs.words || '').slice(0, 64) }));
+if (attrs.offers !== 'false') fail('the last rung did not reach the stage');
+if (!/not asking you for a view/.test(attrs.words || '')) fail(`the stage carries no sentence: ${attrs.words}`);
+// The same facts step 3 checks, by the same helper: frames, movement, and no pause. The
+// ladder withholds the ASK, never the stream, so all three must hold on this stage too.
+await startStream(vp, 'the ladder took the stream, which it must not');
+
+// Call the break the viewer is not supposed to be asked for. The file's own four-minute
+// gap between breaks is asserted in test/live.test.js and a walk cannot sit it out, so
+// the file's earlier windows are MOVED BACK ten minutes first — the breaks still happened
+// and the cue indexes still climb, which is why this is a move rather than a delete.
+execFileSync('node', ['ci/eyes/reset-unlock.mjs', VIEWER, ASSET, '--windows'], { encoding: 'utf8' });
+await sp.goto(panelUrl);
+await sp.locator('input[name=seconds][value="30"]').check();
+await sp.getByRole('button', { name: 'Call this break' }).click();
+await sp.waitForLoadState('load');
+if (!/Break called/.test(await sp.locator('body').innerText())) fail('the store could not call the break');
+// The break is seen by the POLLER, so the wait is on the poller's interval rather than on
+// a feeling about how long six seconds is.
+await vp.waitForFunction(
+  () => /not asking you for a view/.test(document.querySelector('[data-live-status]')?.textContent || ''),
+  null, { timeout: 45_000 },
+).catch(() => fail('the stage never said why nothing was being asked'));
+const status8 = await vp.locator('[data-live-status]').innerText().catch(() => '');
+const modalUp = await vp.locator('#ad-modal').isVisible();
+/*
+ * "The stream kept playing" is read as six samples across five seconds of NOT BEING
+ * TOUCHED. The fixture is a three-segment EVENT playlist with no ENDLIST — a five-second
+ * live window that the player pins to — so a moving `currentTime` is not a property of
+ * this stream and asserting it would be asserting something about the demo rather than
+ * about the product. What the product does to a stream is `video.pause()`; that is what
+ * is checked, along with the picture still being decoded.
+ */
+const samples = [];
+for (let i = 0; i < 6; i += 1) {
+  samples.push(await vp.evaluate(() => {
+    const v = document.querySelector('[data-live] video');
+    return { paused: v?.paused, width: v?.videoWidth, at: Number((v?.currentTime || 0).toFixed(2)) };
+  }));
+  if (i < 5) await vp.waitForTimeout(1000);
+}
+console.log('  the viewer    :', JSON.stringify({
+  paused: samples.map((s) => s.paused), at: [...new Set(samples.map((s) => s.at))],
+  modal: modalUp, says: status8.slice(0, 80),
+}));
+if (modalUp) fail('a break the ladder is not offering still opened the modal');
+if (samples.some((s) => s.paused)) fail('the stream was stopped for an ask nobody was given');
+if (samples.some((s) => !(s.width > 0))) fail('frames stopped decoding during the withheld ask');
+if (!/not asking you for a view/.test(status8)) fail(`the stage does not say why nothing was asked: ${status8}`);
+await shot(vp, 'live-7-withheld-ask');
+
+// And the rung is a knob, not a wall: clear the signals and the next break asks again.
+execFileSync('node', ['ci/eyes/reset-unlock.mjs', VIEWER, ASSET, '--signals'], { encoding: 'utf8' });
+execFileSync('node', ['ci/eyes/reset-unlock.mjs', VIEWER, ASSET, '--windows'], { encoding: 'utf8' });
+await vp.goto(fileUrl);
+await vp.locator('[data-live]').waitFor();
+const back2 = await vp.evaluate(() => document.querySelector('[data-live]')?.dataset.rungOffers);
+console.log('  after clearing:', JSON.stringify({ offers: back2 }));
+if (back2 !== 'true') fail('the ladder did not reset — the last rung is a wall');
+await sp.goto(panelUrl);
+await sp.locator('input[name=seconds][value="30"]').check();
+await sp.getByRole('button', { name: 'Call this break' }).click();
+await sp.waitForLoadState('load');
+const panel8 = await sp.locator('body').innerText();
+if (!/Break called/.test(panel8)) fail(`the store could not call the break again: ${panel8.replace(/\s+/g, ' ').slice(0, 200)}`);
+await vp.locator('#ad-modal').waitFor({ state: 'visible', timeout: 60_000 })
+  .catch(async () => {
+    const seen = [];
+    for (let i = 0; i < 4; i += 1) {
+      seen.push(await vp.evaluate(async (id) => {
+        const r = await (await fetch(`/api/live/${id}/state`, { credentials: 'same-origin' })).json();
+        return { stop: r.stop?.cueIndex ?? null, entry: r.entry, offers: r.rung?.offersUnlock, breaks: r.breaksRun };
+      }, assetId));
+      await vp.waitForTimeout(1500);
+    }
+    fail(`the break did not ask again after the rung reset: ${JSON.stringify(seen)}`);
+  });
+console.log('  the ask is back:', JSON.stringify(await vp.locator('#ad-ask-tail').innerText().catch(() => '')));
+await vp.locator('#ad-close').click().catch(() => {});
+await shot(vp, 'live-8-asking-again');
+
+console.log(`  shots          : ${OUT}/live-{1-the-door,2-the-ask,3-playing,4-the-break,4-the-break-ended-early,5-after-the-early-end,6-clean-entry,7-withheld-ask,8-asking-again}.png`);
 if (errors.length) fail('the pages reported console errors — see above');
 await browser.close();
 console.log('\nthe stream played, a break the store called stopped it, the viewer came back at the edge,'

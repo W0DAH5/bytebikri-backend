@@ -124,7 +124,7 @@ import {
 } from './plus.js';
 // The blocker ladder. One module, so the sentence the visitor reads and the
 // sentence the seller's dashboard prints cannot disagree about what was done.
-import { rungFor, NEVER_DO, blockedSellerNote } from './blocked.js';
+import { rungFor, playerWords, readerWords, NEVER_DO, blockedSellerNote } from './blocked.js';
 
 const FAMILY_LABELS = Object.fromEntries(AUDIT_FAMILIES.map((f) => [f.key, f.label]));
 
@@ -2403,7 +2403,7 @@ ${closed.length ? `<section class="section">
  * make a copy traceable, and the note says exactly that, because a product that
  * claims to be un-copyable and is not is worse than one that never claimed it.
  */
-function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, slug, assetSlug, lockedReason = null, assetId = null, gate = null, resumeAt = null }) {
+function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, slug, assetSlug, lockedReason = null, assetId = null, gate = null, blockRung = null, resumeAt = null }) {
   // `data-asset-id` is what lets the player tell the server how long the file is
   // when its metadata loads (slice 3: placement needs a measured runtime, and the
   // player is the only component that has one).
@@ -2413,7 +2413,7 @@ function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, 
   // pause; it does not decide whether it may move on — that answer comes back from
   // the network's postback through `data-break-url`.
   const gateAttr = gate && gate.cues?.length
-    ? ` data-cues="${esc(JSON.stringify(gate.cues))}" data-break-url="${esc(gate.breakUrl)}"`
+    ? ` data-cues="${esc(JSON.stringify(gate.cues))}" data-break-url="${esc(gate.breakUrl)}"${rungAttrs(blockRung)}`
     : '';
   // The saved position, as data the client seeks to. It is a NUMBER on the element and
   // never a script: with the script blocked the file simply starts at the beginning,
@@ -2473,6 +2473,23 @@ function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, 
 }
 
 /**
+ * The blocker ladder, as two attributes on whatever element asks for a view inside a
+ * player (§14.7).
+ *
+ * `data-rung-offers="false"` is the harsh end arriving WITHOUT JavaScript's opinion: the
+ * player reads it and stops stopping at cues, and the stage says why in the rung's own
+ * words. The sentence rides along as data rather than as a sentence in the markup because
+ * the same element is also the one that reports failures — a second copy of the copy is a
+ * second thing to keep true.
+ */
+function rungAttrs(rung, words = null) {
+  if (!rung) return '';
+  const said = words ?? playerWords(rung) ?? '';
+  return ` data-rung-offers="${rung.offersUnlock ? 'true' : 'false'}"`
+    + (said ? ` data-rung-words="${esc(said)}"` : '');
+}
+
+/**
  * The live player (§14).
  *
  * A stream is the one surface where the platform holds no bytes: the URL is the
@@ -2490,12 +2507,12 @@ function mediaStage({ previewFile, markUri, coverUrl, title, unlocked, needsAd, 
  * `liveState()`. It is a fact the server computed, not a decision the page makes: the
  * page has no way to invent a break, which is the whole point of the shape.
  */
-function liveStage({ url, state, cleanEntry, stateUrl, viewUrl, pollSeconds, markUri, coverUrl, title, assetId, storeName = '' }) {
+function liveStage({ url, state, cleanEntry, stateUrl, viewUrl, pollSeconds, rung = null, markUri, coverUrl, title, assetId, storeName = '' }) {
   const stop = state?.stop ? esc(JSON.stringify(state.stop)) : '';
   return `
     <div class="live" data-live data-asset-id="${esc(assetId)}" data-url="${esc(url || '')}"
          data-state-url="${esc(stateUrl)}" data-view-url="${esc(viewUrl)}"
-         data-poll-seconds="${esc(String(pollSeconds || 15))}" data-stop="${stop}">
+         data-poll-seconds="${esc(String(pollSeconds || 15))}" data-stop="${stop}"${rungAttrs(rung)}>
       <figure class="stage stage-live" data-protect data-asset-id="${esc(assetId)}">
         <video controls playsinline preload="metadata"${coverUrl ? ` poster="${esc(coverUrl)}"` : ''}
                controlslist="nodownload noplaybackrate noremoteplayback"
@@ -3060,11 +3077,11 @@ export function assetPage({
   <div class="stack stack-8">
     ${liveOpen ? liveStage({
       url: live.url, state: live.state, cleanEntry: live.cleanEntry,
-      stateUrl: live.stateUrl, viewUrl: live.viewUrl, pollSeconds: live.pollSeconds,
+      stateUrl: live.stateUrl, viewUrl: live.viewUrl, pollSeconds: live.pollSeconds, rung: live.rung,
       markUri, coverUrl: asset.cover_url, title: asset.title, assetId: asset.id, storeName: channel.name,
     }) : mediaStage({
       previewFile, markUri, coverUrl: asset.cover_url, title: asset.title, unlocked, needsAd, assetId: asset.id,
-      gate,
+      gate, blockRung,
       // The stage's own sentence. A members-only file behind an ad-shaped veil
       // reading "Unlocks after the ad" would be the page's one outright lie: no ad
       // opens this, and no amount of watching one will.
@@ -3226,21 +3243,37 @@ export function readerPage({
          <figcaption class="fine">${esc(it.caption || 'This page could not be opened.')}</figcaption>
        </figure>`)).join('');
 
+  /*
+   * The gate, or the ladder's last word about it.
+   *
+   * A seam is the one break whose wall is the BYTES: the route refuses the pages behind
+   * it, so the button is an offer to pay for them rather than a question about leaving.
+   * At the withheld rung the offer goes — the panel keeps the reason, keeps what still
+   * works, and keeps the way back to the file, and the count passes on its own (§14.7).
+   */
+  const gateRung = gate?.blockRung || null;
+  const gateWithheld = Boolean(gateRung && gateRung.offersUnlock === false);
   const gatePanel = gate
     ? `<div class="note note-warning reader-gate" role="status">
-         <p><strong>${esc(gate.sentence || 'One view, then the next page.')}</strong></p>
-         <p class="small" style="margin-top:var(--space-2)">
+         <p><strong>${esc((gateWithheld ? readerWords(gateRung) : gate.sentence) || 'One view, then the next page.')}</strong></p>
+         ${gateWithheld
+    ? ''
+    : `<p class="small" style="margin-top:var(--space-2)">
            ${gate.seconds ? `About ${gate.seconds} seconds. ` : ''}The page turns when the ad network confirms the view,
            not when the countdown ends — so this is one request to the network, and it is the same verified
            view that opens a file anywhere else here.
-         </p>
+         </p>`}
          <p style="margin-top:var(--space-4)">
-           <button class="btn btn-primary" type="button"
+           ${gateWithheld
+    ? `<a class="btn btn-primary" href="${esc(assetUrl)}">Back to the file</a>`
+    : `<button class="btn btn-primary" type="button"
                    data-reader-gate data-cue-index="${Number(gate.cueIndex) || 0}"
                    data-break-url="${esc(gate.breakUrl || '/api/unlock/break')}"
                    data-asset-id="${esc(asset?.id || '')}"
-                   data-next="${esc(gate.nextHref || '')}">Watch a view to continue</button>
-           ${gate.nextHref ? `<a class="link-quiet" style="margin-left:var(--space-3)" href="${esc(assetUrl)}">Back to the file</a>` : ''}
+                   data-next="${esc(gate.nextHref || '')}"${rungAttrs(gate.blockRung, readerWords(gate.blockRung))}>Watch a view to continue</button>`}
+           ${gate.nextHref && !gateWithheld ? `<a class="link-quiet" style="margin-left:var(--space-3)" href="${esc(assetUrl)}">Back to the file</a>` : ''}
+           ${gateWithheld && gateRung?.hasMembers
+    ? `<a class="link-quiet" style="margin-left:var(--space-3)" href="/s/${esc(channel.slug)}#members">See what membership is</a>` : ''}
          </p>
          <p class="fine" id="reader-gate-status" style="margin-top:var(--space-2)"></p>
        </div>`

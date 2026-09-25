@@ -15,12 +15,18 @@
  *      delivers a signed postback, the page uses the same modal, and the seam then
  *      lets the page through.
  *   5. A bookmark is written for the person who read it, and "continue" comes back.
+ *   6. The seller's own two choices (mode, direction) reach the reader.
+ *   7. At the LAST RUNG of the blocker ladder (§14.7) the seam keeps its reason and keeps
+ *      the way back to the file, and drops only the offer — the one thing a reader's gate
+ *      can do that a player's cannot: the bytes behind the seam are still refused, so the
+ *      panel must not leave somebody standing in front of a wall.
  *
  *   node reader-walk.mjs [storeSlug] [assetSlug] [who] [outDir]
  *
  * Dev-only, like every walk here: it drives the dev simulator to deliver the postback.
  */
 import { chromium } from 'playwright-core';
+import { execFileSync } from 'node:child_process';
 import { sessionFor } from './lib.mjs';
 
 const BASE = process.env.EYES_BASE || 'http://127.0.0.1:3000';
@@ -324,6 +330,63 @@ await Promise.all([
 ]);
 if (!/saved=read-choices/.test(sp.url())) fail('flipping the choices back did not save');
 await sctx.close();
+
+// ── 8. the last rung of the ladder, at the seam ─────────────────────────────────
+say(8, 'at the last rung the seam keeps its reason and its way back, and drops only the offer');
+/*
+ * The seam stands for a reader whose page is behind it, so this step has to start with the
+ * seam UNCLEARED again — step 4 paid for it, and the panel is not rendered for somebody who
+ * already has those pages. Then six unconfirmed views, through the product's own route,
+ * exactly as a browser that keeps failing would arrive at the rung.
+ */
+execFileSync('node', ['ci/eyes/reset-unlock.mjs', WHO, ASSET], { encoding: 'utf8' });
+await p.goto(fileUrl);
+await p.locator('h1').waitFor();
+for (let i = 1; i <= 6; i += 1) {
+  const rung = await p.evaluate(async (id) => {
+    const r = await fetch('/api/unlock/blocked', {
+      method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ assetId: id, signal: 'no_postback' }),
+    });
+    return r.json();
+  }, first.assetId);
+  if (i === 6) {
+    console.log('  six signals   :', JSON.stringify({ attempts: rung.attempts, rung: rung.rung?.key, offers: rung.rung?.offersUnlock }));
+    if (rung.rung?.offersUnlock !== false) fail('six unconfirmed views did not reach the last rung');
+  }
+}
+await p.goto(`${fileUrl}/read?p=${seamStep}`);
+await p.locator('[data-reader]').waitFor();
+const withheld = await p.evaluate(() => {
+  const panel = document.querySelector('.reader-gate');
+  return {
+    panel: Boolean(panel),
+    text: panel ? panel.textContent.replace(/\s+/g, ' ').trim() : '',
+    button: Boolean(document.querySelector('[data-reader-gate]')),
+    back: Boolean(panel?.querySelector('a[href$="/a/kathmandu-sketchbook"]')) || /Back to the file/.test(panel?.textContent || ''),
+    members: Boolean(panel?.querySelector('a[href*="#members"]')),
+    drawn: document.querySelector('figure.reader-page img')?.naturalWidth ?? 0,
+  };
+});
+console.log('  the panel says:', JSON.stringify(withheld.text.slice(0, 170)));
+console.log('  the panel     :', JSON.stringify({ button: withheld.button, back: withheld.back, members: withheld.members }));
+if (!withheld.panel) fail('the seam drew no panel at all at the last rung');
+if (withheld.button) fail('the withheld seam still offers the view');
+if (!/not asking you for a view/.test(withheld.text)) fail('the withheld panel does not say why it is not asking');
+// The reader's OWN tail: a withheld cue on a player is passed over and the file plays on,
+// and a withheld ask at a seam leaves the pages behind it shut. The difference matters —
+// the panel used to print the player's sentence, which promised "it passes on its own".
+if (!/behind the seam wait with the ask/.test(withheld.text)) {
+  fail(`the withheld panel does not say what a reader loses: ${withheld.text}`);
+}
+if (/passes on its own/.test(withheld.text)) fail("the panel promises a shut seam will pass on by itself");
+if (!withheld.back) fail('the withheld panel left no way back to the file');
+if (!withheld.members) fail('this store sells memberships, so the panel should point at them');
+if (!withheld.drawn) fail("the seam's own page stopped drawing — the rung is not supposed to take the page");
+await shot('reader-9-withheld-seam');
+
+// The ladder is put back, so the demo database is where it was before this step.
+execFileSync('node', ['ci/eyes/reset-unlock.mjs', WHO, ASSET, '--signals'], { encoding: 'utf8' });
 
 console.log(`\nconsole errors: ${errors.length ? JSON.stringify(errors.slice(0, 4)) : 'none'}`);
 await browser.close();

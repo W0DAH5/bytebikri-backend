@@ -92,7 +92,9 @@ import {
   // vocabulary rather than spelled again here.
   normalizeGiftCode,
 } from './src/plus.js';
-import { SIGNALS, BLOCKING_SIGNALS, signalFrom, rungFor, SIGNAL_WINDOW_HOURS } from './src/blocked.js';
+import {
+  SIGNALS, BLOCKING_SIGNALS, signalFrom, rungFor, playerWords, readerWords, SIGNAL_WINDOW_HOURS,
+} from './src/blocked.js';
 import { SANDBOX_PROVIDER_IDS } from './src/providers/index.js';
 import { selectableProviders, providerById, payoutVerdict, loadRegistry } from './src/registry.js';
 import {
@@ -2364,6 +2366,28 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
      * poller that acts on another is exactly how a viewer gets stopped by a break
      * nobody mentioned, which is the complaint §2.3 recorded against the industry.
      */
+    /*
+     * WHERE THIS PERSON IS ON THE BLOCKER LADDER, decided here and read by three
+     * surfaces: the door's withheld state, the cue gate inside a player, and a live
+     * break (§14.7). Computed on the server for the same reason the door's copy always
+     * was — a browser that could decide its own rung could decide to un-decide it — and
+     * covering `breaks` files as well as `ad_gated` ones, because a cue break asks a
+     * viewer for a view inside the player with no door anywhere on the page.
+     */
+    const blockRung = !req.user || !['ad_gated', 'breaks'].includes(asset.unlock_mode)
+      ? null
+      : await (async () => {
+        const attempts = await store.blockSignalCount({
+          assetId: asset.id, userId: req.user.id, hours: SIGNAL_WINDOW_HOURS,
+        });
+        // Whether this store sells memberships at all. The withheld rung's only route
+        // forward used to be a button to `#members` — which is a dead anchor in a store
+        // with no tiers, so the button waits for the fact rather than assuming it.
+        const hasMembers = (await store.membershipTiers(channel.id)).length > 0;
+        const rung = rungFor(attempts);
+        return { ...rung, player: playerWords(rung), attempts, hasMembers };
+      })();
+
     const liveBreaks = shape === 'stream' ? await store.liveBreaksOf(asset.id) : [];
     let live = null;
     if (shape === 'stream') {
@@ -2376,6 +2400,11 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
         pollSeconds: LIVE_POLL_SECONDS,
         state,
         cleanEntry: cleanEntrySentence(state.coverageUntil, new Date()),
+        // The blocker ladder, on the surface that cannot be withheld (§14.7). Rendered
+        // here as well as served to the poller, for the reason the door's rung is: a
+        // person who arrives INSIDE a break must not be asked for a view the server has
+        // already stopped offering them, and that decision must not wait for a poll.
+        rung: blockRung,
       };
     }
 
@@ -2453,20 +2482,7 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
       // On a file page the whole point of the space is to pay for the unlock, so
       // the platform slot is always here — the creator's own message appears
       // only if they wrote one.
-      // Where this person is on the blocker ladder, decided HERE from a count of
-      // recorded signals — so the withheld state renders on the server and does not
-      // depend on the client believing anything, or on JavaScript running at all.
-      blockRung: await (async () => {
-        if (!req.user || asset.unlock_mode !== 'ad_gated') return null;
-        const attempts = await store.blockSignalCount({
-          assetId: asset.id, userId: req.user.id, hours: SIGNAL_WINDOW_HOURS,
-        });
-        // Whether this store sells memberships at all. The withheld rung's only route
-        // forward used to be a button to `#members` — which is a dead anchor in a store
-        // with no tiers, so the button waits for the fact rather than assuming it.
-        const hasMembers = (await store.membershipTiers(channel.id)).length > 0;
-        return { ...rungFor(attempts), attempts, hasMembers };
-      })(),
+      blockRung,
 
       // The ask as the pipeline will enforce it — the stored pair, not a recomputed
       // one. If a file asks for 2 × 30 s, the page says 2 × 30 s, whatever the value
@@ -3071,10 +3087,27 @@ APP.get('/api/live/:assetId/state', async (req, res, next) => {
     const unlocked = ['open', 'breaks'].includes(asset.unlock_mode)
       || await store.isUnlocked(asset.id, req.user.id);
     const state = liveState({ breaks, cleared, unlocked, now: new Date() });
+    // Where this person is on the blocker ladder FOR THIS FILE, from the same count the
+    // door reads — and with the live tail of the rung attached, so the sentence a viewer
+    // reads after a failed break is the module's own words rather than the client's.
+    // Decided here for the same reason the door's rung is decided on the server: the
+    // harsh end must not depend on a browser believing anything.
+    const attempts = await store.blockSignalCount({
+      assetId: asset.id, userId: req.user.id, hours: SIGNAL_WINDOW_HOURS,
+    });
+    const rung = rungFor(attempts);
     res.json({
       ok: true,
       ...state,
       cleanEntry: cleanEntrySentence(state.coverageUntil, new Date()),
+      rung: {
+        key: rung.key,
+        headline: rung.headline,
+        body: rung.body,
+        player: playerWords(rung),
+        offersUnlock: rung.offersUnlock,
+        attempts,
+      },
     });
   } catch (err) { next(err); }
 });
@@ -3135,10 +3168,21 @@ APP.post('/api/unlock/blocked', limitUnlock, async (req, res, next) => {
       assetId: asset.id, userId: req.user.id, hours: SIGNAL_WINDOW_HOURS,
     });
     const rung = rungFor(attempts);
+    // Both tails, for the same reason the stage carries one: whatever surface made the
+    // report should be able to say the rung's own sentence without a reload. It was
+    // sending neither, so a live poll's third failure printed the rung the PAGE had been
+    // rendered with rather than the one this answer just computed.
     return res.json({
       ok: true,
       attempts,
-      rung: { key: rung.key, headline: rung.headline, body: rung.body, offersUnlock: rung.offersUnlock },
+      rung: {
+        key: rung.key,
+        headline: rung.headline,
+        body: rung.body,
+        player: playerWords(rung),
+        reader: readerWords(rung),
+        offersUnlock: rung.offersUnlock,
+      },
     });
   } catch (err) { return next(err); }
 });
@@ -3668,12 +3712,38 @@ APP.get('/s/:slug/a/:assetSlug/read', async (req, res, next) => {
     const owedNext = signedIn && after <= last ? owedBefore(after) : [];
     const gateCue = owedHere[0] ?? owedNext[0] ?? null;
     const retrySame = Boolean(owedHere.length);
+    /*
+     * The blocker ladder, on the surface where the wall is the BYTES rather than a
+     * button (§14.7). A seam this person may not pass and an ask that has failed six
+     * times is not a question worth asking a seventh time: the panel says what the
+     * ladder says and stops offering the button. What still works is everything the
+     * door's rung leaves working — the file page, every page already read, the rest of
+     * the store — and the count passes on its own.
+     */
+    const readerRung = req.user && gateCue
+      ? await (async () => {
+        const attempts = await store.blockSignalCount({
+          assetId: asset.id, userId: req.user.id, hours: SIGNAL_WINDOW_HOURS,
+        });
+        const rung = rungFor(attempts);
+        return {
+          ...rung,
+          player: playerWords(rung),
+          // A reader loses something a player does not (§14.7): the seam is the only way
+          // to the pages behind it, so the withheld rung has words of its own for it.
+          reader: readerWords(rung),
+          attempts,
+          hasMembers: (await store.membershipTiers(channel.id)).length > 0,
+        };
+      })()
+      : null;
     const gate = gateCue
       ? {
         cueIndex: gateCue.index,
         sentence: gateSentence(plan, gateCue),
         seconds: Number(placement?.budget?.seconds) || 15,
         nextHref: `${base}/read?p=${retrySame ? start : after}`,
+        blockRung: readerRung,
       }
       : null;
 
@@ -7281,7 +7351,12 @@ async function seed({ force = false } = {}) {
       channelId: alice.id, title: 'Poster kit walkthrough', slug: 'poster-kit-walkthrough',
       moderationState: 'approved',
       coverUrl: '/img/demo/devanagari-poster-kit.jpg',
-      description: 'Five minutes through the kit — layers, type pairings, and how to export for print.',
+      // Five SECONDS. The sentence used to say five minutes, which was a demo
+      // describing a file it did not ship: `break-walk.mjs` points at this clip to
+      // watch a door, and a five-minute file would put four minutes of nothing
+      // between the two walks that use it. The file that can carry a break INSIDE it
+      // is the session below, and only a file longer than three and a half minutes can.
+      description: 'Five seconds through the kit — layers, type pairings, and how to export for print.',
     });
     await store.addFile({
       assetId: videoAsset.id, storageKey: await storage.put(clip, 'store-walkthrough.mp4'),
@@ -7289,6 +7364,46 @@ async function seed({ force = false } = {}) {
       checksum: crypto.createHash('sha256').update(clip).digest('hex'),
     });
     walkthrough = videoAsset;
+
+    /*
+     * A FILE A BREAK CAN BE PLACED IN — the demo's only one.
+     *
+     * A break inside a file may not sit in the first two minutes or the last ninety
+     * seconds (`placement.js`, rule 1), so a five-second clip can never carry one: with
+     * no legal window there is no cue, no gate, and nothing for the player's own surface
+     * to be reviewed against. This clip is four minutes at 6 fps — generated by
+     * `scripts/make-demo-media.mjs`, committed, 524 KB — and it is seeded in `breaks`
+     * mode, which is the promise its page makes: free to open, one view asked for
+     * part-way through, nothing before you start.
+     *
+     * Its length is NOT seeded: `assets.runtime_sec` is measured by the first player
+     * that loads it (the player reports what it measured, and the seller's page prints
+     * the number). Until somebody opens this page the file has no runtime, so it has no
+     * cues — which is the honest place for a demo to start, and the state a walk has to
+     * walk through rather than around.
+     *
+     * Skipped silently if the fixture is missing, like the two above.
+     */
+    try {
+      const session = await fs.readFile(path.resolve(__dirname, 'seed-assets/poster-kit-session.mp4'));
+      const sessionAsset = await store.createAsset({
+        channelId: alice.id, title: 'The Poster Kit — the session', slug: 'poster-kit-session',
+        moderationState: 'approved', unlockMode: 'breaks',
+        coverUrl: '/img/demo/devanagari-poster-kit.jpg',
+        // The trade is NOT in this sentence. The product writes that itself once it knows
+        // where it can place the break (`breakSentence`), and a description that repeated
+        // it would be the demo saying the same thing twice in a row.
+        description: 'Four minutes through the kit: layers, type pairings, and how to export for print.',
+      });
+      await store.addFile({
+        assetId: sessionAsset.id,
+        storageKey: await storage.put(session, 'poster-kit-session.mp4'),
+        filename: 'poster-kit-session.mp4', mimeType: 'video/mp4', sizeBytes: session.length,
+        checksum: crypto.createHash('sha256').update(session).digest('hex'),
+      });
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
+    }
 
     /*
      * A SERIES, so §15's pages have something real behind them.
