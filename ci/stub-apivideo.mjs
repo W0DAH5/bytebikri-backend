@@ -3,43 +3,47 @@
  *
  * `app/src/video-apivideo.js` was written where there is no egress to `ws.api.video` (TLS
  * reset, like every other host this repository talks to). This implements the documented
- * surface and nothing else:
+ * surface **that this product calls**, and nothing else — which is less than the whole API
+ * on purpose:
  *
  *   POST   /auth/api-key                → a Bearer token, or 401 (the credential check)
- *   POST   /videos                      create a container → videoId + assets
- *   POST   /videos/{id}/source          the bytes, multipart `file`
- *   GET    /videos/{id}                 the record: status, assets.hls, assets.mp4
- *   DELETE /videos/{id}                 a real delete
+ *   GET    /videos                      the workspace listing: how many items the account
+ *                                       holds, with the rate-limit headers the doctor reads
  *   POST   /live-streams                mint a stream → liveStreamId, streamKey, assets.hls
  *   GET    /live-streams/{id}           the record; `broadcasting` says live-now
  *   PATCH  /live-streams/{id}           rename / record / restream
  *   DELETE /live-streams/{id}           remove the container
- *   GET    /videos/{id}/hls/manifest.m3u8, /videos/{id}/mp4/source.mp4   the CDN, served here
- *   GET    /live/{id}.m3u8              a live playlist that HLS.js can actually load
+ *   GET    /live/{id}.m3u8              a live playlist, with segment urls
+ *   GET    /live/seg0.ts                a segment, so the playlist is not a list of 404s
  *
- * Four behaviours are here because the REAL ones are what the client has to survive:
+ * THERE ARE NO UPLOAD ROUTES, AND THAT IS THE POINT. api.video is the LIVE host in this
+ * product: `capabilities.kinds` is empty, no kind of file is routed to it, and nothing in
+ * the app would ever call `POST /videos`. A double that kept modelling the upload half
+ * would let a removed capability go on looking alive — and would let the suite pass while
+ * the product's actual use of the host went untested.
  *
- *   * **Basic auth with the key as the USERNAME and a trailing colon.** Sending the key as
- *     a password, or as a bearer, is refused here exactly as the real host refuses it —
+ * Three behaviours are here because the REAL ones are what the client has to survive:
+ *
+ *   * **Basic auth with the key as the USERNAME and a trailing colon.** Sending the key as a
+ *     password, or as a bearer, is refused here exactly as the real host refuses it —
  *     otherwise the one mistake this module's shape invites would pass every test.
- *   * **A video is not playable the moment it lands.** The container goes
- *     `uploaded → processing → playable`, and `assets.hls` only appears at the end, which
- *     is why `playback()` reads the record rather than inventing a url.
- *   * **`mp4` exists only when the container was created with `mp4Support: true`.** The
- *     real host cannot add it later, and a stub that always served it would hide exactly
- *     the mistake decision 2 in §11.2 exists to prevent.
+ *   * **A stream is not broadcasting until somebody pushes.** `broadcasting` starts false
+ *     and flips when the playlist is fetched, which is the closest this stub can honestly
+ *     come to an RTMP ingest it does not have. The doctor reports the state it is given
+ *     rather than assuming it.
  *   * **`--no-cors`** drops `Access-Control-Allow-Origin` from the playlist and segment
- *     responses, which is the §10.4 wall: hls.js fetches with XHR, a redirected/cross-origin
- *     XHR is judged at its final url, and a CDN that sends no header gives a player that
- *     loads nothing with no error event. It exists so `APIVIDEO_PLAYBACK=mp4` can be
- *     exercised rather than assumed.
+ *     responses, which is the §10.4 wall: hls.js fetches the playlist with XHR under
+ *     `connect-src`, and a CDN that sends no header gives a player that loads nothing with
+ *     no error event at all. For a LIVE stream there is no mp4 to fall back to, so this is
+ *     the difference between a working stream and a black rectangle.
  *
- *   node ci/stub-apivideo.mjs [port] [--sandbox] [--no-cors] [--slow]
- *   VIDEO_DRIVER=apivideo APIVIDEO_API_KEY=stub-key APIVIDEO_BASE=http://127.0.0.1:4005 \
- *     VIDEO_MEDIA_ORIGINS=http://127.0.0.1:4005 npm test --prefix app
+ *   node ci/stub-apivideo.mjs [port] [--sandbox] [--no-cors]
+ *   LIVE_DRIVER=apivideo APIVIDEO_API_KEY=stub-key APIVIDEO_BASE=http://127.0.0.1:4005 \
+ *     VIDEO_MEDIA_ORIGINS=http://127.0.0.1:4005 npm run video:check --prefix app -- --probe-live
  *
- * `--slow` makes the container take two reads to become `playable`, so a caller that
- * treats "created" as "ready" fails here rather than in front of a seller.
+ * `--sandbox` answers with the sandbox's numbers in the rate-limit headers and the
+ * environment report, so the banner's warning and the doctor's refusal can be exercised
+ * without a sandbox key.
  */
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -49,15 +53,12 @@ import { fileURLToPath } from 'node:url';
 const PORT = Number(process.argv[2]) || 4005;
 const SANDBOX = process.argv.includes('--sandbox') || Boolean(process.env.STUB_APIVIDEO_SANDBOX);
 const NO_CORS = process.argv.includes('--no-cors') || Boolean(process.env.STUB_APIVIDEO_NO_CORS);
-const SLOW = process.argv.includes('--slow');
 const KEY = process.env.STUB_APIVIDEO_KEY || 'stub-key';
 
-const videos = new Map();       // videoId → { bytes, mime, reads, mp4Support, title }
 const streams = new Map();      // liveStreamId → { name, streamKey, broadcasting, record }
 
 const SEED = fileURLToPath(new URL('../app/seed-assets/', import.meta.url));
 const readIf = (name) => { try { return readFileSync(SEED + name); } catch { return null; } };
-const MP4 = readIf('store-walkthrough.mp4');
 const TS = readIf('live-demo/seg0.ts');
 
 const readBody = (req) => new Promise((resolve) => {
@@ -105,25 +106,15 @@ function authenticated(req) {
   return false;
 }
 
-const videoJson = (id, record) => {
-  // No bytes, no assets: a container that was created and never filled has nothing to play,
-  // and the real host answers exactly the same way (which is why `playback()` reads the
-  // record instead of building a url out of an id).
-  const playable = Boolean(record.bytes) && (!SLOW || record.reads >= 2);
-  const assets = { player: `http://127.0.0.1:${PORT}/vod/${id}`, iframe: '', thumbnail: `http://127.0.0.1:${PORT}/vod/${id}/thumbnail.jpg` };
-  if (playable) {
-    assets.hls = `http://127.0.0.1:${PORT}/vod/${id}/hls/manifest.m3u8`;
-    if (record.mp4Support) assets.mp4 = `http://127.0.0.1:${PORT}/vod/${id}/mp4/source.mp4`;
-  }
-  return {
-    videoId: id,
-    title: record.title,
-    public: true,
-    mp4Support: Boolean(record.mp4Support),
-    status: playable ? 'playable' : (record.bytes ? 'processing' : 'uploaded'),
-    assets,
-  };
-};
+/*
+ * THE WORKSPACE IS EMPTY, AND THAT IS THE STUB TELLING THE TRUTH.
+ *
+ * The real host's listing says how much content an account holds. This product stores
+ * nothing on it — `capabilities.kinds` is empty — so the honest answer from a stub that
+ * models OUR use of the account is zero, and the doctor's account check still gets what it
+ * came for: a 200 with rate-limit headers, which is what proves the key works.
+ */
+const EMPTY_WORKSPACE = { data: [], pagination: { itemsTotal: 0, pagesTotal: 0, pageSize: 25, currentPage: 1, currentPageItems: 0 } };
 
 const server = http.createServer(async (req, res) => {
   const body = await readBody(req);
@@ -188,89 +179,21 @@ const server = http.createServer(async (req, res) => {
     return json(401, { type: 'about:blank', title: 'Unauthorized', status: 401 });
   }
 
-  // ── videos ────────────────────────────────────────────────────────────────
-  if (path === '/videos' && req.method === 'POST') {
-    const payload = (() => { try { return JSON.parse(body.toString('utf8')); } catch { return {}; } })();
-    const id = `vi${crypto.randomBytes(9).toString('hex')}`;
-    videos.set(id, {
-      title: String(payload.title || '').slice(0, 60),
-      mp4Support: Boolean(payload.mp4Support),
-      public: payload.public !== false,
-      reads: 0,
-      bytes: null,
-      mime: null,
-    });
-    if (payload.public === false) {
-      // The trap this stub exists to catch: a private container's assets go behind a token.
-      return json(201, { ...videoJson(id, videos.get(id)), assets: { iframe: '', player: `http://127.0.0.1:${PORT}/vod/${id}?token=one-shot` } });
-    }
-    return json(201, videoJson(id, videos.get(id)));
-  }
-
-  const sourcePost = /^\/videos\/([^/]+)\/source$/.exec(path);
-  if (sourcePost && req.method === 'POST') {
-    const record = videos.get(sourcePost[1]);
-    if (!record) return json(404, { title: 'video not found', status: 404 });
-    const part = filePart(body, req.headers['content-type']);
-    if (!part || !part.bytes.length) return json(400, { title: 'The file was not sent', status: 400 });
-    if (part.bytes.length > 200 * 1024 * 1024) return json(413, { title: 'Use progressive upload for this file', status: 413 });
-    record.bytes = part.bytes;
-    record.mime = part.type || 'video/mp4';
-    return json(201, videoJson(sourcePost[1], record));
-  }
-
   /*
    * The workspace listing, which is what the doctor's credential check reads: its
    * `pagination.itemsTotal` says how many videos the account holds, and every real response
    * carries the rate-limit headers that say what plan the key is on.
    */
-  if (path === '/videos' && req.method === 'GET') {
-    return json(200, {
-      data: [...videos.entries()].slice(0, Number(url.searchParams.get('pageSize') || 25)).map(([id, r]) => videoJson(id, r)),
-      pagination: { itemsTotal: videos.size, pagesTotal: 1, pageSize: Number(url.searchParams.get('pageSize') || 25), currentPage: 1, currentPageItems: videos.size },
-    });
-  }
+  if (path === '/videos' && req.method === 'GET') return json(200, EMPTY_WORKSPACE);
 
-  const videoOne = /^\/videos\/([^/]+)$/.exec(path);
-  if (videoOne) {
-    const record = videos.get(videoOne[1]);
-    if (!record) return json(404, { title: 'video not found', status: 404 });
-    if (req.method === 'GET') {
-      record.reads += 1;
-      return json(200, videoJson(videoOne[1], record));
-    }
-    if (req.method === 'DELETE') {
-      videos.delete(videoOne[1]);
-      return res.writeHead(204).end();
-    }
-  }
-
-  // ── the "CDN" ─────────────────────────────────────────────────────────────
-  const manifest = /^\/vod\/([^/]+)\/hls\/manifest\.m3u8$/.exec(path);
-  if (manifest && req.method === 'GET') {
-    const record = videos.get(manifest[1]);
-    if (!record || !record.bytes) return json(404, { title: 'manifest not found', status: 404 });
-    const playlist = [
-      '#EXTM3U', '#EXT-X-VERSION:3', '#EXT-X-TARGETDURATION:5', '#EXT-X-MEDIA-SEQUENCE:0',
-      '#EXTINF:5.0,', '/vod/seg0.ts',
-      '#EXT-X-ENDLIST', '',
-    ].join('\n');
-    return asset(200, Buffer.from(playlist, 'utf8'), 'application/vnd.apple.mpegurl');
-  }
-  const mp4 = /^\/vod\/([^/]+)\/mp4\/source\.mp4$/.exec(path);
-  if (mp4 && req.method === 'GET') {
-    const record = videos.get(mp4[1]);
-    if (!record || !record.bytes) return json(404, { title: 'no mp4', status: 404 });
-    return asset(200, MP4 || record.bytes, 'video/mp4');
-  }
-  if (path === '/vod/seg0.ts' && req.method === 'GET') {
-    if (!TS) return json(404, { title: 'no segment in the stub', status: 404 });
-    return asset(200, TS, 'video/mp2t');
-  }
-  const thumb = /^\/vod\/([^/]+)\/thumbnail\.jpg$/.exec(path);
-  if (thumb && req.method === 'GET') {
-    return asset(200, Buffer.from([0xff, 0xd8, 0xff, 0xd9]), 'image/jpeg');
-  }
+  /*
+   * NO UPLOAD ROUTES ABOVE, AND NO VOD CDN BELOW. This host is a LIVE provider in this
+   * product — `capabilities.kinds` is empty, so no kind of file can be routed to it and
+   * nothing here would ever be called. A double that keeps modelling a capability the
+   * product removed is how a dead path goes on looking alive in the test suite; what is
+   * left is exactly what we call: the credential check, the workspace listing, and the
+   * live half, where the stub's own numbers match their published live limits.
+   */
 
   // ── live streams ──────────────────────────────────────────────────────────
   if (path === '/live-streams' && req.method === 'POST') {
@@ -348,11 +271,11 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`stub api.video on http://127.0.0.1:${PORT}`
-    + `${SANDBOX ? ' (SANDBOX limits: 30s, watermark, 24h)' : ''}`
-    + `${NO_CORS ? ' (no CORS headers — the §10.4 wall)' : ''}`
-    + `${SLOW ? ' (containers take two reads to become playable)' : ''}`);
-  console.log('  VIDEO_DRIVER=apivideo APIVIDEO_API_KEY=stub-key APIVIDEO_BASE=http://127.0.0.1:%d \\', PORT);
-  console.log('    VIDEO_MEDIA_ORIGINS=http://127.0.0.1:%d npm test --prefix app', PORT);
+    + `${SANDBOX ? ' (SANDBOX: video 30s, live STOPPED at 30min, watermark, 24h)' : ''}`
+    + `${NO_CORS ? ' (no CORS headers — the §10.4 wall)' : ''}`);
+  console.log('  this host is LIVE ONLY here: it has no upload routes, because nothing uploads to it');
+  console.log('  LIVE_DRIVER=apivideo APIVIDEO_API_KEY=stub-key APIVIDEO_BASE=http://127.0.0.1:%d \\', PORT);
+  console.log('    VIDEO_MEDIA_ORIGINS=http://127.0.0.1:%d npm run video:check --prefix app -- --probe-live', PORT);
   console.log('  LIVE_DRIVER=apivideo  — mint streams with POST /live-streams; push to NOTHING,');
   console.log('  this stub has no RTMP ingest: fetch the playlist to mark the stream broadcasting.');
 });

@@ -23,10 +23,13 @@
  *   npm run video:check -- --drivers                 # all of them, one line each
  *   npm run video:check -- --upload a.mp4            # upload one file, classify, then DELETE it
  *   npm run video:check -- --upload a.jpg --driver=telegraph
- *   npm run video:check -- --driver=apivideo --upload a.mp4
- *   npm run video:check -- --probe-telegraph         # is the UNDOCUMENTED image upload alive?
+ *   npm run video:check -- --driver=apivideo         # the LIVE host: credential + environment
  *   npm run video:check -- --probe-live              # mint a live stream, print the ingest
  *                                                    # addresses, and DELETE the container
+ *   npm run video:check -- --probe-telegraph         # is the UNDOCUMENTED image upload alive?
+ *
+ * `--upload` on the live host is REFUSED, by design: api.video stores nothing for this
+ * product (§11.2), so there is no file to send it and nothing it would do with one.
  *   npm run video:check -- --upload a.mp4 --keep     # …and leave it there to look at
  *
  * The upload it performs is small on purpose: this is a check, not a backfill. When a
@@ -150,9 +153,17 @@ for (const kind of ['video', 'image', 'audio', 'file']) {
 if (flag('drivers')) {
   console.log('');
   for (const facts of video.hostFacts()) {
-    const cap = facts.maxBytes ? `${Math.round(facts.maxBytes / 1024 / 1024)} MB/file` : 'no published cap';
-    console.log(`  ${facts.host.padEnd(9)} ${facts.configured ? 'configured' : 'not configured'} · ${cap}`
-      + ` · ${facts.hls ? 'playlists' : 'progressive'} · ${facts.durable ? 'permanent' : 'EXPIRES when idle'}`);
+    /*
+     * A LIVE HOST GETS ITS OWN LINE, because a file cap and a retention word describe
+     * storage and this host does none: printing "no published cap · permanent" beside it
+     * would describe a bucket that does not exist. What matters about it instead is that
+     * every byte it touches is a stream.
+     */
+    const shape = facts.role === 'live'
+      ? 'live only · nothing stored · metered per minute DELIVERED'
+      : `${facts.maxBytes ? `${Math.round(facts.maxBytes / 1024 / 1024)} MB/file` : 'no published cap'}`
+        + ` · ${facts.hls ? 'playlists' : 'progressive'} · ${facts.durable ? 'permanent' : 'EXPIRES when idle'}`;
+    console.log(`  ${facts.host.padEnd(9)} ${facts.configured ? 'configured' : 'not configured'} · ${shape}`);
     console.log(`            ${facts.note}`);
     /*
      * WHAT IT IS FOR, and what its terms say about our use of it.
@@ -224,22 +235,26 @@ try {
      * a consequence, which is what a warning is for.
      */
     /*
-     * api.video's own tier word, and the two facts that decide whether a store can be
-     * served from it: the SANDBOX crops every video to 30 seconds and deletes it after a
-     * day (so it is a test environment, never a store's), and the rate-limit headers say
-     * what plan the key is on without anyone reading a dashboard.
+     * api.video's own tier word, and the facts that decide whether it can serve a store:
+     * the SANDBOX cuts video to 30 seconds, STOPS live at 30 minutes, watermarks both and
+     * deletes them within a day (so it is a test environment, never a store's); the
+     * rate-limit headers say what plan the key is on without anyone reading a dashboard;
+     * and the role line says out loud what this deployment uses the host for, because the
+     * answer to "what does this cost me" starts with "it stores nothing".
      */
     if (chosen === 'apivideo') {
+      const caps = video.providers.apivideo.capabilities;
+      says('role: LIVE ONLY — nothing is stored on this host, and no kind of file is routed to it');
       says(`environment: ${account.sandbox ? 'SANDBOX' : 'production'}`);
       if (account.sandbox) {
-        const caps = video.providers.apivideo.capabilities.sandbox;
-        bad('this is a SANDBOX key: videos and live streams are cropped to '
-          + `${caps.maxSeconds}s, watermarked, and deleted after ${caps.deletesAfterHours}h — `
-          + 'fine for a demo, not for a store');
+        bad(`this is a SANDBOX key: video is cropped to ${caps.sandbox.maxSeconds}s, live is STOPPED at `
+          + `${Math.round(caps.sandbox.liveMaxSeconds / 60)} minutes, everything is watermarked and deleted `
+          + `after ${caps.sandbox.deletesAfterHours}h — fine for a demo, not for a store`);
       }
-      says(`workspace: ${account.videos ?? 'unknown'} video(s) on the account`);
+      says(`workspace: ${account.videos ?? 'unknown'} stored item(s) on the account `
+        + '(a leftover here is a recording someone enabled, or an upload made outside this product)');
       if (account.rate) says(`rate limit: ${account.rate.limit}/min, ${account.rate.remaining} left this window`);
-      says('playback: HLS by default; set APIVIDEO_PLAYBACK=mp4 if the playlist is not CORS-readable');
+      says(`costing: ${caps.live.metering}`);
     }
     if (chosen === 'pixeldrain' && !/pro|premium|paid/i.test(String(account.tier || ''))) {
       says('NOTE: this account is on a free plan. Pixeldrain refuses requests it reads as');
@@ -330,6 +345,21 @@ else if (imageDriver && !flag('drivers')) {
   bytes = probePng();
   toUpload = 'bytebikri-probe.png';
   says(`(no --upload given — ${bytes.length} bytes of generated png, uploaded and left there)`);
+}
+/*
+ * A HOST THAT STORES NOTHING CANNOT BE UPLOADED TO, and it is worth saying why rather
+ * than failing the upload with a routing error: the file would go to the kind routing
+ * (Filemoon, Pixeldrain, Catbox — or our own disk), never here. Refusing at the door
+ * keeps the doctor's own output honest about what this deployment does.
+ */
+if (toUpload && video.hostFacts().find((h) => h.host === chosen)?.role === 'live') {
+  console.log('');
+  console.error(`  ${chosen} is the LIVE host: it holds no files, so there is nothing to upload to.`);
+  console.error('  The kinds route to the storage hosts (see --drivers). For this one, the check is:');
+  console.error('');
+  console.error('    npm run video:check -- --probe-live');
+  console.error('');
+  process.exit(2);
 }
 if (toUpload && bytes) {
   const extension = path.extname(toUpload).replace('.', '').toLowerCase();
@@ -463,8 +493,18 @@ if (toUpload && bytes) {
     }
   }
 } else if (!flag('drivers')) {
-  console.log('\n  No file to read a shape from. Re-run with:'
-    + `\n    npm run video:check -- --driver=${chosen} --upload app/seed-assets/store-walkthrough.mp4\n`);
+  /*
+   * THE NEXT COMMAND HAS TO BE ONE THAT WORKS. For a storage host that is an upload; for
+   * the live host it is a mint, because `--upload` there is refused on purpose and a hint
+   * pointing at a refused command teaches an operator to distrust the tool.
+   */
+  const isLive = video.hostFacts().find((h) => h.host === chosen)?.role === 'live';
+  console.log('\n  No file to read a shape from. Re-run with:');
+  console.log(isLive
+    ? `    npm run video:check -- --driver=${chosen} --probe-live`
+      + '\n  (this host stores nothing, so there is no file to check it with — it runs streams)'
+    : `    npm run video:check -- --driver=${chosen} --upload app/seed-assets/store-walkthrough.mp4`);
+  console.log('');
 }
 
 console.log(process.exitCode ? '\nvideo host check: FAILED\n' : '\nvideo host check: ok\n');
@@ -552,6 +592,47 @@ async function probeLive() {
     says(`broadcasting: ${state.broadcasting ? 'YES — a stream is up' : 'not yet (expected: nothing is pushing)'}`);
     says('A live file points at that playlist and our own player plays it: the breaks, the cue');
     says('and the unlock ladder are unchanged, because the url is still an .m3u8.');
+
+    /*
+     * THE TWO FACTS THAT DECIDE WHETHER A STREAM CAN BE SOLD, and neither can be learned
+     * from the create call:
+     *
+     *   * whether the playlist is CORS-readable — hls.js fetches an m3u8 with XHR under
+     *     `connect-src`, and a CDN that omits `Access-Control-Allow-Origin` gives a black
+     *     rectangle and no error event (§10.4). For a STREAM there is no mp4 to fall back
+     *     to, so this is the difference between working and not;
+     *   * what a minute of it costs, which is a number an operator should read once,
+     *     before a store's first broadcast, rather than discover on an invoice.
+     *
+     * A playlist that is not broadcasting yet can still answer: a 200 with the header is
+     * the whole question, and a 404 is reported as "not yet" rather than as a failure,
+     * because the answer only exists while somebody is pushing.
+     */
+    if (live.hls) {
+      try {
+        const res = await fetch(live.hls, { method: 'GET' });
+        const origin = res.headers.get('access-control-allow-origin');
+        if (res.status === 404) {
+          says('cors        : unknown yet — the playlist is not being served (nothing is pushing), '
+            + 'so hls.js cannot be tested until a stream is up');
+        } else if (origin) {
+          ok(`the playlist is CORS-readable — hls.js can load it (${res.status} allow-origin: ${origin})`);
+        } else {
+          bad(`the live playlist is not CORS-readable (${res.status} with no access-control-allow-origin), `
+            + 'so our own player cannot fetch it in a viewer\'s browser: the CDN must send the header, or '
+            + 'the playlist and its segments must be served from our own origin (VIDEO_STORAGE.md §10.4 — '
+            + 'a bandwidth decision, and there is no mp4 fallback for a live stream)');
+        }
+      } catch (err) {
+        says(`cors        : could not read the playlist from here — ${err.message}`);
+      }
+    }
+    const caps = provider.capabilities;
+    says(`limits      : ${caps.live.metering}`);
+    if (provider.isSandbox()) {
+      says(`              SANDBOX: live stops after ${Math.round(caps.sandbox.liveMaxSeconds / 60)} min, `
+        + `the recording is cut at ${caps.sandbox.liveRecordSeconds}s`);
+    }
   } catch (err) {
     bad(`the live probe failed — ${err.message}`);
   } finally {

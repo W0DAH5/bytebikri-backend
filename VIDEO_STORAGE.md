@@ -83,7 +83,7 @@ Three refusals, each with a reason that is already written down somewhere:
 
 | variable | meaning |
 | --- | --- |
-| `VIDEO_DRIVER` | the host for **video** — `filemoon`, `apivideo`, `pixeldrain`, `catbox`, or unset for our disk |
+| `VIDEO_DRIVER` | the host for **video** — `filemoon`, `pixeldrain`, `catbox`, or unset for our disk. **Never `apivideo`**: it stores nothing, so routing a file to it is impossible by declaration (§11.2) |
 | `IMAGE_DRIVER` | the host for **images** — `telegraph`, `pixeldrain`, or unset |
 | `FILE_DRIVER` | the host for **audio, archives, documents and anything else** — `pixeldrain`, or unset |
 | `LIVE_DRIVER` | **the host that runs a live ingest** — `apivideo`, or unset to keep the seller pasting their own playlist |
@@ -91,8 +91,7 @@ Three refusals, each with a reason that is already written down somewhere:
 | `FILEMOON_TOKEN` | `id\|secret`, sent as `Authorization: Bearer …` |
 | `FILEMOON_API_BASE` | defaults to `https://filemoon.org/api/v1` |
 | `APIVIDEO_API_KEY` | api.video key — Basic auth, **key as the username with a trailing colon** |
-| `APIVIDEO_BASE` | `https://ws.api.video` (production) or `https://sandbox.api.video` (30 s, watermarked, 24 h) |
-| `APIVIDEO_PLAYBACK` | `hls` (default) or `mp4` — mp4 when a playlist is not CORS-readable from a browser |
+| `APIVIDEO_BASE` | `https://ws.api.video` (production) or `https://sandbox.api.video` (video 30 s, live stopped at 30 min, watermarked, 24 h) |
 | `PIXELDRAIN_API_KEY` | Pixeldrain key — Basic auth, **key as the password**, empty username |
 | `PIXELDRAIN_API_BASE` | defaults to `https://pixeldrain.com/api` (the `/api` is part of the base) |
 | `TELEGRAPH_UPLOAD_BASE` | defaults to `https://telegra.ph/upload` — **not** `api.telegra.ph`, which refuses that node |
@@ -255,16 +254,16 @@ deleted rather than left dormant — a provider that is present but always refus
 one day route to. The one thing kept from it is the lesson: **a host whose playable link is the paid feature
 cannot be a store's delivery path.**
 
-| | Filemoon | api.video | Pixeldrain | Telegra.ph | Catbox |
+| | Filemoon | api.video **(live only)** | Pixeldrain | Telegra.ph | Catbox |
 | --- | --- | --- | --- | --- | --- |
 | what the credential is | API token `id\|secret`, sent as `Authorization: Bearer` | **API key as the USERNAME of Basic auth, with a trailing colon** (`basic base64("<key>:")`); a Bearer token can be minted from `/auth/api-key` | **`Authorization: Basic` with the API key in the PASSWORD field** and an empty username | **none** — the upload node takes a file from anybody | `userhash`, a form field on every call |
-| upload | `POST /files/upload`, multipart `file` (+ `visibility`) | **two calls**: `POST /videos` creates the container (and deletes an empty one after 7 days), then `POST /videos/{id}/source` fills it. ≤200 MiB in one request; more needs progressive chunks | **`PUT /api/file/{filename}` with the bytes as the raw body** — the docs recommend this over the multipart form, which "can cause performance issues" | `POST https://telegra.ph/upload`, multipart `file` — **not `api.telegra.ph`**, which refuses this node | `POST https://catbox.moe/user/api.php`, `reqtype=fileupload` |
+| upload | `POST /files/upload`, multipart `file` (+ `visibility`) | **not used.** The upload path exists in their API (`POST /videos`, then `/videos/{id}/source`) and this product does not call it: the host stores nothing here (§11.2) | **`PUT /api/file/{filename}` with the bytes as the raw body** — the docs recommend this over the multipart form, which "can cause performance issues" | `POST https://telegra.ph/upload`, multipart `file` — **not `api.telegra.ph`**, which refuses this node | `POST https://catbox.moe/user/api.php`, `reqtype=fileupload` |
 | response | JSON, shape unconfirmed here | JSON with honest HTTP codes and a `{type,title,status}` body; **rate-limit headers on every response** | JSON with a `success` boolean; refusals carry a `value` code (`hotlink_detected`, `not_found`, …) | **an ARRAY on success — `[{"src":"/file/x.jpg"}]` — and an OBJECT on failure** (`{"error":"FILE_TYPE_INVALID"}`) | **plain text**, the url itself, or an error sentence |
-| a playable url | `playback_url` / `hls_url` on the file record | `assets.hls` (adaptive) and `assets.mp4` (progressive) — **the mp4 exists only if `mp4Support` was set at creation** | `GET /api/file/{id}`, byte ranges supported | `https://telegra.ph` + the returned path; permanent | the upload's return value *is* the url |
-| deletion | `DELETE /files/{id}` | `DELETE /videos/{id}` — a real delete (or a 90-day discard when Video Restore is on) | `DELETE /api/file/{id}` — a real delete | **none.** No endpoint, no account, no key: a file sent there cannot be recalled by anybody | `reqtype=deletefiles`, by file NAME |
-| durability | until deleted | until deleted; the **sandbox deletes everything after 24 h** | until deleted — but **API keys expire 30 days after their last use** | permanent | permanent |
-| size | not published here | ≤30 GiB / 24 h; 200 MiB per single upload request | plan-dependent; no published hard number | **5 MB per file** (5,242,880 B) | **200 MB per file**, hard |
-| formats | twelve video containers, auto-encoded for streaming | video, transcoded to adaptive HLS with an mp4 beside it; **the sandbox crops everything to 30 seconds** | any file | **jpg, jpeg, png, gif** — and mp4, which we decline | images, audio, video; blocks `.exe`, `.scr`, `.cpl`, `.doc*`, `.jar` |
+| a playable url | `playback_url` / `hls_url` on the file record | `assets.hls` on the LIVE STREAM — the playlist our own player plays | `GET /api/file/{id}`, byte ranges supported | `https://telegra.ph` + the returned path; permanent | the upload's return value *is* the url |
+| deletion | `DELETE /files/{id}` | `DELETE /live-streams/{id}` — a real delete, and what the doctor uses to leave no container behind | `DELETE /api/file/{id}` — a real delete | **none.** No endpoint, no account, no key: a file sent there cannot be recalled by anybody | `reqtype=deletefiles`, by file NAME |
+| durability | until deleted | nothing is kept: an unrecorded stream leaves no bytes; the **sandbox deletes everything after 24 h** | until deleted — but **API keys expire 30 days after their last use** | permanent | permanent |
+| size | not published here | **no cap on stream duration or on how many run at once**; the one ceiling is the bill — delivery is metered per viewer-minute (§11.1) | plan-dependent; no published hard number | **5 MB per file** (5,242,880 B) | **200 MB per file**, hard |
+| formats | twelve video containers, auto-encoded for streaming | live video in (RTMP/RTMPS/SRT), adaptive HLS out; **the sandbox stops live at 30 minutes** | any file | **jpg, jpeg, png, gif** — and mp4, which we decline | images, audio, video; blocks `.exe`, `.scr`, `.cpl`, `.doc*`, `.jar` |
 | listings | `GET /files` | none used — our database is the record | none | none |
 | **live** | none | **`POST /live-streams` → a streamKey and an HLS url; RTMP/RTMPS/SRT ingest at `broadcast.api.video`** | none | none |
 | documentation | documented | documented | documented | **UNDOCUMENTED, NOT PART OF THE PUBLISHED API** | documented |
@@ -333,7 +332,7 @@ host:
 | each client's contract | `test/video.test.js` against a per-provider stub in-process: field names, headers, the plain-text response, the envelope's `status` field beating HTTP 200, the size refusal, the free-tier refusal |
 | the whole suite with each driver on | `ci/stub-pixeldrain.mjs` (Basic auth whose password is the key, raw-body PUT, ranges, an optional `--hotlink` refusal mode), `ci/stub-telegraph.mjs` (multipart and both answer envelopes, with `--off` for the discontinued case), `ci/stub-catbox.mjs`, `ci/stub-filemoon.mjs` |
 | playback per host | `ci/eyes/video-host-walk.mjs` against an instance configured for that driver: the 302, the player's own request, and the picture advancing |
-| the doctor's own modes | every one run against the stubs **in this round**: `--driver=apivideo --upload` (a container created and filled, HLS classified, the playlist CORS-readable, Range `206 bytes 0-1/85263` on the progressive asset, delete confirmed); `--probe-live` (a stream minted, the OBS/ffmpeg ingest lines printed, `broadcasting` read, the container removed); `--no-cors` (the §10.4 wall modeled, and the doctor naming `APIVIDEO_PLAYBACK=mp4` as the switch that already exists); `--driver=pixeldrain --upload` (auth, upload, playback url, Range `206 bytes 0-1/32044`, delete confirmed); `--probe-telegraph` (upload answered, url served back `HTTP 206 image/png`); `--probe-telegraph` against `--off` (reported in the words *the upload node is gone*, with the fallback named) |
+| the doctor's own modes | every one run against the stubs **in this round**: `--probe-live` (a stream minted, the OBS/ffmpeg ingest lines printed, `broadcasting` read, the playlist CORS-checked, the container removed); `--driver=apivideo --upload` (**refused** — this host stores nothing, and the doctor says so instead of uploading); `--no-cors` (the §10.4 wall modeled on a live playlist); `--driver=pixeldrain --upload` (auth, upload, playback url, Range `206 bytes 0-1/32044`, delete confirmed); `--probe-telegraph` (upload answered, url served back `HTTP 206 image/png`); `--probe-telegraph` against `--off` (reported in the words *the upload node is gone*, with the fallback named) |
 | the live hosts | `npm run video:check -- --drivers` on a machine with ordinary network access, then `--driver=pixeldrain --upload <file>` and `--probe-telegraph` — the answers that cannot be had from here |
 
 Range is the one unverifiable-from-here behaviour that a viewer will notice: a host that ignores `Range`
@@ -347,7 +346,7 @@ reading it:
 | driver | stub | instance needs, beyond the driver's own variables |
 | --- | --- | --- |
 | Filemoon | `node ci/stub-filemoon.mjs 3999 [--hls]` | `VIDEO_MEDIA_ORIGINS=http://127.0.0.1:3999` |
-| api.video | `node ci/stub-apivideo.mjs 4005 [--sandbox] [--no-cors] [--slow]` | `VIDEO_DRIVER=apivideo`, `APIVIDEO_BASE=http://127.0.0.1:4005`, `APIVIDEO_API_KEY=stub-key`, and `VIDEO_MEDIA_ORIGINS=http://127.0.0.1:4005`; `LIVE_DRIVER=apivideo` for the live half (the stub has no RTMP ingest — fetch the playlist to mark a stream broadcasting) |
+| api.video | `node ci/stub-apivideo.mjs 4005 [--sandbox] [--no-cors]` | `LIVE_DRIVER=apivideo`, `APIVIDEO_BASE=http://127.0.0.1:4005`, `APIVIDEO_API_KEY=stub-key`, `VIDEO_MEDIA_ORIGINS=http://127.0.0.1:4005` (the stub has no RTMP ingest — fetch the playlist to mark a stream broadcasting, which is also what flips `broadcasting`) |
 | Pixeldrain | `node ci/stub-pixeldrain.mjs 4003 [--hotlink] [--cap=bytes]` | `FILE_DRIVER=pixeldrain`, `PIXELDRAIN_API_BASE=http://127.0.0.1:4003/api` (**the `/api` is part of the base**, not a path we add), `PIXELDRAIN_API_KEY=stub-key`, and `VIDEO_MEDIA_ORIGINS=http://127.0.0.1:4003` |
 | Telegra.ph | `node ci/stub-telegraph.mjs 4004 [--off]` | `IMAGE_DRIVER=telegraph`, `TELEGRAPH_UPLOAD_BASE=http://127.0.0.1:4004/upload`, `TELEGRAPH_FILE_BASE=http://127.0.0.1:4004`, and `VIDEO_MEDIA_ORIGINS=http://127.0.0.1:4004` |
 | Catbox | `node ci/stub-catbox.mjs 4002` | `CATBOX_FILE_BASE=http://127.0.0.1:4002` |
@@ -431,12 +430,12 @@ shape, and the difference is exactly the thing the product's own surfaces depend
 
 | | Filemoon | api.video | Pixeldrain | Telegra.ph | Catbox |
 | --- | --- | --- | --- | --- | --- |
-| what it is designed to be | a **video host**: twelve video formats, every upload encoded for streaming, HLS delivery, subtitles, posters, an embeddable player, remote and FTP intake | **video infrastructure**: transcoding, adaptive HLS delivery from a CDN, a progressive mp4, analytics — and a **live ingest** with RTMP/RTMPS/SRT | a **general file host**: any kind, a direct url per file with byte ranges, public and private files, real deletes — built for exactly this shape of use | an **image endpoint that happens to exist**: Telegram's publishing site exposes an undocumented upload node that takes jpg/png/gif and returns a permanent link | a **small-file hotlink host**: images, audio, short video, served from a static url, kept forever |
-| non-video files | accepted, then **download-only** — its own words: "stream supported videos online **or download allowed files**" | not the point of it: video is the medium, and an audio master would meet the sandbox's 30-second crop | first-class; this is the host's whole purpose | is the non-video case. Video is refused *by us* though the node would take an mp4 (no delete, and Filemoon exists) | first-class (except executables, `.doc*`, `.html`/`.php`) |
-| what a page needs from it | an HLS or progressive url per file | `assets.hls`, `assets.mp4`, or a live `…m3u8` — all absolute urls on their CDN, ours to fetch | a stable direct url — `GET /api/file/{id}`, ranges honoured | a stable direct url — `telegra.ph/file/<name>` | the upload's answer *is* the url |
-| capacity | free: 1 GB guest / 2 GB registered per file; premium: uncapped | 30 GiB / 24 h per video; **the sandbox is capped at 30 SECONDS and deletes after 24 h** | plan-dependent; no published hard number | **5 MB per file** | **200 MB hard**; GIF 20 MB |
-| retention | until deleted | until deleted (production); the sandbox is 24 hours by design | until deleted; **API keys expire after 30 days of no use** | permanent — in the strongest sense | permanent |
-| **may we use it this way** | yes — a streaming host for websites, which is what we are doing with it | yes — this is exactly what the product is sold for; the sandbox is for testing and production is pay-as-you-go | yes, and **the delivery path wants a paid plan**: hotlinking is its paid feature (`hotlink_detected: 403`) and our 302 is a hotlink | undefined: no terms cover third-party file hosting and the endpoint is undocumented. Fine for images a store need never recall; not a place for anything that must come back | **no**: its operator's own blog (July 2026) names "social spaces or other user generated content sites that are using Catbox for file uploads" as disallowed, and states datacenter uploads "will be heavily filtered and/or purged". A store platform with ads, uploading from a server, is that description |
+| what it is designed to be | a **video host**: twelve video formats, every upload encoded for streaming, HLS delivery, subtitles, posters, an embeddable player, remote and FTP intake | **live video infrastructure**, and the only host here that runs an ingest: RTMP/RTMPS/SRT in, adaptive HLS out, free and unlimited encoding. It also sells storage and we do not buy it (§11.2) | a **general file host**: any kind, a direct url per file with byte ranges, public and private files, real deletes — built for exactly this shape of use | an **image endpoint that happens to exist**: Telegram's publishing site exposes an undocumented upload node that takes jpg/png/gif and returns a permanent link | a **small-file hotlink host**: images, audio, short video, served from a static url, kept forever |
+| non-video files | accepted, then **download-only** — its own words: "stream supported videos online **or download allowed files**" | **not applicable: no file is sent to it at all** | first-class; this is the host's whole purpose | is the non-video case. Video is refused *by us* though the node would take an mp4 (no delete, and Filemoon exists) | first-class (except executables, `.doc*`, `.html`/`.php`) |
+| what a page needs from it | an HLS or progressive url per file | a live `…m3u8` our own player plays — an absolute url on their CDN, fetched by hls.js | a stable direct url — `GET /api/file/{id}`, ranges honoured | a stable direct url — `telegra.ph/file/<name>` | the upload's answer *is* the url |
+| capacity | free: 1 GB guest / 2 GB registered per file; premium: uncapped | no cap on concurrent streams or duration; the meter is delivery minutes. **The sandbox stops live at 30 minutes** | plan-dependent; no published hard number | **5 MB per file** | **200 MB hard**; GIF 20 MB |
+| retention | until deleted | nothing is retained unless a seller enables recording; the sandbox is 24 hours by design | until deleted; **API keys expire after 30 days of no use** | permanent — in the strongest sense | permanent |
+| **may we use it this way** | yes — a streaming host for websites, which is what we are doing with it | yes — live streaming is exactly what the product is sold for; the sandbox is for testing and production is pay-as-you-go | yes, and **the delivery path wants a paid plan**: hotlinking is its paid feature (`hotlink_detected: 403`) and our 302 is a hotlink | undefined: no terms cover third-party file hosting and the endpoint is undocumented. Fine for images a store need never recall; not a place for anything that must come back | **no**: its operator's own blog (July 2026) names "social spaces or other user generated content sites that are using Catbox for file uploads" as disallowed, and states datacenter uploads "will be heavily filtered and/or purged". A store platform with ads, uploading from a server, is that description |
 
 So the registry answers two questions instead of one, and both answers are data:
 
@@ -522,115 +521,157 @@ matters for each host — `telegraph — cannot delete — a file sent there sta
 `pixeldrain — needs a paid plan to serve` — and `npm run video:check -- --drivers` prints the same table plus
 each host's terms. Both read from `capabilities`, so neither can drift from what the code does.
 
-## 11. api.video: the video-infrastructure host, and the first one that can run a live ingest
+## 11. api.video: the live ingest, and what "no limit" actually means
 
-Researched from their own documentation and dashboard, not assumed — and this is the first provider whose
-answer changes what the *product* can do rather than only where bytes sit. Everything below was read from
-`docs.api.video` / `help.api.video` / their API reference. Nothing was exercised against the live API: this
-sandbox has no egress to `ws.api.video`, `sandbox.api.video` or `cdn.api.video` (all reset before TLS, like
-every other host in this document), so the split from §9 stands.
+api.video is the fifth host on the list and the only one that is **not a place files live**. It is used
+for one thing — running a seller's live stream — and the reasons are in §11.2 and §11.3. What follows is
+what their own pages say, including the part that is easy to read past.
 
-### 11.1 The facts
+### 11.1 The limits, in their words
 
-| | what it is |
-| --- | --- |
-| environments | **two, and the key belongs to one**: production `https://ws.api.video`, sandbox `https://sandbox.api.video`. A key used against the wrong environment answers `401`. |
-| auth | **HTTP Basic, API key as the USERNAME with a trailing colon** — `Authorization: Basic base64("<key>:")`. There is also `POST /auth/api-key` → a Bearer token (1 h) plus a refresh token; the SDKs use that. |
-| create a video | `POST /videos` — `{title, description, public, mp4Support, tags, metadata}` → `videoId` + `assets{player, iframe, hls, mp4, thumbnail}`. **An empty container is deleted after 7 days**, and a video must be uploaded within 7 days of the container being made. |
-| upload | `POST /videos/{videoId}/source`, multipart `file`. ≤200 MiB in ONE request; larger needs *progressive* chunks (`Content-Range: part N/M`, 5–200 MiB each). Ceiling 30 GiB / 24 h. |
-| state | `GET /videos/{videoId}` — the container moves uploaded → processing → playable, so a video is not playable the moment it lands (the same shape Filemoon has). |
-| playback | `assets.hls` (`…/hls/manifest.m3u8`) and `assets.mp4` (`…/mp4/source.mp4`, **only if `mp4Support` was set when the container was created**). |
-| delete | `DELETE /videos/{videoId}` — a real delete. With their Video Restore feature it becomes a 90-day discard instead. |
-| **live** | `POST /live-streams` → `liveStreamId`, **`streamKey`**, `broadcasting`, `assets{hls, player, iframe, thumbnail}`. `GET /live-streams/{id}` reports `broadcasting` while it is up; `DELETE` removes it; thumbnails can be uploaded; restreams can be configured. |
-| **live ingest** | `rtmp://broadcast.api.video/s`, `rtmps://broadcast.api.video:1936/s`, or `srt://broadcast.api.video:6200?streamid=<streamKey>` — the seller points OBS (or `ffmpeg`) at it with the stream key. **They run the ingest server.** |
-| live playback | `https://live.api.video/<liveStreamId>.m3u8` — an HLS playlist, which is *exactly* the shape this product's live panel already accepts. |
-| live-to-VOD | with recording enabled, a stream is kept and split into 24-hour videos. (Not wired; noted so it is a decision and not an omission.) |
-| sandbox limits | **30-second cap (videos AND live streams — longer ones are cropped), an unremovable watermark, deletion after 24 hours.** Every feature otherwise works. Rate limits: 40 uploads / 40 writes / 100 reads per minute. |
-| rate-limit headers | `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Retry-After` **on every response** — which is how the doctor can report what plan and environment a key belongs to instead of guessing. |
-| price | pay-as-you-go; the sandbox is free, and their own words for production are "upgrade to a paid model". Ingest minutes and hosting minutes are the metered things. |
+**There is no cap on how many streams run at once, and no cap on how long one runs.** Two of their own
+pages, because this is the claim that decides whether a seller can rely on it:
 
-### 11.2 The four decisions this forces
+> "with api.video there is no such limitation — as long as you have cameras (and available bandwidth),
+> you can stream to your heart's content from every single one of them … You can create as many streams
+> as you'd like."
+>
+> — *How many live streams can I run at once?*, api.video blog
 
-**1. Containers are `public: true`, and that is a deliberate trade.** api.video's private delivery is a
-**single-use token**: every `GET /videos/{id}` mints a new private token, the token is consumed by one web
-session, and juggling more than one asset needs a *session token* (`?avh=`) dance. Our route is a 302 to the
-host's url, and HLS playback fetches a manifest plus every segment — a token that dies on first use would
-break seeking, refreshes and rewatches, which is to say it would break the player. So the container is
-public, its url is a bearer once it reaches a browser, and **our own door is the gate** — precisely the
-sentence §7 already carries for Filemoon and §10.6 for Catbox. It is the same trade as every other host
-here, written down rather than discovered later.
+> "You can stream events for as long as you want. If you go over 24 hours, the live stream recording will
+> be divided into multiple 24-hour videos."
+>
+> — *Live streaming*, api.video product page (their own FAQ)
 
-**2. Ask for the mp4 at creation, always.** `mp4Support` cannot be turned on after the fact, and the
-progressive mp4 is the one asset that does not depend on the CDN's CORS policy — §10.4's wall, where hls.js
-is blocked by a playlist that is not CORS-readable. Creating every container with both assets means the
-delivery path can be switched by configuration (`APIVIDEO_PLAYBACK=hls|mp4`) rather than by re-uploading a
-store's catalogue.
+**Encoding is free and unlimited**, at every quality up to 4K — that is the platform's core pitch on their
+pricing page, not a rounding.
 
-**3. Basic auth, not Bearer.** The token round-trip buys nothing for occasional server-side calls and costs
-a cache plus a refresh loop in the failure path. Bearer and *delegated* upload tokens exist for the case we
-deliberately do not have — an upload straight from a seller's browser to the provider, bypassing our own
-validation.
+**But live is metered, and the meter is the viewers.** Two units, and both apply to streams:
 
-**4. Live is a second kind of driver, not a fifth media host.** `LIVE_DRIVER=apivideo` mints a live stream
-and hands the seller an ingest address; the *file* it feeds is still a live file with an `external_url`
-pointing at an m3u8. So the cue/break/unlock ladder is untouched: the player cannot tell the difference
-between a playlist we minted and one the seller pasted, which is the whole reason this fits. Unset
-`LIVE_DRIVER` means today's behaviour — a seller pastes a playlist they got somewhere else.
+| what is billed | their rate | what it means for a store here |
+| --- | --- | --- |
+| **Delivery** — per minute *watched*, per viewer | from **$0.0017/min** (≈ $1.70 per 1,000 viewer-minutes) | a 1-hour stream watched by 100 people ≈ 6,000 minutes ≈ **$10.20** |
+| **Hosting** — per minute *stored* | from **$0.00285/min/month** | applies to every video **and every recorded live stream**: an hour of replay kept for a month ≈ $0.17 |
+
+Their terms state the segment sizes too, which is why a live minute bills slightly differently from a VOD
+one: **4-second segments for VOD, 2-second segments for live**, counted as minutes delivered. A stream
+nobody watches delivers nothing, so it costs nothing beyond the ingest.
+
+**The honest version of "no limit":** there is no ceiling on quantity, duration or encoding — the ceiling
+is money, and it is proportional to viewers. That is a better shape for a store than a hard cap (a quiet
+stream is nearly free, a big one costs in proportion to the audience it reached), but it is not free, and
+Nepal-first means the bandwidth is ours only in the sense that we pay for it.
+
+**The sandbox is not a small version of production — on LIVE it has its own cut-offs:** video is cropped
+to 30 seconds; **live is stopped at 30 minutes and its recording is cut at 30 seconds**; everything is
+watermarked and deleted after 24 hours. Their API reference summarises this as "limited to 30 seconds
+videos and live streams", which contradicts the more specific live page — assume the stricter reading and
+measure it on your own key (§11.5, question 3).
+
+### 11.2 Decision: this host is LIVE ONLY
+
+**api.video stores nothing for this product, and the registry enforces it.** `capabilities.kinds` is an
+empty array, and `driverForKind()` consults exactly that list, so no value of `VIDEO_DRIVER` — not
+`apivideo`, not a typo of it — can route a file here. A test asserts the empty list, and that every kind
+lands somewhere that actually stores it.
+
+The reasoning is the bill above. We already have hosts that hold files at no marginal cost per minute
+(and our own disk for free). Paying a **minute-meter for storage** when the encoding is free and the
+ingest is the scarce thing would be paying for the wrong half of the product. So:
+
+* `POST /videos` and the whole upload path are **gone** from `video-apivideo.js`, along with
+  `acceptsFile`, the 200 MiB single-request ceiling, `mp4Support` and `APIVIDEO_PLAYBACK`. What remains is
+  the credential check, the workspace listing the account check reads, and the live half.
+* `ci/stub-apivideo.mjs` **lost its upload routes too**, and the in-process double in the suite with it.
+  A double that keeps modelling a removed capability is how a dead path goes on looking alive.
+* **`record` defaults to off.** A recorded stream becomes a stored video, and stored minutes are billed —
+  so a replay is a decision a seller or an owner makes, never something that quietly starts costing money
+  when somebody presses Go live. (Their live best-practices page says streams are recorded automatically;
+  where that is true, the recording is what the hosting meter counts, which is another reason to keep this
+  deployment's use of the host to *running a stream* and to check the dashboard's usage after a test
+  broadcast — §11.5, question 4.)
+
+### 11.3 The live path, as built
+
+**`LIVE_DRIVER=apivideo` is a second kind of driver, not a sixth media host.** The three per-kind
+variables decide where bytes are *stored*; this one decides who *runs the stream*. The file a seller
+publishes is still a live file with an `.m3u8` in `external_url`, so the player, the cue, the breaks and
+the unlock ladder cannot tell a playlist we minted from one the seller pasted — the whole reason this
+fits. Unset (the default) means today's behaviour, unchanged.
 
 **The streamKey is never stored.** It is a broadcasting credential; `GET /live-streams/{id}` returns it, so
-the seller's panel fetches it when the owner opens it. That keeps a live secret out of our database, out of
-the audit log, and out of any page a viewer can reach. What we store is the container id.
+the owner's panel fetches it when the panel is opened. What our database keeps is the container id.
 
-### 11.3 What only the user's machine can settle
+**The CSP names the live host by name** (§11.4, finding 2) — the deployment shape this is built for is
+files on one host and live on another.
 
-Three questions, in the order they matter:
+### 11.4 What running it proved
 
-1. **Is the key sandbox or production?** Sandbox means **30-second content, a watermark and 24-hour
-   deletion** — usable for a demo, not for a store. The doctor prints the base it is using and the
-   rate-limit headers, which is as close as this repository can get to asking.
-2. **Is their HLS CORS-readable?** If not, a hosted **playlist** cannot be loaded by hls.js (§10.4) and the
-   delivery path must be `APIVIDEO_PLAYBACK=mp4` — which exists only because of decision 2 above.
-3. **Does live work end to end?** Creating a live stream is a call; *broadcasting* needs an RTMP push, which
-   needs a machine with `ffmpeg` (or OBS) and a network:
-   ```
-   ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=30 -f lavfi -i sine=frequency=440 \
-     -c:v libx264 -preset veryfast -t 60 -f flv rtmp://broadcast.api.video/s/<streamKey>
-   ```
-   while watching `https://live.api.video/<liveStreamId>.m3u8` play in our own player. That is the round
-   after this one.
-
-### 11.4 What running it proved — and what only the user's machine still can
-
-Every claim above was exercised against `ci/stub-apivideo.mjs`, which enforces this host's shape rather
+Everything above was exercised against `ci/stub-apivideo.mjs`, which enforces this host's shape rather
 than agreeing with us: Basic auth with the key as the username and a **trailing colon** (a key-as-password
-attempt gets a 401, like the real thing), a container that is not `playable` until bytes are in it, a
-listing route, and asset routes that honour `Range`.
+attempt gets a 401, exactly as the real host answers it), a stream that is not `broadcasting` until
+something pushes, a listing route, and playlists that can be served with or without CORS headers.
 
 | mode | what it showed |
 | --- | --- |
-| `--drivers` | five hosts on the credential table, `video → apivideo`, and the honest sentence: **video infrastructure — transcoding to adaptive HLS, a progressive mp4, and a live ingest** |
-| `--driver=apivideo --upload` | the key authenticates; a container is created and filled; playback resolves as `hls`; the playlist is **CORS-readable**; the progressive asset answers `206 bytes 0-1/85263`; the delete is confirmed |
-| `--probe-live` | a stream minted (`li3420a370595432befc`), its stream key and **all three ingest addresses** printed ready to paste into OBS or ffmpeg, `broadcasting: not yet` read back truthfully, and the container removed — *no container left behind* |
-| `--no-cors` | the §10.4 wall, modelled: the doctor fails the playlist and names **`APIVIDEO_PLAYBACK=mp4`** as the switch that already exists for it |
+| `--drivers` | five hosts on the credential table, `apivideo configured · live only · nothing stored · metered per minute DELIVERED`, and the routing table showing **no kind going to it** |
+| `--probe-live` | a stream minted (`li3420a370595432befc`), its stream key and **all three ingest addresses** printed ready to paste into OBS or ffmpeg, `broadcasting: not yet` read back truthfully, the playlist CORS-checked, the metering restated, and the container removed — *no container left behind* |
+| `--driver=apivideo --upload <file>` | **refused in two lines**, with the reason (this host holds no files) and the command that does apply to it. A doctor that uploaded anyway would be describing an architecture this product does not have |
+| `--no-cors` | the §10.4 wall, modelled on a live playlist: the doctor fails it and says there is **no mp4 fallback for a stream** — for live, a missing header is not a fallback question, it is a blocker |
+| the app suite | **851/851** after the reshape: five storage tests removed with the path they tested, one added that holds the live-only policy in place |
 
-**Three things running it changed, which reading it had not.**
+**Four things running it changed, which reading it had not.**
 
 1. **A playlist is not a byte-ranged file.** The doctor's Range probe reported "the media url ignored
    Range" against a host behaving perfectly — `Range` on an `.m3u8` is meaningless (seeking inside HLS is
-   the demuxer's job) and asking for two bytes of a few-hundred-byte text file proves nothing. The probe
-   now asks the *progressive* asset, which is what a viewer actually scrubs, and says so in the log.
-   A check that fails a correct host is worse than no check: it teaches an operator to ignore it.
+   the demuxer's job) and asking for two bytes of a few-hundred-byte text file proves nothing. A check
+   that fails a correct host is worse than no check: it teaches an operator to ignore it.
 2. **The CSP needs the live host by name, not by kind.** `activeHosts()` answers for the kind routing
    only, so with files on one host and live on another — the likeliest production shape —
    `mediaOrigins()` left the live origin unnamed and hls.js would be refused by `connect-src` with no
    error event at all. Found by running `VIDEO_DRIVER=catbox LIVE_DRIVER=apivideo` and reading the
    header, not by reading the function. There is now a test that names that exact shape.
 3. **A stub that is missing a route hides a broken check.** The credential probe passed while the
-   account check 404'd, because the stub had no `GET /videos`. Both are fixed, which is the point of the
-   stub enforcing the host's shape: it fails the same way the provider would.
+   account check 404'd, because the stub had no `GET /videos`. The double has to fail the way the
+   provider would, or it is only agreeing with us.
+4. **A per-kind host can be made unreachable by declaring nothing.** `capabilities.kinds` is both the
+   routing table and the policy: emptying it removed the upload path from the router, the doctor, the
+   stubs and the tests in one edit, and no configuration is left that can bypass it. That is harder to
+   undo by accident than an `if (driver === 'apivideo')` in four places, and it is the same mechanism
+   that keeps audio away from an image host.
 
-Nothing in this round has touched `ws.api.video`. This sandbox has no egress to any media host — a
-request is refused before TLS, and api.video answers a request to its CDN the same way — so the three
-questions in §11.3 are exactly as open as they were: **sandbox or production key, CDN CORS in a real
-browser, and a live stream pushed end to end.** The doctor answers the first two in one command on a
-machine that can reach them; the third needs `ffmpeg` and the one-liner above.
+### 11.5 What only the user's machine can settle
+
+Four questions, in the order they matter. None can be answered from this sandbox: it has no egress to
+`ws.api.video` or its CDN, and the request is refused before TLS, like every other host here.
+
+1. **Is the key sandbox or production?** A key belongs to one environment and answers 401 against the
+   other. If it is sandbox, this deployment is a demo: video is cropped to 30 seconds, **live is stopped
+   at 30 minutes**, everything is watermarked and deleted within a day. The doctor prints the base and the
+   rate-limit headers (the two environments answer with different numbers) and refuses a sandbox key for a
+   store in as many words.
+   ```
+   npm run video:check --prefix app -- --driver=apivideo
+   ```
+2. **Is the live playlist CORS-readable from a viewer's browser?** hls.js fetches an `.m3u8` with XHR
+   under `connect-src`, and a CDN that omits `Access-Control-Allow-Origin` gives a black rectangle with no
+   error event at all (§10.4). **For a live stream there is no progressive fallback** — that decision went
+   with the storage path — so if their CDN does not send the header, the playlist and its segments have to
+   come from our own origin, which for live is a bandwidth decision rather than a config change.
+   `--probe-live` reads the header whenever a stream is up.
+3. **Do the sandbox's live limits behave as documented?** Their API reference says 30 seconds for "videos
+   and live streams"; their live best-practices page says a 30-minute stop with a 30-second recording cut.
+   Push for two minutes and see which is true for your key — it decides whether a sandbox can demo a real
+   broadcast at all.
+   ```
+   ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=30 -f lavfi -i sine=frequency=440 \
+     -c:v libx264 -preset veryfast -t 120 -f flv rtmp://broadcast.api.video/s/<streamKey>
+   ```
+   while watching `https://live.api.video/<liveStreamId>.m3u8` play in our own player.
+4. **Does a stream leave anything stored?** Their live best-practices page says live streams are recorded
+   automatically; our create call asks for `record: false`. After one test broadcast, read the dashboard's
+   usage page: if hosting minutes moved, the recording happens regardless and the §11.1 hosting meter
+   applies to every stream — better learned now than on an invoice.
+
+The doctor answers questions 1 and 2 on a machine that can reach them; question 3 needs `ffmpeg` and the
+one-liner above; question 4 needs the dashboard's usage page and one broadcast.

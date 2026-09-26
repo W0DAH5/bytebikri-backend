@@ -713,7 +713,9 @@ test('Telegra.ph: playback is a url from the name, and there is NO delete to cal
 //   * containers are created `public: true` — a private container's delivery is a
 //     single-use token, and HLS fetches a manifest plus every segment, so a private
 //     container is a player that breaks on the second request;
-//   * `mp4Support: true` is asked for at CREATION, because it cannot be added later and it
+//   * the host is LIVE ONLY in this product, so the double carries no upload routes and the
+//     sandbox numbers that matter are the live ones (30 minutes of stream, 30 seconds of
+//     recording) beside the video crop
 //     is the fallback that does not depend on a CDN's CORS policy;
 //   * the live half mints a stream and hands back an HLS playlist our own player plays —
 //     and the streamKey is a credential the client is given, never one it stores.
@@ -740,31 +742,12 @@ const apiStub = http.createServer(async (req, res) => {
   }
   if (!authed && !publicAsset) return json(401, { type: 'about:blank', title: 'Unauthorized', status: 401 });
 
-  if (url.pathname === '/videos' && req.method === 'POST') {
-    return json(201, { videoId: 'viSTUB0000000000000001', assets: { player: 'p', iframe: '', thumbnail: 't' }, status: 'uploaded' });
-  }
-  if (url.pathname === '/videos/viSTUB0000000000000001/source' && req.method === 'POST') {
-    return json(201, {
-      videoId: 'viSTUB0000000000000001', status: 'processing',
-      assets: { player: 'p', iframe: '', thumbnail: 't' },
-    });
-  }
-  if (url.pathname === '/videos/viSTUB0000000000000001') {
-    return json(200, {
-      videoId: 'viSTUB0000000000000001', status: 'playable', title: 'stub', duration: 5, public: true, mp4Support: true,
-      assets: {
-        player: 'p', iframe: '', thumbnail: 't',
-        hls: 'https://cdn.api.video/vod/viSTUB0000000000000001/hls/manifest.m3u8',
-        mp4: 'https://cdn.api.video/vod/viSTUB0000000000000001/mp4/source.mp4',
-      },
-    });
-  }
-  if (url.pathname === '/videos/notready') {
-    return json(200, { videoId: 'notready', status: 'processing', assets: { player: 'p', iframe: '', thumbnail: 't' } });
-  }
-  if (url.pathname === '/videos/viGONE') return json(404, { title: 'video not found', status: 404 });
-  if (url.pathname === '/videos/viSTUB0000000000000001' && req.method === 'DELETE') return res.writeHead(204).end();
-
+  /*
+   * NO UPLOAD ROUTES. This host stores nothing in this product, so the in-process double
+   * carries only what the product calls: the credential check, the workspace listing (how
+   * the account check works) and the live half. A stub with routes nothing calls is how a
+   * removed capability goes on looking alive.
+   */
   if (url.pathname === '/live-streams' && req.method === 'POST') {
     return json(201, {
       liveStreamId: 'liSTUB0000000000000001',
@@ -785,6 +768,7 @@ const apiStub = http.createServer(async (req, res) => {
   }
   if (url.pathname === '/live-streams/liSTUB0000000000000001' && req.method === 'DELETE') return res.writeHead(204).end();
   if (url.pathname === '/live-streams/liGONE' && req.method === 'DELETE') return json(404, { title: 'not found', status: 404 });
+  /* The workspace listing: the account check reads `pagination.itemsTotal` from it. */
   if (url.pathname === '/videos' && req.method === 'GET') {
     return json(200, { data: [], pagination: { itemsTotal: 7, pagesTotal: 1, pageSize: 1, currentPage: 1 } });
   }
@@ -814,43 +798,9 @@ test('api.video: the credential is Basic with the key as the USERNAME and a trai
   assert.ok(calls.some((c) => c.path === '/auth/api-key'), 'POST /auth/api-key is the one call whose purpose is "is this key valid"');
 });
 
-test('api.video: a container is created PUBLIC and with mp4Support, then filled', async () => {
-  const before = seenApi.length;
-  const out = await video.upload(Buffer.from('pretend video'), 'clip.mp4', { mimeType: 'video/mp4', provider: 'apivideo', env: apiEnv() });
-  assert.equal(out.key, 'apivideo/viSTUB0000000000000001');
-  const calls = seenApi.slice(before);
-  assert.deepEqual(calls.map((c) => `${c.method} ${c.path}`), ['POST /videos', 'POST /videos/viSTUB0000000000000001/source'],
-    'two calls: the shell, then the bytes into it');
-  const create = JSON.parse(calls[0].body);
-  assert.equal(create.public, true,
-    'public on purpose: a private container is delivered with a SINGLE-USE token, and HLS fetches a manifest plus every segment');
-  assert.equal(create.mp4Support, true,
-    'asked for at creation because it cannot be added later, and it is the fallback that does not depend on CORS');
-  assert.ok(calls[1].bytes > 0, 'the second call actually carried the file');
-});
 
-test('api.video: playback reads the record — HLS by default, mp4 by configuration', async () => {
-  const hls = await video.playback('viSTUB0000000000000001', { provider: 'apivideo', env: apiEnv() });
-  assert.equal(hls.kind, 'hls', 'an .m3u8 is HLS, and our player attaches hls.js on that word alone');
-  assert.match(hls.url, /hls\/manifest\.m3u8$/);
 
-  const mp4 = await video.playback('viSTUB0000000000000001', { provider: 'apivideo', env: apiEnv({ APIVIDEO_PLAYBACK: 'mp4' }) });
-  assert.equal(mp4.kind, 'file', 'the progressive asset is the fallback for a CDN whose playlist is not CORS-readable');
-  assert.match(mp4.url, /mp4\/source\.mp4$/);
-});
 
-test('api.video: a container that is still encoding fails with the STATUS in the sentence', async () => {
-  await assert.rejects(
-    video.playback('notready', { provider: 'apivideo', env: apiEnv() }),
-    (e) => e.name === 'VideoApiError' && /processing/.test(e.message) && /no playable asset/.test(e.message),
-    'a seller staring at a spinner needs to know it is the host still encoding, not us being broken',
-  );
-});
-
-test('api.video: a delete that 404s is a success, because gone is gone', async () => {
-  assert.equal(await video.remove('viSTUB0000000000000001', { provider: 'apivideo', env: apiEnv() }), true);
-  assert.equal(await video.remove('viGONE', { provider: 'apivideo', env: apiEnv() }), true);
-});
 
 test('api.video: the sandbox is detected from the base, because its limits are product limits', async () => {
   const provider = video.providers.apivideo;
@@ -858,19 +808,47 @@ test('api.video: the sandbox is detected from the base, because its limits are p
   assert.equal(provider.isSandbox({ APIVIDEO_BASE: 'https://ws.api.video' }), false);
   assert.equal(provider.isSandbox({}), false, 'production is the default base');
   const caps = provider.capabilities.sandbox;
-  assert.equal(caps.maxSeconds, 30);
+  assert.equal(caps.maxSeconds, 30, 'sandbox video is cropped to 30 seconds');
+  assert.equal(caps.liveMaxSeconds, 1800,
+    'sandbox LIVE is a different limit from sandbox video: the stream is stopped at 30 minutes');
+  assert.equal(caps.liveRecordSeconds, 30, 'and its recording is cut at 30 seconds');
   assert.equal(caps.deletesAfterHours, 24);
   assert.equal(caps.watermark, true, 'the sandbox watermark cannot be removed, so it cannot be sold from');
 });
 
-test('api.video: a file needing a chunked upload is kept on our disk instead of failing', () => {
-  // `acceptsFile` answers for the FILE, so the router can move on to another host rather
-  // than sending bytes the client cannot deliver in one request.
-  const verdict = video.providers.apivideo.acceptsFile({ mimeType: 'video/mp4', filename: 'huge.mp4', size: 210 * 1024 * 1024 });
-  assert.equal(verdict.ok, false);
-  assert.match(verdict.why, /progressive|chunked/, 'the reason names the upload path that would be needed');
-  assert.equal(video.providers.apivideo.acceptsFile({ mimeType: 'video/mp4', filename: 'clip.mp4', size: 1024 }).ok, true);
+test('api.video is a LIVE host: no kind of file can be routed to it, whatever the driver says', () => {
+  /*
+   * THE POLICY, AS A TEST RATHER THAN A PARAGRAPH.
+   *
+   * The decision is that this host is not storage: encoding is free and unlimited, but
+   * hosting and delivery are metered per minute, and the hosts we already have hold files
+   * at no marginal cost. What api.video has that nothing else here has is the INGEST, so
+   * that is what we buy and nothing else.
+   *
+   * `capabilities.kinds` is how the registry enforces it — `driverForKind` asks
+   * `hostAccepts`, and `hostAccepts` asks that list. An empty list means there is no
+   * configuration in existence that routes a file here, which is a stronger statement than
+   * a comment in the module saying we do not do that.
+   */
+  const provider = video.providers.apivideo;
+  assert.deepEqual(provider.capabilities.kinds, [],
+    'a storage kind here would be a door we decided not to open');
+  assert.equal(provider.capabilities.role, 'live');
+
+  // And the router agrees, with this host named as loudly as the environment can name it.
+  const env = { VIDEO_DRIVER: 'apivideo', FILE_DRIVER: 'apivideo', APIVIDEO_API_KEY: 'k' };
+  for (const kind of ['video', 'audio', 'image', 'file']) {
+    assert.equal(video.hostAccepts(kind, 'apivideo', env), false, `${kind} must never route to the live host`);
+    assert.notEqual(video.driverForKind(kind, env), 'apivideo', `${kind} must land somewhere that stores it`);
+  }
+  assert.equal(video.driverForKind('video', env), 'local',
+    'nothing else is configured, so the bytes stay on our disk — the fallback that always works');
+
+  // What IS routed there is live, and that is the whole point of the module.
+  assert.equal(video.liveDriver({ ...env, LIVE_DRIVER: 'apivideo' }), 'apivideo');
+  assert.equal(video.liveIngestEnabled({ ...env, LIVE_DRIVER: 'apivideo' }), true);
 });
+
 
 // ── the live half ───────────────────────────────────────────────────────────
 
@@ -1020,6 +998,8 @@ test('a host is asked whether it takes this KIND of media, and only one of them 
     'Pixeldrain is the generalist now — any file kind, direct urls, a real delete');
   assert.ok(kindsOf('catbox').includes('image'), 'Catbox takes images, which is what most of the web uses it for');
   assert.deepEqual(kindsOf('telegraph'), ['image'], 'the image host is an image host, and that is a limit worth writing down');
+  assert.deepEqual(kindsOf('apivideo'), [],
+    'api.video is the LIVE host — it stores nothing, so it declares no kind and no file can reach it');
 
   /*
    * THE VOCABULARY IS `mediaKind`'S, AND THIS IS THE TEST THAT KEEPS IT THAT WAY.

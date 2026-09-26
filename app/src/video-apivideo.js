@@ -6,10 +6,12 @@
  * ── TWO ENVIRONMENTS, ONE KEY ────────────────────────────────────────────────
  *
  *   production  https://ws.api.video        the paid, uncapped environment
- *   sandbox     https://sandbox.api.video   free, and STRICTLY limited: content is
- *                                           capped at 30 seconds (videos AND live
- *                                           streams — longer input is CROPPED),
- *                                           watermarked, and deleted after 24 hours
+ *   sandbox     https://sandbox.api.video   free, for testing only, and capped in ways
+ *                                           that disqualify it for a store: video is cut
+ *                                           to 30 seconds, LIVE IS STOPPED at 30 minutes
+ *                                           and its recording is cut at 30 seconds,
+ *                                           everything is watermarked and deleted after
+ *                                           24 hours
  *
  * A key belongs to one of them and answers 401 against the other, so the base is
  * configuration (`APIVIDEO_BASE`) rather than something derived. `isSandbox()` reads it
@@ -40,13 +42,20 @@
  * gate. That is the same trade §7 records for Filemoon and §10.6 for Catbox, made
  * deliberately instead of discovered during an incident.
  *
- * ── DECISION: ASK FOR THE MP4 AT CREATION, ALWAYS ────────────────────────────
+ * ── DECISION: THIS HOST STORES NOTHING ──────────────────────────────────────
  *
- * `mp4Support` cannot be turned on after the fact, and the progressive mp4 is the only
- * asset that does not depend on the CDN's CORS policy (§10.4's wall, where hls.js is
- * blocked by a playlist that is not CORS-readable). Every container is created with BOTH
- * assets, so the delivery path is a configuration switch (`APIVIDEO_PLAYBACK=hls|mp4`)
- * rather than a re-upload of a store's catalogue.
+ * api.video is a LIVE provider here and not a place files live, and the reason is the
+ * shape of its bill rather than a preference: encoding is free and unlimited, DELIVERY is
+ * metered per minute per viewer, and HOSTING is metered per minute stored — including
+ * every minute of a recorded live stream (their pricing page, and their terms of service).
+ * The hosts we already have hold files at no marginal cost, so paying a minute-meter for
+ * storage we do not need would be paying for the wrong thing. What api.video has that
+ * nothing else here has is the INGEST, and that is what we buy.
+ *
+ * `capabilities.kinds` is therefore EMPTY, which is not a placeholder: `driverForKind`
+ * consults exactly that list, so no kind of file — video included — can ever be routed
+ * here, whatever `VIDEO_DRIVER` says. The policy is enforced by the registry rather than
+ * written down and hoped for, and a test holds it there.
  *
  * ── AND THE HALF THAT IS NOT STORAGE: LIVE ───────────────────────────────────
  *
@@ -63,50 +72,47 @@
  * the owner's panel fetches it from `GET /live-streams/{id}` when it is opened, and what
  * lives in our database is the container id.
  */
-import { VideoApiError, pick, classifyUrl, describe, describeDeep, errorMessage, httpCall, keySafe } from './video-shared.js';
+import { VideoApiError, pick, describeDeep, errorMessage, httpCall } from './video-shared.js';
 
 export const name = 'apivideo';
 export const label = 'api.video';
 
-/**
- * The ceiling for ONE upload request: 200 MiB, per their progressive-upload docs.
- *
- * Our own cap (25 MB) binds far below this, so the number exists to answer `acceptsFile`
- * honestly: a file over it would need chunked uploads this module does not implement, and
- * the router moves such a file to a host that can take it rather than failing the upload.
- */
-export const SINGLE_REQUEST_MAX = 200 * 1024 * 1024;
-
 export const capabilities = {
-  maxBytes: SINGLE_REQUEST_MAX,
+  /*
+   * LIVE ONLY, AND THE EMPTY LIST IS THE POLICY.
+   *
+   * `driverForKind` asks `hostAccepts()`, which asks this list. With no kinds declared,
+   * there is no value of `VIDEO_DRIVER` that can route a byte here — the file hosts are
+   * Filemoon, Pixeldrain and Catbox, and this one runs streams. Keeping `['video']` and a
+   * paragraph of prose would have left the door open to exactly the configuration this
+   * decision exists to prevent.
+   */
+  role: 'live',
+  kinds: [],
   hls: true,
-  durable: true,
   lists: true,
   needs: 'APIVIDEO_API_KEY',
-  note: 'video infrastructure: transcoding to adaptive HLS, a progressive mp4, and a live ingest',
-  /*
-   * Video only, and by design rather than by omission.
-   *
-   * This host is built around transcoding and delivery of moving pictures; audio-only
-   * files, images, archives and documents have hosts here that were built for them
-   * (Pixeldrain for any file, Telegra.ph for images) and this is not the one to send them
-   * to. The sandbox's 30-second crop alone would maul a 40-minute audio master.
-   */
-  kinds: ['video'],
-  deletable: true,
-  /** The sandbox is a *testing* environment, and every limit of it is a product limit. */
+  note: 'a live ingest and the HLS delivery of it — this host runs streams, it is not where files are stored',
+  /** The sandbox's limits are real limits, and on LIVE they are their own set. */
   sandbox: {
     maxSeconds: 30,
+    liveMaxSeconds: 1800,
+    liveRecordSeconds: 30,
     watermark: true,
     deletesAfterHours: 24,
-    note: 'sandbox content is cropped to 30 seconds, watermarked, and deleted after 24 hours',
+    note: 'sandbox: video is cropped to 30 seconds; live is STOPPED after 30 minutes and its '
+      + 'recording cut at 30 seconds; everything is watermarked and deleted after 24 hours',
   },
-  /**
+  /*
    * The live half, as data — because it is a different question from storage.
    *
    * `ingest` is what a seller types into their encoder, `streamsInPage` is that the url
    * they get is an HLS playlist our player already understands, and `keyIsStored` is the
    * promise that makes a broadcast credential safe to hand out: we never keep it.
+   *
+   * `recording: false` is the default and it is the metered one: a recorded stream becomes
+   * a stored video, and stored minutes are billed. A replay is a decision a seller makes,
+   * not something that should quietly start costing money when they press Go live.
    */
   live: {
     ingest: {
@@ -115,14 +121,16 @@ export const capabilities = {
       srt: 'srt://broadcast.api.video:6200?streamid=<streamKey>',
     },
     player: 'hls',
-    recording: true,
+    recording: false,
     keyIsStored: false,
+    metering: 'live is metered per minute DELIVERED to each viewer; encoding is free and unlimited, '
+      + 'and only a recorded stream costs hosting — so a stream watched by nobody costs nothing',
     note: 'the host runs the RTMP/SRT ingest; the stream comes back as an HLS playlist our own player plays',
   },
   policy: {
     commercial: 'allowed',
-    note: 'a video-infrastructure provider — transcoding, adaptive delivery and live ingest are '
-      + 'the product; the sandbox is free with hard limits and production is pay-as-you-go',
+    note: 'a video-infrastructure provider: the ingest, the encoding (free and unlimited) and the '
+      + 'delivery are the product; hosting is metered, which is why nothing is stored here',
   },
 };
 
@@ -143,26 +151,6 @@ export const mediaOrigins = () => [
 
 /** Configured means the credential this host needs is present. */
 export const configured = (env = process.env) => Boolean(env.APIVIDEO_API_KEY);
-
-/**
- * Would this host take this file?
- *
- * The kind check is the router's job (`capabilities.kinds`); this answers the two things
- * about the FILE that would make the host refuse it — the single-request ceiling above,
- * and the sandbox's 30 seconds, which cannot be judged from a byte count. The duration is
- * therefore warned about rather than refused: cropping a seller's file silently would be
- * worse, so callers that know the duration get a sentence to show.
- */
-export function acceptsFile({ mimeType = '', filename = '', size = 0 } = {}) {
-  if (size > SINGLE_REQUEST_MAX) {
-    return {
-      ok: false,
-      why: `${(size / 1024 / 1024).toFixed(0)} MB needs api.video's progressive (chunked) upload, which this client does not implement`,
-    };
-  }
-  void mimeType; void filename;
-  return { ok: true };
-}
 
 /** The sandbox crops and deletes; everything else is the same code path. */
 export const isSandbox = (env = process.env) => /sandbox/i.test(base(env));
@@ -230,115 +218,6 @@ async function call(path, {
  * `mp4Support: true` for the two reasons at the top of this file, and the id it returns is
  * what our storage key keeps.
  */
-export async function upload(buffer, filename, { mimeType = 'video/mp4', env = process.env, title = '' } = {}) {
-  const size = buffer?.length ?? 0;
-  if (size > SINGLE_REQUEST_MAX) {
-    throw new VideoApiError(
-      `this file is ${(size / 1024 / 1024).toFixed(0)} MB and this client uploads in one request, which the host `
-      + `accepts up to ${SINGLE_REQUEST_MAX / 1024 / 1024} MB — a bigger file needs the chunked upload path`,
-      { provider: name, path: '/videos' },
-    );
-  }
-
-  const created = await call('/videos', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', accept: 'application/json' },
-    body: JSON.stringify({
-      title: title || keySafe(filename || 'video').slice(0, 120) || 'untitled',
-      // Public on purpose: our own door is the gate, and a private token would be consumed
-      // by the first segment request. See the header.
-      public: true,
-      // Cannot be added later, and it is the fallback that does not depend on CORS.
-      mp4Support: true,
-    }),
-    env,
-  });
-
-  const id = pick(created, ['videoId']);
-  if (!id) {
-    throw new VideoApiError(
-      `the video host created nothing usable — keys were ${describeDeep(created)}`,
-      { body: created, path: '/videos', provider: name },
-    );
-  }
-
-  const form = new FormData();
-  form.append('file', new Blob([buffer], { type: mimeType || 'video/mp4' }), keySafe(filename || 'video.mp4'));
-  const filled = await call(`/videos/${encodeURIComponent(String(id))}/source`, {
-    method: 'POST',
-    body: form,
-    env,
-    timeoutMs: 180_000,
-  });
-
-  /*
-   * The upload answer is not always the full record — some responses carry only the
-   * id — so the assets are read from whichever of the two calls described them. A missing
-   * `assets.hls` here is NOT an error: the container is transcoding, and `playback()`
-   * reads the record again when the player asks.
-   */
-  return { id: String(id), body: filled || created, assets: pick(filled || created, ['assets']) || null };
-}
-
-/** One video's record — including `assets` and the status a caller may want to report. */
-export async function file(id, { env = process.env } = {}) {
-  const record = await call(`/videos/${encodeURIComponent(String(id))}`, { env });
-  return {
-    id: String(id),
-    status: pick(record, ['status']) || (pick(record, ['assets']) ? 'unknown' : 'unknown'),
-    title: pick(record, ['title']) ?? null,
-    durationSec: pick(record, ['duration']) ?? null,
-    assets: pick(record, ['assets']) || {},
-    raw: record,
-  };
-}
-
-/**
- * A url and a kind.
- *
- * Unlike Catbox or Pixeldrain there is no arithmetic that produces a playback url — the
- * origin and the path are the host's to choose (their own docs have moved between
- * `cdn.api.video` and `vod.api.video`), so this reads the record and takes what it is
- * given. `APIVIDEO_PLAYBACK` chooses between the two assets the container holds:
- * `hls` by default because it adapts, `mp4` when a playlist turns out not to be
- * CORS-readable from a viewer's browser (§10.4).
- */
-export async function playback(id, { env = process.env } = {}) {
-  const record = await file(id, { env });
-  const assets = record.assets || {};
-  const preference = String(env.APIVIDEO_PLAYBACK || 'hls').trim().toLowerCase();
-  const candidates = preference === 'mp4' ? ['mp4', 'hls'] : ['hls', 'mp4'];
-  for (const asset of candidates) {
-    const url = pick(assets, [asset]);
-    if (typeof url === 'string' && url) {
-      return { kind: classifyUrl(url), url, id: String(id) };
-    }
-  }
-  throw new VideoApiError(
-    `the video host has no playable asset for ${id} yet (status "${record.status}"`
-    + `${isSandbox(env) && record.status !== 'playable' ? '; the sandbox crops to 30 seconds, and a video is not playable until it has finished encoding' : ''}`
-    + `) — assets were ${describe(assets)}`,
-    { provider: name, path: '/videos' },
-  );
-}
-
-/** Delete, and say whether the host agreed — a 404 means it is already gone. */
-export async function remove(id, { env = process.env } = {}) {
-  const videoId = String(id || '');
-  if (!idPattern.test(videoId)) {
-    throw new VideoApiError(`the stored video id is not usable in a delete: ${videoId.slice(0, 80)}`, {
-      provider: name, path: '/videos',
-    });
-  }
-  try {
-    await call(`/videos/${encodeURIComponent(videoId)}`, { method: 'DELETE', env });
-    return true;
-  } catch (err) {
-    if (err?.status === 404) return true;
-    throw err;
-  }
-}
-
 /**
  * Who the key belongs to, and what it is allowed to do.
  *

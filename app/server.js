@@ -8107,10 +8107,20 @@ const SERVER = APP.listen(PORT, '0.0.0.0', () => {
       const live = video.liveDriver();
       if (video.liveIngestEnabled()) {
         const caps = video.providers[live].capabilities;
-        console.log(`  live ingest →  ${live} (${caps.live.ingest.rtmp})`);
+        /*
+         * A LIVE HOST STORES NOTHING, AND THE LINE SAYS SO.
+         *
+         * The lines above say where a store's bytes END UP; this one says who RUNS a stream,
+         * which is a different service bought for a different reason (§11.2). Naming the
+         * ingest address is the useful part for an operator — it is what they will compare
+         * against what a seller reports — and "nothing stored" is the part that says what
+         * this deployment is NOT paying for.
+         */
+        console.log(`  live ingest →  ${live} (${caps.live.ingest.rtmp}; nothing stored)`);
         if (video.providers[live].isSandbox && video.providers[live].isSandbox()) {
-          console.warn('             SANDBOX: streams are cropped to '
-            + `${caps.sandbox.maxSeconds}s, watermarked, and deleted after ${caps.sandbox.deletesAfterHours}h`);
+          console.warn(`             SANDBOX: video is cropped to ${caps.sandbox.maxSeconds}s, live is STOPPED at `
+            + `${Math.round(caps.sandbox.liveMaxSeconds / 60)}min, everything is watermarked and deleted `
+            + `after ${caps.sandbox.deletesAfterHours}h`);
         }
       } else if (live !== 'local') {
         console.warn(`  live ingest →  ${live} is named as LIVE_DRIVER but has no credential set`);

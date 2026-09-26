@@ -48,8 +48,10 @@ export {
  * host is chosen per KIND of media (§10.6):
  *
  *   filemoon    video       the video host, and the one this product deploys with
- *   apivideo    video       video infrastructure: transcoding to adaptive HLS, a progressive
- *                           mp4, and THE LIVE INGEST — the only host here that can run one
+ *   apivideo    —           THE LIVE HOST, not a storage host: it runs the ingest and serves
+ *                           the stream, and it declares NO kind, so no file can be routed to
+ *                           it. Encoding is free and unlimited, hosting and delivery are
+ *                           metered, and the ingest is the thing nothing else here has (§11)
  *   pixeldrain  the rest    a general file host: direct urls, byte ranges, a real delete
  *   telegraph   images      small, permanent, free — and it can never delete one
  *   catbox      development only: its terms forbid being a service's CDN
