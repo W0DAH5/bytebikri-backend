@@ -8093,6 +8093,28 @@ const SERVER = APP.listen(PORT, '0.0.0.0', () => {
           console.warn(`               npm run video:check --prefix app -- --driver=${host}\n`);
         }
       }
+      /*
+       * THE LIVE INGEST GETS ITS OWN LINE, because it is a different kind of fact.
+       *
+       * Everything above says where bytes are stored. A live driver says that this
+       * deployment can RUN a stream for a seller — mint one, hand them an ingest address,
+       * and play the playlist that comes back — and an operator who set `LIVE_DRIVER` and
+       * does not see it acknowledged here would reasonably wonder whether it took. It is
+       * also where the sandbox warning belongs: `broadcasting` from a sandbox key produces
+       * a watermarked 30-second stream that vanishes after a day, which is the kind of thing
+       * that should be read from a boot log rather than discovered live.
+       */
+      const live = video.liveDriver();
+      if (video.liveIngestEnabled()) {
+        const caps = video.providers[live].capabilities;
+        console.log(`  live ingest →  ${live} (${caps.live.ingest.rtmp})`);
+        if (video.providers[live].isSandbox && video.providers[live].isSandbox()) {
+          console.warn('             SANDBOX: streams are cropped to '
+            + `${caps.sandbox.maxSeconds}s, watermarked, and deleted after ${caps.sandbox.deletesAfterHours}h`);
+        }
+      } else if (live !== 'local') {
+        console.warn(`  live ingest →  ${live} is named as LIVE_DRIVER but has no credential set`);
+      }
       console.log('');
     }).catch((err) => {
       console.warn(`\n  video hosts: could not report status — ${err.message}\n`);
