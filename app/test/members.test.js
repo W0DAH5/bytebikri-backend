@@ -915,6 +915,66 @@ test('the seller’s queue shows a claim with what a statement will have on it',
   } finally { await cleanup(channel, owner, member); }
 });
 
+test('cancelling a claim is the member’s own act, and it is proved like the rest', async () => {
+  /*
+   * The last membership act with no test. "What happens when membership is cancelled" has
+   * two halves: a paying member LEAVES (tested above — the delete, the audit, the unlock
+   * that outlives it), and a person whose claim is still with the creator CANCELS. The
+   * second half existed in the code — the pending card's "Cancel this claim" button, the
+   * status-blind /s/:slug/leave route, the `member.left` audit — and was never proved.
+   */
+  const { owner, channel, member, tag } = await fixture();
+  try {
+    await store.joinMembership({ profileId: member.id, channelId: channel.id, tierNo: 1, claim: claim() });
+    const pending = await store.membershipFor(member.id, channel.id);
+    assert.equal(membershipState(pending), 'pending');
+    assert.equal(pending.period_end, null, 'a claim is not a period');
+
+    // Their own card, as the storefront renders it: what is happening, their own
+    // reference, and the only act a pending member can do.
+    const page = views.storefront({
+      channel, assets: [], slots: [], user: member, tiers: await store.membershipTiers(channel.id),
+      membership: pending, roster: [], membershipsOn: true,
+    });
+    assert.match(page, /Your claim is with the creator/);
+    assert.match(page, /ESW-TEST-0001/, 'their own reference is on the card');
+    assert.match(page, /Cancel this claim/);
+    assert.doesNotMatch(page, /period has ended/i, 'nothing has ended — nothing has started');
+
+    // The join panel — the storefront's members section, not the standalone room,
+    // which renders no join panel for anybody — is closed while a claim is in the
+    // queue. The pair of renders is what makes the negative meaningful: the same
+    // section offers a claim form to a person with no row at all, and no form to
+    // one whose reference is being checked.
+    assert.doesNotMatch(page, /id="join-reference"/,
+      'a pending member is not shown another claim form');
+    const strangerPage = views.storefront({
+      channel, assets: [], slots: [], user: member, tiers: await store.membershipTiers(channel.id),
+      membership: null, roster: [], membershipsOn: true,
+    });
+    assert.match(strangerPage, /id="join-reference"/, 'the same section does offer the form to a person with no claim');
+
+    // The act itself: the row is gone, the creator’s queue is clear, and the
+    // record says what left — a PENDING membership, not a period. That word in
+    // the audit is the whole difference between cancelling a claim and leaving
+    // while paid, and it is the difference an operator searching the trail needs.
+    assert.equal(await store.leaveMembership(member.id, channel.id), true);
+    assert.equal(await store.membershipFor(member.id, channel.id), null);
+    assert.equal((await store.pendingMemberships(channel.id)).length, 0,
+      'the creator’s queue is clear of the cancelled claim');
+    const left = await query(
+      `select meta from audit_logs where action = 'member.left' order by created_at desc limit 1`);
+    const leftMeta = typeof left.rows[0].meta === 'string' ? JSON.parse(left.rows[0].meta) : left.rows[0].meta;
+    assert.equal(leftMeta.status, 'pending', 'the record says a claim left, not a period');
+
+    // And the door is open again: cancelling a claim does not bar re-joining.
+    const again = await store.joinMembership({ profileId: member.id, channelId: channel.id, tierNo: 1, claim: claim() });
+    assert.equal(membershipState(again), 'pending', 'a cancelled claim does not bar re-joining');
+    assert.equal(await store.leaveMembership(member.id, channel.id), true, 'tidy up the second claim');
+    assert.ok(owner.id && tag);
+  } finally { await cleanup(channel, owner, member); }
+});
+
 test('leaving is a delete, and it takes nothing else with it', async () => {
   const { owner, channel, member, tag } = await fixture();
   try {

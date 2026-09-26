@@ -275,6 +275,11 @@ member is otherwise still listed, and `LAPSE_LINE` says the plate goes quiet rat
 would also contradict the roster's own footnote — *"You are named on this store's member list"* — for a
 person who has not asked to be hidden.
 
+**Decision (the operator, 26 Sept 2026):** the lapsed member **stays** on the public roster,
+marked `ended` — "for now", which is to be taken seriously: it is the current, tested
+behaviour, and the standing instruction that came with it is that **no further
+membership-state changes** are to be made. The `ended` word and the quiet plate stand.
+
 **Explicitly not proposed:** a renewal prompt inside the card, any new perk, any tier redesign, and
 touching the chip's colours or the two-layer composition. Those are the parts this audit found correct.
 
