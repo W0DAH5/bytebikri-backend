@@ -989,7 +989,27 @@ is Cloudflare's own behaviour: the 128 MB memory ceiling (the reason the body is
 rather than buffered), the edge network's IP rotation, and whether their edge is treated as a
 hotlink by Pixeldrain. The first day of real use is the test for those three.
 
-### 13.5 What this does not fix
+### 13.5 The 60-day clock, which is an open gap
+
+Pixeldrain's documentation, on how long files are stored: **"Files will be removed if they have
+not been accessed for 60 days. When a file is downloaded the expiry time is reset to 60 days from
+the current day."**
+
+That is a product risk and not a footnote, because of what this product does with a quiet file: a
+store's back-catalogue is exactly the long tail that nobody opens for two months. A file at
+Pixeldrain can therefore be deleted by the HOST while the page here goes on listing it, selling it
+and asking a viewer to watch an ad for it — and the first symptom is a viewer who paid attention
+and got nothing.
+
+**Nothing sweeps for this yet.** Writing it down as a gap rather than a plan is deliberate: the
+configuration here routes video to Filemoon, images to Telegra.ph and the general kinds to
+Pixeldrain, so the exposure is audio, archives and documents, and the fix wants a decision the
+product has not taken — either a keep-alive (a periodic authenticated `HEAD`/info call per file,
+which their own API supports and which resets the clock) or a "last verified present" date on the
+seller's own page so the risk is visible to the person who owns it. Catbox, for contrast, keeps
+files permanently, which is a real reason the two hosts are not interchangeable.
+
+### 13.6 What this does not fix
 
 * **A public URL that was already fetched.** Telegra.ph's copy is still at its address for anyone who saved
   it. Nothing in this repository can change that; the tombstone says so in as many words.
@@ -998,7 +1018,7 @@ hotlink by Pixeldrain. The first day of real use is the test for those three.
   operator should see coming rather than discover on a graph — which is why the doctor prints which mode is
   in force, and why `MEDIA_RELAY=none` exists.
 
-### 13.6 When a host says no: the failover chain
+### 13.7 When a host says no: the failover chain
 
 §13.3 is about delivery — a host that will not serve a browser. This is about the other half:
 a host that will not take the bytes, or refuses them later, in the middle of a launch.

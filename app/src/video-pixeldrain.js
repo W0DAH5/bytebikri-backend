@@ -33,6 +33,15 @@
  *    30 days after the last time they were used. A deployment that stops uploading for
  *    a month finds its key dead, which is why the doctor's check is also the thing that
  *    keeps the key alive.
+ * 4. **FILES expire too, and this is the one a seller can be hurt by.** Their own
+ *    documentation, on how long files are stored: *"Files will be removed if they have
+ *    not been accessed for 60 days. When a file is downloaded the expiry time is reset
+ *    to 60 days from the current day."* A store's quiet back-catalogue is therefore on a
+ *    clock it cannot see: a file nobody opens for two months is deleted by the host, and
+ *    the page here goes on listing it. The product has no sweeper for this yet — that is
+ *    a real gap and it is recorded as one (`VIDEO_STORAGE.md` §13.5) rather than left to
+ *    be discovered by a seller whose file stopped working. Catbox, for contrast, keeps
+ *    files permanently, which is part of why the two hosts are not interchangeable.
  *
  * File size depends on the account's plan, so `maxBytes` is null: the product's own
  * upload cap binds first, and this module does not invent a limit the host never
@@ -84,7 +93,8 @@ export const capabilities = {
   hotlink: 'refused-when-free',
   policy: {
     commercial: 'premium',
-    note: 'hotlinking is a Pro feature (`hotlink_detected` is in its own error list) and '
+    note: 'files are removed after 60 days without a download, and hotlinking is a Pro '
+      + 'feature (`hotlink_detected` is in its own error list) and '
       + 'download limits exist to stop it; a redirect to their url is hotlinking. Their '
       + 'API keys also expire 30 days after their last use',
   },
