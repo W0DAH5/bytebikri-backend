@@ -82,10 +82,19 @@ So the honest trade, against §11's api.video decision:
 | federation | none built in | ActivityPub, followable from Mastodon |
 | effort to adopt here | **already done** (§11) | a new host, a new deploy, a new failure mode |
 
-**The part that makes this cheap to keep open:** both put an HLS playlist in front of the same product code.
-`external_url` holds an `.m3u8`, the player plays it, the breaks and the ladder are untouched — the
-abstraction that let api.video arrive without a rewrite is the same one that would let PeerTube arrive the
-same way. So this is a decision to *defer with a plan*, not an architecture to redo.
+**Since this was written, a third option was chosen — and it is the one that makes the table above
+concrete.** [Ant Media Server](https://antmedia.io) (Community Edition, Apache-licensed, free forever) is
+self-hosted streaming software in the same family as PeerTube, with a REST API and a panel: RTMP in, HLS
+out, recording, no per-minute meter, no vendor account. It is wired into the same seam as api.video — see
+`VIDEO_STORAGE.md` §12 — under `LIVE_DRIVER=antmedia`. PeerTube remains the option that adds *federation*
+on top of self-hosting; Ant Media is the option that adds a **REST API and a panel** on top of it. Both
+trade the meter for a server and its bandwidth.
+
+**The part that makes any of this cheap to keep open:** they all put an HLS playlist in front of the same
+product code. `external_url` holds an `.m3u8`, the player plays it, the breaks and the ladder are untouched —
+the abstraction that let api.video arrive without a rewrite is the same one that let Ant Media arrive the
+same way, and that would let PeerTube arrive too. So this is a decision to *defer with a plan*, not an
+architecture to redo.
 
 ## 4. Credentials, and how they are held
 
@@ -143,7 +152,9 @@ same handle — 300 requests/5 min is not the constraint; a follower's patience 
 3. **Announce live only, or assets too?**
 4. **PeerTube: a curiosity, or the escape hatch from per-viewer pricing?** It is the only path here that
    makes a stream cost the same whether ten people watch or ten thousand — and the only one that needs an
-   ops commitment this project does not currently have.
+   ops commitment this project does not currently have. **Partly answered below (§7): the escape hatch was
+   taken, with Ant Media Server rather than PeerTube, so the remaining question is only whether
+   *federation* is ever worth adding on top.**
 
 **Verify the credential from a machine that can reach mastodon.social** (this sandbox cannot — the request
 is refused before TLS, like every other host here):
@@ -152,3 +163,51 @@ is refused before TLS, like every other host here):
 npm run mastodon:check --prefix app                 # who the token is, and the instance's real caps
 npm run mastodon:check --prefix app -- --dry-run     # exactly what an announcement would say; posts nothing
 ```
+
+## 7. The free path, decided — and the two costs that were asked about
+
+Two questions arrived together: *"i dont have a cent"* and *"use this for live streaming, its free right?"*
+They deserve separate answers.
+
+### 7.1 Ant Media Server: free is a real answer here, with one trap
+
+**Community Edition is free, and that is not a trial.** Apache-licensed source, no key, no time limit,
+commercial use permitted, no viewer or broadcaster count in the licence. What it costs is a machine and its
+outbound bandwidth — the broadcast's own size, which is arithmetic rather than a vendor's cut
+(`VIDEO_STORAGE.md` §12.2). For a seller with no money, that is a categorically different proposition from a
+per-viewer-minute meter, and it is why this is now the free path while api.video stays available as the
+paid one.
+
+**The trap: the key that was pasted is an Enterprise trial, and a trial is not a licence to run a store.**
+Its EULA limits it to one instance and forbids *any* commercial use or use that benefits a third party — and
+running other sellers' stores is exactly that. It expires 2026-10-10 anyway. So: install Community Edition
+(no key at all), and keep the trial key for a throwaway test box if it is useful there. If Enterprise's
+sub-second latency is ever needed, the honest routes are a paid licence or one of the free
+educational/community licences — not a trial key in production.
+
+**The concession to be explicit about:** Community playback is HLS, so 8–12 seconds behind the camera. Live
+chat that keeps up with the audio is not possible at that distance. Products that need that buy WebRTC
+(Enterprise, or a service like api.video).
+
+### 7.2 Mastodon: it costs nothing, and it does nothing until it is switched on
+
+Asked to remove it if it costs money. **It does not cost money** — the API is free, the token is free, the
+instance is free — and nothing was ever wired to it: no post is made, no scheduler runs, no background job
+exists. What exists is (a) this document — the research and the trade table, which cost nothing to keep and
+are the reason the answer above could be given at all — and (b) `app/scripts/mastodon-check.mjs`, a
+read-only probe that talks to the instance only **when a person runs it by hand**, plus four commented
+variables in `.env.example`. With `MASTODON_*` unset, both are inert. Nothing in the store, the upload
+path, the player or the live panel touches either of them.
+
+Two honest caveats, because "free" should not be doing the persuading here:
+
+* **It is not free of attention.** Every extra surface is something to maintain, and a credential sitting in
+  an env file is a thing that can leak. The token was pasted into a chat, so it should be regenerated
+  before it is ever used for real — and if the Fediverse is not an audience worth posting to, deleting the
+  three files is a one-commit, zero-risk operation with nothing downstream.
+* **It cannot stream.** No amount of re-reading changes that (their issue tracker closed the request as not
+  planned). It can *announce* a stream, which is a link, not a broadcast.
+
+**What it costs to keep, in one line:** ~400 lines of documentation and one probe script that only runs when
+invoked. **What it costs to remove:** one commit. Both are fine; the recommendation is to keep the research
+and treat the probe as inert until there is something worth announcing to an audience that actually exists.

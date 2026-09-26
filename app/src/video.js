@@ -32,6 +32,7 @@
  */
 import * as filemoon from './video-filemoon.js';
 import * as apivideo from './video-apivideo.js';
+import * as antmedia from './video-antmedia.js';
 import * as pixeldrain from './video-pixeldrain.js';
 import * as telegraph from './video-telegraph.js';
 import * as catbox from './video-catbox.js';
@@ -48,10 +49,13 @@ export {
  * host is chosen per KIND of media (§10.6):
  *
  *   filemoon    video       the video host, and the one this product deploys with
- *   apivideo    —           THE LIVE HOST, not a storage host: it runs the ingest and serves
+ *   apivideo    —           A LIVE HOST, not a storage host: it runs the ingest and serves
  *                           the stream, and it declares NO kind, so no file can be routed to
  *                           it. Encoding is free and unlimited, hosting and delivery are
  *                           metered, and the ingest is the thing nothing else here has (§11)
+ *   antmedia    —           THE OTHER LIVE HOST, and the one that is ours: Ant Media Server on
+ *                           a machine we run, RTMP in and HLS out, so the audience stops
+ *                           setting the bill (§12). One of the two is chosen by LIVE_DRIVER
  *   pixeldrain  the rest    a general file host: direct urls, byte ranges, a real delete
  *   telegraph   images      small, permanent, free — and it can never delete one
  *   catbox      development only: its terms forbid being a service's CDN
@@ -59,7 +63,7 @@ export {
  * GoFile is gone: a free account could not produce a playable link at all, and paying for
  * one to serve files this product keeps on its own disk bought nothing.
  */
-export const PROVIDERS = { filemoon, apivideo, pixeldrain, telegraph, catbox };
+export const PROVIDERS = { filemoon, apivideo, antmedia, pixeldrain, telegraph, catbox };
 export const HOSTS = Object.keys(PROVIDERS);
 
 const isHost = (value) => Object.prototype.hasOwnProperty.call(PROVIDERS, value);

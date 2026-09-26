@@ -722,3 +722,125 @@ the one thing it sells that we cannot make ourselves is billed by use, not by th
 
 Until item 1 exists, the right configuration on this deployment is the one it has: **`LIVE_DRIVER` unset**,
 which changes nothing about how the product behaves today.
+
+---
+
+## 12. Ant Media Server: the live host that costs nothing, and is ours
+
+§11 ended the live story at a meter: api.video runs the ingest for us, unbilled until it is watched, and
+billed forever after. That is a fine trade for a company that has decided to spend money. It is not a trade
+for someone who has none. So the same seam learned a second live host — and this one is **software**, not a
+service: it is installed on a machine the seller owns, and after that nobody invoices per minute.
+
+### 12.1 The two editions, and the one trap
+
+Ant Media Server ships in two editions and the difference decides everything:
+
+| | **Community Edition** | **Enterprise Edition** |
+| --- | --- | --- |
+| price | **free, forever** | per running server — ≈$0.09/h, ≈$69/mo annual, $1,999–2,799 perpetual |
+| licence | Apache — source on GitHub, **commercial use allowed** | commercial licence, paid |
+| limit | **none in the licence** — the limit is the machine and its bandwidth | none on viewers or broadcasters either |
+| ingest | RTMP, SRT, WHIP | + VP8, H.265, CMAF, SRT extras |
+| playback | **HLS** and DASH/CMAF — 8–12 s latency with the low-latency HLS extras | **WebRTC playback, ≈0.5 s** |
+| rest | REST v2 API, web panel, recording to MP4/WebM/HLS, IP-camera, re-streaming | + adaptive bitrate, GPU encoding, clustering, publish/play token control, mobile SDKs, simulcast |
+
+**The trap in the message that started this round.** The key pasted in — `AMSb9c5b8ea80df1555713832fd920bab`,
+expiring 2026-10-10 — is an **Enterprise trial**, and an Enterprise trial is *not* a free tier. Its own EULA
+(§4.1.2) limits it to a single instance and says, in as many words, that it **"shall not use the Software for
+any commercial purposes whatsoever or in any manner intended to benefit, aid, or assist a third party."** A
+platform that runs other people's stores, for their audiences, is a third party being assisted. So the trial
+is for evaluating the software on a test box and nothing else; deploying it here would be a licence
+violation with a date on it. **Community Edition needs no key at all.**
+
+If Enterprise features are ever genuinely needed, the honest paths are: pay for it, apply for one of the free
+educational/community licences, or accept the 8–12 second HLS latency that Community already does well.
+PeerTube (§3 of `LIVE_DISTRIBUTION.md`) is the other free-as-in-self-hosted option, and it is built on this
+same idea.
+
+### 12.2 What "free" costs instead
+
+Community Edition removes the per-minute meter and replaces it with the ordinary costs of running software:
+a server (the smallest VPS that can hold the connection), and **the upstream bandwidth of the broadcast**. A
+2 Mbps stream is about 0.9 GB an hour; 100 viewers of it is about 90 GB an hour, which on most hosts is the
+real bill. That is arithmetic rather than a vendor's cut, and it is knowable in advance — which is the
+difference a person without margin actually cares about. The panel (`https://<host>:5443`) shows the live
+streams, viewers per protocol, bitrate and recordings, so the number is legible.
+
+**Latency is the honest concession.** Community playback is HLS, so 8–12 seconds behind the camera — a
+chat that keeps up with the audio is impossible at that delay. For a product demo, a teaching stream, a
+shop's weekly show, that is fine. For a call-in show it is not, and that is a real limit, stated here rather
+than discovered live.
+
+### 12.3 The seam did not change — a second live driver proved it
+
+`LIVE_DRIVER` now names **which** live host runs a stream, exactly as `VIDEO_DRIVER` names which file host
+holds bytes. Both live hosts sit in the same registry, both declare `kinds: []` (no file may route to a
+stream engine), and `liveIngestEnabled()` answers for either. `video-check.mjs --probe-live` now asks
+`liveDriver()` which provider to probe instead of assuming api.video, so the doctor follows the same seam the
+product does. That the whole addition was one new module plus a table entry — not a rewrite of the live
+path — is the evidence that the seam from §10.2 was drawn in the right place.
+
+```js
+LIVE_DRIVER=antmedia
+ANT_MEDIA_BASE=https://stream.example.com:5443
+ANT_MEDIA_APP=LiveApp
+ANT_MEDIA_REST_SECRET=             # only if the panel's JWT filter is on
+ANT_MEDIA_RTMP_BASE=rtmp://stream.example.com:1935/LiveApp
+```
+
+### 12.4 Authorisation, and the one thing that is a credential here
+
+A fresh install authorises REST calls by **IP filter**: the requests must come from an address the panel
+trusts. Turning on `settings.jwtControlEnabled` in the panel replaces that with a **JWT filter** — HS256,
+signature verified, **payload ignored** — and our module signs one token per call from
+`ANT_MEDIA_REST_SECRET`, so there is no token to refresh and no clock to keep. With no secret set, the module
+sends no Authorization header at all rather than invent a credential the server never asked for. All three
+failure shapes (wrong secret, filter on with no secret set, address not in the filter) arrive as the same
+401/403, so the error message names all three instead of guessing.
+
+**Two filters, not one — and the difference is the whole licensing story.** `jwtControlEnabled` guards the
+**REST API** (what we call), and `jwtStreamControlEnabled` guards **the streams themselves** (what a viewer
+plays). The first is a normal, recommended switch. The second is Enterprise play/publish-token control, and
+Community Edition cannot issue those tokens — so a Community box with the stream filter on serves every
+playlist as a 401, and the viewer sees a black rectangle. The doctor now reports that as a failure with the
+switch named (`401 carries allow-origin: *` is exactly the case that an earlier header-only check would have
+called a pass), and the double can reproduce it with `--jwt-streams`. Both switches are independent: the REST
+filter on and the stream filter off is the correct Community configuration.
+
+**Then there is the stream id.** Community Edition has no publish-token control, which means the
+**streamId is the publish credential**: whoever knows it can push to that slot. Two consequences, and both
+are built in:
+
+* the id is **minted here** — `bb` plus 32 hex characters from `crypto.randomBytes(16)`, 128 bits — never a
+  counter and never read back from a listing that anyone with API access could enumerate;
+* recording on the broadcast is **off by default**, because a recording is disk, and a self-hosted server is
+  the one machine where nobody else is going to clean it up.
+
+Publishing is a plain RTMP push to `rtmp://<host>:1935/<app>/<streamId>` — what a seller pastes into OBS,
+and what `ffmpeg` pushes from a laptop. Playback is `https://<host>:5443/<app>/streams/<streamId>.m3u8`,
+fetched by our own player, so the live URL stays what it always was: a file with an `.m3u8` in
+`external_url`, with the same player, the same breaks and the same unlock ladder.
+
+### 12.5 What was verified here, and what only the user's machine can settle
+
+Verified against a local double (`ci/stub-antmedia.mjs`, an HTTP server with the same shapes and the same
+JWT filter): minting a stream, the returned `streamId` matching the one we asked for, the RTMP publish URL
+and the HLS playlist URL derived from it, the server's own `status` flipping to `broadcasting`, per-protocol
+viewer counts, delete-then-delete-again, the JWT path (wrong secret → 401, right secret → accepted), the
+IP-filter path (no header sent), and the wrong-app 404 naming both the app we asked for and `ANT_MEDIA_APP`.
+Five tests in `test/video.test.js` hold all of it.
+
+What cannot be settled from here, in order of risk:
+
+1. **SSL.** WebRTC and the panel insist on it; HLS playback over plain HTTP inside an HTTPS page is blocked
+   by the browser. A certificate (Let's Encrypt, or the free `antmedia.cloud` subdomain) is part of the
+   install, not an afterthought.
+2. **CORS on the playlist**, in a real browser, for the same reason as §11.5 — hls.js fetches it with
+   `fetch`, and the CSP has to name the origin (which `mediaOrigins()` already emits).
+3. **A real broadcast**: `ffmpeg` from the user's laptop into `rtmp://…`, then the player in the panel.
+   That is the proof no double can give.
+4. **The bandwidth arithmetic above**, on whichever host they rent — measured, not estimated.
+
+Until those hold, the honest configuration on any deployment here stays **`LIVE_DRIVER` unset**, which
+changes nothing about how the product behaves today: a seller can still paste a playlist they got elsewhere.

@@ -27,6 +27,7 @@
 import { test, after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import crypto from 'node:crypto';
 
 process.env.DATABASE_URL ||= 'postgres://postgres:postgres@127.0.0.1:55432/bytebikri_test';
 
@@ -393,7 +394,13 @@ before(async () => {
 after(async () => { await new Promise((resolve) => catboxStub.close(resolve)); });
 
 test('the registry knows its hosts, and a misspelled driver is local rather than something else', () => {
-  assert.deepEqual(video.HOSTS, ['filemoon', 'apivideo', 'pixeldrain', 'telegraph', 'catbox']);
+  assert.deepEqual(video.HOSTS, ['filemoon', 'apivideo', 'antmedia', 'pixeldrain', 'telegraph', 'catbox']);
+  const live = Object.entries(video.providers).filter(([, p]) => p.capabilities.role === 'live').map(([name]) => name);
+  assert.deepEqual(live, ['apivideo', 'antmedia'],
+    'two live hosts now — one is a service, one is software on a machine the seller owns');
+  for (const [, p] of Object.entries(video.providers)) {
+    if (p.capabilities.role === 'live') assert.deepEqual(p.capabilities.kinds, [], 'and neither stores a file');
+  }
   assert.equal(video.videoDriver({ VIDEO_DRIVER: 'FILEMOON ' }), 'filemoon');
   assert.equal(video.videoDriver({ VIDEO_DRIVER: 'nope' }), 'local',
     'a typo in an env file must leave every byte on disk, not pick another host');
@@ -785,6 +792,89 @@ const apiEnv = (extra = {}) => ({
   ...process.env, VIDEO_DRIVER: 'apivideo', APIVIDEO_API_KEY: 'stub-key', APIVIDEO_BASE: apiBase, ...extra,
 });
 
+/*
+ * ── the SECOND live host: Ant Media Server on a machine of our own ──────────
+ *
+ * The same shape of double as above, for a server that is software rather than a service:
+ * the application REST API, the JWT filter it can enforce, and the HLS side. `--jwt`-style
+ * enforcement lives here too, because the one thing worth proving about our own auth is
+ * that a server configured with a secret ACCEPTS what we sign.
+ */
+const AMS_SECRET = 'stub-rest-secret';
+const amsSeen = [];
+const amsStreams = new Map();
+const amsStub = http.createServer(async (req, res) => {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  const body = Buffer.concat(chunks).toString('utf8');
+  const url = new URL(req.url, 'http://127.0.0.1');
+  amsSeen.push({ method: req.method, path: url.pathname, body, auth: req.headers.authorization });
+  const json = (code, payload) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)); };
+
+  if (!url.pathname.startsWith('/LiveApp/')) return json(404, { message: 'not found' });
+
+  // The JWT REST filter, as the server applies it when `jwtControlEnabled` is on: signature
+  // verified, payload ignored. A request with NO Authorization header is what a box still on
+  // the default IP filter looks like, so it is allowed through — the filter is a server
+  // setting, and this double serves both configurations.
+  const header = String(req.headers.authorization || '');
+  if (header) {
+    const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+    const [h, p2, sig] = token.split('.');
+    const expected = h && p2 ? crypto.createHmac('sha256', AMS_SECRET).update(`${h}.${p2}`).digest('base64url') : '';
+    if (sig !== expected) return json(401, { message: 'JWT token is not valid' });
+  }
+
+  const rest = url.pathname.slice('/LiveApp/rest/v2'.length);
+  const shape = (id) => {
+    const r = amsStreams.get(id);
+    return {
+      streamId: id, status: r.status, type: 'liveStream', name: r.name,
+      mp4Enabled: r.mp4Enabled ? 1 : 0, rtmpURL: `rtmp://127.0.0.1:1935/LiveApp/${id}`,
+      hlsViewerCount: r.viewers, webRTCViewerCount: 0, rtmpViewerCount: 0,
+      bitrate: r.status === 'broadcasting' ? 1200 : 0,
+    };
+  };
+
+  if (rest === '/broadcasts/create' && req.method === 'POST') {
+    const payload = JSON.parse(body || '{}');
+    amsStreams.set(payload.streamId, { name: payload.name || null, status: 'created', mp4Enabled: Boolean(payload.mp4Enabled), viewers: 0 });
+    return json(200, shape(payload.streamId));
+  }
+  if (rest.startsWith('/broadcasts/list/') && req.method === 'GET') {
+    return json(200, [...amsStreams.keys()].map(shape));
+  }
+  const one = /^\/broadcasts\/([^/]+)$/.exec(rest);
+  if (one && amsStreams.has(decodeURIComponent(one[1]))) {
+    const id = decodeURIComponent(one[1]);
+    if (req.method === 'GET') return json(200, shape(id));
+    if (req.method === 'PUT') return json(200, { success: true });
+    if (req.method === 'DELETE') { amsStreams.delete(id); return json(200, { success: true }); }
+  }
+  const list = /^\/streams\/([^/]+)\.m3u8$/.exec(url.pathname.slice('/LiveApp'.length));
+  if (list && req.method === 'GET') {
+    const id = decodeURIComponent(list[1]);
+    const r = amsStreams.get(id);
+    if (!r) return json(404, { message: 'no such stream' });
+    // Fetching the playlist IS the publish, as close as an HTTP double gets to RTMP.
+    r.status = 'broadcasting';
+    r.viewers += 1;
+    res.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl' });
+    return res.end('#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:4.0,\n/LiveApp/streams/seg0.ts\n');
+  }
+  return json(404, { message: 'not found' });
+});
+let amsBase = '';
+before(async () => {
+  await new Promise((resolve) => amsStub.listen(0, '127.0.0.1', resolve));
+  amsBase = `http://127.0.0.1:${amsStub.address().port}`;
+});
+after(async () => { await new Promise((resolve) => amsStub.close(resolve)); });
+
+const amsEnv = (extra = {}) => ({
+  ...process.env, LIVE_DRIVER: 'antmedia', ANT_MEDIA_BASE: amsBase, ANT_MEDIA_REST_SECRET: AMS_SECRET, ...extra,
+});
+
 test('api.video: the credential is Basic with the key as the USERNAME and a trailing colon', async () => {
   const before = seenApi.length;
   await video.providers.apivideo.account({ env: apiEnv() });
@@ -881,6 +971,103 @@ test('api.video live: the state comes from the host — including whether it is 
   assert.equal(patched.name, 'renamed');
   assert.equal(await video.providers.apivideo.removeLiveStream('liSTUB0000000000000001', { env: apiEnv() }), true);
   assert.equal(await video.providers.apivideo.removeLiveStream('liGONE', { env: apiEnv() }), true, 'a live stream already gone is the outcome we wanted');
+});
+
+// ── Ant Media Server: our own ingest, and the licence facts that go with it ──
+
+test('antmedia is a live host on our own machine: no kind of file can be routed to it', () => {
+  const provider = video.providers.antmedia;
+  assert.deepEqual(provider.capabilities.kinds, [],
+    'a storage kind here would send a file to a stream engine');
+  assert.equal(provider.capabilities.role, 'live');
+  const env = { VIDEO_DRIVER: 'antmedia', FILE_DRIVER: 'antmedia', ANT_MEDIA_BASE: 'https://stream.example:5443' };
+  for (const kind of ['video', 'audio', 'image', 'file']) {
+    assert.equal(video.hostAccepts(kind, 'antmedia', env), false, `${kind} must never route to the live host`);
+  }
+  assert.equal(video.liveDriver({ ...env, LIVE_DRIVER: 'antmedia' }), 'antmedia',
+    'the second live host is a live driver, chosen by LIVE_DRIVER');
+  assert.equal(video.liveIngestEnabled({ ...env, LIVE_DRIVER: 'antmedia' }), true);
+});
+
+test('antmedia: WE mint the stream id, because the id IS the publish credential', async () => {
+  /*
+   * The licence does not include publish-token control on the Community Edition, so
+   * whoever holds a streamId can publish to it. Two consequences, and this test holds
+   * both: the id comes from 128 bits of entropy rather than a counter that can be guessed
+   * by asking for the next one, and what we POST is the id we generated rather than one we
+   * read back from the server.
+   */
+  const before = amsSeen.length;
+  const live = await video.providers.antmedia.createLiveStream({ liveName: 'unit', env: amsEnv() });
+  assert.match(live.id, /^bb[0-9a-f]{32}$/, 'bb + 32 hex characters — 128 bits, not a sequence number');
+  const posted = amsSeen.slice(before).find((c) => c.path.endsWith('/broadcasts/create'));
+  assert.ok(posted, 'the create call went out');
+  assert.equal(JSON.parse(posted.body).streamId, live.id, 'the id we asked for is the id we got');
+  assert.equal(JSON.parse(posted.body).mp4Enabled, false,
+    'recording is OFF on the broadcast: a recorded stream is disk, and disk is the thing a server runs out of');
+
+  const other = await video.providers.antmedia.createLiveStream({ liveName: 'unit2', env: amsEnv() });
+  assert.notEqual(other.id, live.id, 'two streams do not share an id');
+
+  assert.match(live.hls, /\/LiveApp\/streams\/bb[0-9a-f]{32}\.m3u8$/, 'the playlist url is derived from the id');
+  assert.equal(live.publishUrl, `rtmp://127.0.0.1:1935/LiveApp/${live.id}`,
+    'the publish url is what a seller pastes into OBS, and it carries the id');
+  assert.equal(live.broadcasting, false, 'a fresh broadcast is not live yet — the server says so');
+});
+
+test('antmedia: our own HS256 token is what a JWT-filtered server verifies', async () => {
+  const token = video.providers.antmedia.signJwt(AMS_SECRET);
+  const [h, p, sig] = token.split('.');
+  assert.deepEqual(JSON.parse(Buffer.from(h, 'base64url').toString()), { alg: 'HS256', typ: 'JWT' });
+  assert.deepEqual(JSON.parse(Buffer.from(p, 'base64url').toString()), {},
+    'the payload is empty on purpose: their filter verifies the signature and ignores the payload');
+  const expected = crypto.createHmac('sha256', AMS_SECRET).update(`${h}.${p}`).digest('base64url');
+  assert.equal(sig, expected, 'the signature is a plain HMAC-SHA256 over header.payload');
+
+  // And the server accepts it, because the double enforces the same filter the real one does.
+  const before = amsSeen.length;
+  await video.providers.antmedia.account({ env: amsEnv() });
+  const calls = amsSeen.slice(before);
+  assert.ok(calls.length >= 1, 'the account check made a call');
+  for (const c of calls) {
+    assert.equal(c.auth, `Bearer ${video.providers.antmedia.signJwt(AMS_SECRET)}`,
+      'every call carries a freshly signed token — no cache, no clock to keep, nothing to refresh');
+  }
+});
+
+test('antmedia: with no secret configured, no credential is sent — the IP filter is the authorisation', async () => {
+  const before = amsSeen.length;
+  await video.providers.antmedia.account({ env: amsEnv({ ANT_MEDIA_REST_SECRET: undefined }) });
+  const calls = amsSeen.slice(before);
+  assert.ok(calls.length >= 1);
+  assert.equal(calls[0].auth, undefined,
+    'a fresh install authorises by address, so sending a header there would be inventing a credential');
+  assert.equal(video.providers.antmedia.authMode({}), 'ip-filter');
+  assert.equal(video.providers.antmedia.authMode({ ANT_MEDIA_REST_SECRET: 'x' }), 'jwt');
+});
+
+test('antmedia: the state comes from the server — including how many are watching', async () => {
+  const live = await video.providers.antmedia.createLiveStream({ liveName: 'watch', env: amsEnv() });
+  const idle = await video.providers.antmedia.liveStream(live.id, { env: amsEnv() });
+  assert.equal(idle.broadcasting, false);
+  assert.equal(idle.status, 'created', "the server's own word, not ours");
+
+  // Publishing is what flips it; the double marks it when the playlist is fetched.
+  await fetch(live.hls);
+  const liveNow = await video.providers.antmedia.liveStream(live.id, { env: amsEnv() });
+  assert.equal(liveNow.broadcasting, true);
+  assert.equal(liveNow.status, 'broadcasting');
+  assert.ok(liveNow.viewers.hls >= 1, 'the viewer counts are per protocol, which is how a seller sees an empty room');
+
+  assert.equal(await video.providers.antmedia.removeLiveStream(live.id, { env: amsEnv() }), true);
+  assert.equal(await video.providers.antmedia.removeLiveStream('bbgone', { env: amsEnv() }), true,
+    'a stream already gone is the outcome we wanted');
+});
+
+test('antmedia: the CSP names the self-hosted origin, because the playlist comes from it', () => {
+  const origins = video.mediaOrigins({ LIVE_DRIVER: 'antmedia', ANT_MEDIA_BASE: 'https://stream.example:5443' });
+  assert.ok(origins.includes('https://stream.example:5443'),
+    "the server's own origin has to be allowed for hls.js to fetch the playlist at all");
 });
 
 test('the live driver is its own choice, and a host without a live half cannot pretend', () => {

@@ -277,6 +277,30 @@ try {
       if (account.rate) says(`rate limit: ${account.rate.limit}/min, ${account.rate.remaining} left this window`);
       says(`costing: ${caps.live.metering}`);
     }
+    /*
+     * A SELF-HOSTED SERVER HAS NO TIER, so the report says what it does have: which address,
+     * which application, how it authorises us, and what is on it. The three ways this fails
+     * look identical from outside — an unlisted IP, a wrong JWT secret, a wrong application
+     * name — and each one has a different fix, which is why the provider's error messages
+     * name them (that is the only useful thing an error message can do here).
+     */
+    if (chosen === 'antmedia') {
+      says(`server: ${account.base} · application: ${account.app}`);
+      says(`authorisation: ${account.token}`);
+      says(`on the server: ${account.streams} stream(s) known, ${account.live} live right now`);
+      says('role: LIVE ONLY — this host runs streams; no kind of file is routed to it');
+      says('listing: GET /broadcasts/list/0/N is the endpoint behind the counts above');
+      says('costing: the server and its bandwidth, not the audience — no viewer or broadcaster '
+        + 'limit in the Community licence, and no per-minute meter at all');
+      says('LICENCE: the Community Edition is free (commercial use included). An Enterprise TRIAL '
+        + 'key may not be used commercially or to benefit a third party, so a store\'s broadcast '
+        + 'belongs on Community or a paid licence — never on a trial');
+      if (video.providers.antmedia.authMode() === 'ip-filter') {
+        says('note: no ANT_MEDIA_REST_SECRET is set, so this relies on the server\'s REST API IP');
+        says('      filter allowing this address. Setting the JWT filter + secret is the stronger');
+        says('      configuration: then the credential travels with the request.');
+      }
+    }
     if (chosen === 'pixeldrain' && !/pro|premium|paid/i.test(String(account.tier || ''))) {
       says('NOTE: this account is on a free plan. Pixeldrain refuses requests it reads as');
       says('      hotlinks (403 hotlink_detected), and a store page loading its media is');
@@ -325,6 +349,12 @@ if (chosen === 'filemoon') {
   } catch (err) {
     bad(`listing files failed — ${err.message}`);
   }
+} else if (chosen === 'antmedia') {
+  /*
+   * Reported above, in its own words. A stream list is not a file list: saying "GET /videos"
+   * here would name an endpoint this server does not have, and saying "no listing" would be
+   * false about the endpoint it does have.
+   */
 } else if (facts && facts.lists) {
   /*
    * A host that HAS a listing gets told so, with the count — because "does this host still
@@ -542,7 +572,24 @@ async function probeCors(url) {
     const res = await fetch(url, { headers: { origin: 'https://bytebikri.example', range: 'bytes=0-1' } });
     await res.body?.cancel?.();
     const allow = res.headers.get('access-control-allow-origin');
+    const readable = res.status >= 200 && res.status < 300;
     if (allow === '*' || allow === 'https://bytebikri.example') {
+      /*
+       * A HEADER IS NOT A PLAYLIST. The first version of this check called any response
+       * carrying `access-control-allow-origin` CORS-clean, and a 401 with the header passed
+       * — the browser would have been allowed to read a refusal. So the status is part of
+       * the answer now, and a self-hosted server is exactly where it matters: turning on the
+       * stream JWT filter (an Enterprise feature) makes every playlist 401, and Community
+       * Edition has no way to hand a viewer the token that would fix it.
+       */
+      if (!readable) {
+        return {
+          ok: false,
+          detail: `${res.status} carries allow-origin: ${allow} but the playlist itself cannot be read`
+            + ' — if this is your own server, the JWT STREAM filter is on. Community Edition cannot'
+            + ' issue play tokens, so that switch has to be off (the REST filter is a different one)',
+        };
+      }
       return { ok: true, detail: `${res.status} allow-origin: ${allow}` };
     }
     return { ok: false, detail: `${res.status} with ${allow ? `allow-origin: ${allow}` : 'no access-control-allow-origin'}` };
@@ -587,27 +634,50 @@ async function probeRange(url) {
  * to use; it is never stored by the app (VIDEO_STORAGE.md §11.2).
  */
 async function probeLive() {
-  const provider = video.providers.apivideo;
-  if (!provider.configured()) {
-    bad('APIVIDEO_API_KEY is not set — there is no live driver to probe');
+  /*
+   * WHICHEVER LIVE DRIVER IS NAMED, not api.video specifically.
+   *
+   * There are two now, and they answer the same question — api.video buys the ingest and
+   * meters the audience, Ant Media Server is software on our own machine (§12) — so a probe
+   * that only knew about the first would make the second unverifiable, which is the one
+   * thing a provider round must not be.
+   */
+  const liveName = video.liveDriver();
+  if (liveName === 'local') {
+    bad('no LIVE_DRIVER is configured — nothing can mint a stream. Set LIVE_DRIVER=apivideo or LIVE_DRIVER=antmedia');
     return;
   }
-  console.log('\n  api.video live probe\n');
-  console.log(`  base        : ${provider.base()}`);
+  const provider = video.providers[liveName];
+  if (!provider.configured()) {
+    bad(`${liveName} is named as LIVE_DRIVER but is not configured — see app/.env.example`);
+    return;
+  }
+  console.log(`\n  ${provider.label} live probe\n`);
+  console.log(`  base        : ${typeof provider.base === 'function' ? provider.base() : liveName}`);
   let live = null;
   try {
     live = await provider.createLiveStream({ liveName: 'bytebikri-probe' });
     ok(`a live stream was minted — ${live.id}`);
     says(`stream key  : ${live.streamKey}`);
     says(`playlist    : ${live.hls || '(the host did not return one yet)'}`);
-    const ingest = provider.ingestFor({ APIVIDEO_STREAM_KEY: live.streamKey });
+    /* The publish url, from the provider when it knows the exact shape and derived when not. */
+    const publish = live.publishUrl
+      || `${String(provider.capabilities.live.ingest.rtmp).replace(/\/$/, '')}/${live.streamKey}`;
+    const suffix = `/${live.streamKey}`;
+    const rtmpServer = publish.endsWith(suffix) ? publish.slice(0, -suffix.length)
+      : provider.capabilities.live.ingest.rtmp;
     says('');
     says('Put these in OBS (Service: Custom), or push with ffmpeg:');
-    says(`  server    : ${ingest.rtmp}`);
+    says(`  server    : ${rtmpServer}`);
     says(`  stream key: ${live.streamKey}`);
     says('  ffmpeg    : ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=30 \\');
     says('                -f lavfi -i sine=frequency=440 -c:v libx264 -preset veryfast \\');
-    says(`                -t 60 -f flv ${ingest.rtmp}/${live.streamKey}`);
+    says(`                -t 60 -f flv ${publish}`);
+    if (liveName === 'antmedia') {
+      says('              (the stream id doubles as the key here — Community has no publish');
+      says('               tokens, which is why we mint it from 128 bits of entropy and never');
+      says('               show it to a viewer)');
+    }
     const state = await provider.liveStream(live.id);
     says('');
     says(`broadcasting: ${state.broadcasting ? 'YES — a stream is up' : 'not yet (expected: nothing is pushing)'}`);
@@ -633,10 +703,26 @@ async function probeLive() {
       try {
         const res = await fetch(live.hls, { method: 'GET' });
         const origin = res.headers.get('access-control-allow-origin');
+        const readable = res.status >= 200 && res.status < 300;
         if (res.status === 404) {
           says('cors        : unknown yet — the playlist is not being served (nothing is pushing), '
             + 'so hls.js cannot be tested until a stream is up');
-        } else if (origin) {
+        } else if (res.status === 401 || res.status === 403) {
+          /*
+           * The header is present and the playlist is still unreadable, which is the one
+           * combination a header-only check calls a pass. On a hosted CDN this is a broken
+           * delivery rule; on a SELF-HOSTED server it is almost always the stream JWT
+           * filter (`jwtStreamControlEnabled`) — an Enterprise feature that Community
+           * Edition cannot issue play tokens for, so it must be off there. Either way the
+           * viewer gets a black rectangle, so it is a failure with the reason named.
+           */
+          bad(`the playlist answers ${res.status}${origin ? ` (with allow-origin: ${origin})` : ''} — the header is there `
+            + 'and the bytes are not: a viewer\'s player would load a playlist it is not allowed to read. '
+            + (liveName === 'antmedia'
+              ? 'On your own server this is the JWT STREAM filter: turn it off. The REST filter is a different '
+                + 'switch and the two are independent, and Community Edition has no way to issue a play token.'
+              : 'Check the delivery rule for this stream.'));
+        } else if (origin && readable) {
           ok(`the playlist is CORS-readable — hls.js can load it (${res.status} allow-origin: ${origin})`);
         } else {
           bad(`the live playlist is not CORS-readable (${res.status} with no access-control-allow-origin), `
@@ -650,7 +736,12 @@ async function probeLive() {
     }
     const caps = provider.capabilities;
     says(`limits      : ${caps.live.metering}`);
-    if (provider.isSandbox()) {
+    /*
+     * A sandbox is a fact about a HOSTED service; a self-hosted server has none, and asking
+     * one for its sandbox limits threw before this guard existed. Capability questions are
+     * asked of the capability, never of the provider's identity.
+     */
+    if (typeof provider.isSandbox === 'function' && provider.isSandbox()) {
       says(`              SANDBOX: live stops after ${Math.round(caps.sandbox.liveMaxSeconds / 60)} min, `
         + `the recording is cut at ${caps.sandbox.liveRecordSeconds}s`);
     }
