@@ -171,8 +171,31 @@ export const storage = {
       const file = { mimeType, filename, size: buffer?.length ?? 0 };
       const driver = driverForKind(kind, process.env, file);
       if (driver !== 'local') {
-        const { key } = await videoUpload(buffer, filename, { mimeType, provider: driver });
-        return key;
+        /*
+         * ── THE HOST SAID NO, SO THE UPLOAD STILL SUCCEEDS ────────────────────
+         *
+         * The pre-check below (`whyLocal`) covers the refusals a host publishes: a size cap,
+         * a kind it does not take. It cannot cover the ones that happen at the wire — a
+         * key that expired 30 days after its last use, a free plan that reads a
+         * server upload as abuse, a host having a bad afternoon. Those used to THROW, which
+         * meant a seller pressed Publish and got an error page: the platform was blocked by
+         * a third party's mood, and the file, which was perfectly good, never landed.
+         *
+         * So a host failure is now the same shape as a host refusal: the bytes stay here, the
+         * seller gets a file that works, and the reason is in the log rather than in a stack
+         * trace nobody reads. The host is still tried first — this is a fallback, not a
+         * policy — and nothing is silently retried at the host, so a refusal costs one call.
+         *
+         * The failure is NOT swallowed: it is the operator's signal that a driver is
+         * misconfigured, and `warning` reaches the local branch's own log line below.
+         */
+        try {
+          const { key } = await videoUpload(buffer, filename, { mimeType, provider: driver });
+          return key;
+        } catch (err) {
+          const why = err?.message || String(err);
+          console.warn(`  storage: ${driver} refused "${filename || kind}" — kept on our own disk instead: ${why}`);
+        }
       }
       /*
        * THE HOST SAID NO TO THIS FILE, SO WE KEEP IT.
@@ -2217,6 +2240,103 @@ export const store = {
    * is memoised per (file, checksum) inside `pages.js`, which is what keeps this
    * cheap enough to call on every asset-page render.
    */
+  /**
+   * DELETE A FILE — the bytes first, then the last pointer to them.
+   *
+   * Two promises, and they are different promises:
+   *
+   *   * an UNLOCK buys access to a file while it exists. Pausing keeps that promise
+   *     (the file is off sale, and everyone who opened it keeps watching), which is
+   *     why pausing is not this.
+   *   * a DELETE says the bytes are gone and nobody can fetch them any more. That has
+   *     to be true at the byte level — not only in the storefront query — so the
+   *     `asset_files` rows go with the bytes, and both byte routes 404 because there
+   *     is no file to look up rather than because a page decided to hide a card.
+   *
+   * A HOST THAT CANNOT DELETE IS NOT A REASON TO KEEP THE FILE.
+   *
+   * Telegra.ph has no delete endpoint (VIDEO_STORAGE.md §10.5) and says so by throwing
+   * from `remove()`. The old impulse — refuse the whole delete because one copy cannot
+   * be recalled — leaves a picture the seller has explicitly disowned still served by
+   * us, which is the worse of the two outcomes and the one the product can always
+   * avoid. So the attempt is made per file, the failure is recorded as an ORPHAN with
+   * the host and the key, and the local side is destroyed anyway. The seller is told
+   * the truth in the words the host earned: the copy at Telegra.ph cannot be recalled,
+   * and nothing here points at it any more.
+   *
+   * What survives is the row: unlocks, reports and appeals keep their subject, and the
+   * tombstone says what happened and when. What does not survive is every address:
+   * `asset_files` rows, the live `external_url`, and a `cover_url` that points off our
+   * own origin — a cover is a picture of the file, and a deleted file's picture staying
+   * on somebody else's CDN is the same leak one size smaller.
+   */
+  async deleteAsset({ assetId, actorId = null }) {
+    const asset = await this.assetById(assetId);
+    if (!asset) return null;
+    /*
+     * Already a tombstone: nothing to do, and nothing to claim.
+     *
+     * A seller can hold two tabs open, and the second press must not report destroying a
+     * file that is not there — "1 file destroyed" on an empty file is exactly the kind of
+     * small untrue sentence that makes a report worth ignoring. The row it would count is
+     * the ENOENT below, which is a real answer for a first delete (somebody removed the
+     * bytes out of band) and the wrong answer here.
+     */
+    if (asset.status === 'deleted') {
+      return { asset, destroyed: [], orphans: [], unlocksVoided: 0, already: true };
+    }
+    const files = await this.filesOf(assetId);
+    const destroyed = [];
+    const orphans = [];
+
+    for (const file of files) {
+      const key = String(file.storage_key || '');
+      const host = storage.isRemote(key) ? storage.remoteProvider(key) : 'local';
+      try {
+        if (storage.isRemote(key)) await videoRemove(storage.remoteId(key), { provider: host });
+        else await storage.remove(key);
+        destroyed.push({ host, key });
+      } catch (err) {
+        // Not fatal by design. An undeletable host is a fact about the host, and the
+        // sentence it throws is the most useful thing anybody can say about the copy
+        // that remains — so it is kept rather than swallowed.
+        const missing = err?.code === 'ENOENT';
+        if (missing) destroyed.push({ host, key });
+        else orphans.push({ host, key, reason: err?.message || 'the host refused to delete it' });
+      }
+    }
+
+    // The entitlement goes with the bytes. Not for tidiness: `isUnlocked` is what the
+    // byte routes check, and a live unlock row for a file with no bytes is a promise
+    // the product cannot keep.
+    const { rows: [{ n: unlocksVoided }] } = await query(
+      `with voided as (
+         update unlocks set revoked_at = now()
+          where asset_id = $1 and revoked_at is null
+          returning 1)
+       select count(*)::int as n from voided`,
+      [assetId],
+    );
+
+    await query('delete from asset_files where asset_id = $1', [assetId]);
+    const { rows: [row] } = await query(
+      `update assets
+          set status = 'deleted', deleted_at = now(), updated_at = now(),
+              hidden_by_reports = false,
+              external_url = null,
+              cover_url = case when cover_url like '/%' then cover_url else null end
+        where id = $1
+        returning *`,
+      [assetId],
+    );
+
+    await this.audit('asset.deleted', {
+      files: files.length, destroyed, orphans, unlocksVoided,
+    }, { actorId, subjectType: 'asset', subjectId: assetId });
+
+    return { asset: row, destroyed, orphans, unlocksVoided };
+  },
+
   async assetPagePlan(asset, files = null) {
     if (!asset) return pagePlan({ files: [] });
     const rows = files ?? await this.filesOf(asset.id);

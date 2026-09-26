@@ -16,6 +16,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Readable } from 'node:stream';
 
 import { store, storage, SLOT_DEFS, slugify, PLANS, nextPlan } from './src/store.js';
 import { hostsEnabled, mediaOrigins as videoMediaOrigins } from './src/video.js';
@@ -45,7 +46,7 @@ import { composeSlots, HOUSE_CREATIVE, sanitizeUrl } from './src/creatives.js';
 import { exploreRails } from './src/ranking.js';
 import {
   ACTIONS as MOD_ACTIONS, ACTION_LABELS, ASSET_ACTIONS, ASSET_ACTION_TO_STATE,
-  ASSET_BEHAVIOUR, PERSON_ACTIONS, assetBehaviour, behaviour, canWrite,
+  ASSET_BEHAVIOUR, PERSON_ACTIONS, assetBehaviour, behaviour, canWrite, closedToViewers,
   changesVisibility, decisionNote, isAssetPublic, isPublic, isPublicChannel, normaliseAssetState,
   normaliseState, personStateFor, stateFor, validateAssetDecision, validateDecision,
 } from './src/moderation.js';
@@ -3557,6 +3558,46 @@ async function resolveContentRequest(req, res, { event }) {
    */
   const asset = await store.assetById(a);
   if (!asset) { res.status(404).json({ ok: false, error: 'file not found' }); return null; }
+
+  /*
+   * ── THE STATE THE FILE IS IN, ASKED BEFORE THE UNLOCK ──────────────────────
+   *
+   * The bytes route used to check the ENTITLEMENT and nothing else, and the
+   * difference matters exactly when a seller or a moderator takes something down:
+   * an unlock row outlives a decision, so a file that was paused, hidden by
+   * reports, withdrawn by the platform or DELETED kept being served to anyone who
+   * had already opened it. The rule below is the fix, and it is written here —
+   * once, on the byte boundary — rather than in each of the three routes that
+   * call this, because three copies of a delivery rule are three chances for one
+   * of them to be wrong.
+   *
+   * The four answers, and why each is what it is:
+   *
+   *   live      → served, as it always was.
+   *   paused    → STILL SERVED to somebody who already unlocked it. Pausing is
+   *               "off sale", and what an unlock buys is the file, not the sale.
+   *               Taking that away would make a two-minute fix break every buyer.
+   *   deleted   → 410. The file rows are gone with the bytes, so this is the belt
+   *               to that braces: a token minted a second before the delete cannot
+   *               resurrect a file whose addresses no longer exist.
+   *   hidden / removed / not yet published
+   *             → 404/403. A moderator's take-down that left the bytes flowing to
+   *               everyone holding a token was the same bug in a different place:
+   *               hiding a file has to mean it is not being served.
+   *
+   * The owner and an operator are exempt: they are the two people who can do
+   * something about a file, and `draft`/`pending_review` previews have depended on
+   * that since before this check existed.
+   */
+  const heldChannel = await store.channelById(asset.channel_id);
+  const heldPrivileged = heldChannel?.owner_id === u || req.user.role === 'admin';
+  const closed = closedToViewers(asset, { privileged: heldPrivileged });
+  if (closed) {
+    await store.audit('content.denied', {
+      reason: closed.reason, assetId: a, fileId: f, userId: u, status: asset.status,
+    }, { actorId: u, subjectType: 'asset', subjectId: a });
+    return void res.status(closed.status).json({ ok: false, error: closed.error, why: closed.why });
+  }
   // A free file hands out an unlock row on first fetch — but not a file that is
   // paused or hidden pending review. Without this line, hiding a free file
   // changed only what the storefront showed: the file itself kept being served
@@ -3613,10 +3654,10 @@ async function resolveContentRequest(req, res, { event }) {
   if (!file) { res.status(404).json({ ok: false, error: 'file not found' }); return null; }
 
   // The check that matters most: a token proves an unlock, and an unlock in one
-  // country does not carry into a country the file is withheld from.
-  const channel = await store.channelById(asset.channel_id);
-  const privileged = channel?.owner_id === u || req.user.role === 'admin';
-  const refusal = privileged ? null : await countryRefusalFor(asset, viewerCountry(req));
+  // country does not carry into a country the file is withheld from. The channel and
+  // the privileged answer were resolved above, with the state check — one lookup, so
+  // the two rules cannot disagree about who is privileged.
+  const refusal = heldPrivileged ? null : await countryRefusalFor(asset, viewerCountry(req));
   if (refusal) {
     await store.audit('content.denied', {
       reason: refusal.availability.reason === 'file' ? 'file not unlockable' : 'country rule',
@@ -3679,14 +3720,94 @@ async function hostedSourceKind(files = []) {
  * viewer's player is going to show an error either way, and only one of the two
  * tells them it is not their connection.
  */
+/**
+ * Send a viewer the host's bytes through our own origin, Range and all.
+ *
+ * The one thing this must not do is buffer: a 300 MB video sent through `res.send(buf)` would
+ * be 300 MB of RAM per viewer, which is how a relay turns a working store into a dead server.
+ * So the upstream body is piped, the status is passed through untouched (206 and 416 both mean
+ * something to a media element), and the headers a player actually reads — length, range,
+ * accept-ranges, type — come from the host rather than from us.
+ *
+ * It identifies itself honestly. A host that refuses a BROWSER is not refusing a server, and
+ * pretending to be a browser to get around a term or a rule would be the wrong kind of clever;
+ * this sends our own user-agent and our key was already used to mint the url.
+ */
+async function relayBytes(url, req, res, { type = null, filename = null, kind = null, from = null, as = 'inline' } = {}) {
+  let upstream;
+  try {
+    upstream = await fetch(url, {
+      headers: {
+        ...(req.headers.range ? { range: String(req.headers.range) } : {}),
+        'user-agent': 'ByteBikri media relay',
+      },
+    });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: 'the file\u2019s host did not answer', detail: err.message });
+    return undefined;
+  }
+  if (upstream.status !== 200 && upstream.status !== 206) {
+    await upstream.body?.cancel?.();
+    res.status(upstream.status === 416 ? 416 : 502).json({
+      ok: false,
+      error: upstream.status === 403 ? 'the host refused to serve these bytes' : 'the file\u2019s host did not answer',
+      detail: `${upstream.status}${upstream.headers.get('content-range') ? ` ${upstream.headers.get('content-range')}` : ''}`,
+    });
+    return undefined;
+  }
+
+  res.status(upstream.status);
+  res.setHeader('content-type', upstream.headers.get('content-type') || type || 'application/octet-stream');
+  for (const header of ['content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
+    const value = upstream.headers.get(header);
+    if (value) res.setHeader(header, value);
+  }
+  // The same header the redirect branch sets, so a client that reads it for the demuxer
+  // gets the same answer whichever way the bytes travel — plus the one that says the bytes
+  // are coming THROUGH us and whose they are. Without it a relayed 200 is indistinguishable
+  // from a file on our own disk, and the difference matters: one of them is somebody else's
+  // bandwidth, and a walk that cannot tell them apart cannot check either.
+  if (kind) res.setHeader('x-bytebikri-source', kind);
+  if (from) res.setHeader('x-bytebikri-relay', from);
+  if (filename) {
+    res.setHeader('content-disposition',
+      `${as}; filename="${String(filename).replace(/["\\]/g, '')}"`);
+  }
+  res.setHeader('cache-control', 'private, no-store');
+  Readable.fromWeb(upstream.body).pipe(res);
+  return undefined;
+}
+
 async function resolveBytes(file, req, res) {
   if (!storage.isRemote(file.storage_key)) {
     return { buf: await storage.get(file.storage_key) };
   }
   const id = storage.remoteId(file.storage_key);
+  const host = storage.remoteProvider(file.storage_key);
   try {
-    const { playback } = await import('./src/video.js');
-    const found = await playback(id, { provider: storage.remoteProvider(file.storage_key) });
+    const { playback, relaysThroughUs } = await import('./src/video.js');
+    const found = await playback(id, { provider: host });
+    /*
+     * ── REDIRECT, OR RELAY ────────────────────────────────────────────────────
+     *
+     * Two ways to get a viewer the bytes, and the registry decides which (`relaysThroughUs`):
+     * a 302 puts the viewer's browser straight onto the host, which costs us nothing, and a
+     * relay sends every byte through this server, which costs upload but is the only way to
+     * serve a host that refuses browser fetches (`hotlink_detected`) or whose terms we cannot
+     * lean on for delivery. Pixeldrain is the first case; the free plan answers 403 to what
+     * it reads as a hotlink, and a redirect from a store's page is exactly that.
+     *
+     * HLS is NEVER relayed, and it is worth saying why rather than letting it look like an
+     * oversight: a playlist names its segments, and piping the playlist through our origin
+     * without rewriting those names would hand the player a list of urls it is still expected
+     * to fetch from the host — the same CORS question as before, now hidden one level down.
+     * Relaying HLS is a playlist REWRITER, which is a real feature and not a delivery flag;
+     * until it exists the live path stays a redirect, where §10.4's answer (name the origin in
+     * the policy) already works.
+     */
+    if (found.kind !== 'hls' && relaysThroughUs(host)) {
+      return { relay: found, host };
+    }
     return { redirect: found };
   } catch (err) {
     if (err.name === 'VideoApiError') {
@@ -4134,6 +4255,14 @@ APP.get('/api/content/:assetId/file/:fileId', async (req, res, next) => {
 
     const source = await resolveBytes(file, req, res);
     if (!source) return undefined;
+    if (source.relay) {
+      // Same relay, announced as a download: this route is the download arm, and the
+      // disposition is the only thing that differs from the stream route's relay.
+      return relayBytes(source.relay.url, req, res, {
+        type: file.mime_type, filename: file.filename, kind: source.relay.kind,
+        from: source.host, as: 'attachment',
+      });
+    }
     if (source.redirect) {
       // The host's own URL, announced as a download because this route is the
       // download arm. `no-store` on the redirect so a browser does not keep the
@@ -4177,6 +4306,13 @@ APP.get('/api/content/:assetId/file/:fileId/stream', async (req, res, next) => {
 
     const source = await resolveBytes(file, req, res);
     if (!source) return undefined;
+    if (source.relay) {
+      // The host will not serve a browser directly, so the bytes come through us — with the
+      // viewer's Range intact, because seeking is the difference between a player and a GIF.
+      return relayBytes(source.relay.url, req, res, {
+        type: file.mime_type, kind: source.relay.kind, from: source.host, as: 'inline',
+      });
+    }
     if (source.redirect) {
       /*
        * THE PLAYER KEEPS OUR URL IN THE PAGE AND THE BYTES COME FROM THE HOST.
@@ -5954,6 +6090,56 @@ APP.get('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
       countryRules: allCountryRules.filter((r) => r.source === 'creator'),
       platformRules: allCountryRules.filter((r) => r.source !== 'creator'),
       live: livePanel,
+      // What the delete did, when the seller has just done one. Read from the query
+      // string rather than from a session flash, because these numbers are the record
+      // of an irreversible act: a reload should still show them.
+      deleted: req.query.deleted
+        ? {
+          already: req.query.deleted === 'already',
+          gone: Number(req.query.gone) || 0,
+          orphans: Number(req.query.orphans) || 0,
+          unlocks: Number(req.query.unlocks) || 0,
+          at: String(req.query.at || '').split(',').filter(Boolean),
+        }
+        : null,
+    }));
+  } catch (err) { return next(err); }
+});
+
+/*
+ * The confirmation step, and the only page in the dashboard that asks for a word.
+ *
+ * A separate page rather than a modal, because the point is to make the seller read
+ * three sentences before the bytes go: what is destroyed, who loses access, and what
+ * the host can and cannot take back. The number of unlocks is on this page on purpose
+ * — the seller is told how many people are about to lose the file, while they can still
+ * change their mind.
+ */
+APP.get('/dashboard/:slug/assets/:assetId/delete', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    const asset = await store.assetById(req.params.assetId);
+    if (!asset || asset.channel_id !== channel.id) return res.status(404).send('Not found');
+    const files = await store.filesOf(asset.id);
+    const unlocks = (await store.unlocksOfChannel(channel.id)).filter((u) => u.asset_id === asset.id).length;
+    /*
+     * WHICH HOSTS CANNOT TAKE IT BACK — asked of the registry before the fact, not
+     * discovered after it. A host that declares `deletable: false` will refuse, and
+     * saying so here is what makes the confirmation honest: the seller learns that the
+     * copy on Telegra.ph will outlive their delete BEFORE they press it, rather than
+     * from a tombstone afterwards.
+     */
+    const hosts = [...new Set(files.filter((f) => storage.isRemote(f.storage_key))
+      .map((f) => storage.remoteProvider(f.storage_key)))];
+    const keepable = [];
+    for (const host of hosts) {
+      const facts = (await import('./src/video.js')).hostFacts().find((h) => h.host === host);
+      if (facts && facts.deletable === false) keepable.push({ host, label: facts.label });
+    }
+    res.send(views.assetDelete({
+      channel, asset, user: req.user, files, unlocks, keepable,
+      error: String(req.query.error || ''),
     }));
   } catch (err) { return next(err); }
 });
@@ -6087,6 +6273,76 @@ APP.post('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
     // turns its pages a different way — and that is the whole of what changed.
     if (readChanged) return res.redirect(`${back}?saved=read-choices`);
     return res.redirect(`${back}?saved=1`);
+  } catch (err) { return next(err); }
+});
+
+/*
+ * ── DELETING A FILE, WHICH UNTIL NOW THE PRODUCT COULD NOT DO ────────────────
+ *
+ * There is no `DELETE` verb in this app's vocabulary — every seller action is a form
+ * post with an outcome in the query string — so this is a post like the rest, and the
+ * outcome is a page rather than a JSON body: after a delete the seller lands on the
+ * file's tombstone, which is the only place that can tell them what actually happened.
+ *
+ * THREE THINGS THIS ROUTE IS CAREFUL ABOUT.
+ *
+ * 1. **It is the seller's own store's file.** Same guard sequence as the edit route
+ *    above: owner, not frozen, and the asset must belong to THIS channel. An id from
+ *    another store is a 404, not a delete.
+ *
+ * 2. **It asks for the word "delete".** A delete cannot be undone — the bytes are
+ *    gone — so it is the one action in this dashboard that is not a single click.
+ *    The form's confirm field is checked here rather than trusted to the browser:
+ *    a confirmation that only exists in an `onsubmit` is a confirmation a scripted
+ *    post can skip, and this is the action where skipping it costs the most.
+ *
+ * 3. **It reports the copies it could not destroy.** `store.deleteAsset` returns the
+ *    orphans — bytes at a host that has no delete endpoint — and they are named on
+ *    the tombstone. A delete that claimed more than it did would be worse than the
+ *    bug this fixes, because the seller would stop worrying about a picture that is
+ *    still up.
+ *
+ * IT IS NOT IN THE BULK ACTIONS, deliberately: bulk actions are undoable (the batch
+ * id can be replayed), and an undoable delete is a lie — there are no bytes to put
+ * back. If bulk deletion is ever wanted, it needs its own non-undoable path.
+ */
+APP.post('/dashboard/:slug/assets/:assetId/delete', async (req, res, next) => {
+  try {
+    const channel = await ownerChannel(req, res);
+    if (!channel) return undefined;
+    if (refuseWrite(req, res, channel)) return undefined;
+    const base = `/dashboard/${encodeURIComponent(channel.slug)}/assets/${encodeURIComponent(req.params.assetId)}`;
+    const asset = await store.assetById(req.params.assetId);
+    if (!asset || asset.channel_id !== channel.id) return res.status(404).send('Not found');
+    if (asset.status === 'deleted') return res.redirect(`${base}?deleted=already`);
+    /*
+     * THE WORD IS `delete`, EXACTLY, and the first draft of this was wrong about that.
+     *
+     * It folded the case before comparing, so `DELETE` went through — and the walk that
+     * types the wrong thing first caught it: a confirmation that accepts a different word
+     * than the one the page asks for is a confirmation that accepts whatever the browser's
+     * autocomplete or a stray shift key produces. The page says "type the word delete", so
+     * the question is answered with the word `delete`; anything else, including the same
+     * word in capitals, comes back as a refusal.
+     */
+    if (String(req.body?.confirm || '').trim() !== 'delete') {
+      return res.redirect(`${base}/delete?error=confirm`);
+    }
+
+    const out = await store.deleteAsset({ assetId: asset.id, actorId: req.user.id });
+    const orphanHosts = [...new Set(out.orphans.map((o) => o.host))];
+    await store.audit('asset.delete_reported', {
+      assetId: asset.id, channelId: channel.id,
+      destroyed: out.destroyed.length, orphaned: out.orphans.length, orphanHosts,
+    });
+    const q = new URLSearchParams({
+      deleted: '1',
+      gone: String(out.destroyed.length),
+      orphans: String(out.orphans.length),
+      unlocks: String(out.unlocksVoided),
+    });
+    if (orphanHosts.length) q.set('at', orphanHosts.join(','));
+    return res.redirect(`${base}?${q.toString()}`);
   } catch (err) { return next(err); }
 });
 

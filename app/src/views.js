@@ -5471,7 +5471,10 @@ ${(() => {
           </label>
         </td>
         <td><strong>${esc(a.title)}</strong>
-          <div class="fine">${esc(a.slug)} · ${plural(Number(st.files) || 0, 'file')}${
+          <div class="fine">${esc(a.slug)} · ${/* A deleted file has no files, and saying "0 files"
+                under a live-looking row was the sort of half-truth a seller would have to
+                open the row to understand. The row says what it is. */
+    a.status === 'deleted' ? 'deleted — the bytes are gone' : plural(Number(st.files) || 0, 'file')}${
     a.unlock_mode === 'open' ? ' · open to everyone' : a.unlock_mode === 'breaks' ? ' · open, breaks inside' : ''}</div></td>
         <td data-label="State">${/* A file the report threshold hid is not the same as one the seller
                 paused, and calling both "Paused" told a seller they had done something
@@ -8014,9 +8017,96 @@ ${notPanel}`,
   });
 }
 
+/**
+ * What a delete actually did, in the seller's own words — the four facts, and the one
+ * caveat that has to be said out loud.
+ *
+ * A host with no delete endpoint (Telegra.ph) leaves bytes behind that we cannot
+ * unlink, and this is where the seller is told rather than reassured. The sentence is
+ * deliberately about what WE do and do not control: nothing here serves, lists or links
+ * it any more; the direct address, if somebody saved it, is still the host's.
+ */
+function deletedReport(deleted, asset, channel) {
+  if (deleted.already) {
+    return `<div class="note note-info" role="status">This file was already deleted.</div>`;
+  }
+  const rows = [];
+  rows.push(`${deleted.gone} file${deleted.gone === 1 ? '' : 's'} destroyed`);
+  if (deleted.unlocks) {
+    rows.push(`${deleted.unlocks} unlock${deleted.unlocks === 1 ? '' : 's'} voided — `
+      + 'whoever held one can no longer open it');
+  }
+  const caveat = deleted.orphans
+    ? `<p><strong>${deleted.orphans} copy${deleted.orphans === 1 ? '' : 'ies'} could not be taken back.</strong>
+        ${deleted.at.length ? `${esc(deleted.at.join(', '))} has no delete endpoint` : 'The host has no delete endpoint'},
+        so the file there still exists at whatever address it was given. Nothing on ByteBikri
+        serves it, lists it or points at it any more — but if somebody had already saved that
+        direct address, it is still the host's and still resolves. That is a fact about the host,
+        not something this delete could have fixed, and it is worth knowing rather than assuming.</p>`
+    : '';
+  return `<div class="note ${deleted.orphans ? 'note-warn' : 'note-ok'}" role="status">
+    <p><strong>Deleted.</strong> ${esc(rows.join(' · '))}.</p>
+    ${caveat}
+  </div>`;
+}
+
+/**
+ * The confirmation page for deleting a file.
+ *
+ * A page rather than a browser confirm dialog, because the three things a seller needs
+ * to know before the bytes go do not fit in a dialog: which files are destroyed, how
+ * many people lose access, and which host cannot take its copy back. The typed word is
+ * checked on the server (`POST …/delete`), so it is a real gate rather than a script
+ * that a form post can skip.
+ */
+export function assetDelete({ channel, asset, user, files = [], unlocks = 0, keepable = [], error = '' }) {
+  const remote = files.filter((f) => f.hosted).length;
+  return layout({
+    title: `Delete ${asset.title}`, user, activeChannel: channel, current: 'dashboard',
+    body: `
+${pageHead(channel, 'overview', `Delete “${asset.title}”?`, 'This cannot be undone.')}
+${error === 'confirm' ? `<div class="note note-warning" role="alert">Type the word
+   <strong>delete</strong> in the box — the file was not touched.</div>` : ''}
+<section class="section">
+  <h2>What deleting does</h2>
+  <dl class="kv">
+    <dt>Its files</dt><dd>${files.length} file${files.length === 1 ? '' : 's'}
+      ${remote ? `(${remote} held at a media host)` : ''} — destroyed, and their addresses removed,
+      so nothing here can serve them. Any link anyone holds stops working.</dd>
+    <dt>People with access</dt><dd>${unlocks
+      ? `<strong>${unlocks} unlock${unlocks === 1 ? '' : 's'} will be voided.</strong> They opened this
+         file; after a delete there is nothing left to open. There is no refund in this product —
+         payments happen off-platform — so if you owe somebody something, settle it with them first.`
+      : 'Nobody holds an unlock for this file yet.'}</dd>
+    <dt>The record</dt><dd>Kept: the file's history, its reviews and the audit log stay, so the
+      store can still answer questions about what happened.</dd>
+    ${keepable.length ? `<dt>A copy you cannot take back</dt><dd>
+      <strong>${esc(keepable.map((k) => k.label).join(', '))}</strong> has no delete endpoint.
+      The copy there stays at its address — deleting removes everything here and cannot unmake
+      that URL.</dd>` : ''}
+  </dl>
+  <form method="post" action="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}/delete" class="stack">
+    <label for="confirm">Type <code>delete</code> to confirm</label>
+    <input id="confirm" name="confirm" autocomplete="off" autocapitalize="off" spellcheck="false"
+           placeholder="delete" required>
+    <div class="row">
+      <button class="btn btn-danger" type="submit">Delete this file for good</button>
+      <a class="btn" href="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}">Keep it</a>
+    </div>
+    <p class="muted">Pausing it instead takes it off the storefront and leaves everyone's access
+      alone — that is the reversible option, and it is on the file's own page.</p>
+  </form>
+</section>`,
+  });
+}
+
 export function assetManage({
   channel, asset, user, consent = null, flash = null, files = [],
   policy = {}, stats = {}, unlocks = 0,
+  // What a delete just did (null when no delete happened), and what it could not
+  // undo. Passed in rather than read from the query string here, because a view
+  // renders synchronously and decides nothing.
+  deleted = null,
   // Whether this store's plan includes members, and which tiers exist. The
   // "Members only" option is not offered on a plan that cannot use it: a setting
   // that silently does nothing is the worst kind of control.
@@ -8048,6 +8138,38 @@ export function assetManage({
   // correct rendering for a file nobody has reported.
   caseFile = null, appeals = [],
 }) {
+  /*
+   * A DELETED FILE GETS A TOMBSTONE, NOT THE EDITOR.
+   *
+   * The editor is a page of controls for a file that exists: a title to change, an ask
+   * to price, files to look at, a publish address to copy. None of that is true any
+   * more, and offering it would be offering buttons that cannot work — so the page
+   * becomes the record instead: what was destroyed, how many people lost access, and
+   * which copy (if any) a host could not take back. This early return is the whole of
+   * that decision, and it is here rather than at the route so that no future edit to
+   * the editor can accidentally be reachable for a deleted file.
+   */
+  if (asset.status === 'deleted') {
+    return layout({
+      title: asset.title, user, activeChannel: channel, consent, current: 'dashboard',
+      body: `
+${pageHead(channel, 'overview', asset.title, 'This file has been deleted.')}
+${deleted ? deletedReport(deleted, asset, channel) : ''}
+<section class="section">
+  <h2>What is gone, and what is not</h2>
+  <dl class="kv">
+    <dt>The bytes</dt><dd>${files.length ? 'removed from this store' : 'removed, and no longer addressed by anything here'}</dd>
+    <dt>Anyone watching it</dt><dd>Their access was voided when the file went — an unlock buys a file that exists.</dd>
+    <dt>The page here</dt><dd>Kept as a record: unlocks, reports and reviews keep their subject, and the audit log keeps the date.</dd>
+    <dt>Deleted</dt><dd>${asset.deleted_at ? esc(new Date(asset.deleted_at).toISOString().slice(0, 10)) : 'yes'}</dd>
+  </dl>
+  <p class="muted">Uploading a new file is a new file: it gets its own address, its own
+     unlocks and its own page. This one does not come back, which is what deleting means.</p>
+  <p><a class="btn" href="/dashboard/${esc(channel.slug)}#files">Back to the files</a></p>
+</section>`,
+    });
+  }
+
   const publicHref = `/s/${channel.slug}/a/${asset.slug}`;
   // The shape, derived from the file the seller actually uploaded — the same call
   // the storefront and the content path make, so the panel below cannot offer a
@@ -8434,6 +8556,15 @@ export function assetManage({
    * — stale — title posts back and the edit disappears. Two buttons that
    * silently undo each other are worse than one button that does both.
    */
+  /*
+   * The way IN to the delete, which is the whole of what the panel at the foot of this
+   * page is. It LINKS rather than posts, because the decision needs a page of its own:
+   * how many files, how many unlocks, and which host cannot take its copy back. A danger
+   * button that deleted on the click would make all three invisible at exactly the moment
+   * they matter most. Pausing is named there too, because for most sellers it is the
+   * action they actually want and the reversible one — the product should not make
+   * "delete" the nearest thing to hand.
+   */
   return layout({
     title: asset.title, user, activeChannel: channel, consent, current: 'dashboard',
     body: `
@@ -8676,6 +8807,17 @@ ${notice ? `
     <span class="fine">Details and unlock terms save together.</span>
   </div>
 </form>
+
+<section class="section">
+  <div class="section-head">
+    <h2>Delete this file</h2>
+    <p>Pausing takes it off the storefront and leaves everyone's access alone — that is the
+    reversible option, and it is in the file list. Deleting destroys the files and voids every
+    unlock, and it cannot be undone.</p>
+  </div>
+  <p><a class="btn btn-danger" href="/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}/delete">
+    Delete this file&hellip;</a></p>
+</section>
 
 <section class="section">
   <div class="section-head">

@@ -412,3 +412,65 @@ export function validateAssetDecision({ action, ruleCode = null, remedy = '' } =
 export function assetChangesVisibility(action) {
   return ASSET_ACTION_TO_STATE[String(action ?? '')] !== null;
 }
+
+/**
+ * May these bytes be handed to this viewer at all — the STATE half of that question.
+ *
+ * Extracted from `server.js`'s content path for one reason: it is a rule about the product
+ * (`paused` means off sale, `deleted` means gone, a report means a person is looking), and a
+ * rule that lives inside a 9000-line route file can only be tested by booting the server. It
+ * sits beside the moderation vocabulary because it is the same vocabulary, read from the
+ * viewer's side.
+ *
+ * The three answers a caller branches on: `{ status, error, why, reason }` when the file is
+ * closed, and `null` when it serves. `privileged` is the store's owner or an operator — the
+ * two people whose own previews have to keep working, and the two who can act on what they
+ * find. It does not apply to a deleted file: see the note on that branch.
+ *
+ * WHY `paused` IS NOT CLOSED. An unlock buys the file, not the sale. Pausing is the
+ * reversible, everyday action ("I am fixing the description"), and making it cut off every
+ * buyer would teach sellers not to use it — which is exactly when they would reach for the
+ * irreversible one instead.
+ *
+ * WHY `deleted` ANSWERS 410 AND NOT 404. The address was real and the file was really there.
+ * A seller reading their own tombstone should not be told it never existed.
+ */
+export function closedToViewers(asset, { privileged = false } = {}) {
+  if (!asset) return null;
+  /*
+   * A DELETED FILE IS CLOSED TO EVERYBODY, INCLUDING ITS OWNER.
+   *
+   * The privilege exists so that the two people with a reason to look — the store's owner and
+   * an operator — can still see a file that is hidden, paused or under review. It cannot mean
+   * anything for a file whose bytes no longer exist: the answer there is not a permission, it
+   * is a fact, and the fact is Gone. The first draft exempted the owner and the walk found it:
+   * the owner's own request fell through to the ENTITLEMENT check and came back 403 "you have
+   * not unlocked this" — a true answer to a question nobody asked, for a file that is gone.
+   */
+  if (asset.status === 'deleted') {
+    return {
+      status: 410,
+      reason: 'deleted by its store',
+      error: 'this file was deleted by its store',
+      why: 'The store removed it, so there is nothing left to serve and any link to it is void.',
+    };
+  }
+  if (privileged) return null;
+  if (asset.hidden_by_reports) {
+    return {
+      status: 403,
+      reason: 'hidden by reports, awaiting review',
+      error: 'this file is under review and is not being served',
+      why: 'Reports from viewers paused it while a person looks at it. Nothing was deleted, '
+        + 'and access comes back if the review clears it.',
+    };
+  }
+  if (asset.status === 'paused') return null;      // off sale; still theirs to watch
+  if (asset.status === 'live') return null;
+  return {
+    status: 404,
+    reason: `not published (${asset.status})`,
+    error: 'file not found',
+    why: 'This file is not published, so there is nothing here to open.',
+  };
+}
