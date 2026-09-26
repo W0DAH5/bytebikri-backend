@@ -249,7 +249,28 @@ try {
       if (account.sandbox) {
         bad(`this is a SANDBOX key: video is cropped to ${caps.sandbox.maxSeconds}s, live is STOPPED at `
           + `${Math.round(caps.sandbox.liveMaxSeconds / 60)} minutes, everything is watermarked and deleted `
-          + `after ${caps.sandbox.deletesAfterHours}h — fine for a demo, not for a store`);
+          + `after ${caps.sandbox.deletesAfterHours}h — fine for a demo and for building on, NOT for a store`);
+        /*
+         * THE NEXT STEP IS A BUSINESS STEP, AND AN OPERATOR SHOULD NOT HAVE TO GUESS IT.
+         *
+         * Sandbox is what an account has until somebody puts a payment method on it; that
+         * happens in api.video's dashboard and nowhere else, because this product moves no
+         * money by design. Saying so here turns "the doctor says no" into a one-line fix
+         * rather than a hunt through code for a setting that does not exist. The trial plan
+         * is also time-limited — their terms cap it at twelve monthly periods per entity —
+         * so it is not a destination either way.
+         */
+        says('to run a seller\'s real broadcast, the api.video account itself must be upgraded:');
+        says('a payment method goes on THEIR dashboard (billing there, not in this app — this');
+        says('product moves no money), then a production key is used. Sandbox is free and');
+        says('unlimited for building and demoing, which is what it is for.');
+      } else {
+        /*
+         * We cannot see a plan from the API, so we do not pretend to: the account report
+         * says who the bill belongs to and points at the page that answers it.
+         */
+        says('billing: api.video bills this ACCOUNT directly, by usage (their dashboard → usage).');
+        says('         Nothing in this product moves money, and no in-app payment is involved.');
       }
       says(`workspace: ${account.videos ?? 'unknown'} stored item(s) on the account `
         + '(a leftover here is a recording someone enabled, or an upload made outside this product)');

@@ -8120,7 +8120,8 @@ const SERVER = APP.listen(PORT, '0.0.0.0', () => {
         if (video.providers[live].isSandbox && video.providers[live].isSandbox()) {
           console.warn(`             SANDBOX: video is cropped to ${caps.sandbox.maxSeconds}s, live is STOPPED at `
             + `${Math.round(caps.sandbox.liveMaxSeconds / 60)}min, everything is watermarked and deleted `
-            + `after ${caps.sandbox.deletesAfterHours}h`);
+            + `after ${caps.sandbox.deletesAfterHours}h — production needs a payment method on the `
+            + `${live} account itself (their dashboard; this app moves no money)`);
         }
       } else if (live !== 'local') {
         console.warn(`  live ingest →  ${live} is named as LIVE_DRIVER but has no credential set`);

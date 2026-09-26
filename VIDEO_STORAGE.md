@@ -675,3 +675,50 @@ Four questions, in the order they matter. None can be answered from this sandbox
 
 The doctor answers questions 1 and 2 on a machine that can reach them; question 3 needs `ffmpeg` and the
 one-liner above; question 4 needs the dashboard's usage page and one broadcast.
+
+### 11.6 Who pays, and what has to be true before a seller can go live
+
+**Nothing in this product moves money.** There is no in-app payment for any of this, by an earlier decision
+that still stands, and api.video does not need one: **they bill the account holder directly**, monthly, by
+usage — the same way they would bill any other developer. The app holds a key; the account holds the bill.
+
+**An account with no payment method is on the sandbox, and the sandbox cannot run a store.** That is not a
+nuisance setting — it is the state of an account before anyone has decided to spend money on it, and it is
+worth being concrete about what it means here:
+
+| | sandbox (no payment method) | production (payment method on the account) |
+| --- | --- | --- |
+| live duration | **stopped at 30 minutes** (their API reference says 30 seconds — measure it, §11.5 Q3) | as long as you want, and as many at once as you have cameras for |
+| recording | cut at 30 seconds | kept, in 24-hour chunks, and billed as hosting |
+| watermark | unremovable | none |
+| content lifetime | **deleted after 24 hours** | until deleted |
+| cost | free | delivery ≈ $0.0017/min watched · hosting ≈ $0.00285/min stored per month |
+| good for | building the panel, demoing a broadcast end to end, testing CORS and the player | a seller's actual audience |
+
+Two consequences worth stating plainly:
+
+* **The next round can be built and demoed for free.** A sandbox key mints real streams, our own player
+  plays the playlist, and the whole panel flow — mint, show the ingest address, go live, stop — works
+  against it. What a sandbox cannot show is a long broadcast or one without a watermark, which is exactly
+  the difference between a demo and a store.
+* **The sandbox is not a permanent free tier either.** Their Free Trial Plan terms cap it at *twelve
+  monthly periods per legal entity*. So it is a place to build and test, and the upgrade is a step that
+  will arrive on its own.
+
+**So the honest cost picture for Nepal-first, if the account is upgraded:** the meter is viewers, and it
+scales with them. A quiet stream is nearly free — a 1-hour event with 10 people watching is about
+$1.00; 50 people is about $5.10; 100 is about $10.20; 500 is about $51. Nothing is stored, so there is no
+monthly meter running between events, and a stream nobody watches delivers nothing and costs nothing.
+That is the whole argument for buying only the ingest from this host: our storage is already paid for, and
+the one thing it sells that we cannot make ourselves is billed by use, not by the month.
+
+**The checklist before a seller broadcasts for real** — the first item is the only one that is not code:
+
+1. **a payment method on the api.video account** (their dashboard → billing), then a **production key**;
+2. `APIVIDEO_API_KEY` from that environment, with `APIVIDEO_BASE=https://ws.api.video`;
+3. `LIVE_DRIVER=apivideo` set on the deployment, which the boot banner acknowledges;
+4. the CORS question settled in a real browser (§11.5 Q2), because for live there is no fallback;
+5. the seller panel (next round) — mint, ingest address, live status, rotate the key.
+
+Until item 1 exists, the right configuration on this deployment is the one it has: **`LIVE_DRIVER` unset**,
+which changes nothing about how the product behaves today.
