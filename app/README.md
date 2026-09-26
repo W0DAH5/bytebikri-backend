@@ -30,11 +30,29 @@ node ../ci/demo-state.mjs     # from app/, puts the interesting states in place
 | File pages | `/s/alice/a/devanagari-poster-kit` (ad-gated), `…/poster-kit-walkthrough` |
 | Dashboard | `/dashboard/alice` — sign in as `alice@bytebikri.local` / `bytebikri-demo` |
 | The person's premium | `/plus` — `alice` is wearing one, `carol` has a claim waiting |
-| Operator console | `/admin` — `ops@bytebikri.local` / `bytebikri-demo` |
+| Operator console | `/admin` — `operator@bytebikri.local` / `bytebikri-demo` |
 | Health / readiness | `/health`, `/readyz` |
 
 `DATABASE_URL` decides which database all of this touches, and `npm run
 db:reset && npm run db:migrate && npm start` gets a clean one from nothing.
+
+**The operator account is not a demo-only idea.** `/admin` answers 404 to anybody whose
+`profiles.role` is not `'admin'`, and until this round nothing in the product could set that column —
+so a deployment had a console nobody could open, and the demo lost a third of its states (the
+verification records, the plan payments and the approvals are all made *as* an operator). The seeder
+now creates `operator@bytebikri.local` on a fresh development database, and a real deployment does it
+the other way round: the person **signs up first** (that is what sets their password), then gets
+promoted from the machine that holds the database.
+
+```bash
+npm run operator -- ops@example.com             # promote to admin
+npm run operator -- ops@example.com --moderator # or moderator, which is not the console
+npm run operator -- ops@example.com --demote    # back to an ordinary account
+npm run operator -- --list                      # who is an operator now
+```
+
+Deliberately not an HTTP route: there is nothing to secure beyond the database credentials, which the
+person running it already has. Every change is audited as `operator.role_changed` with the actor.
 
 ## How this file's history reads
 

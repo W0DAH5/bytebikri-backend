@@ -102,3 +102,65 @@ test('with no host configured at all there is nothing to explain, so nothing is 
       'a deployment with no hosts must not print a storage reason for every upload');
   });
 });
+
+/*
+ * ── AND IN PRODUCTION THE DISK IS NOT AN ANSWER AT ALL ───────────────────────────────────────────
+ *
+ * The three tests above describe a laptop: a host took the file or it stayed here, and either way the
+ * person has a file that works. A deployment cannot do that, because "here" is a container whose
+ * filesystem the next deploy replaces — the upload succeeds, the page opens, and the bytes are gone
+ * by morning with nobody having been told. So the same branch REFUSES instead.
+ *
+ * The assertions are deliberately about what did NOT happen: not the code the error carries, but the
+ * absence of the file. A test that only checked `ENOSTORAGE` would pass on a version that threw it
+ * after writing.
+ */
+test('in production a file no host will take is refused, and nothing is written', async () => {
+  await withEnv({
+    NODE_ENV: 'production',
+    IMAGE_DRIVER: 'telegraph',   // configured, but this photo is over its cap
+    FILE_DRIVER: null,
+    VIDEO_DRIVER: null,
+    MEDIA_FALLBACK: null,
+  }, async () => {
+    const before = await fs.readdir(path.join(UPLOADS, 'private')).catch(() => []);
+    const file = { filename: 'six-megabyte-photo.png', mimeType: 'image/png' };
+
+    const lines = await warnings(async () => {
+      await assert.rejects(
+        () => storage.put(bytesOf(6), file.filename, { namespace: 'private', mimeType: file.mimeType }),
+        (err) => {
+          assert.equal(err.code, 'ENOSTORAGE', 'the refusal has to be a code a route can branch on');
+          assert.match(err.message, /nothing could store this file/);
+          assert.match(err.reasons || '', /telegraph/, 'the error carries which host was asked');
+          assert.match(err.reasons || '', /5 MB/, "and the host's own ceiling, so the fix is obvious");
+          return true;
+        },
+      );
+    });
+
+    const after = await fs.readdir(path.join(UPLOADS, 'private')).catch(() => []);
+    assert.deepEqual(after, before, 'the refusal must not leave a byte on our own disk');
+    const line = lines.find((l) => l.includes('REFUSED'));
+    assert.ok(line, `the operator gets nothing to grep for: ${JSON.stringify(lines)}`);
+    assert.match(line, /production stores nothing/);
+  });
+});
+
+/*
+ * The scope of the rule, pinned so it cannot quietly widen: TWO namespaces are outside it and both
+ * for stated reasons — `kyc` because the copy is local BY PROMISE to the person who handed it over,
+ * and `public` because covers are served by us with no token and the image host cannot delete what
+ * it keeps. If a later round moves covers to a host, this test is where the decision has to be made
+ * out loud rather than by accident.
+ */
+test('the production refusal is about seller content, not identity documents or covers', async () => {
+  await withEnv({ NODE_ENV: 'production', IMAGE_DRIVER: null, FILE_DRIVER: null, VIDEO_DRIVER: null, MEDIA_FALLBACK: null },
+    async () => {
+      for (const [namespace, name] of [['kyc', 'document.jpg'], ['public', 'banner.png']]) {
+        const key = await storage.put(bytesOf(0.2), name, { namespace, mimeType: 'image/png' });
+        assert.match(key, new RegExp(`^${namespace}/`), `${namespace} stays on this disk by design`);
+        await fs.rm(path.join(UPLOADS, key));
+      }
+    });
+});

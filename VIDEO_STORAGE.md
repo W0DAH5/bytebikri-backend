@@ -1121,6 +1121,7 @@ bandwidth. The order is the order it has to be done in.
 | 4 | set `MEDIA_EDGE_BASE` + `MEDIA_EDGE_SECRET` in the app's environment | this app | the Worker's own url; a base without a secret is unconfigured on purpose |
 | 5 | a Pixeldrain **Pro** key, and `MEDIA_RELAY=none` | Pixeldrain, and the operator | money, and a decision: with a paid key the host serves browsers itself and no relay is needed at all |
 | 6 | the day-one checks on real Cloudflare | nobody yet | see below — they can only be run once item 1 is true |
+| 7 | **a host configured for every kind a seller may upload**, and a fallback chain | the operator | since §13.9 there is no disk to catch an unconfigured kind: with no host for images, a photo upload is refused (`?error=no-media-store`) rather than parked on a container. Video → Filemoon, image → Telegra.ph, everything else → Pixeldrain (Catbox while its terms are open, §13.4) |
 
 **Item 6, spelled out, because it is the one that cannot be tested from here.** Every probe in this
 workspace answers `000` for Cloudflare, Pixeldrain and Catbox. So three facts about the edge tier
@@ -1136,12 +1137,70 @@ are undocumented guesses that the first day of real traffic settles:
 
 **Also owed, beyond the edge tier** — recorded here so one list holds them all:
 
-* **the seller's live panel has no mint button.** `src/video-antmedia.js` can create a broadcast and
-  return its RTMP url, and the panel renders the facts, but no seller can press anything that mints
-  one, and no live stream has ever been pushed from a real encoder. The proof needs the user's own
-  machine: `--upload`, `--probe-telegraph`, `--probe-live` are written for exactly that, and none of
-  them can pass here.
+* ~~**the seller's live panel has no mint button.**~~ **Done** (`fe39f0e`, and `ci/eyes/live-mint-walk.mjs`
+  drives it): a seller mints a broadcast from the panel, the streamId is the publish credential, the
+  key is shown once, rotation replaces the key, and ending the stream deletes the broadcast on the
+  server while the file is paused and its playlist address is kept as the record of where it pointed.
+  What is still owed is the half that needs a real encoder: no live stream has ever been pushed to a
+  real Ant Media Server from a real camera. `--probe-live` is written for exactly that, and it cannot
+  pass here — the AMS on this machine is a stub behind `ams.{crt,key}`.
 * **the 60-day clock (§13.5) has no decision**, and therefore no code. Keep-alive or honest "last
   seen" date — either is fine, silence is not.
 * **Catbox's terms are still a conversation** (§13.4), and no engineering step in this file changes
   that.
+
+---
+
+### 13.9 Production keeps nothing on our own disk
+
+The rule, in the operator's own words: *"in a production none gets stored on our disk but all in media
+storages and stuffs i provided already"*.
+
+The disk was the first answer and it is still the right answer on a laptop: it always says yes, so a
+contributor with no host configured can upload a file and watch the product work. On a deployment it
+is wrong in the way that hides itself — the upload succeeds, the page opens the file, and the bytes
+are on a container filesystem that the next deploy replaces. By the time anybody notices, the person
+has been told they published. So in production it is a **refusal**, not a warning.
+
+**Where the rule lives.** One line, in `storage.put`, at the single place in this codebase that
+creates a file of ours for somebody's upload:
+
+```js
+if (namespace === 'private' && inProduction()) { /* ENOSTORAGE */ }
+```
+
+Four call sites each remembering to check a mode is four chances to forget, and forgetting this one
+fills a container with the only copy of a seller's work. The chain is untouched: every configured
+host is still tried first, and when none takes the bytes the error carries **each host's own refusal**
+(`err.reasons`), so the log line an operator greps names every host that was asked and what it said.
+
+**What the person sees.** Both doors into the product were rewired so the refusal is a sentence and
+not a stack trace: the publish form redirects with `?error=no-media-store`, and the JSON upload route
+(a phone posting a file) answers `503 {ok:false, error:'no-media-store', message}`. `ERROR_FLASH`
+holds the words: nothing was stored, nothing was charged, it is not your file, write to us.
+
+**And the bytes move before the row.** Both routes used to create the asset first and store the file
+second, which is fine while the disk always says yes and wrong the moment it can say no: the store
+would show a file whose page opens onto nothing. Storing first makes a refusal total — there is no
+half-made thing to clean up.
+
+**Two namespaces are outside the rule, and neither is an oversight.**
+
+| namespace | what it holds | why it is exempt |
+| --- | --- | --- |
+| `kyc` | an identity document | **Local by promise.** The copy is destroyed when the check is decided, and `destroyHeldDocument` is built on `remove` being a real unlink. Somebody's citizenship certificate does not go to a media host, ours or anybody's. |
+| `public` | covers and banners | **Flagged rather than decided** — see below. |
+
+**The one question this section cannot answer by itself.** A cover is a file too, so the rule taken
+literally sends covers and banners to the image host as well. Two facts make that a decision rather
+than a detail: `/media` serves a cover with **no token and no redirect** (that is the point of a
+cover), and the image host the operator provides — Telegra.ph — **cannot delete what it keeps** (it
+says so itself, §13.2). So routing banners there costs a permanent orphan every time a seller changes
+one, and it costs the ability to take a cover down at all. The alternative is one written exception:
+covers stay on our disk, which is a thing to say out loud rather than to leave implicit. Until that
+is decided, covers stay where they are and the code says so in the comment above the guard.
+
+**Before a real deploy, this is a configuration requirement rather than a preference.** With the rule
+on, a kind with no host that accepts it is a kind nobody can upload, and that is the intended
+behaviour: an upload refused with a reason beats a file that vanishes on the next deploy. Item 7 in
+the table below.

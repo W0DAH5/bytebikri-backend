@@ -18,7 +18,8 @@
     "shots": "node scripts/shoot.mjs",
     "audit:visual": "node scripts/audit.mjs",
     "video:check": "node scripts/video-check.mjs",
-    "mastodon:check": "node scripts/mastodon-check.mjs"
+    "mastodon:check": "node scripts/mastodon-check.mjs",
+    "operator": "node scripts/operator.mjs"
   },
   "dependencies": {
     "express": "^4.19.2",

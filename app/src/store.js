@@ -81,6 +81,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const GRACE_DAYS = 30;
 const UPLOAD_DIR = path.resolve(__dirname, '../.data/uploads');
 
+/**
+ * Is this the real deployment, rather than a laptop or a test run?
+ *
+ * Read from the environment exactly the way the seed and the cookie flags read it, because this
+ * one question decides whether a seller's bytes are allowed to land on our own disk.
+ */
+const inProduction = () => process.env.NODE_ENV === 'production';
+
 export const now = () => new Date();
 export const id = () => randomUUID();
 export const orderCode = (n = 6) =>
@@ -231,6 +239,54 @@ export const storage = {
        * moment it matters, rather than being discovered by a support question later.
        */
       // fall through to the local branch below
+    }
+    /*
+     * ── PRODUCTION KEEPS NOTHING, SO THE DISK IS NOT A DESTINATION THERE ──────
+     *
+     * The disk was the first answer and it is a good one on a laptop: it always says yes, so a
+     * contributor with no host configured can still upload a file and see the product work. On a
+     * deployment it is the wrong answer in a way that HIDES ITSELF — the upload succeeds, the page
+     * opens the file, and the bytes are sitting on a container's ephemeral filesystem where the next
+     * deploy deletes them. That is why it has to be refused rather than warned about: a file that
+     * disappears on deploy is worse than a file that was never accepted, because by then the person
+     * has been told they published.
+     *
+     * So the rule is a refusal, and it lives HERE, at the one line in the codebase that creates a
+     * file of ours for a seller's upload. Four call sites each remembering to check a mode is four
+     * chances to forget, and forgetting this one fills a container with the only copy of somebody's
+     * work. Nothing about the CHAIN changes: every configured host is still tried first, and the
+     * refusals it collected are carried into this error, so the operator reading the log learns
+     * which hosts were asked and what each said — the two facts needed to fix it.
+     *
+     * TWO NAMESPACES ARE DELIBERATELY OUTSIDE THIS RULE, and neither is an oversight:
+     *
+     *   * `kyc` — an identity document. It is local BY PROMISE: the copy is destroyed when the check
+     *     is decided (`destroyHeldDocument` is built on `remove` being a real unlink), and a
+     *     person's citizenship certificate is not going to a media host, ours or anybody's.
+     *   * `public` — covers and banners. These are the shop window rather than the merchandise:
+     *     `/media` serves them with no token and no redirect, which is the point of a cover, and
+     *     the image host the operator provides cannot delete what it takes (Telegra.ph says so
+     *     itself), so routing banners there would leave a permanent orphan every time a seller
+     *     changes one. This one is flagged rather than decided: `VIDEO_STORAGE.md` §13.9 records
+     *     the trade-off and the question it needs answered.
+     */
+    if (namespace === 'private' && inProduction()) {
+      const kind = mediaKind(mimeType, filename);
+      const why = refusals.length
+        ? refusals.join('; ')
+        : (whyLocal(kind, process.env, { mimeType, filename, size: buffer?.length ?? 0 })
+          || 'no host is configured for this kind of file');
+      const err = new Error(
+        `nothing could store this file, and this deployment keeps no files of its own `
+        + `(${why || 'no host accepted it'})`,
+      );
+      err.code = 'ENOSTORAGE';
+      err.reasons = why || null;
+      // Loud on the way out: this is the line an operator greps for when a seller reports an upload
+      // that "did not work", and it names every host that was asked along with its own refusal.
+      console.warn(`  storage: REFUSED "${filename || kind}" — production stores nothing on our own disk `
+        + `(${why || 'no host accepted it'})`);
+      throw err;
     }
     const ext = (path.extname(filename || '') || '').toLowerCase().replace(/[^.a-z0-9]/g, '');
     await fs.mkdir(path.join(UPLOAD_DIR, namespace), { recursive: true });
@@ -508,6 +564,40 @@ export const store = {
     const existing = await one('select * from profiles where email = $1', [normalized]);
     if (existing) return existing;
     return this.createUser({ email: normalized });
+  },
+
+  /**
+   * Make an existing account an operator — or take the role away again.
+   *
+   * `/admin` answers 404 to anybody whose `profiles.role` is not `'admin'`, and until this existed
+   * NOTHING in the product could set that column: not the sign-up route, not the demo seed, not any
+   * script. The console was reachable only by editing the database by hand, which is why the demo
+   * said "the operator account is missing?" and why the README's `/admin` line was a promise with
+   * nothing behind it. `app/scripts/operator.mjs` is the door for a real deployment; the demo seed
+   * uses this same call, so the two cannot drift.
+   *
+   * The account has to EXIST first. Creating it here would mint a login nobody signed up for, with
+   * no password and no way to set one; the operator the product documents is a person who registers,
+   * gets verified, and is then promoted — which is also the only order in which promotion can be
+   * audited to a real person.
+   */
+  async setOperatorRole({ email, role = 'admin', actorId = null }) {
+    if (!['admin', 'moderator', 'user'].includes(role)) throw new Error(`unknown role: ${role}`);
+    const normalized = String(email || '').trim().toLowerCase();
+    if (!normalized) throw new Error('an email is required');
+    // `profiles` has no `updated_at` — the table is a record of who somebody is, not of when a row
+    // was touched, and inventing a column here would be a migration for one UPDATE statement.
+    const row = await one(
+      'update profiles set role = $2 where email = $1 returning id, email, role',
+      [normalized, role],
+    );
+    if (!row) throw new Error(`no account with the email ${normalized} — they sign up first, then get promoted`);
+    if (actorId) {
+      await this.audit('operator.role_changed', { email: row.email, role: row.role }, {
+        actorId, subjectType: 'profile', subjectId: row.id,
+      });
+    }
+    return row;
   },
 
   // ---- channels ----------------------------------------------------------

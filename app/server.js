@@ -4820,6 +4820,18 @@ const ERROR_FLASH = {
   host: 'The platform\u2019s video host would not take the file, so nothing was published and nothing was '
     + 'charged. This is the platform\u2019s storage and not your file: try again in a few minutes, and if it keeps '
     + 'failing write to us — the address is on the privacy page.',
+  /*
+   * NO STORAGE AT ALL — the production shape of the refusal above.
+   *
+   * Every host that is configured for this kind of file refused it, or none is configured for it, and
+   * in production this server keeps no files of its own, so the upload is refused rather than quietly
+   * parked on a disk that the next deploy deletes. The person must be told three things and no more:
+   * nothing was stored, nothing was charged, and this is a server problem that they cannot fix by
+   * re-encoding — because the one thing a seller does with a refusal is try again.
+   */
+  'no-media-store': 'Nothing would store this file and this server keeps no files of its own, so nothing was '
+    + 'uploaded and nothing was charged. It is not your file — it is the storage this platform is configured '
+    + 'with. Write to us with the file\u2019s name and we will set it up.',
   // The series panel (§15). Each refusal that the module writes is the module's own
   // sentence, read from `SERIES_REFUSALS` — so the seller who reads it after a redirect
   // and the seller who reads it beside the form are reading one rule, not two copies of
@@ -5236,23 +5248,39 @@ APP.post('/dashboard/:slug/assets', contentUpload((req, qs) =>
     // both have "poster-kit"; one store may not have two.
     const assetSlug = await uniqueAssetSlug(channel.id, title);
 
-    const asset = await store.createAsset({
-      channelId: channel.id, title, slug: assetSlug,
-      description: String(req.body.description || '').trim().slice(0, 2000),
-      unlockMode,
-      coverUrl: cover
-        ? `/media/${await storage.put(cover.buffer, cover.originalname, { namespace: 'public' })}`
-        : null,
-    });
-
     /*
+     * ── THE BYTES GO FIRST, AND THE ROW SECOND ────────────────────────────────
+     *
+     * The other order looks tidier and it is the one that produces a file with nothing behind it. In
+     * production an upload can be REFUSED — no host will take these bytes and this server keeps none of
+     * its own (`storage.put` throws `ENOSTORAGE`) — and if the row already exists by then, the store
+     * shows a file whose page opens onto nothing, and the seller has been told they published. Storing
+     * first means a refusal is a refusal: the redirect below says so and there is no half-made thing to
+     * clean up. The window this opens is the opposite one (bytes stored, insert fails), and that was
+     * always the case for the cover, which was stored inside the arguments to `createAsset` below.
+     *
      * Where these bytes land is decided by `storage` with the mime type in hand
      * (`VIDEO_STORAGE.md` §2): video goes to the configured video host, everything
      * else stays on this disk, and identity documents cannot reach it at all.
      * Passing the type is the whole contract — without it the router takes the
      * safe answer, which is local.
      */
-    const storageKey = await storage.put(media.buffer, media.originalname, { mimeType: media.mimetype });
+    let storageKey;
+    let coverKey = null;
+    try {
+      storageKey = await storage.put(media.buffer, media.originalname, { mimeType: media.mimetype });
+      if (cover) coverKey = await storage.put(cover.buffer, cover.originalname, { namespace: 'public' });
+    } catch (err) {
+      if (err.code === 'ENOSTORAGE') return fail('no-media-store');
+      throw err;
+    }
+
+    const asset = await store.createAsset({
+      channelId: channel.id, title, slug: assetSlug,
+      description: String(req.body.description || '').trim().slice(0, 2000),
+      unlockMode,
+      coverUrl: coverKey ? `/media/${coverKey}` : null,
+    });
 
     await store.addFile({
       assetId: asset.id,
@@ -8099,6 +8127,23 @@ APP.post('/api/assets', upload.single('file'), async (req, res, next) => {
       });
     }
 
+    /*
+     * Bytes first, row second — the same reason as the publish form above, and the same refusal to
+     * answer: this route is the API a phone posts to, so it answers with a code and a sentence rather
+     * than a redirect it cannot perform.
+     */
+    let storageKey = null;
+    if (req.file) {
+      try {
+        storageKey = await storage.put(req.file.buffer, req.file.originalname, { mimeType: req.file.mimetype });
+      } catch (err) {
+        if (err.code === 'ENOSTORAGE') {
+          return res.status(503).json({ ok: false, error: 'no-media-store', message: ERROR_FLASH['no-media-store'] });
+        }
+        throw err;
+      }
+    }
+
     const asset = await store.createAsset({
       channelId: channel.id, title: title || 'Untitled',
       slug: slugify(title || 'asset'), description, unlockMode: unlockMode || 'ad_gated',
@@ -8116,9 +8161,8 @@ APP.post('/api/assets', upload.single('file'), async (req, res, next) => {
        * (`POST /dashboard/…/assets`, the seeder) sent video to the host. Two doors to
        * the same bytes must not disagree about where the bytes are.
        */
-      const key = await storage.put(req.file.buffer, req.file.originalname, { mimeType: req.file.mimetype });
       await store.addFile({
-        assetId: asset.id, storageKey: key, filename: req.file.originalname,
+        assetId: asset.id, storageKey, filename: req.file.originalname,
         mimeType: req.file.mimetype, sizeBytes: req.file.size,
         checksum: crypto.createHash('sha256').update(req.file.buffer).digest('hex'),
       });
@@ -8265,6 +8309,24 @@ async function seed({ force = false } = {}) {
     listingMode: 'marketplace',
   });
   await store.applyUpgrade(alice, 'store');
+
+  /*
+   * THE OPERATOR, because `/admin` was a documented page with no way in.
+   *
+   * The console 404s for anybody whose profile role is not `admin`, and nothing created such a
+   * profile: the README promised `/admin — operator@bytebikri.local`, and the first thing anybody found
+   * was a 404. Worse, the demo's own state script needs an operator to exist — it records the
+   * verification checks, matches the plan payments and approves files AS that account — so without
+   * one, eight of the states the demo is supposed to show silently did not exist. (Its own words:
+   * "alice plus NOT RUNNING (pending_payment) — the operator account is missing?")
+   *
+   * Same rules as every other demo account: created only outside production (the guard at the top of
+   * this function refuses to seed at all when NODE_ENV=production), idempotent, and its password is
+   * the demo password — which is exactly why a deployment must never seed.
+   */
+  const opsUser = await store.userByEmailOrCreate('operator@bytebikri.local');
+  await auth.setPassword(opsUser.id, demoPassword);
+  await store.setOperatorRole({ email: 'operator@bytebikri.local' });
 
   const bobUser = await store.userByEmailOrCreate('bob@bytebikri.local');
   await auth.setPassword(bobUser.id, demoPassword);
@@ -8783,6 +8845,7 @@ await store.ensurePlatformCreative(HOUSE_CREATIVE);
 const result = await seed();
 if (result.seeded) {
   console.log('  seeded a fresh database: /s/alice and /s/bob');
+  console.log('  operator console: /admin — operator@bytebikri.local (demo password)');
   console.log(`  demo sign-in: alice@bytebikri.local / ${process.env.DEMO_PASSWORD || 'bytebikri-demo'}`);
 } else if (result.reason) {
   console.log(`  not seeding: ${result.reason}`);

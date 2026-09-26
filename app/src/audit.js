@@ -54,7 +54,11 @@ export const AUDIT_FAMILIES = [
     // `seller.verification` belongs here rather than with the store's own actions:
     // it is about a person, it is asked for by a person, and the question it
     // answers after an incident is the same one this family exists for.
-    prefixes: ['auth.signup', 'auth.password_reset', 'auth.email_verified', 'auth.email_changed', 'auth.verify_sent_by_operator', 'consent.', 'payout_account.', 'seller.verification'],
+    // `operator.` is the promotion or demotion of an account's own powers (`setOperatorRole`).
+    // It belongs in this family rather than a family of its own: the question asked after an
+    // incident — "who could do this, and since when" — is this family's question, and an
+    // operator's role IS a fact about a person, not about a store or a payment.
+    prefixes: ['auth.signup', 'auth.password_reset', 'auth.email_verified', 'auth.email_changed', 'auth.verify_sent_by_operator', 'consent.', 'payout_account.', 'seller.verification', 'operator.'],
     decisions: true,
   },
   {
