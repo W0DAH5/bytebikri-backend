@@ -17,11 +17,16 @@
  *   * the store's tier chip survives in both, because a tier a person held is the store's own record
  *     and the state is a second fact rather than a replacement for the first;
  *   * and the person's own card on the same page agrees with the public plate — the two surfaces are
- *     read in the same minute, from the same row.
+ *     read in the same minute, from the same row;
+ *   * and the members-only FILE PAGE addresses the person standing at it — a member whose period has
+ *     run out is told it ended, and a stranger is told what the door is, which was ONE sentence for
+ *     BOTH before the fix.
  *
- * THE FIXTURE IS PUT BACK. This walk moves one membership's `period_end` into the past and restores
- * it in a `finally`, so a walk that fails halfway still leaves the demo as it found it. `ci/demo-state.mjs`
- * is the source of that fixture; run it first if the database is fresh.
+ * THE FIXTURE IS PUT BACK. This walk moves one membership's `period_end` — and, for the file page, the
+ * unlock it granted, because an unlock whose date has not passed would still open the file and the
+ * lapse would not be genuine — and restores both in a `finally`, so a walk that fails halfway still
+ * leaves the demo as it found it. `ci/demo-state.mjs` is the source of that fixture; run it first if
+ * the database is fresh.
  */
 import { chromium } from 'playwright-core';
 import { mkdirSync } from 'node:fs';
@@ -56,6 +61,30 @@ const setPeriod = (profileId, iso) => query(
   `update memberships set period_end = $2 where profile_id = $1 and channel_id = (
      select id from channels where slug = $3)`,
   [profileId, iso, SLUG],
+);
+
+/**
+ * The unlock the membership granted, and its members-only file. A lapse is genuine only when BOTH
+ * have passed: `doorFor` is a function of the membership's state, but a still-good unlock opens the
+ * file anyway, and the page would correctly say "unlocked" — the walk must test the wall, not the
+ * row.
+ */
+const ASSET_SQL = `
+  select a.slug from assets a
+    join channels c on c.id = a.channel_id
+   where c.slug = $1 and a.unlock_mode = 'members' and a.status = 'live'
+   order by a.created_at limit 1`;
+const UNLOCK_SQL = `
+  select u.expires_at from unlocks u
+    join profiles p on p.id = u.user_id
+    join channels c on c.id = u.channel_id
+   where c.slug = $1 and p.display_name = $2
+   order by u.granted_at desc limit 1`;
+const setUnlock = (displayName, iso) => query(
+  `update unlocks u set expires_at = $3
+     from profiles p, channels c
+    where p.id = u.user_id and c.id = u.channel_id and p.display_name = $2 and c.slug = $1`,
+  [SLUG, displayName, iso],
 );
 
 const browser = await chromium.launch({
@@ -149,8 +178,64 @@ try {
   console.log('  their card    :', JSON.stringify(ownText.slice(0, 110)));
   check(/period has ended/i.test(ownText), 'their own card says the period has ended');
   await own.locator('.member-self').first().screenshot({ path: `${OUT}/membership-fixed-03-own-card.png` });
+  // ── 4. the file page addresses the person at it ─────────────────────────────────────────────────
+  //
+  // The second surface with the same defect, on the page where the loss is actually felt: a member
+  // whose period ended arrived here by clicking a file that opened for them the day before, and the
+  // gate said to them character-for-character what it says to a signed-out stranger.
+  say(4, 'the members-only file page: the lapsed member vs the stranger, same page');
+  const assetSlug = (await one(ASSET_SQL, [SLUG]))?.slug;
+  if (!assetSlug) {
+    check(false, `no live members-only file on /s/${SLUG} — cannot walk the file page`);
+  } else {
+    const unlock = await one(UNLOCK_SQL, [SLUG, row.display_name]);
+    if (unlock) {
+      const unlockBack = new Date(unlock.expires_at).toISOString();
+      await setUnlock(row.display_name, past);   // a genuine lapse, not a moved date
+      const fileUrl = `${BASE}/s/${SLUG}/a/${assetSlug}`;
+
+      // The member, one day out of the period, reading their own file.
+      const mctx = await browser.newContext({
+        viewport: { width: 1280, height: 900 },
+        storageState: await sessionFor(browser, row.display_name, { base: BASE }),
+      });
+      const mp = await mctx.newPage();
+      await mp.goto(fileUrl);
+      await consent(mp);
+      await mp.goto(fileUrl);
+      const mGate = mp.locator('.member-gate').first();
+      const mRefusal = await mGate.getAttribute('data-refusal').catch(() => null);
+      const mText = (await mGate.innerText().catch(() => '')).replace(/\s+/g, ' ');
+      console.log(`  their file page : data-refusal=${mRefusal} · ${JSON.stringify(mText.slice(0, 90))}`);
+      check(mRefusal === 'lapsed', 'the gate knows this reader is a lapsed member');
+      check(/membership has ended/i.test(mText), 'and says it ended, in words, to them');
+      check(!/members open this\./.test(mText),
+        'they are not addressed as a stranger — that sentence is for people who never joined');
+      await mGate.screenshot({ path: `${OUT}/membership-fixed-04-file-lapsed.png` });
+
+      // The stranger: the same page still sells the door to them, unchanged.
+      const gctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+      const gp = await gctx.newPage();
+      await gp.goto(fileUrl);
+      await consent(gp);
+      await gp.goto(fileUrl);
+      const gGate = gp.locator('.member-gate').first();
+      const gRefusal = await gGate.getAttribute('data-refusal').catch(() => null);
+      const gWhole = (await gGate.innerText().catch(() => '')).replace(/\s+/g, ' ');
+      console.log(`  the stranger's  : data-refusal=${gRefusal} · ${JSON.stringify(gWhole.slice(0, 90))}`);
+      check(gRefusal === 'join', 'the stranger is still the stranger');
+      check(/members open this\./.test(gWhole), 'and the door is still sold to them');
+      await gGate.screenshot({ path: `${OUT}/membership-fixed-05-file-stranger.png` });
+
+      await setUnlock(row.display_name, unlockBack);
+      check((await one(UNLOCK_SQL, [SLUG, row.display_name])).expires_at instanceof Date,
+        'their unlock is back where it was found');
+    } else {
+      console.log('  (no unlock row for this member — the file page needs the door, not a row)');
+    }
+  }
 } finally {
-  // ── 4. THE FIXTURE GOES BACK, whether the walk passed or failed ────────────────────────────────
+  // ── 5. THE FIXTURE GOES BACK, whether the walk passed or failed ─────────────────────────────────
   await setPeriod(row.profile_id, new Date(row.period_end).toISOString());
   await close();
   await browser.close();

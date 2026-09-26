@@ -79,6 +79,9 @@ import { earningsSummary, MONEY_MAP, payoutChecklist, periodStatus, calibrationV
 import {
   TIERS_MAX, PERIODS, CLAIM_METHODS, ACCENTS, ACCENT_KEYS, MONEY_LINE, FREE_PLAN_LINE,
   PLATE_COPY, tierDraft, paymentNoteDraft, membershipState, membershipCurrent, memberBadge,
+  // The refusal builder: `pending` / `lapsed` / `tier` / `join`, in the module's own
+  // vocabulary. It was written for the file page and reached no page at all until now.
+  memberRefusal,
   doorsOf, adModeOf, attentionProgress, standingOf, attentionViews, JOIN_MODES, AD_MODES,
   duesLine, tierByNo, memberAdFreeFor,
 } from './src/memberships.js';
@@ -2595,6 +2598,28 @@ APP.get('/s/:slug/a/:assetSlug', async (req, res, next) => {
       // refusal sentence is built from.
       memberCover,
       memberDoor: memberDoor.door,
+      /*
+       * WHY THE DOOR IS SHUT, FOR THE PERSON STANDING AT IT.
+       *
+       * `memberDoor` answers 'members' for three different situations — never joined, a
+       * claim the creator has not confirmed, and a period that has run out — and the page
+       * rendered ONE sentence for all three: "Elite members open this". So a member whose
+       * period ended last month read character-for-character what a signed-out stranger
+       * reads, on the page they reached by clicking a file they could open the day before.
+       *
+       * `memberRefusal()` is the module that already tells these apart, and it is unit
+       * tested (`members.test.js`) — this passes its answer through rather than deriving a
+       * second opinion here. Only asked when the door is actually shut: a covered member
+       * has no refusal, and a supporter-tier member is IN (their gate says the arrangement,
+       * which the view already branches on).
+       */
+      memberRefusal: asset.unlock_mode === 'members' && memberDoor.door === 'members'
+        ? memberRefusal({
+          policy: { mode: 'members', member_tier: Number(asset.member_tier) || 1 },
+          membership: memberDoor.membership,
+          tiers: memberTiersHere,
+        })
+        : null,
       plainFooter: store.plan(channel).capabilities?.remove_footer === true,
       memberTiers: asset.unlock_mode === 'members' ? memberTiersHere : [],
       memberTierName: asset.unlock_mode === 'members'

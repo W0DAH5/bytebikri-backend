@@ -394,6 +394,65 @@ test('the member card says whether the period is still running, in the seller li
     'the seller list still names the states, which is where these two words come from');
 });
 
+test('the file gate addresses the person standing at it, not everybody the same way', () => {
+  /*
+   * THE SECOND SURFACE, found while closing the audit's last question ("where are the
+   * benefits communicated"). A members-only file said ONE sentence to three readers —
+   * "Elite members open this" — and one of those readers had held this membership until
+   * last month and arrived by clicking a file that opened for them then. Read live from
+   * the running server before the fix, as a lapsed member, the page text was
+   * character-for-character what a signed-out stranger reads.
+   *
+   * `memberRefusal()` already returned 'pending' | 'lapsed' | 'tier' | 'join' for exactly
+   * this page and reached no page at all. Now the route passes it through and the gate
+   * branches on it, so what is asserted here is that each reader gets a sentence THAT IS
+   * TRUE OF THEM — and that the stranger's sentence did not change, because it was never
+   * wrong, it was just said to the wrong people.
+   */
+  const channel = { slug: 'shop', name: 'Shop', id: 'c1' };
+  const asset = { id: 'a1', slug: 'kit', title: 'Kit', channel_id: 'c1', unlock_mode: 'members', member_tier: 2 };
+  const page = (refusal) => views.assetPage({
+    channel, asset, files: [], slots: [], user: { id: 'u1', display_name: 'N' },
+    unlocked: false, policy: { ads_required: 1, unlock_hours: 24 },
+    memberTierName: 'Elite', memberDoor: 'members', memberRefusal: refusal,
+  });
+  const gate = (html) => html.match(/<div class="member-gate"[\s\S]*?<\/div>/)[0];
+
+  // A stranger: unchanged, and still the sentence the tier is sold with.
+  const stranger = gate(page({ code: 'join', tier: 2, name: 'Elite' }));
+  assert.match(stranger, /data-refusal="join"/);
+  assert.match(stranger, /Elite members open this\./);
+  assert.match(stranger, /See what membership is/);
+
+  // A claim waiting on the creator: told that it is waiting, not that they are outside.
+  const waiting = gate(page({ code: 'pending', tier: 2, name: 'Elite' }));
+  assert.match(waiting, /data-refusal="pending"/);
+  assert.match(waiting, /Your claim is with the creator\./);
+  assert.doesNotMatch(waiting, /Elite members open this\./,
+    'a person whose claim is in the queue must not be addressed as a stranger');
+  assert.match(waiting, /See your membership/);
+
+  // The reader this whole finding is about.
+  const lapsed = gate(page({ code: 'lapsed', tier: 2, name: 'Elite' }));
+  assert.match(lapsed, /data-refusal="lapsed"/);
+  assert.match(lapsed, /Your Elite membership has ended\./);
+  assert.match(lapsed, /nothing was deleted/i, 'the row survives its period, and the page says so');
+  assert.doesNotMatch(lapsed, /Elite members open this\./,
+    'a member whose period ran out must not be told what a stranger is told');
+  assert.match(lapsed, /See your membership/);
+
+  // A member one tier below: not outside, one door down.
+  const below = gate(page({ code: 'tier', tier: 2, name: 'Elite' }));
+  assert.match(below, /data-refusal="tier"/);
+  assert.match(below, /This file is for Elite members\./);
+  assert.match(below, /You are a member at this store/, 'they are a member — say so');
+  assert.doesNotMatch(below, /Elite members open this\./);
+
+  // And the four are genuinely four different pages.
+  const rendered = [stranger, waiting, lapsed, below];
+  assert.equal(new Set(rendered).size, 4, 'the four readers must not share a sentence');
+});
+
 test('the seller’s own member list hands the renderer the look too', async () => {
   // The sibling of the roster test above, and the same bug in a second query. The
   // seller's members page passes every row to `memberPlate()`, which dresses the name,

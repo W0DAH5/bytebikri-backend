@@ -8,7 +8,7 @@ if a different card was meant, the same method applies and the finding may diffe
 **Status.** The report below is the current behavior, traced to implementation and tests. The card's
 defect (§1.3, finding 5) was then fixed in `e763bc4` — the smallest change this document recommends,
 with the tests it names as acceptance criteria, and the frames in `docs/evidence/round48/`. §2.7 is a
-second finding, same class, reported and not yet fixed.
+second finding, same class, found and fixed in the same round (see its own status line).
 
 ---
 
@@ -199,7 +199,32 @@ own vocabulary, so nothing new is invented:
 | `lapsed` | "Your Elite membership ended <date>" + the way back, instead of the stranger's sentence |
 
 `memberRefusal` (`memberships.js:372`) already returns these codes and is unit-tested at
-`members.test.js:199` — it was written for this page and reaches none.
+`members.test.js` — it was written for this page and reached none.
+
+**Fixed in this round** (the change §2.7 recommends, nothing larger):
+
+- `server.js` (asset page route): passes the module's own answer through —
+  `memberRefusal({ policy, membership, tiers })`, computed only when the door is actually shut,
+  because a covered member has no refusal and a supporter-tier member is *in* (their gate already
+  says the arrangement);
+- `views.js` (`assetPage`): the gate now branches on it — `pending` is told the claim is with the
+  creator, `lapsed` is told it ended and what reopens it, `tier` is told the file sits behind a
+  door one tier above theirs, and `join` keeps **the stranger's sentence exactly as it was**,
+  because it was never wrong, it was just said to the wrong people. The gate carries
+  `data-refusal` so a test (or a person) can see which reader a page was written for;
+- `app/test/members.test.js`: the four readers asserted as four different pages, each in a
+  sentence that is true of *them* — including "a member whose claim is in the queue must not be
+  addressed as a stranger" and "a member whose period ran out must not be told what a stranger is
+  told". **881/881.**
+- `ci/eyes/member-state-walk.mjs` §4, in a browser: the lapsed member reads their own members-only
+  file (`data-refusal=lapsed`, the ended sentence, not the stranger's), the stranger reads the same
+  page (`data-refusal=join`, the door still sold to them), and — because an unlock whose date has
+  not passed would still open the file — the walk moves the membership's *and* the unlock's dates
+  into the past for a genuine lapse, and restores both in the `finally`. **0 findings.**
+
+One correction to the method, found while proving it: moving only `period_end` does not make a
+lapse. The membership's own unlock row still opened the file — correctly — and the page said
+"unlocked". A lapse has two dates, and both had to move.
 
 ---
 

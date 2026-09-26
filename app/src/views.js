@@ -2848,6 +2848,10 @@ export function assetPage({
   memberCover = null,
   // 'covered' | 'ads' | 'members' | 'none', from `doorFor` in memberships.js.
   memberDoor = 'none',
+  // The module's own answer to "why can this person not open it": pending / lapsed / tier
+  // / join, or null when the door is open. `assetPage` passes it through; nothing here
+  // decides it, so the gate and the file's own access line cannot disagree.
+  memberRefusal = null,
   memberTierAdMode = 'ad_free',
   memberTiers = [],
   memberTierName = null,
@@ -2951,14 +2955,54 @@ export function assetPage({
    * work out why a membership is being asked for a view.
    */
   const memberPaysAds = membersOnly && memberDoor === 'ads';
-  const memberGate = `<div class="member-gate">
-    <p class="small"><strong>${esc(wantedName)} members open this.</strong>
-      ${esc(wantedTier === 2
-    ? 'It is the top tier’s file.'
-    : memberTierAdMode === 'supporter'
-      ? 'Any member can open it, and this tier keeps the ordinary asks — a membership here is the belonging.'
-      : 'Any member can open it — no ad, while the dues are current.')}</p>
-    <a class="btn btn-primary btn-lg btn-block" href="/s/${esc(channel.slug)}#members">See what membership is</a>
+  /*
+   * ── THE GATE ADDRESSES THE PERSON STANDING AT IT ─────────────────────────────
+   *
+   * It used to say one sentence to everybody — "Elite members open this" — which is true
+   * and is also what a person who HELD this membership last month is told, on the page
+   * they reached by clicking a file that opened for them then. Three readers, one
+   * sentence, and only one of them is a stranger.
+   *
+   * The app already knows the difference (`memberRefusal`), so the gate asks it rather
+   * than guessing: a claim waiting on the creator is told that, a period that has ended
+   * is told WHEN it ended and what reopens it, and a member of a lower tier is told which
+   * file is whose. The stranger's sentence is unchanged — it was never wrong, it was just
+   * said to the wrong people.
+   */
+  const gateLine = (() => {
+    if (!memberRefusal || memberRefusal.code === 'join') {
+      return {
+        lead: `${wantedName} members open this.`,
+        body: wantedTier === 2
+          ? 'It is the top tier’s file.'
+          : memberTierAdMode === 'supporter'
+            ? 'Any member can open it, and this tier keeps the ordinary asks — a membership here is the belonging.'
+            : 'Any member can open it — no ad, while the dues are current.',
+      };
+    }
+    if (memberRefusal.code === 'pending') {
+      return {
+        lead: 'Your claim is with the creator.',
+        body: `${wantedName} opens this once they find your transfer and confirm it. Nothing is wrong — a claim waits for a person.`,
+      };
+    }
+    if (memberRefusal.code === 'lapsed') {
+      return {
+        lead: `Your ${wantedName} membership has ended.`,
+        body: 'The file closed with it, and nothing was deleted. Renewing the period opens it again — the way back is on the store’s page.',
+      };
+    }
+    // `tier`: a member, of the wrong tier for this file. Said plainly rather than as a
+    // refusal, because they are not outside — they are one tier below a door that opens.
+    return {
+      lead: `This file is for ${wantedName} members.`,
+      body: `You are a member at this store — your tier opens the files marked for it, and this one sits behind ${wantedName}.`,
+    };
+  })();
+  const memberGate = `<div class="member-gate" data-refusal="${esc(memberRefusal?.code || 'join')}">
+    <p class="small"><strong>${esc(gateLine.lead)}</strong> ${esc(gateLine.body)}</p>
+    <a class="btn btn-primary btn-lg btn-block" href="/s/${esc(channel.slug)}#members">${memberRefusal?.code === 'lapsed' || memberRefusal?.code === 'pending'
+    ? 'See your membership' : 'See what membership is'}</a>
     <p class="fine" style="margin-top:var(--space-3);text-align:center">${esc(MONEY_LINE)}</p>
   </div>`;
 
