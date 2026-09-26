@@ -146,7 +146,24 @@ console.log('\n  routing:');
 for (const kind of ['video', 'image', 'audio', 'file']) {
   const driver = video.driverForKind(kind);
   const how = driver === 'local' ? 'our own disk' : driver;
-  console.log(`    ${kind.padEnd(7)} → ${how}`);
+  /*
+   * THE WHOLE CHAIN, not just the first host, because the chain is the answer to the question an
+   * operator actually has on a launch morning: what happens when the first one says no. A
+   * refusal at the host is not hypothetical for either of the two hosts with known problems —
+   * Pixeldrain's keys expire after 30 idle days and its free plan refuses what it reads as abuse,
+   * and Catbox's terms are enforced by a person, not by an HTTP status — so the line says where
+   * the file goes next, and ends where the walk always ends: our own disk.
+   */
+  const chain = driver === 'local' ? [] : video.uploadChainForKind(kind);
+  const tail = chain.length > 1 ? ` → then ${chain.slice(1).join(' → ')}` : '';
+  console.log(`    ${kind.padEnd(7)} → ${how}${tail}${chain.length ? ' → our own disk (always works)' : ''}`);
+}
+if (process.env.MEDIA_FALLBACK) {
+  console.log(`    MEDIA_FALLBACK=${process.env.MEDIA_FALLBACK}`);
+} else {
+  console.log('    MEDIA_FALLBACK is not set — each kind tries only its own driver, then our disk');
+  console.log('      set it to name fallbacks in order (`all`, or `pixeldrain,catbox`) so one host'
+    + '\n      refusing cannot stop an upload');
 }
 
 /*

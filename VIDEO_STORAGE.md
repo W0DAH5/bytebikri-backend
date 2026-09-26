@@ -944,3 +944,46 @@ redirect, where §10.4's answer (name the origin in the policy) already works.
 * **Bandwidth.** A relay is our upload, and it is now in the delivery path for one host. That is a cost the
   operator should see coming rather than discover on a graph — which is why the doctor prints which mode is
   in force, and why `MEDIA_RELAY=none` exists.
+
+### 13.5 When a host says no: the failover chain
+
+§13.3 is about delivery — a host that will not serve a browser. This is about the other half:
+a host that will not take the bytes, or refuses them later, in the middle of a launch.
+
+**The refusals that were known, and what each one actually is.**
+
+| | what happens | is it a bug? |
+| --- | --- | --- |
+| Pixeldrain, hotlink | 403 `hotlink_detected` on a browser fetch, free plan | no — it is their product decision; §13.3 relays around it |
+| Pixeldrain, idle key | the API key expires 30 days after its last use | no — but it is the failure an operator meets on the morning of a launch |
+| Pixeldrain, upload | the free plan refuses what it reads as abuse, and some formats | no |
+| Catbox, terms | "not a service's CDN" — enforced by a person, not a status code | no, and no code fixes a term |
+| Catbox, upload | size limits, blocked extensions, and a 200 that can carry an error | no |
+| Telegra.ph | 5 MB, four image formats, no delete, no account | no — the host is what it is |
+| any host | an outage | no |
+
+**So the walk does not end at one host.** `uploadChainForKind` returns an ordered list, and
+`storage.put` walks it: the first host that takes the bytes keeps them, each refusal is logged
+with the host's own words, and the walk ends on our own disk — which always says yes. That last
+step is not decoration: it is the reason a third party's bad afternoon has never been able to
+stop a seller publishing.
+
+`MEDIA_FALLBACK` is how an operator extends the chain:
+
+```
+unset                 → the kind's own driver, then our own disk      (today's behaviour)
+all                   → every configured host that takes that kind, in registry order
+pixeldrain,catbox     → exactly those, after the primary
+```
+
+Three rules, each of which is silent if broken: a host is tried **once** (a refusal costs one
+call — never a retry loop against a service already saying no); a **live** host can never
+appear (it stores no files, so it has no turn); and a host whose **own** rules would refuse this
+file is never asked (`driverForKind` handles that first, so a 9 MB photo does not even reach
+Telegra.ph's 5 MB cap). The doctor prints the whole chain per kind, because "where does this go
+if the first one refuses" is the question an operator has.
+
+**What this does not fix, said plainly:** it cannot make Catbox suitable for production (their
+terms, not their uptime), and it cannot make a deleted file un-remembered by a host that issued
+it a public URL (§13.2). What it does is make sure neither of those is the reason a seller's
+publish fails.

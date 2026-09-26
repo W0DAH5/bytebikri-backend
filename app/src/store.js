@@ -68,7 +68,7 @@ import {
 // driver is configured at all, how to put bytes there, how to tell a remote key
 // from a local one, and how to delete one. `VIDEO_STORAGE.md` is the reasoning.
 import {
-  driverForKind, whyLocal, hostAccepts, upload as videoUpload, remove as videoRemove,
+  driverForKind, uploadChainForKind, whyLocal, hostAccepts, upload as videoUpload, remove as videoRemove,
   isRemoteKey, remoteId, remoteProvider,
 } from './video.js';
 // `mediaKind` is the product's own answer to "what is this file", and the router
@@ -169,33 +169,40 @@ export const storage = {
        */
       const kind = mediaKind(mimeType, filename);
       const file = { mimeType, filename, size: buffer?.length ?? 0 };
-      const driver = driverForKind(kind, process.env, file);
-      if (driver !== 'local') {
-        /*
-         * ── THE HOST SAID NO, SO THE UPLOAD STILL SUCCEEDS ────────────────────
-         *
-         * The pre-check below (`whyLocal`) covers the refusals a host publishes: a size cap,
-         * a kind it does not take. It cannot cover the ones that happen at the wire — a
-         * key that expired 30 days after its last use, a free plan that reads a
-         * server upload as abuse, a host having a bad afternoon. Those used to THROW, which
-         * meant a seller pressed Publish and got an error page: the platform was blocked by
-         * a third party's mood, and the file, which was perfectly good, never landed.
-         *
-         * So a host failure is now the same shape as a host refusal: the bytes stay here, the
-         * seller gets a file that works, and the reason is in the log rather than in a stack
-         * trace nobody reads. The host is still tried first — this is a fallback, not a
-         * policy — and nothing is silently retried at the host, so a refusal costs one call.
-         *
-         * The failure is NOT swallowed: it is the operator's signal that a driver is
-         * misconfigured, and `warning` reaches the local branch's own log line below.
-         */
+      /*
+       * ── THE CHAIN, AND WHY IT IS A CHAIN ──────────────────────────────────────
+       *
+       * One host was the whole answer until now: if it refused at the wire — a key that
+       * expired 30 days after its last use, a free plan that reads a datacenter upload as
+       * abuse, a host having an afternoon, their terms being enforced — the file fell back to
+       * our own disk. That works, and it wastes every other host the operator configured and
+       * pays for. So the registry hands back an ordered chain (`uploadChainForKind`, and
+       * `MEDIA_FALLBACK` is how an operator extends it) and this walks it: the first host that
+       * takes the bytes keeps them, the refusals are logged with their reason, and the walk
+       * ends on our own disk, which always says yes.
+       *
+       * Two rules are worth stating because breaking either is silent: each host is tried
+       * ONCE (a refusal costs one call, never a retry loop against a service that is already
+       * saying no), and the reason every host gave is kept, because "kept on our disk" with no
+       * explanation is the support question this file exists to prevent.
+       */
+      const chain = uploadChainForKind(kind, process.env, file);
+      const refusals = [];
+      for (const driver of chain) {
         try {
           const { key } = await videoUpload(buffer, filename, { mimeType, provider: driver });
           return key;
         } catch (err) {
           const why = err?.message || String(err);
-          console.warn(`  storage: ${driver} refused "${filename || kind}" — kept on our own disk instead: ${why}`);
+          refusals.push(`${driver}: ${why}`);
+          // Not swallowed: a host that refuses every upload is an operator's problem, and this
+          // is where they find out — named, with the host's own words.
+          console.warn(`  storage: ${driver} refused "${filename || kind}" — trying the next host: ${why}`);
         }
+      }
+      if (refusals.length) {
+        console.warn(`  storage: every configured host refused "${filename || kind}" — kept on our own disk `
+          + `(${refusals.join('; ')})`);
       }
       /*
        * THE HOST SAID NO TO THIS FILE, SO WE KEEP IT.

@@ -143,6 +143,66 @@ export function driverForKind(kind, env = process.env, file = null) {
 }
 
 /**
+ * ── THE HOSTS TO TRY, IN ORDER, WHEN THE FIRST ONE SAYS NO ────────────────────
+ *
+ * `driverForKind` answers "who takes this file", and until now that answer was final: if the
+ * chosen host refused at the wire — a key that expired thirty days after its last use, a free
+ * plan that reads a datacenter upload as abuse, a host having an afternoon, or their terms
+ * being enforced — the file fell back to our own disk. That is a working answer for a store with
+ * one host and a bad answer for a store with two: the second host was configured, paid for and
+ * idle while the first one's mood decided where the bytes went.
+ *
+ * So the router answers with a CHAIN, and the chain is the workaround the two hosts with known
+ * refusals actually need:
+ *
+ *   * Pixeldrain's free plan refuses what it reads as abuse, and its keys expire after 30 idle
+ *     days — the exact failure an operator discovers on the morning of a launch.
+ *   * Catbox's terms forbid being a service's CDN, so a deployment that leans on it as its only
+ *     file host has a problem no code can fix. What code CAN do is make sure that moment is a
+ *     warning and a second choice rather than a seller staring at a failed publish.
+ *
+ * `MEDIA_FALLBACK` names them, in order:
+ *
+ *   unset                  → the one host the kind's driver names, then our disk (today's behaviour)
+ *   all                    → every configured host that accepts the kind, in registry order
+ *   pixeldrain,filemoon    → exactly those, after the primary
+ *
+ * A chain never contains a host that does not take the kind, is not configured, or is a live
+ * host (a live host stores no files, so it can never sit in an upload chain), and it never
+ * contains the same host twice. `local` is not in the list because it is not a host: it is
+ * where the walk ends when every host has said no, and it always says yes.
+ *
+ * The chain is deliberately NOT visible to the seller as a choice — where the bytes sit is an
+ * operator's decision, and a seller choosing a CDN is a product this one is not building yet.
+ * What the seller gets is the guarantee: their file lands somewhere, and the page says where.
+ */
+export const FALLBACK_VAR = 'MEDIA_FALLBACK';
+
+export function uploadChainForKind(kind, env = process.env, file = null) {
+  const chain = [];
+  const add = (host) => {
+    if (!host || host === 'local' || chain.includes(host)) return;
+    const provider = PROVIDERS[host];
+    if (!provider || provider.capabilities.role === 'live') return;
+    if (!configured(host, env)) return;
+    if (!hostAccepts(kind, host, env)) return;
+    if (file && typeof provider.acceptsFile === 'function' && !provider.acceptsFile(file).ok) return;
+    chain.push(host);
+  };
+
+  add(driverForKind(kind, env, file));
+  const setting = String(env[FALLBACK_VAR] ?? '').trim().toLowerCase();
+  if (setting) {
+    const named = setting.split(/[,\s]+/).filter(Boolean);
+    for (const entry of named) {
+      if (entry === 'all' || entry === '*') { for (const host of Object.keys(PROVIDERS)) add(host); continue; }
+      add(entry);
+    }
+  }
+  return chain;
+}
+
+/**
  * Why a kind is NOT going to a host, in words a seller could act on.
  *
  * `driverForKind` returning `local` is the right behaviour and a terrible explanation: it

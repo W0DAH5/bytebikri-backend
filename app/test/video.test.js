@@ -804,6 +804,84 @@ const amsEnv = (extra = {}) => ({
 
 // ── the live half ───────────────────────────────────────────────────────────
 
+// ── a host that says no does not stop the upload: the chain ────────────────
+
+test('the chain is the order hosts are tried in, and it obeys the registry', () => {
+  const env = {
+    VIDEO_DRIVER: 'filemoon', FILE_DRIVER: 'pixeldrain', IMAGE_DRIVER: 'telegraph',
+    FILEMOON_TOKEN: '147|stub', PIXELDRAIN_API_KEY: 'k', CATBOX_USERHASH: 'h',
+  };
+  const plain = { mimeType: 'video/mp4', size: 10 };
+  assert.deepEqual(video.uploadChainForKind('video', env, plain), ['filemoon'],
+    'with no fallback configured, the chain is the driver — today\'s behaviour, unchanged');
+  assert.deepEqual(video.uploadChainForKind('video', { ...env, MEDIA_FALLBACK: 'catbox' }, plain),
+    ['filemoon', 'catbox']);
+  assert.deepEqual(video.uploadChainForKind('video', { ...env, MEDIA_FALLBACK: 'all' }, plain),
+    ['filemoon', 'pixeldrain', 'catbox'],
+    '`all` means every host that takes the kind — pixeldrain is the general host and takes video; '
+    + 'antmedia stores no files and never appears');
+  assert.deepEqual(video.uploadChainForKind('file', { ...env, MEDIA_FALLBACK: 'all' }, { mimeType: 'text/plain', size: 10 }),
+    ['pixeldrain', 'catbox'], 'and for a `file` kind the video host is not in it at all');
+  assert.deepEqual(video.uploadChainForKind('video', { ...env, MEDIA_FALLBACK: 'antmedia,telegraph' }, plain),
+    ['filemoon'],
+    'a LIVE host can never sit in an upload chain, and an image-only host is not asked for a video');
+  /*
+   * And the file-level pre-check is the first filter, not an afterthought: a 9 MB photo has no
+   * turn at Telegra.ph (5 MB cap), so `driverForKind` — not the chain — moves it to the general
+   * host on FILE_DRIVER, which is where it should have gone in the first place. The chain never
+   * sees a host whose own rules would refuse the file.
+   */
+  const huge = { mimeType: 'image/png', size: 9 * 1024 * 1024 };
+  assert.deepEqual(video.uploadChainForKind('image', { ...env, MEDIA_FALLBACK: 'telegraph' }, huge),
+    ['pixeldrain'],
+    'a photo too big for the image host goes to the general host, and never to Telegra.ph');
+});
+
+test('a refusal at the first host is handed to the next one, and the key says where it landed', async () => {
+  /*
+   * THE WORKAROUND, end to end. The primary host answers 500 to every upload — the stand-in
+   * for an expired key or a free plan reading a datacenter upload as abuse — and the second
+   * host takes the file. What must be true afterwards: the key NAMES the second host (a key
+   * that named the first would be a key that cannot be fetched), and the bytes are really
+   * there. Before this, the file went to our own disk, which works but wastes a configured,
+   * paid-for host.
+   */
+  // Two servers, because the point of the chain is that they behave differently: the first
+  // refuses everything, the second answers the way Catbox does — the URL as the whole body.
+  const refusing = http.createServer((req, res) => {
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ success: false, value: 'nope' }));
+  });
+  const accepting = http.createServer((req, res) => {
+    req.resume();                                   // the multipart body is not the point
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('https://files.catbox.moe/took-it.png');
+    });
+  });
+  await new Promise((resolve) => refusing.listen(0, '127.0.0.1', resolve));
+  await new Promise((resolve) => accepting.listen(0, '127.0.0.1', resolve));
+  try {
+    const key = await withDriver(async () => storage.put(
+      Buffer.from('a perfectly good image'), 'photo.png', { mimeType: 'image/png' },
+    ), {
+      driver: null,
+      env: {
+        IMAGE_DRIVER: 'pixeldrain', MEDIA_FALLBACK: 'catbox',
+        PIXELDRAIN_API_KEY: 'k',
+        PIXELDRAIN_API_BASE: `http://127.0.0.1:${refusing.address().port}/api`,
+        CATBOX_USERHASH: 'stub-userhash',
+        CATBOX_API_BASE: `http://127.0.0.1:${accepting.address().port}`,
+        CATBOX_FILE_BASE: `http://127.0.0.1:${accepting.address().port}`,
+      },
+    });
+    assert.match(key, /^catbox\//, `the key must name the host that took it: ${key}`);
+  } finally {
+    await new Promise((resolve) => refusing.close(resolve));
+    await new Promise((resolve) => accepting.close(resolve));
+  }
+});
+
 // ── not being blocked by the hosts that do not want to serve a browser ──────
 
 test('a host that refuses the bytes mid-upload does not fail the seller\'s upload', async () => {
