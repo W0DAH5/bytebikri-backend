@@ -153,6 +153,23 @@ export const storage = {
 
   async put(buffer, filename, { namespace = 'private', mimeType = '' } = {}) {
     if (!/^[a-z]+$/.test(namespace)) throw new Error('bad storage namespace');
+    /*
+     * THE REFUSALS, DECLARED OUT HERE SO THE LOCAL BRANCH CAN SEE THEM.
+     *
+     * `whyLocal` is called in two different places below for two different reasons, and the first
+     * version of this only called it inside the routed branch — which made the sentence it prints
+     * UNREACHABLE for the case it was written for. `routesToHost` asks `driverForKind` about the
+     * file BEFORE any bytes move, so a 6 MB photo for a 5 MB image host never enters the routed
+     * branch at all: it goes straight to the disk, with nothing in the log. The one line an operator
+     * reads to find out why a seller's file is not on the CDN was the one line that case never
+     * printed.
+     *
+     * Hoisting the array is what lets the local branch tell the two situations apart: names already
+     * in it mean hosts were TRIED and refused at the wire (that path logs its own line), and an
+     * empty one on the way to the disk means every host was skipped for a rule before the wire —
+     * which is exactly what `whyLocal` explains.
+     */
+    const refusals = [];
     // The SIZE is part of the routing decision now (a host's cap is not our cap), so it is
     // passed rather than defaulted — otherwise `routesToHost` would answer about a file it
     // was told nothing about.
@@ -187,7 +204,6 @@ export const storage = {
        * explanation is the support question this file exists to prevent.
        */
       const chain = uploadChainForKind(kind, process.env, file);
-      const refusals = [];
       for (const driver of chain) {
         try {
           const { key } = await videoUpload(buffer, filename, { mimeType, provider: driver });
@@ -214,14 +230,24 @@ export const storage = {
        * only difference is which disk the bytes are on. The reason is logged once, at the
        * moment it matters, rather than being discovered by a support question later.
        */
-      const why = whyLocal(kind, process.env, file);
-      if (why) console.warn(`  storage: kept ${filename || kind} on our own disk — ${why}`);
       // fall through to the local branch below
     }
     const ext = (path.extname(filename || '') || '').toLowerCase().replace(/[^.a-z0-9]/g, '');
     await fs.mkdir(path.join(UPLOAD_DIR, namespace), { recursive: true });
     const key = `${namespace}/${id()}${ext}`;
     await fs.writeFile(path.join(UPLOAD_DIR, key), buffer);
+    /*
+     * WHY THESE BYTES ARE ON OUR DISK, one line, at the moment it happens — for the files that never
+     * reached a host at all. Reached with an empty `refusals` when the routing pre-check skipped a
+     * host on a rule (size, format, an extension the host blocks), which is a case no seller can see
+     * and no operator can guess: their file works, it is simply not where the invoice says it is.
+     * When a host WAS tried and said no, `refusals` is not empty and the line above already carries
+     * every host's own words — so this does not print a second, vaguer one.
+     */
+    if (!refusals.length) {
+      const why = whyLocal(mediaKind(mimeType, filename), process.env, { mimeType, filename, size: buffer?.length ?? 0 });
+      if (why) console.warn(`  storage: kept ${filename || mediaKind(mimeType, filename)} on our own disk — ${why}`);
+    }
     return key;
   },
 

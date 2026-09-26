@@ -1060,6 +1060,21 @@ a host that will not take the bytes, or refuses them later, in the middle of a l
 | Telegra.ph | 5 MB, four image formats, no delete, no account | no — the host is what it is |
 | any host | an outage | no |
 
+**The refusal that never reaches the wire, and why it is the quiet one.** A file over a host's cap is
+skipped BEFORE it is sent — `acceptsFile` is consulted while the destination is being chosen, so a
+5.5 MB image never makes a 5.5 MB round trip to be told no. Two things follow, both measured in
+`ci/eyes/upload-cap-walk.mjs`:
+
+* The file does not necessarily stay on our disk. The candidates for a kind are its own host and
+  then the general file host, so on a deployment with both, the 5.5 MB image goes to Pixeldrain and
+  the seller's file row says "held at Pixeldrain". It stays on our disk only when no configured host
+  will take it — and then the seller's row says "on this server".
+* Either way the seller gets a working file, and the operator gets one line naming the host's rule
+  (`storage: kept … on our own disk — telegraph: 5.5 MB is over the image host's 5 MB cap`). That
+  line was unreachable for exactly this case until the cap walk went looking for it: the routing
+  pre-check meant the explaining code in `storage.put` was never entered. If a file is on our disk
+  and nothing in the log says why, that is a regression, not a mystery.
+
 **So the walk does not end at one host.** `uploadChainForKind` returns an ordered list, and
 `storage.put` walks it: the first host that takes the bytes keeps them, each refusal is logged
 with the host's own words, and the walk ends on our own disk — which always says yes. That last

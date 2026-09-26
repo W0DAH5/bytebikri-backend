@@ -15,9 +15,15 @@
  * consequence of how the upload is transported: multer buffers the whole file in memory before
  * anything can inspect it, so this cap is also the ceiling on how much RAM one publish can cost.
  * WANT A BIGGER FILE? That is a streaming-upload change (write to disk, then hand the path to the
- * adapter), not a bigger number here. The per-host caps are a separate and usually smaller
- * question — Telegra.ph takes 5 MB, Catbox 200 MB — and a file a host refuses does not fail, it
- * falls back to this server's disk (`MEDIA_FALLBACK`, VIDEO_STORAGE.md §13.7).
+ * adapter), not a bigger number here.
+ *
+ * THE PER-HOST CAPS ARE A SEPARATE, SMALLER QUESTION, and this sentence used to get their answer
+ * wrong. Measured (`ci/eyes/upload-cap-walk.mjs`): a 5.5 MB image on a deployment that configures
+ * both an image host and a general file host does NOT land on our disk — Telegra.ph is skipped for
+ * size and Pixeldrain takes it, because the kind's candidates are [its own host, the general one].
+ * It stays on our disk only when NO configured host will take it, and then the instance logs the
+ * host's own rule as the reason. `MEDIA_FALLBACK` is a different lever: it is the chain tried when
+ * a host that DID accept the file refuses it at the wire (VIDEO_STORAGE.md §13.7).
  */
 export const UPLOAD_CAP_MB = 25;
 export const UPLOAD_CAP_BYTES = UPLOAD_CAP_MB * 1024 * 1024;
