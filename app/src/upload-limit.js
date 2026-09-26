@@ -1,0 +1,29 @@
+/**
+ * How big a published file may be — one number, read by everything that has to agree about it.
+ *
+ * This was four literals: multer's `fileSize`, the hint under the file picker, and two refusal
+ * sentences. Four copies of a number is a drift waiting for a quiet afternoon — raise the limit
+ * and the form keeps promising the old one, or lower it and the refusal names a size the form says
+ * is fine. Nothing would fail: no test reads a sentence, and the seller meets the disagreement at
+ * the one moment it matters, standing in front of a rejected upload.
+ *
+ * So it lives in a module rather than in `server.js`, because the form is rendered by `views.js`
+ * and a view cannot import the server. A frozen number is not a side effect: `views.js` stays the
+ * pure renderer it is, and the sentence, the picker's hint and the actual limit cannot disagree.
+ *
+ * WHY THE NUMBER IS SMALL. 25 MB is not a decision about what a seller may sell — it is a
+ * consequence of how the upload is transported: multer buffers the whole file in memory before
+ * anything can inspect it, so this cap is also the ceiling on how much RAM one publish can cost.
+ * WANT A BIGGER FILE? That is a streaming-upload change (write to disk, then hand the path to the
+ * adapter), not a bigger number here. The per-host caps are a separate and usually smaller
+ * question — Telegra.ph takes 5 MB, Catbox 200 MB — and a file a host refuses does not fail, it
+ * falls back to this server's disk (`MEDIA_FALLBACK`, VIDEO_STORAGE.md §13.7).
+ */
+export const UPLOAD_CAP_MB = 25;
+export const UPLOAD_CAP_BYTES = UPLOAD_CAP_MB * 1024 * 1024;
+
+/**
+ * The form's own hint, written once so the sentence a seller reads before choosing a file and the
+ * one they read after being refused are recognisably the same rule.
+ */
+export const uploadCapHint = () => `Up to ${UPLOAD_CAP_MB} MB.`;

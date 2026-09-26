@@ -125,6 +125,8 @@ import {
 // The blocker ladder. One module, so the sentence the visitor reads and the
 // sentence the seller's dashboard prints cannot disagree about what was done.
 import { rungFor, playerWords, readerWords, NEVER_DO, blockedSellerNote } from './blocked.js';
+import { uploadCapHint } from './upload-limit.js';
+import { hostLabel } from './video.js';
 
 const FAMILY_LABELS = Object.fromEntries(AUDIT_FAMILIES.map((f) => [f.key, f.label]));
 
@@ -5567,7 +5569,7 @@ ${(() => {
       <div class="field" style="flex:1 1 240px">
         <label for="p-media">The file people unlock</label>
         <input class="input" id="p-media" name="media" type="file" required>
-        <span class="hint">Up to 25 MB. Stored privately — it is only ever sent through a
+        <span class="hint">${uploadCapHint()} Stored privately — it is only ever sent through a
         link minted for one signed-in account.</span>
       </div>
       <div class="field" style="flex:1 1 240px">
@@ -8061,7 +8063,10 @@ function deletedReport(deleted, asset, channel) {
  * that a form post can skip.
  */
 export function assetDelete({ channel, asset, user, files = [], unlocks = 0, keepable = [], error = '' }) {
-  const remote = files.filter((f) => f.hosted).length;
+  // Where the bytes are, per file, from the provider decoded out of the storage key. This read
+  // `f.hosted` — a prop the route never passed, so the count was always zero and the one sentence
+  // telling the seller that some of these bytes are NOT on our disk silently never appeared.
+  const remote = files.filter((f) => f.host).map((f) => hostLabel(f.host));
   return layout({
     title: `Delete ${asset.title}`, user, activeChannel: channel, current: 'dashboard',
     body: `
@@ -8072,7 +8077,7 @@ ${error === 'confirm' ? `<div class="note note-warning" role="alert">Type the wo
   <h2>What deleting does</h2>
   <dl class="kv">
     <dt>Its files</dt><dd>${files.length} file${files.length === 1 ? '' : 's'}
-      ${remote ? `(${remote} held at a media host)` : ''} — destroyed, and their addresses removed,
+      ${remote.length ? `(<strong>${esc([...new Set(remote)].join(', '))}</strong> ${remote.length === 1 ? 'holds' : 'hold'} a copy, named below)` : ''} — destroyed, and their addresses removed,
       so nothing here can serve them. Any link anyone holds stops working.</dd>
     <dt>People with access</dt><dd>${unlocks
       ? `<strong>${unlocks} unlock${unlocks === 1 ? '' : 's'} will be voided.</strong> They opened this
@@ -8099,6 +8104,42 @@ ${error === 'confirm' ? `<div class="note note-warning" role="alert">Type the wo
   </form>
 </section>`,
   });
+}
+
+/**
+ * Who sees a viewer when a hosted file is opened — said per TIER, because the tiers do not agree.
+ *
+ * This sentence used to be unconditional, and it was true when it was written: every hosted file
+ * was a video at a player host, fetched by the viewer's own browser, so "the host sees a viewer's
+ * address" was simply what happened. Two things then changed underneath it. Files began being held
+ * per KIND — a picture at Telegra.ph, a document at Pixeldrain — and delivery grew two more tiers,
+ * where the request goes through this server or through the Worker on Cloudflare's edge instead of
+ * straight from the viewer. So the same sentence became false in a way nobody could see from the
+ * page: it was still saying the host sees the viewer's address while the host was seeing Cloudflare.
+ *
+ * The tier therefore travels from the registry (`deliveryOf`) with the file, and this function turns
+ * the tiers that are actually in play for these files into one paragraph. It writes NO paragraph for
+ * a store whose files are all on this disk: there is then nothing about a provider to disclose, and a
+ * page that explains a thing that did not happen is its own kind of wrong.
+ */
+function heldWords(files = []) {
+  const tiers = new Set(files.map((f) => f.delivery).filter(Boolean));
+  const said = [];
+  if (tiers.has('direct')) {
+    said.push(`A viewer's browser fetches a direct file from that host itself, so the host sees the
+      viewer's address — the same thing any file host sees.`);
+  }
+  if (tiers.has('ours')) {
+    said.push(`A file its host will not hand to a browser is fetched through this server first, so
+      the host sees this server rather than the viewer, and this server sees which file was asked
+      for.`);
+  }
+  if (tiers.has('edge')) {
+    said.push(`A file its host will not hand to a browser is fetched through a relay running on
+      Cloudflare's edge, so Cloudflare sees the viewer's address and the host sees Cloudflare. The
+      relay is not a general proxy: every link it accepts names one file and expires within hours.`);
+  }
+  return said.join(' ');
 }
 
 export function assetManage({
@@ -8772,18 +8813,19 @@ ${notice ? `
             <span class="file-badge" aria-hidden="true">${esc((f.mime_type || 'file').split('/').pop().slice(0, 4).toUpperCase())}</span>
             <span class="dl-body">
               <span class="dl-name">${esc(f.filename)}</span>
-              <span class="dl-meta">${(f.size_bytes / 1024).toFixed(1)} KB · ${esc(f.mime_type || '')}${
-    f.hosted ? ' · held and delivered by our media host' : ''}</span>
+              <span class="dl-meta">${(f.size_bytes / 1024).toFixed(1)} KB · ${esc(f.mime_type || '')} · ${
+    f.host ? `held at ${esc(hostLabel(f.host))}` : 'on this server'}</span>
             </span>
           </li>`).join('')}
         </ul>
-        ${files.some((f) => f.hosted) ? `<p class="fine" style="margin-top:var(--space-4)" data-hosted-note="1">
-          A video is kept and delivered by the platform's media host rather than on this server, so
-          it plays for somebody on a slow connection without us in the middle of every second of it. The file is still yours and the door is still ours: nothing hands it out
-          without the unlock, and the host sees a viewer's address when a video plays — which the
-          <a href="/legal/privacy">privacy notice</a> says in the same words. Everything else a store
-          uploads stays on this server.
-        </p>` : ''}
+        <p class="fine" style="margin-top:var(--space-4)" data-hosted-note="1">
+          Each file's own line says where its bytes are kept. Routing is per kind, decided when the
+          file is uploaded: a picture can be held by one host and a video by another, and anything a
+          host will not take stays on this server's disk. Either way the file is still yours and the
+          door is still ours — nothing hands it out without the unlock. ${heldWords(files)}
+          The <a href="/legal/privacy">privacy notice</a> says this in the same words, including
+          the two things no provider ever sees.
+        </p>
         <p class="fine" style="margin-top:var(--space-4)">
           A file cannot be swapped for another one here. Replacing bytes behind a URL somebody
           already unlocked is how a store loses the argument about what they bought — publish a

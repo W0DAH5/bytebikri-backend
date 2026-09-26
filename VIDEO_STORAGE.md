@@ -214,6 +214,31 @@ provider failure during upload is named as the HOST's failure rather than as an 
 sentence, because the host's own words would otherwise travel in a redirect URL, with those words recorded on
 the audit line (`asset.upload_host_failed`) where somebody investigating can read them.
 
+**The first of those was only true for video, and the promise is older than the routing.** When this was
+written the only thing that left the disk was a video at a player host, so one sentence covered it: *"A video
+is kept and delivered by the platform's media host… everything else a store uploads stays on this server."*
+Then the registry learned to route by kind — a picture to Telegra.ph, a document or a sound file to
+Pixeldrain or Catbox — and the sentence went on saying what it had always said. For a Telegraph-hosted PNG
+the seller's page stated, in two clauses, that video was the only kind held elsewhere and that everything
+else stayed here: both false, on the page of the one person entitled to know, with no test able to see it
+because a sentence is not a return value. `ci/eyes/publish-walk.mjs` found it — and then found that its own
+check had been written against the wording the walk *expected* rather than the wording the page rendered, so
+it had been failing on a correct page before it failed on a wrong one.
+
+What the page says now is derived, not remembered. The provider comes from the **storage key** — the thing
+the upload actually wrote — through `remoteProvider()`, and its name from the registry's own `label`; the
+delivery tier comes from `deliveryOf()`, the same call the route consults, so the page cannot claim a viewer's
+address reaches the host when the request in fact goes through this server or through Cloudflare. Every file
+names where it is, local files included ("on this server", which is a fact rather than silence), and the
+paragraph explains the policy once — per-kind routing, the door staying ours, and what the privacy notice
+already says in the same words.
+
+**A second instance of the same mistake, found while fixing the first:** the delete page's first line —
+*"N files (N held at a media host) — destroyed"* — read a prop (`f.hosted`) that its route never passed, so
+the count was always zero and the clause silently never appeared. Nothing about deleting was wrong; the one
+sentence that tells a seller some of these bytes are not on our disk simply never rendered. It now names the
+hosts, from the same key.
+
 ## 9. Verification plan
 
 | what | how |
@@ -1060,3 +1085,48 @@ if the first one refuses" is the question an operator has.
 terms, not their uptime), and it cannot make a deleted file un-remembered by a host that issued
 it a public URL (§13.2). What it does is make sure neither of those is the reason a seller's
 publish fails.
+
+### 13.8 The deploy that has not happened, and everything owed to it
+
+The edge tier is built, tested against its own Worker code and **switched off**. Not by a flag
+somebody forgot to flip: `app/.env` carries `MEDIA_EDGE_BASE` and `MEDIA_EDGE_SECRET` commented
+out, so `deliveryOf()` answers `ours` for Catbox and Pixeldrain and the product behaves exactly as
+it did before §13.4 existed. Nothing below is needed to run, publish or sell today.
+
+It is written down here, in the file rather than in a conversation, because it is the kind of list
+that gets lost: each item is a step somebody must take outside this repository, and the work does
+not announce its own absence — a store with the relay off works, just from the operator's
+bandwidth. The order is the order it has to be done in.
+
+| # | owed | to whom | what it needs |
+| --- | --- | --- | --- |
+| 1 | `wrangler deploy ci/cloudflare/media-relay-worker.js --name bytebikri-media` | Cloudflare | an account, and `ci/cloudflare/README.md` §2 |
+| 2 | `wrangler secret put MEDIA_EDGE_SECRET` | Cloudflare | the same value the app gets, and nothing weaker than a random 32 bytes |
+| 3 | `wrangler secret put PIXELDRAIN_API_KEY` | Cloudflare | **optional** — only if the upstream needs the key on the relay's side |
+| 4 | set `MEDIA_EDGE_BASE` + `MEDIA_EDGE_SECRET` in the app's environment | this app | the Worker's own url; a base without a secret is unconfigured on purpose |
+| 5 | a Pixeldrain **Pro** key, and `MEDIA_RELAY=none` | Pixeldrain, and the operator | money, and a decision: with a paid key the host serves browsers itself and no relay is needed at all |
+| 6 | the day-one checks on real Cloudflare | nobody yet | see below — they can only be run once item 1 is true |
+
+**Item 6, spelled out, because it is the one that cannot be tested from here.** Every probe in this
+workspace answers `000` for Cloudflare, Pixeldrain and Catbox. So three facts about the edge tier
+are undocumented guesses that the first day of real traffic settles:
+
+* whether Cloudflare's edge is seen by Pixeldrain as a hotlink (their protection is plan-tiered and
+  activates on detected hotlinking) — if it is, item 5 stops being optional;
+* the 128 MB memory ceiling under a real long stream, which is why the body is passed through as a
+  stream and never buffered, and which no local test can reproduce;
+* the free tier's 100,000 requests/day, which is a **request** ceiling and not a bandwidth one:
+  Cloudflare does not bill egress on Workers, so the thing that runs out is the count of Range
+  requests a long video makes — a number worth watching rather than estimating.
+
+**Also owed, beyond the edge tier** — recorded here so one list holds them all:
+
+* **the seller's live panel has no mint button.** `src/video-antmedia.js` can create a broadcast and
+  return its RTMP url, and the panel renders the facts, but no seller can press anything that mints
+  one, and no live stream has ever been pushed from a real encoder. The proof needs the user's own
+  machine: `--upload`, `--probe-telegraph`, `--probe-live` are written for exactly that, and none of
+  them can pass here.
+* **the 60-day clock (§13.5) has no decision**, and therefore no code. Keep-alive or honest "last
+  seen" date — either is fine, silence is not.
+* **Catbox's terms are still a conversation** (§13.4), and no engineering step in this file changes
+  that.

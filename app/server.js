@@ -19,7 +19,8 @@ import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 
 import { store, storage, SLOT_DEFS, slugify, PLANS, nextPlan } from './src/store.js';
-import { hostsEnabled, edgeEnabled, mediaOrigins as videoMediaOrigins } from './src/video.js';
+import { hostsEnabled, edgeEnabled, mediaOrigins as videoMediaOrigins, deliveryOf } from './src/video.js';
+import { UPLOAD_CAP_MB, UPLOAD_CAP_BYTES } from './src/upload-limit.js';
 // The cosmetics engine: the look picker's slots, declared once. This route validates a
 // submitted look against the catalog rather than against a list typed here.
 import { personSlots } from './src/cosmetics.js';
@@ -301,8 +302,9 @@ const limitPostback = rateLimit({ windowMs: 60_000, max: 600, name: 'postbacks' 
 const upload = multer({
   storage: multer.memoryStorage(),
   // A cap on the request, not just a preference: multer buffers to RAM, so an
-  // unbounded upload is a memory exhaustion primitive.
-  limits: { fileSize: 25 * 1024 * 1024, files: 2, fields: 12 },
+  // unbounded upload is a memory exhaustion primitive. The number lives in one place and the
+  // form's hint and the refusal sentences read the same module (`src/upload-limit.js`).
+  limits: { fileSize: UPLOAD_CAP_BYTES, files: 2, fields: 12 },
 });
 
 /**
@@ -317,6 +319,35 @@ const uploadDocument = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_BYTES, files: 1, fields: 6 },
 });
+
+/**
+ * The same handler, for the publish form's uploader.
+ *
+ * THIS EXISTED FOR DOCUMENTS AND NOT FOR FILES, and the difference was invisible until a browser
+ * sent 26 MB through the publish form: multer refuses by calling `next(err)`, which SKIPS the
+ * route handler entirely, so the route's own `catch (err) { if (err.code === 'LIMIT_FILE_SIZE') }`
+ * never ran — it was unreachable code that looked exactly like a handled case. The seller got the
+ * app's 413 "Something broke" page with a request id, for a file that was simply too big, and the
+ * sentence written for this moment (`ERROR_FLASH.size`, which names the limit) was never read.
+ *
+ * That is the failure mode this repository keeps meeting: the fix is not a better message, it is
+ * putting the message where the refusal actually arrives. A route's catch block cannot see a
+ * middleware's error, so the middleware gets its own handler — the same shape `documentUpload`
+ * has used since the identity documents were added, for the same reason.
+ *
+ * `back` is a function of the request because the URL needs the slug.
+ */
+const contentUpload = (back) => (req, res, next) =>
+  upload.fields([{ name: 'media', maxCount: 1 }, { name: 'cover', maxCount: 1 }])(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') return res.redirect(back(req, 'error=size'));
+    // A third file, or a field this form does not carry. Its own sentence, because "larger than
+    // the limit" is a lie about a file that was the right size and the wrong shape.
+    if (err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE') {
+      return res.redirect(back(req, 'error=files'));
+    }
+    return next(err);
+  });
 
 /**
  * Multer refuses inside the middleware, so its refusals never reach a route: an
@@ -4923,8 +4954,18 @@ const ERROR_FLASH = {
       + 'Nothing already published has changed.'
     : "Your plan's file limit is reached. Existing files stay live; upgrade to publish more."),
   cover: 'The cover must be an image under 5 MB.',
-  size: 'That file is larger than the 25 MB upload limit.',
-  toobig: 'That file is larger than the 25 MB upload limit.',
+  // The number comes from the same constant multer is configured with, because it appeared in
+  // three places and drifted in none of them only by luck: the limit, this sentence, and the hint
+  // under the form's file picker. One constant, read three times.
+  size: `That file is larger than the ${UPLOAD_CAP_MB} MB upload limit — the form sends one file to `
+    + 'unlock and one cover image, and nothing was published. A video that big is usually a matter '
+    + 'of re-encoding it smaller; a picture or a document that big is usually a scan at full '
+    + 'resolution that would read the same at half of it.',
+  toobig: `That file is larger than the ${UPLOAD_CAP_MB} MB upload limit. Nothing was published.`,
+  // A third file, or a part this form does not carry. NOT the size sentence: that would blame a
+  // file that was the right size and the wrong shape, and the seller would re-encode it for nothing.
+  files: 'That upload carried more than a file can take: one file to unlock and one cover image is '
+    + 'all this form sends. Nothing was published.',
 };
 
 /**
@@ -5086,10 +5127,8 @@ APP.post('/dashboard/:slug/assets/bulk/:batchId/undo', async (req, res, next) =>
   } catch (err) { return next(err); }
 });
 
-APP.post('/dashboard/:slug/assets', upload.fields([
-  { name: 'media', maxCount: 1 },
-  { name: 'cover', maxCount: 1 },
-]), async (req, res, next) => {
+APP.post('/dashboard/:slug/assets', contentUpload((req, qs) =>
+  `/dashboard/${encodeURIComponent(req.params.slug)}?${qs}#publish`), async (req, res, next) => {
   const back = `/dashboard/${encodeURIComponent(req.params.slug)}`;
   try {
     if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
@@ -5161,7 +5200,10 @@ APP.post('/dashboard/:slug/assets', upload.fields([
     await store.audit('asset.created', { assetId: asset.id, channelId: channel.id });
     res.redirect(`${back}?published=${encodeURIComponent(assetSlug)}`);
   } catch (err) {
-    if (err.code === 'LIMIT_FILE_SIZE' || err.code === 'LIMIT_UNEXPECTED_FILE') return fail('size');
+    // NO `LIMIT_FILE_SIZE` BRANCH HERE, deliberately: multer refuses in the middleware, so its
+    // errors never reach this catch (`contentUpload` handles them and the test asserts it does).
+    // The branch that used to sit here was unreachable, and it is exactly why nobody noticed the
+    // seller was getting a 413 page instead of the sentence.
     /*
      * A video host is a dependency, and a dependency fails in its own words. The
      * seller gets the reason ("the video host refused the upload: …"), not a 500:
@@ -6106,9 +6148,18 @@ APP.get('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
       membershipsOn,
       tiers: membershipsOn ? await store.membershipTiers(channel.id) : [],
       planCode: store.effectivePlanCode(channel),
-      // `hosted` is added here for the same reason `planCode` is computed here: the
-      // view renders synchronously and reads no storage key (`VIDEO_STORAGE.md` §8).
-      files: (await store.filesOf(asset.id)).map((f) => ({ ...f, hosted: storage.isRemote(f.storage_key) })),
+      // Where each file's bytes actually are, and how they reach a browser, computed here for the
+      // same reason `planCode` is: the view renders synchronously and reads no storage key
+      // (`VIDEO_STORAGE.md` §8). The provider comes from the KEY, not from a guess about the
+      // mime type — the key is what the upload actually wrote, and the registry is what routed it.
+      //
+      // `delivery` travels with the file because the sentence the seller reads has to agree with
+      // the tier that serves the bytes: "the host sees a viewer's address" is true of a direct
+      // link and FALSE of a relayed one, where the host sees this server or Cloudflare instead.
+      files: (await store.filesOf(asset.id)).map((f) => {
+        const host = storage.remoteProvider(f.storage_key);
+        return { ...f, host, delivery: host ? deliveryOf(host) : null };
+      }),
       // The page count, so the seller's plan panel asks the planner the same
       // question the buyer's page does: a forty-page comic has room for a break
       // after page 13, and the panel used to be told it had one chapter.
@@ -6158,7 +6209,9 @@ APP.get('/dashboard/:slug/assets/:assetId/delete', async (req, res, next) => {
     if (!channel) return undefined;
     const asset = await store.assetById(req.params.assetId);
     if (!asset || asset.channel_id !== channel.id) return res.status(404).send('Not found');
-    const files = await store.filesOf(asset.id);
+    // `host` per file, because the view's first sentence is about which of these bytes are NOT on
+    // this disk — and it read a prop this route never passed, so it always said none were.
+    const files = (await store.filesOf(asset.id)).map((f) => ({ ...f, host: storage.remoteProvider(f.storage_key) }));
     const unlocks = (await store.unlocksOfChannel(channel.id)).filter((u) => u.asset_id === asset.id).length;
     /*
      * WHICH HOSTS CANNOT TAKE IT BACK — asked of the registry before the fact, not

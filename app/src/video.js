@@ -337,6 +337,25 @@ export const relaysThroughUs = (host, env = process.env) => {
   return setting.split(/[,\s]+/).filter(Boolean).includes(host);
 };
 
+/**
+ * Which tier delivers a host's bytes: `direct` (a 302 to the host), `edge` (a 302 to the Worker),
+ * `ours` (piped through this server), or `live` for a stream host that serves browsers itself.
+ *
+ * A function rather than a branch inside `hostFacts()`, because the seller's page has to make a
+ * claim about this — who sees a viewer's address, and therefore what the privacy notice's own
+ * paragraph says — and a page that derives the tier differently from the route that serves the
+ * bytes is a page that can be confidently wrong. One implementation, three callers.
+ */
+export function deliveryOf(host, env = process.env) {
+  const provider = PROVIDERS[host];
+  if (!provider) return null;
+  if (provider.capabilities.role === 'live') return 'live';
+  if (!relaysThroughUs(host, env)) return 'direct';
+  const edge = String(env.MEDIA_EDGE_BASE || '').trim();
+  const secret = String(env.MEDIA_EDGE_SECRET || '').trim();
+  return edge && secret && ['catbox', 'pixeldrain'].includes(host) ? 'edge' : 'ours';
+}
+
 /** The api base of the configured provider, for the messages and the doctor. */
 export const videoHostBase = (env = process.env) => {
   const driver = videoDriver(env);
@@ -350,18 +369,11 @@ export const videoHostBase = (env = process.env) => {
  * changes per account or per plan without every caller re-deriving it.
  */
 export function hostFacts(env = process.env) {
-  const edge = String(env.MEDIA_EDGE_BASE || '').trim();
   return HOSTS.map((host) => ({
     host,
     label: PROVIDERS[host].label,
     configured: PROVIDERS[host].configured(env),
-    // Which tier delivers this host's bytes, asked here so the route, the doctor and the boot
-    // banner cannot disagree: direct (a 302 to the host), edge (a 302 to the Worker), ours
-    // (piped through this server), or none for a host that serves browsers itself.
-    delivery: PROVIDERS[host].capabilities.role === 'live' ? 'live'
-      : relaysThroughUs(host, env) ? (edge && ['catbox', 'pixeldrain'].includes(host) && String(env.MEDIA_EDGE_SECRET || '').trim()
-        ? 'edge' : 'ours')
-        : 'direct',
+    delivery: deliveryOf(host, env),
     ...PROVIDERS[host].capabilities,
   }));
 }
@@ -495,6 +507,17 @@ export function remoteProvider(key) {
 
 /** Is this key one of ours-to-disk, or one of theirs? */
 export const isRemoteKey = (key) => remoteProvider(key) !== null;
+
+/**
+ * A provider's human name, for a sentence somebody reads.
+ *
+ * The seller's page has to say WHERE a file is held, and "our media host" is not an answer — the
+ * registry already knows the name it is displayed under, and a second copy of the list of names
+ * here is how a page ends up naming a host the product stopped using. An unknown name falls back to
+ * itself rather than to an empty string: a wrong word on the page is a bug somebody can report,
+ * while a blank is one nobody can see.
+ */
+export const hostLabel = (provider) => PROVIDERS[provider]?.label || String(provider ?? '');
 
 /** The provider's id inside a remote key, or null. */
 export function remoteId(key) {
