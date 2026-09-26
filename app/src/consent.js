@@ -24,7 +24,7 @@ import { one, query } from './db.js';
 import { readSecret } from './config.js';
 // Whether a media host is in play at all — the fact the notice's version and its
 // own paragraph both follow (`VIDEO_STORAGE.md` §3, §7).
-import { hostsEnabled } from './video.js';
+import { hostsEnabled, edgeEnabled } from './video.js';
 
 /**
  * Bump this whenever the notice changes in a way a person would care about:
@@ -47,11 +47,13 @@ import { hostsEnabled } from './video.js';
  */
 export const POLICY_VERSION_BASE = '2026-09-1';
 export const POLICY_VERSION_MEDIA_HOST = '2026-09-2';
+export const POLICY_VERSION_MEDIA_EDGE = '2026-09-3';
 
-export const policyVersionFor = ({ mediaHost = false } = {}) =>
-  (mediaHost ? POLICY_VERSION_MEDIA_HOST : POLICY_VERSION_BASE);
+export const policyVersionFor = ({ mediaHost = false, mediaEdge = false } = {}) =>
+  (mediaEdge ? POLICY_VERSION_MEDIA_EDGE
+    : mediaHost ? POLICY_VERSION_MEDIA_HOST : POLICY_VERSION_BASE);
 
-export const POLICY_VERSION = policyVersionFor({ mediaHost: hostsEnabled() });
+export const POLICY_VERSION = policyVersionFor({ mediaHost: hostsEnabled(), mediaEdge: edgeEnabled() });
 
 /**
  * The purposes we ask about. `necessary` is not on the list: it is not a choice.

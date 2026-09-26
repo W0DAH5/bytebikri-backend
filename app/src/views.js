@@ -5480,9 +5480,10 @@ ${(() => {
                 paused, and calling both "Paused" told a seller they had done something
                 they had not done — while hiding the one thing they needed to know. The
                 pill says who acted, and the row links straight to the answer. */
-    a.hidden_by_reports ? pill('Hidden after reports', 'danger')
-      : a.status === 'paused' ? pill('Paused by you', 'warning')
-        : a.status === 'removed' ? pill('Removed', 'danger') : pill('Live', 'success')}
+    a.status === 'deleted' ? pill('Deleted', 'danger')
+      : a.hidden_by_reports ? pill('Hidden after reports', 'danger')
+        : a.status === 'paused' ? pill('Paused by you', 'warning')
+          : a.status === 'removed' ? pill('Removed', 'danger') : pill('Live', 'success')}
           ${a.hidden_by_reports ? `<div class="fine" style="margin-top:var(--space-1)">
             <a href="/dashboard/${esc(channel.slug)}/assets/${esc(a.id)}">Your side of it →</a></div>` : ''}</td>
         <td data-label="Access">${a.unlock_mode === 'open' ? pill('Free', 'success')

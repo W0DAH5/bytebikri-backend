@@ -951,6 +951,208 @@ test('the relay is in the delivery path, and HLS is deliberately not', async () 
   assert.match(src, /from: source\.host/, 'naming the host the bytes came from');
 });
 
+// ── the edge relay: Catbox and Pixeldrain, on somebody else's connection ────
+
+test('the edge serves only the two hosts it was built for, and only fully configured', async () => {
+  /*
+   * THE RULE THAT KEEPS THIS FROM BECOMING AN OPEN PROXY, tested before anything else about it.
+   *
+   * The tempting shape is "relay every host that would have been relayed", which turns a helper
+   * for two known problems into a general-purpose proxy carrying our key. The list is two names;
+   * this asserts it stays two and that a host outside them is never given an edge url, whatever
+   * the relay setting says.
+   */
+  const edge = await import('../src/video-edge.js');
+  assert.deepEqual(edge.EDGE_HOSTS, ['catbox', 'pixeldrain'], 'the list is a decision, not a derivation');
+  const env = { MEDIA_EDGE_BASE: 'https://edge.example.workers.dev', MEDIA_EDGE_SECRET: 's', MEDIA_RELAY: 'all' };
+  assert.equal(edge.edgeServes('catbox', env), true);
+  assert.equal(edge.edgeServes('pixeldrain', env), true);
+  assert.equal(edge.edgeServes('filemoon', env), false, 'a host that serves browsers itself is never sent here');
+  assert.equal(edge.edgeServes('telegraph', env), false);
+  assert.equal(edge.edgeServes('antmedia', env), false, 'and a live host is never relayed on any tier');
+
+  /*
+   * A BASE WITHOUT A SECRET IS NOT CONFIGURED, and that is the important half: the Worker refuses
+   * every request without a secret, so a deployment that set one and not the other would hand out
+   * urls that 403. Answering "not configured" means it falls back to the relay we control, which
+   * works — slowly, on our bandwidth — instead of producing links that do not.
+   */
+  const half = { MEDIA_EDGE_BASE: 'https://edge.example.workers.dev', MEDIA_RELAY: 'all' };
+  assert.equal(edge.edgeConfigured(half), false, 'no secret, no edge');
+  assert.equal(edge.edgeServes('catbox', half), false);
+  assert.equal(edge.edgeUrl('catbox', 'x.jpg', { env: half }), null);
+});
+
+test('an edge url is signed, expires, and covers the file it names', async () => {
+  /*
+   * The signature is the whole reason a public Worker can be handed out. Three properties, and
+   * each one is a different attack if it is missing: guessing a url (the secret), keeping a url
+   * (the expiry), and editing a url (the path being inside the signed payload).
+   */
+  const edge = await import('../src/video-edge.js');
+  const env = { MEDIA_EDGE_BASE: 'https://edge.example.workers.dev', MEDIA_EDGE_SECRET: 'shhh', MEDIA_RELAY: 'catbox' };
+  const now = 1_790_000_000_000;
+  const url = new URL(edge.edgeUrl('catbox', 'photo.jpg', { env, now }));
+  assert.equal(url.origin + url.pathname, 'https://edge.example.workers.dev/catbox/photo.jpg');
+  const exp = Number(url.searchParams.get('e'));
+  const sig = url.searchParams.get('s');
+  assert.equal(exp, Math.floor((now + edge.DEFAULT_EDGE_TTL_SECONDS * 1000) / 1000), 'the default TTL is the one in the url');
+  assert.equal(sig, edge.edgeSignature('catbox', 'photo.jpg', exp, env), 'and it signs host/id/expiry');
+
+  // Editing the id invalidates it, which is what stops a link for one file becoming a link for
+  // another — the difference between signing a url and handing out a key.
+  assert.notEqual(sig, edge.edgeSignature('catbox', 'other.jpg', exp, env));
+  assert.notEqual(sig, edge.edgeSignature('pixeldrain', 'photo.jpg', exp, env));
+  assert.notEqual(sig, edge.edgeSignature('catbox', 'photo.jpg', exp + 1, env));
+  // A different secret is a different signature: a deployment's links are worthless on another's.
+  assert.notEqual(sig, edge.edgeSignature('catbox', 'photo.jpg', exp, { ...env, MEDIA_EDGE_SECRET: 'other' }));
+
+  // The TTL is a setting, because six hours suits a film and a live page might want less.
+  const short = new URL(edge.edgeUrl('catbox', 'photo.jpg', { env: { ...env, MEDIA_EDGE_TTL_SECONDS: '60' }, now }));
+  assert.equal(Number(short.searchParams.get('e')), Math.floor((now + 60_000) / 1000));
+  // An unparseable TTL falls back rather than producing a url that expires at the epoch.
+  const bad = new URL(edge.edgeUrl('catbox', 'photo.jpg', { env: { ...env, MEDIA_EDGE_TTL_SECONDS: 'soon' }, now }));
+  assert.equal(Number(bad.searchParams.get('e')) - Math.floor(now / 1000), edge.DEFAULT_EDGE_TTL_SECONDS);
+});
+
+test('the worker refuses an unsigned, tampered or expired link — before it opens a socket', async () => {
+  /*
+   * THIS RUNS THE REAL WORKER, not a model of it. `ci/cloudflare/media-relay-worker.js` is the
+   * one piece of delivery that lives on somebody else's platform, and a test against a
+   * reimplementation of it would prove the reimplementation. So the module is imported and its
+   * own `fetch` handler is called with real `Request`s, which is also what
+   * `ci/stub-edge-relay.mjs` does for the walk.
+   *
+   * The upstream is a server this test starts, and the point of it is what it does NOT record:
+   * a refused request never reaches it.
+   */
+  const secret = 'test-edge-secret';
+  const upstream = http.createServer((req, res) => {
+    hits.push(req.url);
+    res.writeHead(200, { 'content-type': 'application/octet-stream' });
+    res.end('the file');
+  });
+  const hits = [];
+  await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${upstream.address().port}`;
+  const env = { MEDIA_EDGE_SECRET: secret, PIXELDRAIN_API_BASE: base, MEDIA_EDGE_BASE: 'https://edge.example.workers.dev' };
+  const worker = (await import('../../ci/cloudflare/media-relay-worker.js')).default;
+  const ask = (path) => worker.fetch(new Request(`https://edge.example.workers.dev${path}`), env);
+  try {
+    const good = new URL(await (async () => {
+      const { edgeUrl } = await import('../src/video-edge.js');
+      return edgeUrl('pixeldrain', 'abc123', { env: { ...env, MEDIA_RELAY: 'pixeldrain' } });
+    })());
+    assert.equal(good.origin, 'https://edge.example.workers.dev');
+
+    const ok = await ask(good.pathname + good.search);
+    assert.equal(ok.status, 200, 'a signed url is served');
+    assert.equal(await ok.text(), 'the file', 'and the bytes are the host\'s');
+    assert.equal(hits.length, 1, 'the upstream was reached exactly once');
+
+    // Nothing below may reach the upstream at all — that is what "before it opens a socket" means.
+    const unsigned = await ask(good.pathname);
+    assert.equal(unsigned.status, 403);
+    assert.match(await unsigned.text(), /no expiry/);
+
+    const tampered = await ask(`${good.pathname}?e=${good.searchParams.get('e')}&s=${'0'.repeat(64)}`);
+    assert.equal(tampered.status, 403);
+    assert.match(await tampered.text(), /signature does not match/);
+
+    const expired = await ask(`${good.pathname}?e=1&s=${good.searchParams.get('s')}`);
+    assert.equal(expired.status, 403);
+    assert.match(await expired.text(), /expired/);
+
+    // Another host, however well signed: the table is two names and a request cannot add one.
+    const foreign = await ask(`/example.com/abc123?e=${good.searchParams.get('e')}&s=${good.searchParams.get('s')}`);
+    assert.equal(foreign.status, 404);
+    assert.match(await foreign.text(), /not a host this relay serves/);
+
+    // And a write is not a read.
+    const posted = await worker.fetch(new Request(`https://edge.example.workers.dev${good.pathname}${good.search}`, { method: 'POST' }), env);
+    assert.equal(posted.status, 405);
+
+    assert.equal(hits.length, 1, `the upstream saw ${hits.length} requests; only the signed one may arrive`);
+  } finally {
+    await new Promise((resolve) => upstream.close(resolve));
+  }
+});
+
+test('the worker streams, forwards Range, and does not replay the host\'s own headers', async () => {
+  /*
+   * The three things a relay gets wrong by default, each of which looks fine on a small file:
+   * buffering (fails on a large one), dropping Range (a player that cannot seek), and copying
+   * every header (the host's caching and CORS decided by the host rather than by us).
+   */
+  const upstream = http.createServer((req, res) => {
+    seen = { range: req.headers.range, auth: req.headers.authorization, ua: req.headers['user-agent'] };
+    if (req.headers.range) {
+      res.writeHead(206, {
+        'content-type': 'video/mp4', 'content-range': 'bytes 0-9/1000', 'accept-ranges': 'bytes',
+        // Deliberately hostile: these must NOT come back to the viewer.
+        'set-cookie': 'upstream=1', 'cache-control': 'public, max-age=99999',
+        'access-control-allow-origin': 'https://elsewhere.example',
+      });
+      res.end('0123456789');
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'video/mp4', 'content-length': '1000' });
+    res.end(Buffer.alloc(1000, 7));
+  });
+  let seen = {};
+  await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const env = {
+    MEDIA_EDGE_SECRET: 'k',
+    PIXELDRAIN_API_BASE: `http://127.0.0.1:${upstream.address().port}`,
+    PIXELDRAIN_API_KEY: 'the-key',
+  };
+  const worker = (await import('../../ci/cloudflare/media-relay-worker.js')).default;
+  const { edgeUrl } = await import('../src/video-edge.js');
+  const signed = edgeUrl('pixeldrain', 'vid1', { env: { ...env, MEDIA_EDGE_BASE: 'https://e.example', MEDIA_RELAY: 'pixeldrain' } });
+  const path = new URL(signed).pathname + new URL(signed).search;
+  try {
+    const ranged = await worker.fetch(new Request(`https://e.example${path}`, { headers: { range: 'bytes=0-9' } }), env);
+    assert.equal(ranged.status, 206, 'the host\'s 206 is passed through, not turned into a 200');
+    assert.equal(ranged.headers.get('content-range'), 'bytes 0-9/1000', 'so the player can seek');
+    assert.equal(ranged.headers.get('accept-ranges'), 'bytes');
+    assert.equal(await ranged.text(), '0123456789');
+    assert.equal(seen.range, 'bytes=0-9', 'the Range reached the host');
+    assert.equal(seen.auth, `Basic ${Buffer.from(':the-key').toString('base64')}`, 'and the key went as the PASSWORD half, as their API wants');
+    assert.match(seen.ua, /ByteBikri/, 'and it identifies itself honestly rather than pretending to be a browser');
+
+    // The host's own choices do not become ours.
+    assert.equal(ranged.headers.get('set-cookie'), null, 'a host cookie is not replayed as this relay\'s');
+    assert.equal(ranged.headers.get('cache-control'), 'private, no-store');
+    assert.equal(ranged.headers.get('access-control-allow-origin'), '*',
+      'and the CORS answer is the relay\'s, not the host\'s — a host that allows only itself would'
+      + ' otherwise break the player on our page');
+
+    const whole = await worker.fetch(new Request(`https://e.example${path}`), env);
+    assert.equal(whole.status, 200);
+    assert.equal(whole.headers.get('content-length'), '1000', 'a length the player can trust');
+    assert.equal(Buffer.from(await whole.arrayBuffer()).length, 1000);
+  } finally {
+    await new Promise((resolve) => upstream.close(resolve));
+  }
+});
+
+test('a deployment with no edge keeps the relay it already had', async () => {
+  /*
+   * The fallback is the point of the tiering: nobody is required to open a Cloudflare account,
+   * and an operator who does not gets exactly the behaviour this product shipped before the edge
+   * existed. The route branches on the registry, so that is what is asserted — no edge worker,
+   * no edge url, and the stream route still knows how to pipe.
+   */
+  const edge = await import('../src/video-edge.js');
+  const bare = { MEDIA_RELAY: 'pixeldrain' };
+  assert.equal(edge.edgeConfigured(bare), false);
+  assert.equal(edge.edgeUrl('pixeldrain', 'x', { env: bare }), null);
+  assert.deepEqual(edge.edgeOrigins(bare), [], 'and the CSP names no origin that is not in use');
+  const withEdge = { ...bare, MEDIA_EDGE_BASE: 'https://e.example', MEDIA_EDGE_SECRET: 's' };
+  assert.deepEqual(edge.edgeOrigins(withEdge), ['https://e.example'],
+    'with one configured, the policy names the origin the browser will actually fetch from');
+});
+
 // ── Ant Media Server: our own ingest, and the licence facts that go with it ──
 
 test('antmedia is a live host on our own machine: no kind of file can be routed to it', () => {

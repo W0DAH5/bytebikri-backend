@@ -247,7 +247,21 @@ try {
    */
   const RELAY_HOSTS = (process.env.EYES_RELAY_HOSTS || '127.0.0.1:4003,pixeldrain.com')
     .split(',').map((h) => h.trim()).filter(Boolean);
-  if (stream.status() === 302 && /^https?:\/\//.test(location)) {
+  // The edge relay is a third destination, and it is identified by the header the route sets
+  // rather than by the address — which is the point of that header (`video-edge.js`).
+  const EDGE_ORIGIN = (() => {
+    try { return process.env.MEDIA_EDGE_BASE ? new URL(process.env.MEDIA_EDGE_BASE).origin : null; } catch { return null; }
+  })();
+  if (stream.status() === 302 && stream.headers()['x-bytebikri-edge']) {
+    // The video host's own files are not edge-relayed (only Catbox and Pixeldrain are), so this
+    // branch means the walk was pointed at a deployment whose video driver is one of those two —
+    // which is `ci/eyes/edge-walk.mjs`'s job, not this one's.
+    if (!EDGE_ORIGIN || new URL(location).origin !== EDGE_ORIGIN) {
+      fail(`the stream route redirected to an edge relay at ${location}, not the configured one (${EDGE_ORIGIN})`);
+    } else {
+      ok('the stream route sends the browser to the edge relay', location.slice(0, 72));
+    }
+  } else if (stream.status() === 302 && /^https?:\/\//.test(location)) {
     ok('the stream route sends the browser to the host', location.slice(0, 72));
   } else if (stream.status() === 302) {
     fail(`the redirect does not point anywhere usable: ${location}`);
@@ -455,7 +469,26 @@ try {
   } else {
     const u = new URL(localUrl, BASE);
     const local = await read(u.pathname + u.search);
-    if (local.status() === 302) {
+    if (local.status() === 302 && local.headers()['x-bytebikri-edge']) {
+      /*
+       * THE EDGE TIER, which supersedes the relay for the two hosts it serves (§13.4). A 302 is
+       * the right answer here and a 200 is not: the bytes are going to Cloudflare's edge, so this
+       * server neither pays for them nor appears as the single address asking the host for them.
+       * The signature is checked, because an unsigned redirect to a relay is the open proxy this
+       * design exists to avoid — the header alone would pass for a url anybody could guess.
+       */
+      const to = new URL(local.headers().location || '', BASE);
+      const exp = to.searchParams.get('e');
+      const sig = to.searchParams.get('s') || '';
+      if (!/^[0-9a-f]{64}$/.test(sig) || !exp) {
+        fail(`the edge url is not signed or not dated (${to.pathname}) — anyone who learned it could use it`);
+      } else if (Number(exp) * 1000 < Date.now()) {
+        fail(`the edge url was handed to the browser already expired (${new Date(Number(exp) * 1000).toISOString()})`);
+      } else {
+        ok('a file at a host that refuses browsers is delivered by the edge relay',
+          `${LOCAL} → ${to.origin} (signed, expires ${new Date(Number(exp) * 1000).toISOString().slice(11, 16)}Z)`);
+      }
+    } else if (local.status() === 302) {
       const to = local.headers().location || '';
       if (CONFIGURED_HOSTS.some((h) => to.includes(h))) {
         ok('a file at a host is delivered by that host', `(${LOCAL} → ${new URL(to).host})`);

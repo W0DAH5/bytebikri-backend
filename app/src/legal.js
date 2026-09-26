@@ -46,6 +46,13 @@ export const LAST_UPDATED = '21 September 2026';
  * what the software actually does".
  */
 export const LAST_UPDATED_MEDIA_HOST = '26 September 2026';
+/*
+ * A third date, for the third state of the notice. The processor list changes when delivery goes
+ * through the edge relay — Cloudflare joins the storage provider in seeing a visitor — and a
+ * policy that changed its meaning under an unchanged date is the kind of thing this file exists
+ * to avoid.
+ */
+export const LAST_UPDATED_MEDIA_EDGE = '26 September 2026';
 
 const op = () => OPERATOR.name || 'the operator of ByteBikri';
 const mail = () => OPERATOR.email || '[contact address not configured]';
@@ -83,7 +90,7 @@ export const FACTS = {
 // Privacy
 // ---------------------------------------------------------------------------
 
-export const privacy = ({ mediaHost = false } = {}) => ({
+export const privacy = ({ mediaHost = false, mediaEdge = false } = {}) => ({
   slug: 'privacy',
   title: 'Privacy',
   lede: `How ${op()} handles personal data, written to describe what the software actually does.`,
@@ -128,7 +135,16 @@ export const privacy = ({ mediaHost = false } = {}) => ({
         file host sees, and we see only that you opened the file. They are not told your name, your
         email address, or what else you have watched or read here. Two things never go to them:
         documents you hand over for an identity check, which stay on our own servers and are
-        destroyed when the check is decided, and anything you have not asked to open.</p>` : ''}`,
+        destroyed when the check is decided, and anything you have not asked to open.</p>` : ''}
+        ${mediaHost && mediaEdge ? `<p><strong>Some files are delivered through a relay</strong>,
+        and it is worth naming because it changes who sees what. When a file is held by a provider
+        that will not hand it to a browser directly, the request goes to a relay running on
+        <strong>Cloudflare's edge network</strong>, which fetches the file from the storage provider
+        and passes it to you. Cloudflare therefore sees your IP address and which file you asked
+        for, and the storage provider sees Cloudflare rather than you. The relay is not a general
+        proxy: every link it accepts carries a signature that names one file and expires within
+        hours, so a link copied out of a page stops working rather than becoming a permanent open
+        door. No document you hand over for an identity check ever travels this way.</p>` : ''}`,
     },
     {
       h: 'How long we keep it',
@@ -169,7 +185,7 @@ export const privacy = ({ mediaHost = false } = {}) => ({
       h: 'Changes',
       body: `<p>When this notice changes in a way that matters, the version changes with it and the
         consent banner returns — because an old agreement does not cover a new purpose.</p>
-        <p>Last updated: ${mediaHost ? LAST_UPDATED_MEDIA_HOST : LAST_UPDATED}.</p>`,
+        <p>Last updated: ${mediaEdge ? LAST_UPDATED_MEDIA_EDGE : mediaHost ? LAST_UPDATED_MEDIA_HOST : LAST_UPDATED}.</p>`,
     },
   ],
 });

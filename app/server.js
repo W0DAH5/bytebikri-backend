@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 
 import { store, storage, SLOT_DEFS, slugify, PLANS, nextPlan } from './src/store.js';
-import { hostsEnabled, mediaOrigins as videoMediaOrigins } from './src/video.js';
+import { hostsEnabled, edgeEnabled, mediaOrigins as videoMediaOrigins } from './src/video.js';
 // The cosmetics engine: the look picker's slots, declared once. This route validates a
 // submitted look against the catalog rather than against a list typed here.
 import { personSlots } from './src/cosmetics.js';
@@ -617,11 +617,14 @@ APP.post('/consent', async (req, res, next) => {
 });
 
 /*
- * `mediaHost` is passed to every document and read by one of them: the privacy notice
- * is the only page whose text depends on whether this deployment delivers video bytes
- * through somebody else's CDN, and its date moves with that paragraph
- * (`VIDEO_STORAGE.md` §7). The consent version moves with the same fact, in
- * `src/consent.js`, so the two cannot disagree about what changed.
+ * `mediaHost` and `mediaEdge` are passed to every document and read by one of them: the privacy
+ * notice is the only page whose text depends on whether this deployment delivers bytes through
+ * somebody else's network, and its date moves with that paragraph (`VIDEO_STORAGE.md` §7). The
+ * second fact — an edge relay in the delivery path (§13.5) — changes the sentence from "they see
+ * your IP address" to "Cloudflare sees your IP address and the storage provider sees Cloudflare",
+ * which is a different promise and therefore a different version. The consent version moves with
+ * the same two facts, in `src/consent.js`, so the notice and the consent cannot disagree about
+ * what changed.
  */
 const LEGAL_DOCS = { privacy: legal.privacy, terms: legal.terms, cookies: legal.cookies };
 
@@ -629,7 +632,7 @@ APP.get('/legal/:slug', async (req, res, next) => {
   try {
     const build = LEGAL_DOCS[req.params.slug];
     if (!build) return res.status(404).send('Not found');
-    const doc = build({ consent: req.consent, mediaHost: hostsEnabled() });
+    const doc = build({ consent: req.consent, mediaHost: hostsEnabled(), mediaEdge: edgeEnabled() });
     res.send(views.legalPage({
       user: req.user, doc, consent: req.consent,
       missingOperatorFields: legal.MISSING_OPERATOR_FIELDS,
@@ -3784,8 +3787,11 @@ async function resolveBytes(file, req, res) {
   }
   const id = storage.remoteId(file.storage_key);
   const host = storage.remoteProvider(file.storage_key);
+  let edgeServesFor = () => false;
   try {
+    ({ edgeServes: edgeServesFor } = await import('./src/video-edge.js'));
     const { playback, relaysThroughUs } = await import('./src/video.js');
+    const { edgeUrl } = await import('./src/video-edge.js');
     const found = await playback(id, { provider: host });
     /*
      * ── REDIRECT, OR RELAY ────────────────────────────────────────────────────
@@ -3805,6 +3811,28 @@ async function resolveBytes(file, req, res) {
      * until it exists the live path stays a redirect, where §10.4's answer (name the origin in
      * the policy) already works.
      */
+    /*
+     * ── THREE TIERS, ASKED IN ORDER ───────────────────────────────────────────
+     *
+     *   1. THE EDGE   a signed 302 to the Cloudflare Worker (`video-edge.js`). It costs the
+     *                 operator nothing to serve (Cloudflare does not bill Worker egress), the
+     *                 requests leave from many addresses rather than this server's one, and
+     *                 the key that satisfies the host lives on the Worker rather than in a
+     *                 process that also renders pages. This is the delivery path for Catbox
+     *                 and Pixeldrain when `MEDIA_EDGE_BASE` is set.
+     *   2. OURS       the relay below: unbuffered, Range-aware, and paid for out of this
+     *                 server's bandwidth. Still the right answer for a deployment with no
+     *                 Worker, and the fallback the edge tier was built to replace.
+     *   3. THE HOST   a plain 302, selected by `MEDIA_RELAY=none` or by a host that serves
+     *                 browsers perfectly well.
+     *
+     * A SIGNED url is the whole reason the first tier is safe to expose: the Worker is not an
+     * open relay, because a request it cannot verify against its secret never opens a socket.
+     */
+    if (found.kind !== 'hls' && edgeServesFor(host)) {
+      const url = edgeUrl(host, id);
+      if (url) return { redirect: { ...found, url }, edge: host };
+    }
     if (found.kind !== 'hls' && relaysThroughUs(host)) {
       return { relay: found, host };
     }
@@ -4269,6 +4297,11 @@ APP.get('/api/content/:assetId/file/:fileId', async (req, res, next) => {
       // decision: the entitlement is checked per request, and a cached 302 would
       // outlive it.
       res.setHeader('cache-control', 'private, no-store');
+      // Which tier the bytes travel through, on this arm as well as the stream arm: a download
+      // is the same delivery decision, and a walk (or an operator with curl) that reads one
+      // route and not the other should not get two different answers about the same file.
+      res.setHeader('x-bytebikri-source', source.redirect.kind);
+      if (source.edge) res.setHeader('x-bytebikri-edge', source.edge);
       return res.redirect(302, source.redirect.url);
     }
     let buf = source.buf;
@@ -4331,6 +4364,10 @@ APP.get('/api/content/:assetId/file/:fileId/stream', async (req, res, next) => {
       // The kind travels to the page so the player can pick its demuxer instead of
       // guessing from an extension it cannot see behind a redirect (`data-hls`).
       res.setHeader('x-bytebikri-source', source.redirect.kind);
+      // What the download arm also sets for a relay, on the redirect arm: which tier the bytes
+      // travel through. Without it a browser fetch is redirected to a Worker for reasons nobody
+      // reading a response can see.
+      if (source.edge) res.setHeader('x-bytebikri-edge', source.edge);
       return res.redirect(302, source.redirect.url);
     }
     let buf = source.buf;
@@ -8335,6 +8372,14 @@ const SERVER = APP.listen(PORT, '0.0.0.0', () => {
         if (caps.deletable === false) caveats.push('cannot delete — a file sent there stays');
         if (caps.policy?.commercial === 'prohibited') caveats.push('DEVELOPMENT ONLY (terms)');
         if (caps.policy?.commercial === 'premium') caveats.push('needs a paid plan to serve');
+        /*
+         * WHICH CONNECTION THE BYTES TRAVEL OVER, which is the fact an operator is most likely to
+         * be wrong about: setting an edge and forgetting it, or paying for upload they thought a
+         * Worker was carrying. `hostFacts().delivery` answers it in one word — direct, edge, ours
+         * — so this line and the doctor and the route cannot disagree.
+         */
+        if (caps.delivery === 'edge') caveats.push('delivered by the edge relay');
+        else if (caps.delivery === 'ours') caveats.push('relayed through this server (bandwidth is ours)');
         console.log(`  ${kinds.join('/').padEnd(9)} →  ${host}${caveats.length ? ` — ${caveats.join('; ')}` : ''}`);
         // A host with no account to ask (Catbox's userhash, Telegra.ph's absence of one)
         // is not probed: the honest check for those is a real upload, which is the doctor.

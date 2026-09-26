@@ -936,7 +936,60 @@ expected to fetch from the host — the same CORS question, hidden one level dow
 REWRITER, which is a real feature rather than a delivery flag; until it exists, the live path stays a
 redirect, where §10.4's answer (name the origin in the policy) already works.
 
-### 13.4 What this does not fix
+### 13.4 The edge relay: the same fix, on somebody else's connection
+
+The relay in §13.3 has two costs that a store with no budget should not have to pay, and they are
+worth separating because they are different problems with the same cure:
+
+* **the bandwidth is ours.** Every byte of a Pixeldrain or Catbox file goes out through the
+  operator's upload, which is the one resource a small deployment has least of;
+* **every viewer arrives from ONE address — ours.** That is exactly the traffic shape a host's
+  abuse detection exists to notice. Fifty people watching fifty files look like one server
+  hammering a host, and the account at risk is the operator's.
+
+So delivery has three tiers now, and the middle one moves both problems off this server:
+
+| tier | who pays for the bytes | who the host sees | when it is used |
+| --- | --- | --- | --- |
+| **direct** | the host | the viewer | the default, and right for every host that serves browsers |
+| **edge** | Cloudflare (no egress charge on Workers) | Cloudflare's edge, many addresses | `MEDIA_EDGE_BASE` + `MEDIA_EDGE_SECRET`, for Catbox and Pixeldrain |
+| **ours** | the operator's upload | our one address | the fallback when no edge is configured |
+
+`ci/cloudflare/media-relay-worker.js` is the Worker, `app/src/video-edge.js` is the seam, and
+`ci/cloudflare/README.md` is the deployment steps. The interesting part is not the streaming —
+that is forty lines of `Response` passthrough — but the fact that a public endpoint fetching other
+people's files has to be **unusable by anyone who is not us**:
+
+* every url is signed with an HMAC over `host/id/expiry`, verified on the Worker before a socket
+  is opened, compared with `crypto.subtle.verify` so the comparison is the runtime's job and not a
+  loop this code wrote;
+* the signature covers the PATH, so a link for one file cannot be edited into a link for another —
+  the difference between signing a url and handing out a key;
+* it expires (`MEDIA_EDGE_TTL_SECONDS`, six hours by default), because a signed media url travels
+  in a query string by necessity: a `<video>` element and a Range request cannot send an
+  `Authorization` header. That is a property of every signed CDN url, and the reason the window is
+  hours rather than forever;
+* the host table is two names. "Relay everything that would have been relayed" is how a helper for
+  two known problems becomes a general-purpose open proxy carrying our API key, so adding a third
+  host is a code change somebody makes on purpose;
+* a base url without a secret is treated as **not configured**, so the tempting half-setup — sign
+  nothing, serve anyone — cannot happen by setting one variable.
+
+**What it does not fix:** Catbox's terms. Their operator says no service may use Catbox as its
+CDN, and fetching their bytes through a Worker and re-serving them is still that. The edge tier
+fixes an HTTP problem and an expensive one; a term is a conversation with a person, not an
+engineering problem. So Catbox stays marked development-only, its relay stays opt-in, and the
+honest route to using it in production is asking.
+
+**And what is not yet proven, said plainly:** no probe from this workspace can reach Cloudflare,
+Pixeldrain or Catbox (`000` on every one), so the Worker has been tested against a local adapter
+that runs the real Worker code on Node and against an upstream the tests start themselves — which
+covers the signature, the streaming, the Range passthrough and the refusals. What it cannot cover
+is Cloudflare's own behaviour: the 128 MB memory ceiling (the reason the body is passed through
+rather than buffered), the edge network's IP rotation, and whether their edge is treated as a
+hotlink by Pixeldrain. The first day of real use is the test for those three.
+
+### 13.5 What this does not fix
 
 * **A public URL that was already fetched.** Telegra.ph's copy is still at its address for anyone who saved
   it. Nothing in this repository can change that; the tombstone says so in as many words.
@@ -945,7 +998,7 @@ redirect, where §10.4's answer (name the origin in the policy) already works.
   operator should see coming rather than discover on a graph — which is why the doctor prints which mode is
   in force, and why `MEDIA_RELAY=none` exists.
 
-### 13.5 When a host says no: the failover chain
+### 13.6 When a host says no: the failover chain
 
 §13.3 is about delivery — a host that will not serve a browser. This is about the other half:
 a host that will not take the bytes, or refuses them later, in the middle of a launch.

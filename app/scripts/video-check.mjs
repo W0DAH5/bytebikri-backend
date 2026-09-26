@@ -178,11 +178,21 @@ if (process.env.MEDIA_FALLBACK) {
  */
 const factsEarly = video.hostFacts().find((h) => h.host === chosen) || null;
 if (chosen !== 'filemoon' && !factsEarly?.role) {
+  const edge = (await import('../src/video-edge.js'));
   const relayed = video.relaysThroughUs(chosen);
-  says(`delivery: ${relayed
-    ? 'through this server (relayed) — every byte is piped, which costs our upload and works when a host will not serve a browser'
-    : `a redirect to the host${factsEarly?.hotlink === 'refused-when-free'
-      ? ' — and this host refuses browser fetches on a free plan, so a viewer may get a 403' : ''}`}`);
+  const onEdge = edge.edgeServes(chosen);
+  says(`delivery: ${!relayed
+    ? `a redirect to the host${factsEarly?.hotlink === 'refused-when-free'
+      ? ' — and this host refuses browser fetches on a free plan, so a viewer may get a 403' : ''}`
+    : onEdge
+      ? `a signed redirect to the EDGE RELAY (${edge.edgeBase()}) — the Worker fetches with our key and streams the bytes, so this server pays nothing and the host sees Cloudflare rather than our one address`
+      : 'through this server (relayed) — every byte is piped, which costs our upload and works when a host will not serve a browser'}`);
+  if (relayed && !onEdge && edge.EDGE_HOSTS.includes(chosen)) {
+    says('          ' + (edge.edgeBase()
+      ? 'MEDIA_EDGE_BASE is set but MEDIA_EDGE_SECRET is not — the relay refuses every request '
+        + 'without one, so this is falling back to our own bandwidth'
+      : 'set MEDIA_EDGE_BASE + MEDIA_EDGE_SECRET to move this off our own bandwidth (ci/cloudflare/)'));
+  }
   says('          MEDIA_RELAY=none stops relaying, all relays every host, or name hosts: MEDIA_RELAY=pixeldrain,catbox');
 }
 if (chosen === 'catbox') {

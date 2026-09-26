@@ -268,6 +268,18 @@ export const liveIngestEnabled = (env = process.env) => {
 export const hostsEnabled = (env = process.env) =>
   ROUTED_KINDS.some((kind) => driverForKind(kind, env) !== 'local');
 
+/**
+ * Is an edge relay part of how files reach viewers?
+ *
+ * The second half of "does a third party see a visitor", which is what the privacy notice and the
+ * consent version both key off. A Worker that has no secret never opens a socket (`video-edge.js`
+ * explains why that is the rule), so a base url alone does not make this true — the answer has to
+ * match the behaviour or the notice describes a deployment that is not running.
+ */
+export const edgeEnabled = (env = process.env) => Boolean(
+  String(env.MEDIA_EDGE_BASE || '').trim() && String(env.MEDIA_EDGE_SECRET || '').trim(),
+);
+
 /** The hosts in play and the kinds each holds, for a line that has to name what leaves. */
 export const activeHosts = (env = process.env) => {
   const found = new Map();
@@ -338,10 +350,18 @@ export const videoHostBase = (env = process.env) => {
  * changes per account or per plan without every caller re-deriving it.
  */
 export function hostFacts(env = process.env) {
+  const edge = String(env.MEDIA_EDGE_BASE || '').trim();
   return HOSTS.map((host) => ({
     host,
     label: PROVIDERS[host].label,
     configured: PROVIDERS[host].configured(env),
+    // Which tier delivers this host's bytes, asked here so the route, the doctor and the boot
+    // banner cannot disagree: direct (a 302 to the host), edge (a 302 to the Worker), ours
+    // (piped through this server), or none for a host that serves browsers itself.
+    delivery: PROVIDERS[host].capabilities.role === 'live' ? 'live'
+      : relaysThroughUs(host, env) ? (edge && ['catbox', 'pixeldrain'].includes(host) && String(env.MEDIA_EDGE_SECRET || '').trim()
+        ? 'edge' : 'ours')
+        : 'direct',
     ...PROVIDERS[host].capabilities,
   }));
 }
@@ -425,7 +445,22 @@ export function mediaOrigins(env = process.env) {
   if (live !== 'local' && configured(live, env)) inUse.add(live);
   const declared = [...inUse].flatMap((host) => PROVIDERS[host].mediaOrigins(env));
   const fromEnv = String(env.VIDEO_MEDIA_ORIGINS || '').split(/[,\s]+/).filter(Boolean);
-  return [...new Set([...declared, ...fromEnv])];
+  /*
+   * AND THE EDGE RELAY'S ORIGIN, which is the same lesson one tier further out (§13.5).
+   *
+   * With `MEDIA_EDGE_BASE` set, a relayed file's 302 points at the Worker rather than at the
+   * host — so the origin the browser actually fetches from is the Worker's, and a policy that
+   * still named only the host would refuse the play with no error event. Read from the
+   * environment here rather than imported from `video-edge.js`, because that module imports
+   * THIS one for `relaysThroughUs` and a cycle between the registry and its own tier would be
+   * a worse trade than four lines of parsing in the one place that needs them.
+   */
+  const edge = String(env.MEDIA_EDGE_BASE || '').trim();
+  const edgeOrigins = [];
+  if (edge) {
+    try { edgeOrigins.push(new URL(edge).origin); } catch { /* a malformed base is the doctor's job to report */ }
+  }
+  return [...new Set([...declared, ...fromEnv, ...edgeOrigins])];
 }
 
 // ─── keys ────────────────────────────────────────────────────────────────────
