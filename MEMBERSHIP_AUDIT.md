@@ -5,8 +5,10 @@ public roster plate on `/s/nima-crafts` (`docs/evidence/round48/membership-*-01-
 No attachment arrived with the request, so that plate is what this audit treats as "the member card";
 if a different card was meant, the same method applies and the finding may differ.
 
-**No fix is applied in this round.** This is the current behavior, traced to implementation and tests,
-plus the smallest change that would make the card tell the truth.
+**Status.** The report below is the current behavior, traced to implementation and tests. The card's
+defect (§1.3, finding 5) was then fixed in `e763bc4` — the smallest change this document recommends,
+with the tests it names as acceptance criteria, and the frames in `docs/evidence/round48/`. §2.7 is a
+second finding, same class, reported and not yet fixed.
 
 ---
 
@@ -47,7 +49,8 @@ no status rewrite, no job, no second row. All five surfaces were then read in th
 | 2 | The members-only file (`bhaktapur-workshop-recordings`) | "Members only / Unlock" — refused | ✅ correct |
 | 3 | The seller's own member list (as nima) | `pill-warning` "**ended**" | ✅ correct |
 | 4 | The member room (`/s/nima-crafts/members`, as alice) | "Your period has ended" | ✅ correct |
-| 5 | **The public roster card** (as a signed-out guest) | `member--top` + Elite chip + `since …` — **identical to a current member** | ❌ **wrong** |
+| 5 | **The public roster card** (as a signed-out guest) | `member--top` + Elite chip + `since …` — **identical to a current member** | ❌ **wrong** — *fixed in `e763bc4`* |
+| 6 | **The members-only file page** (as a lapsed member) | the stranger's sentence, verbatim — "Elite members open this" | ❌ **wrong** — §2.7 |
 
 **The proof is a hash.** The public roster card was screenshotted while active and again while one day
 lapsed, from the same seed, viewport and selector:
@@ -159,6 +162,44 @@ in almost these words, about the look, in `views.js:1000`:
 > for, silently, on a storefront."
 
 That is exactly what the membership join does.
+
+---
+
+## 2.7 The second surface with the same defect: the file page
+
+Found while closing the last of the six questions — *where are the benefits communicated* — and it is
+the same shape as the card, on the surface where the loss is actually felt.
+
+**What a lapsed member reads on a members-only file page** (alice at Nima Crafts, period ended, her
+unlock also past — a genuine lapse, not a moved date; the page text read from the running server):
+
+> 🔒 **Elite members open this — no ad**
+> … **Access:** Elite members — no ad · *Open while the dues you have paid for are current*
+
+That is **character-for-character what a signed-out stranger reads**. Nothing on the page says this
+person was a member, that their period ended, or that renewing is what opens it again. They arrived by
+clicking a file they could open last month, and the page addresses them as somebody who never joined.
+
+**Why.** `memberDoorFor` (`store.js:3542`) returns `{ door, membership }`, and `doorFor` answers
+`'members'` for **both** a stranger and a lapsed member (`memberships.js:181`). The asset route passes
+only `memberDoor: memberDoor.door` and keeps the membership row for the `'covered'` case alone
+(`server.js:2364`), so `memberGate` (`views.js:2954`) has no state to branch on and renders one
+sentence for three different situations: never joined, waiting on a confirmation, and lapsed. The
+`supporter` arrangement *is* distinguished — by reading `memberTierAdMode` — which shows the page can
+carry that information the moment it is handed to it.
+
+**The smallest change, same size as the card's:** pass the membership (or its derived state) through
+to the view, and let `memberGate` say what is true for the person reading it — `membershipState()`'s
+own vocabulary, so nothing new is invented:
+
+| state | the sentence |
+| --- | --- |
+| `none` | what it says today: "Elite members open this" |
+| `pending` | "Your claim is with the creator" + the reference, as the person's own card already says |
+| `lapsed` | "Your Elite membership ended <date>" + the way back, instead of the stranger's sentence |
+
+`memberRefusal` (`memberships.js:372`) already returns these codes and is unit-tested at
+`members.test.js:199` — it was written for this page and reaches none.
 
 ---
 
