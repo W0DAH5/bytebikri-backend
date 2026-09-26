@@ -4568,19 +4568,81 @@ async function watermarked(file, userId, source) {
 // match across a slash, so the two-segment key silently 404s — and the fix is
 // also the better design: the public namespace is part of the ROUTE, so there
 // is no way to express a request for private content in the first place.
-APP.get('/media/public/:file', async (req, res, next) => {
+/**
+ * A cover, wherever its bytes are.  `/media/public/<uuid>.jpg` or `/media/telegraph/<id>.jpg`
+ *
+ * The three arms are the same three the paid content routes have, and they are handled here rather
+ * than in each route for the reason this file keeps rediscovering: two copies of a delivery decision
+ * drift, and the one that drifts is the one nobody is looking at. `resolveBytes` DECIDES (local
+ * bytes, a relay, an edge, or the host's own url); this performs the decision a cover's way — inline,
+ * cacheable, and with no entitlement to check, because a cover is the shop window.
+ *
+ * The first version of these routes read `resolveBytes(...)`'s return value as `source.buf` and sent
+ * it, which is true only for the LOCAL arm: a remote cover is answered by the other two, so the route
+ * sent an empty body and the storefront rendered a broken image while every status code said 200.
+ * A cover that returns 200 with no bytes is worse than one that 404s, because nothing anywhere looks
+ * broken except the picture.
+ */
+async function servePublicMedia(key, req, res, next) {
   try {
-    const key = `public/${req.params.file}`;
-    const buf = await storage.get(key);
-    res.setHeader('content-type', mimeFor(key));
+    const type = mimeFor(key);
+    const source = await resolveBytes(
+      { storage_key: key, mime_type: type, filename: key.split('/').pop() }, req, res,
+    );
+    if (source.relay) {
+      // The host refuses browser fetches (Pixeldrain's free plan reads a storefront as a hotlink), so
+      // the bytes come through us. `inline`, because this is an image on a page rather than a download.
+      return relayBytes(source.relay.url, req, res, {
+        type, filename: key.split('/').pop(), kind: source.relay.kind, from: source.host, as: 'inline',
+      });
+    }
+    if (source.redirect) {
+      // The host's own url — the edge tier when a Worker is configured, otherwise the host direct.
+      // Cacheable, unlike the content routes' `no-store`: the key is immutable, so the decision cannot
+      // outlive anything, and a browser asking us for the same cover on every page view would put the
+      // shop window on our own bandwidth — the thing this whole round is moving off it.
+      res.setHeader('cache-control', 'public, max-age=3600');
+      res.setHeader('x-bytebikri-source', source.redirect.kind);
+      if (source.edge) res.setHeader('x-bytebikri-edge', source.edge);
+      return res.redirect(302, source.redirect.url);
+    }
+    res.setHeader('content-type', type);
     // Safe to cache hard: the key contains a uuid, so replacing an image
     // produces a new URL rather than changing the bytes behind an old one.
     res.setHeader('cache-control', 'public, max-age=31536000, immutable');
-    res.send(buf);
+    return res.send(source.buf);
   } catch (err) {
     if (err.code === 'ENOENT' || /bad storage key/.test(err.message)) return res.status(404).end();
-    next(err);
+    return next(err);
   }
+}
+
+APP.get('/media/public/:file', (req, res, next) =>
+  servePublicMedia(`public/${req.params.file}`, req, res, next));
+
+/**
+ * A cover whose bytes are at the image host.  /media/telegraph/<id>.jpg
+ *
+ * ONE GUARD, AND IT IS THE WHOLE REASON THIS ROUTE IS SAFE: the key has to be one that a store
+ * actually advertises. Without that check this was a second, unauthenticated door onto every host —
+ * `/media/filemoon/<id>` would hand out a paid video with no unlock, no entitlement and no
+ * watermark, which is exactly the kind of hole a "small" convenience route opens. The `channels` and
+ * `assets` rows ARE the list of public keys: a cover is public because the product says a cover is
+ * public, and that is what this asks. The walk tries the door on purpose, as a guest.
+ */
+APP.get('/media/:provider/:file', async (req, res, next) => {
+  try {
+    const key = `${req.params.provider}/${req.params.file}`;
+    const advertised = await scalar(
+      `select 1 from channels where banner_url = $1
+        union all
+       select 1 from assets  where cover_url  = $1
+        limit 1`,
+      [`/media/${key}`],
+    );
+    if (!advertised || !storage.isRemote(key)) return res.status(404).end();
+    return await servePublicMedia(key, req, res, next);
+  } catch (err) { return next(err); }
 });
 
 const mimeFor = (key) => ({
@@ -6120,6 +6182,22 @@ APP.post('/dashboard/:slug/settings', upload.single('banner'), async (req, res, 
     if (banner && !String(banner.mimetype).startsWith('image/')) return fail('banner');
     if (banner && banner.size > 5 * 1024 * 1024) return fail('banner');
 
+    /*
+     * A banner is a cover, and a cover now leaves for the image host — so this door has the same
+     * refusal the other two have: if nothing will take the bytes (no image host configured on a
+     * deployment, or the host refusing this particular image), the seller reads a sentence instead
+     * of a stack trace, and nothing about the store has changed.
+     */
+    let bannerKey = null;
+    if (banner) {
+      try {
+        bannerKey = await storage.put(banner.buffer, banner.originalname, { namespace: 'public' });
+      } catch (err) {
+        if (err.code === 'ENOSTORAGE') return fail('no-media-store');
+        throw err;
+      }
+    }
+
     await store.updateChannel(channel.id, {
       name,
       tagline: String(req.body.tagline || '').trim(),
@@ -6129,9 +6207,7 @@ APP.post('/dashboard/:slug/settings', upload.single('banner'), async (req, res, 
       ads_enabled: req.body.adsEnabled === 'on',
       sells_digital: req.body.sellsDigital === 'on',
       sells_physical: req.body.sellsPhysical === 'on',
-      ...(banner
-        ? { banner_url: `/media/${await storage.put(banner.buffer, banner.originalname, { namespace: 'public' })}` }
-        : {}),
+      ...(bannerKey ? { banner_url: `/media/${bannerKey}` } : {}),
     });
 
     await store.audit('channel.settings_updated', { channelId: channel.id });

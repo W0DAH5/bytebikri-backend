@@ -1121,7 +1121,7 @@ bandwidth. The order is the order it has to be done in.
 | 4 | set `MEDIA_EDGE_BASE` + `MEDIA_EDGE_SECRET` in the app's environment | this app | the Worker's own url; a base without a secret is unconfigured on purpose |
 | 5 | a Pixeldrain **Pro** key, and `MEDIA_RELAY=none` | Pixeldrain, and the operator | money, and a decision: with a paid key the host serves browsers itself and no relay is needed at all |
 | 6 | the day-one checks on real Cloudflare | nobody yet | see below — they can only be run once item 1 is true |
-| 7 | **a host configured for every kind a seller may upload**, and a fallback chain | the operator | since §13.9 there is no disk to catch an unconfigured kind: with no host for images, a photo upload is refused (`?error=no-media-store`) rather than parked on a container. Video → Filemoon, image → Telegra.ph, everything else → Pixeldrain (Catbox while its terms are open, §13.4) |
+| 7 | **a host configured for every kind a seller may upload — covers and banners included**, and a fallback chain | the operator | since §13.9 there is no disk to catch an unconfigured kind: with no host for images, a photo upload AND a store banner are both refused (`?error=no-media-store`) rather than parked on a container. Video → Filemoon, image → Telegra.ph, everything else → Pixeldrain (Catbox while its terms are open, §13.4) |
 
 **Item 6, spelled out, because it is the one that cannot be tested from here.** Every probe in this
 workspace answers `000` for Cloudflare, Pixeldrain and Catbox. So three facts about the edge tier
@@ -1191,14 +1191,32 @@ half-made thing to clean up.
 | `kyc` | an identity document | **Local by promise.** The copy is destroyed when the check is decided, and `destroyHeldDocument` is built on `remove` being a real unlink. Somebody's citizenship certificate does not go to a media host, ours or anybody's. |
 | `public` | covers and banners | **Flagged rather than decided** — see below. |
 
-**The one question this section cannot answer by itself.** A cover is a file too, so the rule taken
-literally sends covers and banners to the image host as well. Two facts make that a decision rather
-than a detail: `/media` serves a cover with **no token and no redirect** (that is the point of a
-cover), and the image host the operator provides — Telegra.ph — **cannot delete what it keeps** (it
-says so itself, §13.2). So routing banners there costs a permanent orphan every time a seller changes
-one, and it costs the ability to take a cover down at all. The alternative is one written exception:
-covers stay on our disk, which is a thing to say out loud rather than to leave implicit. Until that
-is decided, covers stay where they are and the code says so in the comment above the guard.
+**Covers went to the host, which the operator decided rather than this file.** The rule taken
+literally applies to a banner as much as to a video, and when the trade-off was put in front of the
+operator — the image host **cannot delete what it keeps** (§13.2), and `/media` was serving covers
+with no token and no redirect — the answer was to send them anyway: *"in a production none gets
+stored on our disk but all in media storages"*. So a banner is a seller's file like any other, and
+this is what that decision cost, written down rather than discovered:
+
+* **a replaced banner is an orphan.** Changing a banner writes a new key and leaves the old image at
+  the host forever; nothing can recall it, and no code here pretends otherwise. The same is true of
+  an asset's cover. The alternative was the exception above, and it was declined.
+* **5 MB is the real cover ceiling.** Both the publish form and the settings form already refused an
+  image over 5 MB before any bytes moved, which happens to be Telegra.ph's own cap — so the seller
+  reads "cover too big" from us rather than a host's refusal afterwards.
+* **the url does not change shape.** A cover is still `/media/<key>` on every page; `/media/public/…`
+  serves one of ours and `/media/<provider>/…` serves one of theirs, through the same three arms the
+  content routes use (edge → relay → host's own url). A template never has to know where the bytes
+  are, which is the whole reason the adapter exists.
+* **the door has a guard, and it is the interesting part.** `/media/<provider>/<id>` is one key away
+  from being an open door onto every paid video we hold, so a key is served only when a `channels` or
+  `assets` row ADVERTISES it as a cover. `ci/eyes/cover-host-walk.mjs` tries the door as a guest on
+  purpose — a real `filemoon/<id>` key, both directly and dressed as a cover — and both answers are
+  404.
+* **a cover 200 with no bytes is a bug this walk caught.** `resolveBytes` DECIDES the arm and the
+  caller performs it; the first version of the cover route read it as `source.buf` and sent an empty
+  body, so every status code said 200 while the storefront rendered a broken picture. The frame in
+  `docs/evidence/round47/cover-01-hosted-banner.png` is a 1800×600 banner that arrived from the host.
 
 **Before a real deploy, this is a configuration requirement rather than a preference.** With the rule
 on, a kind with no host that accepts it is a kind nobody can upload, and that is the intended

@@ -148,19 +148,49 @@ test('in production a file no host will take is refused, and nothing is written'
 });
 
 /*
- * The scope of the rule, pinned so it cannot quietly widen: TWO namespaces are outside it and both
- * for stated reasons — `kyc` because the copy is local BY PROMISE to the person who handed it over,
- * and `public` because covers are served by us with no token and the image host cannot delete what
- * it keeps. If a later round moves covers to a host, this test is where the decision has to be made
- * out loud rather than by accident.
+ * `kyc` is the ONE namespace outside the rule, and this pins it — the copy of an identity document is
+ * local BY PROMISE, so it must still be written on a production box with nothing configured. Covers
+ * USED to be the second exemption and are not any more: the operator decided a banner is a seller's
+ * file too, so `public` is refused like everything else (the routing half of that decision is
+ * asserted below).
  */
-test('the production refusal is about seller content, not identity documents or covers', async () => {
+test('an identity document is still kept when production refuses everything else', async () => {
   await withEnv({ NODE_ENV: 'production', IMAGE_DRIVER: null, FILE_DRIVER: null, VIDEO_DRIVER: null, MEDIA_FALLBACK: null },
     async () => {
-      for (const [namespace, name] of [['kyc', 'document.jpg'], ['public', 'banner.png']]) {
-        const key = await storage.put(bytesOf(0.2), name, { namespace, mimeType: 'image/png' });
-        assert.match(key, new RegExp(`^${namespace}/`), `${namespace} stays on this disk by design`);
-        await fs.rm(path.join(UPLOADS, key));
-      }
+      const key = await storage.put(bytesOf(0.2), 'document.jpg', { namespace: 'kyc', mimeType: 'image/png' });
+      assert.match(key, /^kyc\//, 'a held document stays on this disk by design, in production too');
+      await fs.rm(path.join(UPLOADS, key));
+
+      // And the same bytes under a cover's namespace, with nothing configured to take them, are
+      // refused — the decision that covers leave, and that the refusal is total.
+      await assert.rejects(
+        () => storage.put(bytesOf(0.2), 'banner.png', { namespace: 'public', mimeType: 'image/png' }),
+        (err) => {
+          assert.equal(err.code, 'ENOSTORAGE');
+          assert.match(err.message, /nothing could store this file/);
+          return true;
+        },
+      );
     });
+});
+
+/*
+ * And the other half: with an image host configured, a cover LEAVES. This is what the operator asked
+ * for ("all in media storages and stuffs i provided already"), and it is asserted at the routing
+ * seam rather than by reading the page, because the page shows a url whichever host holds the bytes.
+ */
+test('a cover routes to the image host when one is chosen, and an identity document never does', async () => {
+  await withEnv({
+    IMAGE_DRIVER: 'telegraph', FILE_DRIVER: null, VIDEO_DRIVER: null, MEDIA_FALLBACK: null,
+    NODE_ENV: 'development',
+  }, async () => {
+    const cover = { mimeType: 'image/png', filename: 'banner.png', size: 200_000 };
+    assert.equal(storage.routesToHost({ namespace: 'public', ...cover }), true,
+      'a cover must go to the chosen image host');
+    assert.equal(storage.routesToHost({ namespace: 'kyc', ...cover }), false,
+      'a citizenship document must never leave this disk, whatever host is configured');
+    // A `public` key that is not an image is not a cover, and this namespace does not own it.
+    assert.equal(storage.routesToHost({ namespace: 'public', mimeType: 'application/zip', filename: 'pack.zip', size: 10 }),
+      false, 'only images are covers');
+  });
 });

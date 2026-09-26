@@ -946,7 +946,11 @@ test('the relay is in the delivery path, and HLS is deliberately not', async () 
   assert.match(src, /relaysThroughUs\(host\)/, 'the resolver asks the registry, not a hardcoded host');
   assert.match(src, /found\.kind !== 'hls' && relaysThroughUs/, 'and it refuses HLS, on purpose');
   const relays = src.match(/return relayBytes\(source\.relay\.url/g) || [];
-  assert.equal(relays.length, 2, 'both byte routes (stream and download) handle a relay');
+  // THREE, not two: the stream arm, the download arm, and — since covers moved to the image host
+  // (§13.9) — the cover arm. A cover on a host that refuses browser fetches has the same problem a
+  // video has, and it is the same three lines that answer it (`servePublicMedia`, one decision for
+  // both namespaces rather than a second copy that drifts).
+  assert.equal(relays.length, 3, 'every byte route (stream, download, cover) handles a relay');
   assert.match(src, /x-bytebikri-relay/, 'and a relayed response says so, or a relayed 200 cannot be told from our own');
   assert.match(src, /from: source\.host/, 'naming the host the bytes came from');
 });

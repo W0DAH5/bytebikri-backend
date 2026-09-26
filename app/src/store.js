@@ -120,8 +120,13 @@ export const orderCode = (n = 6) =>
  *     promise that the copy is destroyed when the check is decided, and
  *     `destroyHeldDocument` is built on `remove` being a real unlink. A
  *     citizenship certificate at a video host would make that sentence false.
- *   * `public` NEVER leaves. Covers and banners are images, and they are the one
- *     thing we serve ourselves with no token — the point of a cover.
+ *   * `public` leaves when it is an IMAGE and the operator has chosen an image host.
+ *     Covers and banners were ours to serve until now (no token, no redirect — the
+ *     point of a cover). The operator's rule for production is that nothing of a
+ *     seller's stays on our disk, and a cover is theirs too, so the same registry
+ *     that routes their video now routes their banner — with the consequence stated
+ *     where it belongs (VIDEO_STORAGE.md §13.9): the image host the operator provides
+ *     cannot delete, so a replaced banner stays at the host forever.
  *   * `private` leaves ONLY when the bytes are video and a driver is configured.
  *     Audio is playable by the same predicate and stays local until there is a
  *     fixture to prove it against; that is a decision, and it is written down.
@@ -154,8 +159,14 @@ export const storage = {
    * (a reader's archive is offset-addressed by our own reader).
    */
   routesToHost({ namespace = 'private', mimeType = '', filename = '', size = 0 } = {}) {
-    if (namespace !== 'private') return false;
+    // Identity documents never leave, whatever the mode: the promise made to the person
+    // who handed one over is that it is destroyed when the check is decided, and that
+    // promise is only true while `remove` is a real unlink on a disk we control.
+    if (namespace === 'kyc') return false;
     const kind = mediaKind(mimeType, filename);
+    // A cover or a banner may go to the image host; anything that is not an image under a
+    // `public` key is not a cover, so it is not this namespace's business.
+    if (namespace === 'public' && kind !== 'image') return false;
     return driverForKind(kind, process.env, { mimeType, filename, size }) !== 'local';
   },
 
@@ -258,19 +269,14 @@ export const storage = {
      * refusals it collected are carried into this error, so the operator reading the log learns
      * which hosts were asked and what each said — the two facts needed to fix it.
      *
-     * TWO NAMESPACES ARE DELIBERATELY OUTSIDE THIS RULE, and neither is an oversight:
-     *
-     *   * `kyc` — an identity document. It is local BY PROMISE: the copy is destroyed when the check
-     *     is decided (`destroyHeldDocument` is built on `remove` being a real unlink), and a
-     *     person's citizenship certificate is not going to a media host, ours or anybody's.
-     *   * `public` — covers and banners. These are the shop window rather than the merchandise:
-     *     `/media` serves them with no token and no redirect, which is the point of a cover, and
-     *     the image host the operator provides cannot delete what it takes (Telegra.ph says so
-     *     itself), so routing banners there would leave a permanent orphan every time a seller
-     *     changes one. This one is flagged rather than decided: `VIDEO_STORAGE.md` §13.9 records
-     *     the trade-off and the question it needs answered.
+     * ONE NAMESPACE IS OUTSIDE THE RULE, and it is not an oversight: `kyc`, an identity document. It
+     * is local BY PROMISE — the copy is destroyed when the check is decided
+     * (`destroyHeldDocument` is built on `remove` being a real unlink) — and a person's citizenship
+     * certificate is not going to a media host, ours or anybody's. Covers were the other candidate
+     * and the operator decided it: a cover is a seller's file too, so it goes to the image host and
+     * the orphan that leaves is written down rather than hidden (`VIDEO_STORAGE.md` §13.9).
      */
-    if (namespace === 'private' && inProduction()) {
+    if (namespace !== 'kyc' && inProduction()) {
       const kind = mediaKind(mimeType, filename);
       const why = refusals.length
         ? refusals.join('; ')

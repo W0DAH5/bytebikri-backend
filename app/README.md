@@ -33,8 +33,20 @@ node ../ci/demo-state.mjs     # from app/, puts the interesting states in place
 | Operator console | `/admin` — `operator@bytebikri.local` / `bytebikri-demo` |
 | Health / readiness | `/health`, `/readyz` |
 
+### Two databases, and one of them belongs to the tests
+
 `DATABASE_URL` decides which database all of this touches, and `npm run
-db:reset && npm run db:migrate && npm start` gets a clean one from nothing.
+db:reset && npm run db:migrate && npm start` gets a clean one from nothing. Keep the two apart,
+because this cost a whole round of "the demo has lost everything":
+
+| variable | who uses it | what happens to it |
+| --- | --- | --- |
+| `bytebikri` (the default) | `npm start`, `ci/dev-up.sh`, the demo | seeded once, then filled by `ci/demo-state.mjs`; nothing else touches it |
+| `bytebikri_test` | `npm test` (`scripts/test-db.mjs` drops and refills it) | **destroyed and refilled on every test run** |
+
+Pointing a preview at `bytebikri_test` means every `npm test` silently wipes the demo you are about to
+show somebody — the stores are still there and the sign-in is gone, which reads as lost work rather
+than as a dropped database. After a test run, nothing needs re-seeding; just restart the instance.
 
 **The operator account is not a demo-only idea.** `/admin` answers 404 to anybody whose
 `profiles.role` is not `'admin'`, and until this round nothing in the product could set that column —
