@@ -3870,7 +3870,16 @@ export const store = {
               -- store's roster, the same way the palette does: the card is a rendering
               -- of the person, not a surface of the store's.
               p.plus_ring as plus_ring, p.plus_frame as plus_frame,
-              pl.plus_status, pl.plus_period_end
+              pl.plus_status, pl.plus_period_end,
+              -- WHEN THE PERIOD ENDS, and it is the one column the card was missing.
+              -- The WHERE below filters on status = 'active', and a membership's
+              -- status is never rewritten by the clock — 0031 says so in the table's
+              -- own comment ("Lapse is derived from period_end rather than stored as
+              -- a status"). So without this, a period that ended last month reaches
+              -- the renderer looking exactly like one being paid for today, and the
+              -- plate rendered BYTE-IDENTICAL HTML for the two states. The renderer
+              -- asks membershipState() with this date; nothing here decides it.
+              m.period_end
          from memberships m
          join profiles p on p.id = m.profile_id
          left join membership_tiers t

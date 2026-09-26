@@ -902,7 +902,7 @@ function wearStyleAttr(accentKey) {
  */
 function memberPlate({
   name, accent = 'indigo', tier = null, tierNo = 0, glyph = null,
-  joined = null, me = false, plusRow = null,
+  joined = null, me = false, plusRow = null, state = null,
 }) {
   const label = String(name || 'Member');
   const initial = label.trim().slice(0, 1).toUpperCase() || 'M';
@@ -949,12 +949,49 @@ function memberPlate({
         style="${plateStyleAttr(accent)}${ringPalette}" aria-hidden="true">${esc(initial)}</span>
   <span class="member-body">
     <span class="${nameClass}" style="${plateStyleAttr(namePalette)}">${esc(label)}</span>
-    ${layers.chip ? tierChip({
+    ${/*
+      * ONE ROW FOR THE CHIP AND THE STATE, and that is a layout constraint rather than a
+      * preference: `member-body` is a two-row grid, and a bare third child made it three.
+      * The card then grew a line, `.member-since` (which is centred against the body in
+      * the flex row) slid up into the chip, and the plate read as two overlapping
+      * fragments — caught in the walk's own screenshot, not by a test, which is why the
+      * frame is kept.
+      */ ''}
+    <span class="member-flags">
+      ${layers.chip ? tierChip({
     label: layers.chip.label, glyph: layers.chip.glyph, top,
     style: plateStyleAttr(layers.chip.palette),
   }) : ''}
+      ${/*
+      * WHETHER THE PERIOD IS STILL RUNNING, in the seller's own list's words.
+      *
+      * The chip beside the name is the STORE's tier and it is the same chip either
+      * way: a tier a person held is a fact about the store's record, and the design
+      * rule that a person's purchase never replaces the store's mark cuts both ways.
+      * What was missing is the clock, so it is said in words — the same two words the
+      * seller's own member list uses (`current` / `ended`, views.js `membersList`),
+      * rather than a second vocabulary invented here.
+      *
+      * Rendered for BOTH states, because an absence is not a signal: a card with no
+      * marker cannot be told from a card whose state the page never asked about, and
+      * that ambiguity is what let an expired membership look current.
+      *
+      * `data-state` carries the derived value for the tests and for styling, and it is
+      * `membershipState()`'s own word (`active`/`lapsed`), not a third spelling.
+      */ ''}
+      ${state ? `<span class="member-state fine" data-state="${esc(state)}">${
+    state === 'active' ? 'current' : 'ended'}</span>` : ''}
+    </span>
+    ${/* THE DATE IS THE BODY'S THIRD ROW, not a third column of the card.
+         It was a flex sibling with `margin-left: auto`, which asks flexbox to put it at
+         the far right — and the card is 202px wide holding a 32px avatar, a name, a chip
+         and this 116px string. Flexbox answered by shrinking `.member-body` to width 0,
+         and the date was drawn ON TOP of the chip: 7px of overlap at HEAD, 21px once the
+         state joined the row (both measured in a browser, and this file's own
+         `docs/evidence/round48/membership-baseline-before-any-change.png` shows the
+         first). Rows cannot collide with columns, and the card keeps its height. */ ''}
+    ${joined ? `<span class="member-since fine">${esc(joined)}</span>` : ''}
   </span>
-  ${joined ? `<span class="member-since fine">${esc(joined)}</span>` : ''}
 </li>`;
 }
 
@@ -1107,6 +1144,11 @@ function memberRoster(roster = []) {
     ${roster.map((m) => memberPlate({
     name: m.display_name, accent: m.accent, tier: m.tier_name, tierNo: m.tier_no,
     glyph: m.glyph,
+    // Derived from the clock, never from a stored word: the query returns rows whose
+    // status is 'active', and one whose period ended yesterday is still 'active' in the
+    // database by design. `membershipState` is the same function the member's own card,
+    // the file gate and the seller's list use, so the four cannot drift apart.
+    state: membershipState({ status: 'active', period_end: m.period_end }),
     joined: `since ${longDay(m.joined_at)}`,
     // Their own look, if they have one and it is current. Two payments to two
     // different parties can be on one plate; neither can impersonate the other,

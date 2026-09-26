@@ -2381,7 +2381,19 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 }
 .member-body { display: grid; gap: 0.15rem; min-width: 0; }
 .member .member-name { overflow-wrap: anywhere; }
-.member-since { margin-left: auto; white-space: nowrap; }
+.member-since { white-space: nowrap; }
+/* `margin-left: auto` belonged to the flex row this used to be a child of. Inside the
+   body it is a grid row, and an auto left margin there right-aligns the date against a
+   name and a chip that are left-aligned — so it is reset rather than inherited. */
+.member-body .member-since { margin-left: 0; }
+/* The period's state, in words. Deliberately the quiet line rather than a badge: an
+   ended membership is not a fault and the product says so itself ("The plate goes
+   quiet"), so this is the same `.fine` ink as the joined date beside it — the word is
+   the signal, and there is no colour to read as an alarm. */
+.member-state { white-space: nowrap; }
+/* The chip and the state on one line, so the card keeps the two rows it had before the
+   state existed and the `since` line does not slide into them. */
+.member-flags { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .member--me { border-color: color-mix(in srgb, var(--plate-a, var(--indigo-600)) 45%, var(--border-subtle)); }
 
 /* Where a member stands, in a panel of their own colour. The tint is 8% of the

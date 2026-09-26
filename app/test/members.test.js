@@ -48,6 +48,17 @@ const {
   attentionBankedLine, adModeOf, doorFor, ATTENTION_MONEY_LINE, SUPPORTER_LINE,
 } = await import('../src/memberships.js');
 const { plusWear } = await import('../src/plus.js');
+
+/** The store the rendered assertions use. Same shape `identity.test.js` renders with. */
+const CHANNEL = {
+  id: 'c1', slug: 'alice', name: 'Alice’s Studio', tagline: 'Design templates.',
+  owner_id: 'p1', banner_url: null, logo_url: null, listing_mode: 'marketplace',
+};
+const TIERS = [
+  { tier_no: 1, name: 'Friend', dues_npr: 150, period_months: 1, perks: null, accent: 'teal', glyph: null, join_mode: 'both', ad_mode: 'ad_free' },
+  { tier_no: 2, name: 'Elite', dues_npr: 600, period_months: 3, perks: null, accent: 'rose', glyph: 'peak', join_mode: 'dues', ad_mode: 'ad_free' },
+];
+const { readFileSync } = await import('node:fs');
 const { startUnlock } = await import('../src/unlocks.js');
 
 after(async () => { await close(); });
@@ -293,6 +304,17 @@ test('the roster hands the renderer the palette the look is painted from', async
     const [row] = await store.publicRoster(channel.id);
     assert.equal(row.nameplate, 'teal', 'the roster row does not carry the field the look is read from');
 
+    /*
+     * AND THE DATE THE STATE IS DERIVED FROM, which is the column this roster was
+     * missing. The WHERE above the select filters on `status = 'active'` and the
+     * database never rewrites that status when a period ends — by design, per 0031's
+     * own comment — so a row without `period_end` reaches the renderer looking exactly
+     * like a membership being paid for today. The card then rendered byte-identical
+     * HTML for an active member and one whose period ended yesterday.
+     */
+    assert.ok(row.period_end instanceof Date,
+      'the roster row must carry period_end, or the card cannot tell a current membership from an expired one');
+
     // The same row the storefront receives, with the arrangement the join proves in
     // production (asserted directly here so this test needs no subscription fixture).
     const dressed = { ...row, plus_active: true };
@@ -319,6 +341,57 @@ test('the roster hands the renderer the palette the look is painted from', async
       'the ring and the store’s top-tier light do not share the avatar');
     assert.match(html, /class="store-chip/, 'the store’s own chip left the card');
   } finally { await cleanup(channel, owner, member); }
+});
+
+test('the member card says whether the period is still running, in the seller list’s own words', async () => {
+  /*
+   * THE FAILURE THIS PINS, measured before it was fixed: the public roster card — the
+   * plate on a storefront that a stranger reads — was BYTE-IDENTICAL for a member being
+   * paid for and one whose period had ended. sha256 58154f04b3fc3161 both ways, from the
+   * same fixture with only `period_end` moved a day into the past.
+   *
+   * Every other surface flipped correctly (the person's own card, the file gate, the
+   * seller's own list, the member room), which is why this hid: the market's own list
+   * derives the state and the storefront's card did not, and nothing asserted the two
+   * agreed. So the assertions below are about AGREEMENT and DIFFERENCE, not about looks:
+   * the same roster row renders differently either side of its own period end, and the
+   * word it uses is the one the seller's list already uses.
+   */
+  const future = new Date(Date.now() + 30 * 86400000).toISOString();
+  const past = new Date(Date.now() - 86400000).toISOString();
+  const row = (period_end) => ({
+    profile_id: 'p2', display_name: 'Alice', tier_no: 2, tier_name: 'Elite',
+    accent: 'rose', glyph: 'peak', joined_at: '2026-09-01T00:00:00Z', period_end,
+  });
+  const page = (period_end) => views.storefront({
+    channel: { ...CHANNEL, name: 'nima-crafts' }, assets: [], slots: [], user: null,
+    estimate: null, pageviews: 0, tiers: TIERS, membershipsOn: true,
+    roster: [row(period_end)],
+  });
+
+  const current = page(future);
+  const ended = page(past);
+
+  assert.match(current, /data-state="active"[^>]*>current</,
+    'a member inside their period says so in words');
+  assert.match(ended, /data-state="lapsed"[^>]*>ended</,
+    'and a member whose period has run out says that instead');
+  assert.notEqual(
+    current.match(/<ul class="member-roster">[\s\S]*?<\/ul>/)[0],
+    ended.match(/<ul class="member-roster">[\s\S]*?<\/ul>/)[0],
+    'the two states must not render the same card — that equality is the bug',
+  );
+  // The chip is NOT what changes: the tier a person held is the store's own record, and
+  // the design rule that a person's purchase never replaces the store's mark cuts both
+  // ways. The state is a second fact, not a replacement for the first.
+  for (const html of [current, ended]) {
+    assert.match(html, /<ul class="member-roster">[\s\S]*?store-chip[^>]*>[\s\S]*?Elite<\/span>/,
+      'both states keep the store’s tier chip');
+  }
+  // And the word is the seller list's own ('current' / 'ended'), not a third vocabulary.
+  const sellerList = readFileSync(new URL('../src/views.js', import.meta.url), 'utf8');
+  assert.match(sellerList, /\{ active: 'current', pending: 'waiting', rejected: 'not found' \}/,
+    'the seller list still names the states, which is where these two words come from');
 });
 
 test('the seller’s own member list hands the renderer the look too', async () => {
