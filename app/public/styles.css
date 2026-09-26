@@ -3016,6 +3016,106 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   }
 }
 
+/* The nameplate: the name itself wears the power's metal
+   (PREMIUM_COSMETICS.md §4, the "Nameplate" column). The rim and the halo dress
+   the card; the paint on the name is what makes the tier readable at arm's
+   length without reading the chip. Each power is a real metal, not a colour —
+   silver is cold chrome, gold is liquid gold, crystal is a prism (four hues,
+   not one), inferno is a banked ember — so the four rungs read as four
+   materials, which is the whole argument for a ladder.
+
+   TWO LAYERS, KEPT APART ON THE NAME TOO. The metal is the POWER's paint; the
+   person's palette ink is mixed into the two ends of the sweep (see
+   `--plate-ink` below), so a member's own colour survives in the metal rather
+   than being deleted — the same separation as the ring and the chip, where
+   their choice lives. That mix is also why the name can be painted here at
+   all: a painted name in this stylesheet is always inks (the rule
+   test/wear.test.js proves), and this one is.
+
+   YIELDED TO, NEVER STOMPED. A member who bought their own PAINTED name —
+   `wear-gradient`, `wear-prism`, `wear-edge` — keeps it, because a painted
+   name is their identity and the power would be replacing it; for them the
+   power dresses the card instead (the rim, the halo, the sheen above). The
+   three `:not()` guards are that refusal, in selectors. Everyone else (the
+   plain `wear-solid`, and the `halo`/`neon` names whose glyphs stay solid ink
+   and whose glow is a text-shadow that survives the clip) wears the metal,
+   and the tier is the name.
+
+   It is a STATIC gradient: the metal holds with every animation off, so
+   reduced motion loses nothing and the card's sheen above stays the single
+   moving element. Only the four real powers set this, so an unknown value
+   keeps its ink and can never render as invisible text. */
+/* Each rule is SELF-CONTAINED on purpose: the clip, the transparent fill and the
+   ink-mixed sweep live in one declaration block, because the rule
+   test/wear.test.js proves is "every name that paints its glyphs (clips a
+   background to the text) paints them from the palette ink". A clip with no ink
+   in the same block would fail it as a name painted from nothing, so the four
+   powers each carry their own complete block rather than sharing a bare clip.
+   The sweep: the person's ink at both ends (the layer that is theirs), the pure
+   metal through the middle (the layer that is the tier). 100deg, not 90, so the
+   highlight sits off-centre and reads as a band of light on a face, not a seam. */
+[data-power="silver"] .member-name:not(.wear-gradient):not(.wear-prism):not(.wear-edge) {
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  background-image: linear-gradient(100deg,
+    color-mix(in srgb, var(--plate-ink) 22%, #e2e8f0) 0%, #cbd5e1 34%, #94a3b8 50%, #e2e8f0 66%,
+    color-mix(in srgb, var(--plate-ink) 22%, #94a3b8) 100%);
+}
+[data-power="gold"] .member-name:not(.wear-gradient):not(.wear-prism):not(.wear-edge) {
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  background-image: linear-gradient(100deg,
+    color-mix(in srgb, var(--plate-ink) 22%, #fde68a) 0%, #fcd34d 32%, #d97706 50%, #fbbf24 68%,
+    color-mix(in srgb, var(--plate-ink) 22%, #b45309) 100%);
+}
+[data-power="crystal"] .member-name:not(.wear-gradient):not(.wear-prism):not(.wear-edge) {
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  background-image: linear-gradient(100deg,
+    color-mix(in srgb, var(--plate-ink) 22%, #bae6fd) 0%, #a5b4fc 30%, #67e8f9 50%, #c4b5fd 72%,
+    color-mix(in srgb, var(--plate-ink) 22%, #bae6fd) 100%);
+}
+[data-power="inferno"] .member-name:not(.wear-gradient):not(.wear-prism):not(.wear-edge) {
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  background-image: linear-gradient(100deg,
+    color-mix(in srgb, var(--plate-ink) 22%, #fdba74) 0%, #fb923c 34%, #ef4444 52%, #fdba74 72%,
+    color-mix(in srgb, var(--plate-ink) 22%, #c2410c) 100%);
+}
+/* Light scheme: the same metals cut darker so they hold on a light card without
+   washing out — the metal IS the tier, and the tier must still read. The ends
+   mix the person's light-theme ink for the same two-layer reason. */
+@media (prefers-color-scheme: light) {
+  [data-power="silver"] .member-name:not(.wear-gradient):not(.wear-prism):not(.wear-edge) {
+    background-image: linear-gradient(100deg,
+      color-mix(in srgb, var(--plate-ink-light) 22%, #475569) 0%, #334155 34%, #64748b 50%, #475569 66%,
+      color-mix(in srgb, var(--plate-ink-light) 22%, #1e293b) 100%);
+  }
+  [data-power="gold"] .member-name:not(.wear-gradient):not(.wear-prism):not(.wear-edge) {
+    background-image: linear-gradient(100deg,
+      color-mix(in srgb, var(--plate-ink-light) 22%, #92400e) 0%, #92400e 32%, #b45309 50%, #92400e 68%,
+      color-mix(in srgb, var(--plate-ink-light) 22%, #78350f) 100%);
+  }
+  [data-power="crystal"] .member-name:not(.wear-gradient):not(.wear-prism):not(.wear-edge) {
+    background-image: linear-gradient(100deg,
+      color-mix(in srgb, var(--plate-ink-light) 22%, #155e75) 0%, #4f46e5 30%, #0891b2 50%, #155e75 72%,
+      color-mix(in srgb, var(--plate-ink-light) 22%, #0e7490) 100%);
+  }
+  [data-power="inferno"] .member-name:not(.wear-gradient):not(.wear-prism):not(.wear-edge) {
+    background-image: linear-gradient(100deg,
+      color-mix(in srgb, var(--plate-ink-light) 22%, #7f1d1d) 0%, #b91c1c 34%, #c2410c 52%, #7f1d1d 72%,
+      color-mix(in srgb, var(--plate-ink-light) 22%, #991b1b) 100%);
+  }
+}
+
 /* THE MARK — the motif beside the name, the identity layer (PREMIUM_COSMETICS.md
    §5). Eighteen pixels, because that is the size a name is read at in a roster
    and the mark must hold at that size (the Twitch rule, §2). It sits inline

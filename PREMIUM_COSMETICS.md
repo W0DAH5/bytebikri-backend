@@ -277,10 +277,26 @@ untouched, and nothing on any page moved.
 | Phase | What | Gate |
 |---|---|---|
 | **A — this round** | model + budget + first motif set + tests; no UI | done: the tests |
-| **B — the person's wardrobe** | the `motif` picker on the Plus look page (a `demo`-kind control, like ring/frame), the motif rendered beside the wearer's name at 18 px, and the silver/gold/crystal treatment of the wearer's own card within budget | the picker, the route validation against `MOTIFS`, the walk reading the 18 px mark and the budget off the page, the reduced-motion pass |
+| **B — the person's wardrobe** | the `motif` picker on the Plus look page (a `demo`-kind control, like ring/frame), the motif rendered beside the wearer's name at 18 px, and the silver/gold/crystal treatment of the wearer's own card within budget | done: `ci/eyes/cosmetic-walk.mjs` reads the 18 px mark, the power, the sheen state and the reduced-motion fallback off the page; the metallic nameplate passes `test/wear.test.js`'s painted-name rule |
 | **C — the store's treatment** | the store's tiers earn their treatment: a tier 1 chip/plate renders silver-class on the store's own pages, tier 2 gold-class — the *store's* slots, owned by the creator, never appearing beside a member's name as if the member's | the ownership test (a store treatment must not land on a person's surface), the walk comparing the same member's plate at a tier-1 store and a tier-2 store |
 | **D — the mascot layer + inferno** | a character sits/orbits the frame (resting pose + one idle + a hover reaction, never more), the environmental embers on one's own stage, and the inferno treatment for a special grant | the format decision (sprite sheet vs Lottie — budget < 200 KB), the one-per-viewport rule verified by the walk, the reduced-motion resting pose |
 | — | shop, bundles, rarity, seasonal passes, creator marketplace | **refused while money movement is refused** — they arrive with a rail, if ever |
+
+**What Phase B rendered, in the browser (the acceptance bar is the paint, not the badge):**
+the power reaches the DOM as one `data-power` attribute and the stylesheet dresses the card —
+a static rim+halo in the power's own hue (readable with every animation off), and a single
+45° sheen, transform-only, `paused` at rest and run by hover/focus/the live preview. The
+**nameplate** column of the §4 table is the name itself wearing the power's metal: a static
+gradient painted from the tier's material (cold chrome / liquid gold / prismatic crystal /
+banked ember) with the **person's palette ink mixed into the two ends**, so the metal is the
+tier and the member's own colour survives in it — the two layers kept apart on the name too,
+and the reason a painted name here still satisfies the "painted names are inks" rule that
+`test/wear.test.js` proves. A member who bought their own painted name (`wear-gradient`,
+`wear-prism`, `wear-edge`) keeps it: the power dresses the card instead. The studio tiles had
+their dark stage **keyed to transparent** (`app/scripts/key-tiles.mjs`, a region-grow gated on
+the corner reference colour), so a mascot reads as a character sitting on the card — ringed by
+the power's rim, drop-shadowed by its own shape — rather than a photograph pasted on; a mark
+reads as an emblem at 18 px.
 
 ## 10. The decisions this document makes — confirm or correct
 
