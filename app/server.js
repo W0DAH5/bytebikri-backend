@@ -20,6 +20,10 @@ import { Readable } from 'node:stream';
 
 import { store, storage, SLOT_DEFS, slugify, PLANS, nextPlan } from './src/store.js';
 import { hostsEnabled, edgeEnabled, mediaOrigins as videoMediaOrigins, deliveryOf } from './src/video.js';
+// The live host (§12). Imported as a namespace because every call on it is about the same
+// subject and a reader of this file should be able to see at a glance which lines talk to a
+// streaming server: `antmedia.…` is always one network call to a machine we run.
+import * as antmedia from './src/video-antmedia.js';
 import { UPLOAD_CAP_MB, UPLOAD_CAP_BYTES } from './src/upload-limit.js';
 // The cosmetics engine: the look picker's slots, declared once. This route validates a
 // submitted look against the catalog rather than against a list typed here.
@@ -107,7 +111,7 @@ import {
 import {
   mediaKind, isPlayable, isWatermarkable, hasImageMagick, watermarkImage,
   watermarkLabel, watermarkSvgDataUri, derivativeKey, cachedDerivative, cacheDerivative,
-  rangeFor, assetShape, isLiveUrl, measuredSeconds, MAX_RUNTIME_SEC,
+  rangeFor, assetShape, isLiveUrl, storableLiveUrl, measuredSeconds, MAX_RUNTIME_SEC,
 } from './src/media.js';
 import { placementPanelShown, breakCues, betweenCues, breaksSupported } from './src/placement.js';
 // The page model (§13): what a read is once its pages are counted, and where the
@@ -2681,6 +2685,12 @@ APP.get('/dashboard/:slug', async (req, res, next) => {
       plan: store.plan(channel),
       estimate, pageviews, usage,
       nextPlan: nextPlan(plan.code),
+      // Whether this deployment can make a stream itself, and where an encoder should point. The
+      // button is not rendered without it: a store on a deployment with no streaming server gets
+      // the "I already have a playlist" half of the form and never a button that cannot work.
+      liveMint: antmedia.liveEnabled()
+        ? { server: antmedia.ingestFor('', process.env).rtmp }
+        : null,
       adViews: await store.adViews({ channelId: channel.id }),
       assets,
       // The table lists everything the seller owns except what an operator
@@ -4669,7 +4679,8 @@ const SUCCESS_FLASH = {
   // not a setting: "Saved." would leave the seller unsure whether the break is RUNNING
   // or merely remembered.
   'live-url': () => 'Saved. This file is now the stream at that address — your host serves it, and nothing '
-    + 'about it is copied or kept here. Uncheck-then-save clears it.',
+    + 'about it is copied or kept here. Pasting a different address later replaces it, and if the address '
+    + 'being replaced was one of ours, that stream is ended on our server first.',
   'live-break': () => 'Break called. It is running now, for the length you chose, and every viewer already '
     + 'watching will be stopped by it. Newcomers walk in without the door ask until the coverage it bought runs out.',
   // Ending one early is the opposite event with a number of its own: the coverage still
@@ -4677,6 +4688,23 @@ const SUCCESS_FLASH = {
   // hour without running the break), but it starts from this moment rather than from the
   // end the seller picked. The sentence has to say the difference or the seller is left
   // guessing which of the two the button just did.
+  /*
+   * The studio's four. Each names what changed ON THE MACHINE, because a seller who has just been
+   * handed an rtmp url needs to know what state the server is in — not that a form saved. And
+   * `live-rotated-old-kept` is the honest half of a rotation that could not finish: the new key is
+   * live on the page while the old one still publishes, which is a fact the seller can act on.
+   */
+  'live-minted': () => 'A stream is ready on our server. The server address and the key below are what '
+    + 'go into your encoder, and nothing else publishes to it — the key is the credential, so it stays '
+    + 'here on this page and nowhere public.',
+  'live-rotated': () => 'New key. The stream you had is gone from the server, so the old key publishes '
+    + 'nothing now. Put the new one in your encoder and start sending.',
+  'live-rotated-old-kept': () => 'A new key is in place and works. The server would not delete the stream '
+    + 'you had, though, so that old key still publishes until it is removed there — ask whoever runs the '
+    + 'server, or try the new key again.',
+  'live-ended': () => 'Ended. The stream is off the server and this file is paused, so nobody is sent to '
+    + 'a stream that is not there. The address is kept: create a stream again and put the file back live '
+    + 'when your encoder is running.',
   'live-closed': () => 'Break ended. The window closes for everyone watching now, and the clean entries it '
     + 'bought run from this moment — for the length you announced, not for whatever was left of it.',
 
@@ -4808,8 +4836,8 @@ const ERROR_FLASH = {
   // The live panel's refusals. A break is the one place a seller can cost themselves
   // viewers, so each refusal names the rule rather than saying the button did not work.
   'live-url': 'A live file is an HLS playlist: an https:// address ending in .m3u8, or a same-origin path '
-    + 'to one. A plain page URL is a link, not a stream, and rtmp:// would need an ingest server this '
-    + 'platform does not have. Nothing was changed.',
+    + 'to one. A plain page URL is a link, not a stream, and an rtmp:// address is what an ENCODER speaks — '
+    + 'a browser cannot fetch it, so the playlist is what goes here. Nothing was changed.',
   'live-files': 'This file has uploaded files of its own, and a file cannot be both. Remove the uploads '
     + 'first if it is really a stream — otherwise the uploads would become unreachable. Nothing was changed.',
   'live-break': 'That break was not called. The panel shows why next to each length: breaks are 15 seconds '
@@ -4817,6 +4845,33 @@ const ERROR_FLASH = {
   'live-shape': 'Breaks belong to a live stream. This file is not one — point it at its playlist first. '
     + 'Nothing was changed.',
   'live-action': 'That is not something this panel does. Nothing was changed.',
+  /*
+   * The studio's refusals. Two of them are about OUR machine rather than the seller's mistake, and
+   * they say so — a seller who reads "the server refused" does not go looking for a bug in their own
+   * file. The server's own words never travel in the url (they are recorded on the audit line), for
+   * the same reason an upload host's words do not: a redirect is a public place.
+   */
+  'live-mint': 'The streaming server would not make a stream just now. That is the machine\'s answer '
+    + 'rather than anything about your store, and it is written down with its own words in the log. '
+    + 'Nothing was published — try again in a moment.',
+  'live-mint-off': 'This deployment has no streaming server of its own, so there is nothing here to '
+    + 'create. You can still point a file at a playlist you run yourself. Nothing was changed.',
+  /*
+   * The operator's mistake, not the seller's — and the sentence says so, because the person reading
+   * it may be the one who can fix it. A viewer's browser fetches the playlist directly, so a
+   * plain-http address on an https storefront is content the browser refuses, and the database will
+   * not store one either (migration 0048). Ant Media serves https on :5443 by default.
+   */
+  'live-mint-insecure': 'The streaming server is configured over plain http, so the playlist it would '
+    + 'produce could not be saved: a viewer\'s browser fetches that address itself, and browsers refuse '
+    + 'a plain-http playlist on an https storefront. Point the server at its https address (Ant Media '
+    + 'serves one on port 5443 out of the box) and try again. Nothing was published.',
+  'live-orphan': 'The streaming server did not answer, so nothing was changed — the address and the key '
+    + 'below still work. Try again in a moment; if it stays down, pausing the file takes it off your '
+    + 'storefront without touching the stream.',
+  'live-empty': 'A stream file needs an address — clearing the box would leave a file with nothing to '
+    + 'open. Pause it to take it off your storefront, or end the stream to take it off the server. '
+    + 'Nothing was changed.',
   // The reader's two choices, refused. The panel only renders them for a file a
   // reader opens, so this is reachable by a hand-crafted post — and a refusal that
   // names the rule is the difference between a bug report and a dead end.
@@ -5135,6 +5190,20 @@ APP.post('/dashboard/:slug/assets/bulk/:batchId/undo', async (req, res, next) =>
   } catch (err) { return next(err); }
 });
 
+/**
+ * A slug nobody in this store is using yet.
+ *
+ * `first one wins` is a rule rather than a detail — two files called "poster kit" in one store would
+ * make one of them unreachable, and which one would depend on creation order. Shared by the publish
+ * route and the go-live route, so the two cannot drift into different answers.
+ */
+async function uniqueAssetSlug(channelId, title) {
+  const base = slugify(title) || 'file';
+  let assetSlug = base;
+  for (let n = 2; await store.assetBySlug(channelId, assetSlug); n += 1) assetSlug = `${base}-${n}`;
+  return assetSlug;
+}
+
 APP.post('/dashboard/:slug/assets', contentUpload((req, qs) =>
   `/dashboard/${encodeURIComponent(req.params.slug)}?${qs}#publish`), async (req, res, next) => {
   const back = `/dashboard/${encodeURIComponent(req.params.slug)}`;
@@ -5165,9 +5234,7 @@ APP.post('/dashboard/:slug/assets', contentUpload((req, qs) =>
 
     // Slug: derived from the title, made unique WITHIN the store. Two stores may
     // both have "poster-kit"; one store may not have two.
-    const base = slugify(title) || 'file';
-    let assetSlug = base;
-    for (let n = 2; await store.assetBySlug(channel.id, assetSlug); n += 1) assetSlug = `${base}-${n}`;
+    const assetSlug = await uniqueAssetSlug(channel.id, title);
 
     const asset = await store.createAsset({
       channelId: channel.id, title, slug: assetSlug,
@@ -6134,9 +6201,18 @@ APP.get('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
      */
     const liveShape = await store.shapeOf(asset);
     let livePanel = null;
+    let liveStudio = null;
     if (liveShape === 'stream') {
       const now = new Date();
       const breaks = await store.liveBreaksOf(asset.id);
+      /*
+       * THE PANEL: the break surface, and it is built for ANY stream — ours or somebody else's.
+       * Deleting this assignment is invisible in the routes that do not touch it (the studio below
+       * still rendered, the page still answered 200) while silently removing every break control and
+       * the whole "where the breaks go" surface from the seller's page. It is here because a walk
+       * that greps for the key found the key and not the panel, which is the only reason anybody
+       * noticed.
+       */
       livePanel = {
         url: asset.external_url,
         breaks,
@@ -6147,6 +6223,56 @@ APP.get('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
         ])),
         trade: Object.fromEntries(LIVE_LENGTHS.map((seconds) => [seconds, tradeSentence(seconds)])),
         cleanUntil: cleanEntryUntil(breaks, now),
+      };
+      /*
+       * THE STUDIO: everything a seller needs to actually push a stream into this file.
+       *
+       * The credentials are DERIVED from the playlist address that is already saved on the asset —
+       * never stored a second time and never carried in a url where they would end up in a log, a
+       * browser history or somebody's shoulder. `streamIdFromPlaylist` answers null unless the
+       * address is on the server THIS deployment runs, so a store pointing at its own stream gets
+       * no rtmp box describing our machine.
+       *
+       * The status comes from the server, never from our own bookkeeping: whether an encoder is
+       * connected is a fact only the streaming server has. It is fetched with a four-second
+       * timeout, and a server that does not answer is reported as unanswered rather than crashing
+       * the seller's page — a page that 500s because a streaming box is down would be the wrong
+       * failure in the middle of the one task that needs it.
+       */
+      const streamId = antmedia.streamIdFromPlaylist(asset.external_url);
+      const canMint = antmedia.liveEnabled();
+      let status = null;
+      if (streamId) {
+        try {
+          const live = await antmedia.liveStream(streamId, { env: process.env, timeoutMs: LIVE_CALL_MS });
+          status = {
+            reachable: true, word: live.status, broadcasting: live.broadcasting,
+            viewers: live.viewers, bitrate: live.bitrate,
+          };
+        } catch (err) {
+          /*
+           * A 404 IS AN ANSWER, and it is a different fact from silence.
+           *
+           * The server said it has no such stream — which is exactly what an ended stream looks like
+           * — while a refusal to connect means the box is down. Saying "did not answer" for a 404
+           * would send a seller to check a machine that is running perfectly well, and would hide the
+           * one thing they need to know: the stream they are looking at is gone.
+           */
+          status = err?.status === 404
+            ? { reachable: true, missing: true }
+            : { reachable: false, reason: err?.message || 'the streaming server did not answer' };
+        }
+      }
+      liveStudio = {
+        enabled: canMint,
+        streamId,
+        // What a seller types into OBS. `publishUrl` is exactly that string, not a reconstruction
+        // of it: `ingestFor` is what the doctor prints too, so the two cannot disagree.
+        ingest: canMint && streamId
+          ? { ...antmedia.ingestFor(streamId, process.env), server: antmedia.ingestFor('', process.env).rtmp }
+          : (canMint ? { server: antmedia.ingestFor('', process.env).rtmp } : null),
+        playlist: asset.external_url,
+        status,
       };
     }
     res.send(views.assetManage({
@@ -6186,6 +6312,9 @@ APP.get('/dashboard/:slug/assets/:assetId', async (req, res, next) => {
       countryRules: allCountryRules.filter((r) => r.source === 'creator'),
       platformRules: allCountryRules.filter((r) => r.source !== 'creator'),
       live: livePanel,
+      // The studio travels beside the panel rather than inside it: `live` is the break model and
+      // is read by several callers, while this is only about where the bytes come from.
+      studio: liveStudio,
       // What the delete did, when the seller has just done one. Read from the query
       // string rather than from a session flash, because these numbers are the record
       // of an irreversible act: a reload should still show them.
@@ -6457,6 +6586,169 @@ APP.post('/dashboard/:slug/assets/:assetId/delete', async (req, res, next) => {
  * one" (placement rule 4, ASSET_ECONOMY §14.3) a property of this code rather than a
  * promise about our intentions.
  */
+/*
+ * A machine we run is a dependency too, and it fails in its own words.
+ *
+ * The live panel is rendered with a call to that server, so the timeout is not the default one: a
+ * page a seller is looking at must not wait thirty seconds for a box that is switched off. Four
+ * seconds is long enough for a real answer on a real box and short enough that a dead one reads as
+ * "did not answer" rather than as a hanging page.
+ */
+const LIVE_CALL_MS = 4_000;
+
+/**
+ * Mint a broadcast on our own server and point the asset at it.
+ *
+ * The order matters and is the reason this is one function rather than three lines in two routes:
+ * the SERVER IS ASKED FIRST, so a refusal leaves nothing half-made — no asset whose playlist is a
+ * 404, no key printed for a stream that was never created. `createLiveStream` mints the id here
+ * (`crypto.randomBytes`), which is the whole point of §12: in the Community Edition the id IS the
+ * publish credential, so it must not be guessable and must never reach a viewer.
+ */
+async function mintAndAttach({ assetId, channelId, title, actorId = null, before = null }) {
+  const created = await antmedia.createLiveStream({
+    liveName: title, env: process.env, timeoutMs: 30_000,
+  });
+  await store.setExternalUrl({ assetId, url: created.hls });
+  await store.audit('asset.live_minted', {
+    assetId, channelId, streamId: created.id, replaced: before || null,
+  }, { actorId, subjectType: 'asset', subjectId: assetId });
+  return created;
+}
+
+/**
+ * Take OUR OWN stream off the server, and say whether it went.
+ *
+ * Called wherever a playlist address is about to stop being this asset's address — cleared, or
+ * replaced. It is deliberately not "best effort with a log line": the id in that url is a publish
+ * credential, and leaving a live one behind while removing it from the only page that shows it
+ * would produce a key nobody can see and anybody who cached the playlist can still use. So the
+ * caller refuses to change the address when this returns false, and says why.
+ *
+ * A url that is not ours (a store's own stream, somebody else's playlist) returns true: there is
+ * nothing of ours to end, and reaching for a server this deployment does not run would be a lie
+ * with a DELETE on the end of it.
+ */
+async function endOurStream({ url, assetId, channelId, actorId = null }) {
+  const streamId = antmedia.streamIdFromPlaylist(url);
+  if (!streamId) return true;
+  try {
+    await antmedia.removeLiveStream(streamId, { env: process.env, timeoutMs: 10_000 });
+  } catch {
+    return false;
+  }
+  await store.audit('asset.live_stream_ended', { assetId, channelId, streamId },
+    { actorId, subjectType: 'asset', subjectId: assetId });
+  return true;
+}
+
+/**
+ * Make a live file.
+ *
+ * THIS ROUTE EXISTS BECAUSE THERE WAS NO WAY FOR A SELLER TO HAVE ONE. The live panel renders only
+ * for an asset that is ALREADY a stream — `assetShape` decides that by the playlist address — and
+ * the publish form requires a media file. So a live file was reachable only through the seed that
+ * builds the demo's, and a store with its own streaming server could not create its first stream.
+ * The feature was built, tested and invisible.
+ *
+ * Two ways in, and they are the two honest ones:
+ *
+ *   `source=mint`  our own server mints a broadcast: an id, an rtmp url for OBS, and a playlist.
+ *                  Offered only when `liveEnabled()` — a deployment with no streaming server must
+ *                  not show a button that cannot work.
+ *   `source=url`   the store runs its own stream somewhere and gives us the playlist. The rules are
+ *                  `set-url`'s rules, because this is the same act: an `.m3u8`, over https or
+ *                  same-origin, and no uploads on the asset.
+ */
+APP.post('/dashboard/:slug/live/new', contentUpload((req, qs) =>
+  `/dashboard/${encodeURIComponent(req.params.slug)}?${qs}#golive`), async (req, res, next) => {
+  const back = `/dashboard/${encodeURIComponent(req.params.slug)}`;
+  try {
+    if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.originalUrl)}`);
+    const channel = await store.channelBySlug(req.params.slug);
+    if (!channel || channel.owner_id !== req.user.id) return res.status(404).send('Channel not found');
+    if (refuseWrite(req, res, channel)) return;
+
+    const fail = (code) => res.redirect(`${back}?error=${encodeURIComponent(code)}`);
+
+    const title = String(req.body.title || '').trim().slice(0, 200);
+    if (!title) return fail('title');
+
+    const plan = store.plan(channel);
+    const limit = plan.capabilities.max_assets;
+    if (limit !== -1 && (await store.assetsOf(channel.id)).length >= limit) return fail('limit');
+
+    const cover = req.files?.cover?.[0];
+    if (cover && !String(cover.mimetype).startsWith('image/')) return fail('cover');
+    if (cover && cover.size > 5 * 1024 * 1024) return fail('cover');
+
+    const source = req.body.source === 'mint' ? 'mint' : 'url';
+    // A deployment cannot mint what it does not run. Checked here rather than trusting the form:
+    // the button is not rendered without it, and this is the same fact read in the one place that
+    // would otherwise act on it.
+    if (source === 'mint' && !antmedia.liveEnabled()) return fail('live-mint-off');
+
+    let playlist = null;
+    let minted = null;
+    if (source === 'url') {
+      playlist = String(req.body.externalUrl || '').trim();
+      // The database's own rule, checked here so a refusal is a sentence rather than a 500 from a
+      // constraint. `isLiveUrl` alone would let `.M3U8` through (it is case-insensitive; the
+      // constraint is not) and the insert would fail with "Something broke".
+      if (!playlist || !storableLiveUrl(playlist)) return fail('live-url');
+    } else {
+      /*
+       * THE MINTED ADDRESS IS CHECKED TOO, and this is where the first version of this route earned
+       * its 500: it validated only what the SELLER typed and trusted what our own server returned.
+       * On a deployment whose `ANT_MEDIA_BASE` is plain http the minted playlist was `http://…`, the
+       * database's constraint refused it, and the seller got "Something broke" with a request id —
+       * from a configuration mistake that is entirely the operator's, made before anybody published
+       * anything.
+       *
+       * The refusal below names the fix rather than the symptom, because the person reading it is the
+       * one who can act: Ant Media serves https on :5443 out of the box, so pointing ANT_MEDIA_BASE
+       * at the https address is a one-line change.
+       */
+      const mintBase = antmedia.base(process.env);
+      if (!mintBase.startsWith('https://')) return fail('live-mint-insecure');
+      try {
+        minted = await antmedia.createLiveStream({ liveName: title, env: process.env, timeoutMs: 30_000 });
+        playlist = minted.hls;
+        if (!storableLiveUrl(playlist)) return fail('live-mint-insecure');
+      } catch (err) {
+        // The server's own words are not put in a url — the flash is a fixed sentence and the
+        // reason is recorded where somebody investigating can read it (the same rule the upload
+        // path follows for a host refusal).
+        await store.audit('asset.live_mint_failed', {
+          channelId: channel.id, reason: err?.message || 'the live server refused',
+        }, { actorId: req.user.id });
+        return fail('live-mint');
+      }
+    }
+
+    const asset = await store.createAsset({
+      channelId: channel.id, title,
+      slug: await uniqueAssetSlug(channel.id, title),
+      description: String(req.body.description || '').trim().slice(0, 2000),
+      unlockMode: req.body.unlockMode === 'open' ? 'open' : 'ad_gated',
+      coverUrl: cover
+        ? `/media/${await storage.put(cover.buffer, cover.originalname, { namespace: 'public' })}`
+        : null,
+    });
+    await store.setExternalUrl({ assetId: asset.id, url: playlist });
+    await store.audit('asset.created', { assetId: asset.id, channelId: channel.id, shape: 'stream' });
+    if (minted) {
+      await store.audit('asset.live_minted', {
+        assetId: asset.id, channelId: channel.id, streamId: minted.id,
+      }, { actorId: req.user.id, subjectType: 'asset', subjectId: asset.id });
+    }
+    // Straight to the file's own page, where the credentials are. A seller who has just minted a
+    // stream needs the rtmp url, not a confirmation.
+    return res.redirect(`/dashboard/${encodeURIComponent(channel.slug)}/assets/${asset.id}`
+      + `?saved=${minted ? 'live-minted' : 'live-url'}`);
+  } catch (err) { return next(err); }
+});
+
 APP.post('/dashboard/:slug/assets/:assetId/live', async (req, res, next) => {
   try {
     const channel = await ownerChannel(req, res);
@@ -6475,14 +6767,39 @@ APP.post('/dashboard/:slug/assets/:assetId/live', async (req, res, next) => {
 
     if (action === 'set-url') {
       const url = String(req.body.externalUrl || '').trim();
-      if (!url) {
-        await store.setExternalUrl({ assetId: asset.id, url: null });
-        return res.redirect(`${back}?saved=live-url`);
+      /*
+       * AN ADDRESS OF OURS THAT IS ABOUT TO STOP BEING THIS FILE'S ADDRESS HAS TO DIE ON THE SERVER.
+       *
+       * Emptying the box used to only clear the column, which left a broadcast running on our own
+       * server with a live publish key — and then removed the key from the only page that shows it,
+       * because the panel derives the credentials from this url. A key nobody can see and anybody
+       * who kept the playlist can still use is worse than either outcome, so the order is: end the
+       * stream, then change the address. If the server will not answer, nothing is changed and the
+       * sentence says what is wrong — the reversible option (pausing the file) stays available.
+       */
+      const wasOurs = antmedia.streamIdFromPlaylist(asset.external_url);
+      if (wasOurs && url !== asset.external_url) {
+        const ended = await endOurStream({
+          url: asset.external_url, assetId: asset.id, channelId: channel.id, actorId: req.user.id,
+        });
+        if (!ended) return res.redirect(`${back}?error=live-orphan`);
       }
-      // An HLS playlist, over https or same-origin. `isLiveUrl` is the shape's own
-      // predicate for what a playlist is; the scheme check is the promise §14.1 made —
-      // no ingest and no re-host, so no `rtmp://` and no plain http.
-      if (!isLiveUrl(url) || !(url.startsWith('https://') || url.startsWith('/'))) {
+      /*
+       * AND AN EMPTY BOX IS REFUSED, which it was not before. Clearing the address emptied the
+       * column and left a file with no uploads and no stream — a storefront entry with nothing
+       * behind it, and (if the address had been ours) a live broadcast whose key the page had just
+       * stopped showing. Every stream asset is file-less by construction (`set-url` refuses uploads),
+       * so this was not an edge case: it was the only way to clear one.
+       *
+       * The two things a seller actually wants are both on the panel now — PAUSE, which takes the
+       * file off the storefront and is reversible, and END THE STREAM, which takes the broadcast off
+       * the server. The refusal names them rather than inventing a third state.
+       */
+      if (!url) return res.redirect(`${back}?error=live-empty`);
+      // An HLS playlist, over https or same-origin — the DATABASE's rule (`storableLiveUrl`), asked
+      // here so a pasted address that could not be stored is refused with a sentence. §14.1's promise
+      // is the same rule: no ingest and no re-host, so no `rtmp://` and no plain http.
+      if (!storableLiveUrl(url)) {
         return res.redirect(`${back}?error=live-url`);
       }
       // A file with uploads cannot also be a stream: the shape code gives a live URL
@@ -6529,6 +6846,81 @@ APP.post('/dashboard/:slug/assets/:assetId/live', async (req, res, next) => {
       if (!closed) return res.redirect(`${back}?error=live-break`);
       await store.audit('asset.live_break_closed', { assetId: asset.id, channelId: channel.id });
       return res.redirect(`${back}?saved=live-closed`);
+    }
+
+    if (action === 'mint' || action === 'rotate') {
+      // A stream has no uploads: the same rule `set-url` enforces, and for the same reason — the
+      // shape code gives a playlist precedence, so files on a stream asset become unreachable.
+      if (files.length) return res.redirect(`${back}?error=live-files`);
+      if (!antmedia.liveEnabled()) return res.redirect(`${back}?error=live-mint-off`);
+      const oldUrl = asset.external_url;
+      const before = antmedia.streamIdFromPlaylist(oldUrl);
+      // Rotating is about REPLACING a stream of ours; without one there is nothing to rotate, and a
+      // request that says so is answered as a bad action rather than silently minting a second.
+      if (action === 'rotate' && !before) return res.redirect(`${back}?error=live-action`);
+      let created;
+      try {
+        // The server is asked first: a refusal leaves the asset exactly as it was, still pointing
+        // at a stream that exists, rather than at one that was never created.
+        created = await mintAndAttach({
+          assetId: asset.id, channelId: channel.id, title: asset.title,
+          actorId: req.user.id, before,
+        });
+      } catch (err) {
+        await store.audit('asset.live_mint_failed', {
+          assetId: asset.id, channelId: channel.id, reason: err?.message || 'the live server refused',
+        }, { actorId: req.user.id, subjectType: 'asset', subjectId: asset.id });
+        return res.redirect(`${back}?error=live-mint`);
+      }
+      /*
+       * A ROTATED KEY IS ONLY ROTATED IF THE OLD ONE DIES.
+       *
+       * That is the whole reason to offer this: the id is a publish credential, so replacing it and
+       * leaving the old broadcast alive on the server protects nothing. The new key is already saved
+       * and on the page at this point, so a failure here is reported as the smaller, honest fact —
+       * "the old one would not delete" — instead of pretending the rotation was complete.
+       */
+      if (before && before !== created.id) {
+        const ended = await endOurStream({
+          url: oldUrl, assetId: asset.id, channelId: channel.id, actorId: req.user.id,
+        });
+        if (!ended) return res.redirect(`${back}?saved=live-rotated-old-kept`);
+      }
+      return res.redirect(`${back}?saved=${action === 'rotate' ? 'live-rotated' : 'live-minted'}`);
+    }
+
+    if (action === 'end-stream') {
+      if (shape !== 'stream') return res.redirect(`${back}?error=live-shape`);
+      // Same order as everywhere else: the server first, then the record. A failure changes
+      // nothing, so the seller is never left holding a key the page has stopped showing.
+      const ended = await endOurStream({
+        url: asset.external_url, assetId: asset.id, channelId: channel.id, actorId: req.user.id,
+      });
+      if (!ended) return res.redirect(`${back}?error=live-orphan`);
+      /*
+       * TWO THINGS THIS ROUTE USED TO GET WRONG, both of them the opposite of what its own
+       * confirmation sentence promised — which is how the walk found it: it read "the address is
+       * kept" on the page and then found an empty address box.
+       *
+       * 1. THE ADDRESS STAYS. It is the only record of where this file pointed, it is what the panel
+       *    above renders, and it is what tells the seller which machine to go and check. Clearing it
+       *    did not revoke anything: the broadcast is already deleted, and the panel derives the key
+       *    FROM this address — so emptying the box deleted the seller's own copy of the fact while
+       *    leaving the row looking like a file that never had a stream. The address is not a secret
+       *    the platform is holding for them; it is their own note.
+       *
+       * 2. THE FILE IS PAUSED. A stream nobody is sending is nothing to open, and leaving the file
+       *    `live` kept it on the storefront where a viewer got a player that could only fail — the
+       *    dead-player outcome the mint path exists to avoid. `paused` is precisely the reversible
+       *    state for this: off the storefront, still in the seller's dashboard, put back live with
+       *    the switch that is already there.
+       *
+       * The key is dead on the server before either happens, so keeping the record leaks nothing —
+       * and the panel says so in the same breath ("The key below will not publish either"), while
+       * the way back is the "Create a stream on our server" button under it.
+       */
+      await store.updateAsset(asset.id, { status: 'paused' });
+      return res.redirect(`${back}?saved=live-ended`);
     }
 
     return res.redirect(`${back}?error=live-action`);
@@ -8478,7 +8870,13 @@ const SERVER = APP.listen(PORT, '0.0.0.0', () => {
          * against what a seller reports — and "nothing stored" is the part that says what
          * this deployment is NOT paying for.
          */
-        console.log(`  live ingest →  ${live} (${caps.live.ingest.rtmp}; nothing stored)`);
+        // The DEPLOYMENT's address, not the capability's placeholder. The line above this comment
+        // promises an operator the thing they will compare against what a seller reports, and
+        // `caps.live.ingest.rtmp` is the shape ("rtmp://<your-server>:1935/<app>") — the same string
+        // on every machine, which is exactly what an operator cannot check anything against.
+        const liveIngest = video.providers[live]?.ingestFor?.( '', process.env )?.rtmp
+          || caps.live.ingest.rtmp;
+        console.log(`  live ingest →  ${live} (${liveIngest}; nothing stored)`);
         if (video.providers[live].isSandbox && video.providers[live].isSandbox()) {
           console.warn(`             SANDBOX: video is cropped to ${caps.sandbox.maxSeconds}s, live is STOPPED at `
             + `${Math.round(caps.sandbox.liveMaxSeconds / 60)}min, everything is watermarked and deleted `

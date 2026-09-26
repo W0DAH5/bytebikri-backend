@@ -129,6 +129,31 @@ export function rtmpBase(env = process.env) {
 export const hlsUrl = (streamId, env = process.env) =>
   `${base(env)}/${appName(env)}/streams/${encodeURIComponent(String(streamId))}.m3u8`;
 
+/**
+ * The inverse: which of OUR streams is this playlist, or null.
+ *
+ * The seller's panel has to show the publish credentials, and it must not carry them in a url or
+ * store them a second time — the stream id is already inside the playlist address saved on the
+ * asset, so it is re-derived from there every time the page renders. That keeps one copy of the
+ * key, in the one place it already had to be.
+ *
+ * IT ANSWERS null UNLESS THE ADDRESS IS OURS, and that restriction is the point: a store may paste
+ * a playlist it runs itself (or somebody else's), and printing OUR rtmp server and a stream key
+ * for a stream we do not run would be a page confidently describing the wrong machine. The base and
+ * the app name both have to match, and the id has to survive the same alphabet check every other id
+ * in this product does.
+ */
+export function streamIdFromPlaylist(url, env = process.env) {
+  const value = String(url || '').trim();
+  const root = base(env);
+  if (!value || !root) return null;
+  const prefix = `${root}/${appName(env)}/streams/`;
+  if (!value.startsWith(prefix)) return null;
+  const id = value.slice(prefix.length).replace(/\.m3u8($|[?#])/i, '');
+  if (id === value.slice(prefix.length)) return null; // no `.m3u8` to strip: not a playlist of ours
+  return idPattern.test(id) ? id : null;
+}
+
 /** A stream id survives the same filter as a video id, and a url. */
 export const idPattern = /^[A-Za-z0-9_-]{6,64}$/;
 
@@ -275,13 +300,14 @@ const requireId = (id) => {
  * operator who wants every broadcast recorded sets it on the server and should expect it to
  * win, which is why the doc says "app setting" out loud instead of pretending otherwise.
  */
-export async function createLiveStream({ liveName = '', record = false, env = process.env } = {}) {
+export async function createLiveStream({ liveName = '', record = false, env = process.env, timeoutMs = 30_000 } = {}) {
   const streamId = mintStreamId();
   const created = await call('/broadcasts/create', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ streamId, name: liveName || 'ByteBikri live', mp4Enabled: Boolean(record) }),
     env,
+    timeoutMs,
   });
   const id = pick(created, ['streamId']) || streamId;
   const publish = pick(created, ['rtmpURL', 'rtmpUrl']) || ingestFor(id, env).publishUrl;
@@ -302,9 +328,9 @@ export async function createLiveStream({ liveName = '', record = false, env = pr
  * and the viewer counts are per protocol, which is how an operator sees that a stream is up
  * but nobody is watching rather than assuming either.
  */
-export async function liveStream(id, { env = process.env } = {}) {
+export async function liveStream(id, { env = process.env, timeoutMs = 30_000 } = {}) {
   const streamId = requireId(id);
-  const record = await call(`/broadcasts/${encodeURIComponent(streamId)}`, { env });
+  const record = await call(`/broadcasts/${encodeURIComponent(streamId)}`, { env, timeoutMs });
   const status = String(pick(record, ['status']) || '');
   return {
     id: streamId,
@@ -334,10 +360,10 @@ export async function updateLiveStream(id, patch = {}, { env = process.env } = {
 }
 
 /** Gone is the outcome we wanted, so a 404 is a success — same rule as every other host. */
-export async function removeLiveStream(id, { env = process.env } = {}) {
+export async function removeLiveStream(id, { env = process.env, timeoutMs = 30_000 } = {}) {
   const streamId = requireId(id);
   try {
-    await call(`/broadcasts/${encodeURIComponent(streamId)}`, { method: 'DELETE', env });
+    await call(`/broadcasts/${encodeURIComponent(streamId)}`, { method: 'DELETE', env, timeoutMs });
     return true;
   } catch (err) {
     if (err.status === 404) return true;

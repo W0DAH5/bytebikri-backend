@@ -41,6 +41,7 @@
  *     VIDEO_MEDIA_ORIGINS=http://127.0.0.1:5090 npm run video:check --prefix app -- --probe-live
  */
 import http from 'node:http';
+import https from 'node:https';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -51,6 +52,27 @@ const JWT_SECRET = arg('jwt');
 const JWT_STREAMS = process.argv.includes('--jwt-streams');
 const NO_CORS = process.argv.includes('--no-cors');
 const WRONG_APP = process.argv.includes('--wrong-app');
+/*
+ * `--tls=cert.pem,key.pem` — serve https instead of http.
+ *
+ * NOT A CONVENIENCE: a real Ant Media Server serves https on :5443 out of the box, with a self-signed
+ * certificate, and this product's own rule requires it. `assets_external_url_is_hls` (migration 0048)
+ * stores a playlist only over https or same-origin, because the VIEWER'S BROWSER fetches that address
+ * itself and a plain-http playlist on an https storefront is mixed content the browser refuses with
+ * no error a seller would see. So an http-only stub can exercise the refusal and nothing else, and the
+ * interesting half of the go-live path — mint, play, rotate, end — needs a server that speaks TLS.
+ *
+ *   openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj '/CN=127.0.0.1' \
+ *     -addext 'subjectAltName=IP:127.0.0.1' -keyout ams.key -out ams.crt
+ *   node ci/stub-antmedia.mjs 5443 --tls=ams.crt,ams.key
+ *   NODE_EXTRA_CA_CERTS=$PWD/ams.crt ANT_MEDIA_BASE=https://127.0.0.1:5443 … node scripts/boot.mjs
+ *
+ * The app trusts the certificate through NODE_EXTRA_CA_CERTS, and a browser driving the storefront
+ * needs `ignoreHTTPSErrors` — the same click-through a person does once when a fresh install shows
+ * them its own certificate. Neither shortcut touches what the product checks: the address it stores
+ * still has to be https, and the origin still has to be in the CSP.
+ */
+const TLS_ARG = arg('tls');
 const APP = 'LiveApp';
 
 const SEED = fileURLToPath(new URL('../app/seed-assets/', import.meta.url));
@@ -79,7 +101,8 @@ function jwtOk(req) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-const server = http.createServer(async (req, res) => {
+/** The request handler, named so the same code can serve http or https (see `--tls`). */
+const handler = async (req, res) => {
   const body = await readBody(req);
   const url = new URL(req.url, 'http://127.0.0.1');
   const path = url.pathname;
@@ -204,16 +227,28 @@ const server = http.createServer(async (req, res) => {
       duration: r.status === 'broadcasting' ? Math.round((Date.now() - r.createdAt) / 1000) : 0,
     };
   }
-});
+};
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`stub Ant Media Server on http://127.0.0.1:${PORT}/${APP}`
+const server = http.createServer(handler);
+
+const listener = TLS_ARG
+  ? (() => {
+    const [cert, key] = String(TLS_ARG).split(',');
+    if (!cert || !key) throw new Error('--tls needs cert,key');
+    return https.createServer({ cert: readFileSync(cert), key: readFileSync(key) }, handler);
+  })()
+  : server;
+const scheme = TLS_ARG ? 'https' : 'http';
+
+listener.listen(PORT, '127.0.0.1', () => {
+  console.log(`stub Ant Media Server on ${scheme}://127.0.0.1:${PORT}/${APP}`
     + `${JWT_SECRET ? ' (JWT REST filter ON — HS256 signature verified)' : ' (no auth: the IP filter authorises)'}`
     + `${JWT_STREAMS ? ' [stream control ON — the playlist wants a play token]' : ''}`
     + `${NO_CORS ? ' (no CORS headers — the §10.4 wall)' : ''}`
     + `${WRONG_APP ? ' (every path 404s: the wrong-application-name case)' : ''}`);
   console.log('  this host is LIVE ONLY here: RTMP in, HLS out, and nothing is stored by the product');
-  console.log('  LIVE_DRIVER=antmedia ANT_MEDIA_BASE=http://127.0.0.1:%d \\', PORT);
-  console.log('    VIDEO_MEDIA_ORIGINS=http://127.0.0.1:%d npm run video:check --prefix app -- --probe-live', PORT);
+  console.log('  LIVE_DRIVER=antmedia ANT_MEDIA_BASE=%s://127.0.0.1:%d \\', scheme, PORT);
+  console.log('    VIDEO_MEDIA_ORIGINS=%s://127.0.0.1:%d npm run video:check --prefix app -- --probe-live', scheme, PORT);
+  if (TLS_ARG) console.log('  NODE_EXTRA_CA_CERTS=%s (this stub\'s own certificate, self-signed)', String(TLS_ARG).split(',')[0]);
   if (JWT_SECRET) console.log('  add ANT_MEDIA_REST_SECRET=%s to sign our own HS256 token', JWT_SECRET);
 });

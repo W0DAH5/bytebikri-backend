@@ -5167,10 +5167,96 @@ export function sparkline({ points = [], max = 0, height = 26, label = 'ad views
       aria-label="${esc(describeSeries(points, { unit: label }))}">${bars}</svg>`;
 }
 
+/**
+ * Going live, from the dashboard.
+ *
+ * TWO WAYS IN, and the deployment decides which are offered. `liveMint` is the app saying "a
+ * streaming server of ours is configured" — with it, the store can have a stream minted and get the
+ * rtmp url an encoder needs; without it, the only honest option is the one every store has anyway:
+ * a playlist they already run themselves.
+ *
+ * WHY THIS IS A FORM AND NOT ANOTHER FIELD ON THE PUBLISH FORM. A live file has no uploads — the
+ * bytes come from an encoder — so it cannot go through a form that requires a file, and bolting a
+ * second meaning onto that field would make the product's most used screen explain two things at
+ * once. It is a `<details>` so the dashboard stays as calm as it was for the stores that never
+ * stream, and it needs no script to open.
+ *
+ * It says the ONE fact a seller cannot discover from the product: a live file is watched through the
+ * storefront like anything else, and its door is the ordinary door — a break is what buys clean
+ * entries, and breaks are called from the file's page after it exists.
+ */
+function goLiveSection(channel, liveMint) {
+  const action = `/dashboard/${esc(channel.slug)}/live/new`;
+  return `
+<section class="section">
+  <div class="section-head">
+    <h2>Go live</h2>
+    <p>A live file is a stream rather than an upload: ${liveMint
+    ? 'our own streaming server runs it, and nothing about it is billed by the audience'
+    : 'you point it at a playlist you run yourself'}. Viewers watch it on your storefront like any
+    other file, and its door is the ordinary door — a break you call buys clean entries for the
+    people arriving after it.</p>
+  </div>
+  <details class="card card-pad-lg">
+    <summary>Start a live stream</summary>
+    <form method="post" enctype="multipart/form-data" action="${action}" class="stack"
+          style="margin-top:var(--space-4)">
+      <div class="field">
+        <label for="l-title">Title</label>
+        <input class="input" id="l-title" name="title" required maxlength="200"
+               placeholder="e.g. Friday night stream">
+      </div>
+      <div class="field">
+        <label for="l-desc">Description <span class="fine">(optional)</span></label>
+        <textarea class="textarea" id="l-desc" name="description" rows="2" maxlength="2000"
+                  placeholder="What is this stream?"></textarea>
+      </div>
+      <div class="row" style="gap:var(--space-4);align-items:flex-start;flex-wrap:wrap">
+        <div class="field" style="flex:1 1 200px">
+          <label for="l-mode">Access</label>
+          <select class="input" id="l-mode" name="unlockMode">
+            <option value="ad_gated">One rewarded ad</option>
+            <option value="open">Free — no ad</option>
+          </select>
+        </div>
+        <div class="field" style="flex:1 1 200px">
+          <label for="l-cover">Cover image <span class="fine">(optional)</span></label>
+          <input class="input" id="l-cover" name="cover" type="file" accept="image/*">
+          <span class="hint">What the grid and every share preview show.</span>
+        </div>
+      </div>
+      ${liveMint ? `
+      <div class="field">
+        <span class="field-label">On our server</span>
+        <p class="small" style="margin:var(--space-2) 0 var(--space-3)">
+          We make the stream and hand you the address and key for OBS or ffmpeg — <code>${esc(liveMint.server)}</code>.
+          Nothing else can publish to it: the key is generated here, with full entropy.
+        </p>
+        <button class="btn btn-primary" type="submit" name="source" value="mint">Create the stream</button>
+      </div>` : ''}
+      <div class="field" style="border-top:1px solid var(--border-subtle);padding-top:var(--space-4)">
+        <span class="field-label">${liveMint ? 'Or a stream you already run' : 'Your playlist'}</span>
+        <label for="l-url">Playlist address</label>
+        <input class="input" id="l-url" name="externalUrl" type="url"
+               placeholder="https://stream.example.com/live.m3u8" autocomplete="off">
+        <span class="hint">An HLS playlist: an https:// address ending in <code>.m3u8</code>.
+        An <code>rtmp://</code> address is what an encoder speaks, not what a browser can fetch.</span>
+      </div>
+      <button class="btn" type="submit" name="source" value="url">Use this address</button>
+    </form>
+  </details>
+</section>
+`;
+}
+
 export function dashboard({
   channel, slots, connections, providers, plan, estimate, pageviews, adViews,
   upgrade, user, pendingPayments = [], flash = null, consent = null,
   assets = [], assetStats = [], moderation = null,
+  // Whether this deployment runs its own streaming server, and where an encoder would point.
+  // Null when it does not — and then the form offers only the address half, because a button
+  // that cannot work is worse than no button.
+  liveMint = null,
   // Live + paused, for the seller's own table. `assets` stays live-only: it is the
   // plan-usage count, and a paused file must not count against the same ceiling a
   // publish is checked against.
@@ -5601,6 +5687,8 @@ ${(() => {
     </p>
   </form>
 </section>
+
+${goLiveSection(channel, liveMint)}
 
 <section class="section">
   <div class="section-head"><h2>Ad slots</h2>
@@ -8142,6 +8230,111 @@ function heldWords(files = []) {
   return said.join(' ');
 }
 
+/**
+ * The seller's side of a live stream: the credentials, and whether anything is being sent.
+ *
+ * THIS IS THE ONLY PLACE THE KEY IS EVER PRINTED, and that is a property of the host rather than a
+ * preference of this page. Ant Media Server's Community Edition has no publish-token control — it is
+ * an Enterprise feature — so the stream id IS the publish credential. `capabilities.live.keyIsStored`
+ * says so, the id is minted here with `crypto.randomBytes`, and it reaches a viewer nowhere: the
+ * playlist url carries it, so the playlist lives behind our own door like every other bearer url in
+ * this product (`VIDEO_STORAGE.md` §7). The paragraph below is therefore not a disclaimer, it is the
+ * one fact a seller has to know to keep their stream theirs.
+ *
+ * THREE STATES, and the page says which one it is in rather than showing a form that might do
+ * nothing:
+ *
+ *   ours, with an id   the credentials, the server's own status, and the two ways to change it
+ *   ours, mintable     no stream yet and this deployment can make one — the button
+ *   not ours           a playlist somebody else runs: no rtmp box describing OUR machine
+ */
+function studioPanel(channel, asset, studio) {
+  if (!studio) return '';
+  const action = `/dashboard/${esc(channel.slug)}/assets/${esc(asset.id)}/live`;
+  const pill = (text, kind = '') => `<span class="pill${kind ? ` pill-${kind}` : ''}">${esc(text)}</span>`;
+
+  if (!studio.streamId) {
+    if (!studio.enabled) return '';
+    return `
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Your encoder</h2>
+        ${pill('No stream yet')}
+      </div>
+      <div class="panel-body">
+        <p class="small">This deployment runs its own streaming server. Making a stream here generates a
+        key nobody can guess, gives you the address to point OBS or ffmpeg at, and points this file at the
+        playlist it produces.</p>
+        <form method="post" action="${action}">
+          <input type="hidden" name="action" value="mint">
+          <button class="btn btn-primary" type="submit">Create a stream on our server</button>
+        </form>
+        <p class="fine" style="margin-top:var(--space-3)">Server: <code>${esc(studio.ingest?.server || '')}</code>.
+        The key comes with it and is shown here — not in an email, not in a link, and never on the page a
+        viewer opens.</p>
+      </div>
+    </div>`;
+  }
+
+  const st = studio.status;
+  const state = !st ? ''
+    : st.missing
+      // The server answered, and the answer is that this stream is not there. That is the state an
+      // ended stream leaves behind, and it is worth its own sentence: nothing is broken, and the way
+      // back is a button.
+      ? `<div class="note note-info"><strong>This stream is no longer on the server.</strong> It was ended —
+         or deleted there — so the address above points at a playlist nothing is producing. The key below
+         will not publish either. Create a new stream below to go live again, and put this file back live
+         when your encoder is running.</div>`
+    : !st.reachable
+      ? `<div class="note note-warning"><strong>The streaming server did not answer.</strong>
+         ${esc(st.reason || '')} This is the box that runs the stream, not this page — the key below and the
+         address above are unchanged, and this page will ask again next time it is loaded.</div>`
+      : st.broadcasting
+        ? `<div class="note note-success"><strong>Your encoder is connected.</strong>
+           ${Number(st.viewers?.hls || 0)} watching over HLS${Number(st.bitrate || 0) ? `, at ${Math.round(Number(st.bitrate) / 1000)} kbps` : ''}.
+           A break is called below.</div>`
+        : `<div class="note note-info"><strong>Nobody is sending yet.</strong> The stream exists on the server
+           and the key below is the one it takes. Start OBS or ffmpeg with these settings and this notice
+           changes the next time this page loads.</div>`;
+
+  return `
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Your encoder</h2>
+        ${pill(st?.broadcasting ? 'Broadcasting' : st?.missing ? 'Ended' : 'Waiting', st?.broadcasting ? 'success' : '')}
+      </div>
+      <div class="panel-body">
+        ${state}
+        <dl class="kv" style="margin-top:var(--space-4)">
+          <dt>Server</dt><dd><code>${esc(studio.ingest?.rtmp || '')}</code></dd>
+          <dt>Stream key</dt><dd><code data-stream-key="1">${esc(studio.streamId)}</code></dd>
+          <dt>Playlist</dt><dd><code>${esc(studio.playlist || '')}</code></dd>
+        </dl>
+        <p class="small"><strong>This key is the credential.</strong> Community Edition of the streaming
+        server has no separate publish token, so whoever holds this key can send video into this stream.
+        Keep it off any page a viewer sees — the playlist address carries it too, which is why the playlist
+        is only ever served through this store's own door. If it has leaked, rotate it: the old key stops
+        publishing the moment the new one is made.</p>
+        <p class="fine">OBS: Settings → Stream → Service <em>Custom</em>; Server is the address above, Stream
+        Key is the key. ffmpeg: <code>ffmpeg -re -i your-input … -f flv ${esc((studio.ingest?.rtmp || '') + '/' + studio.streamId)}</code></p>
+        <div class="row" style="margin-top:var(--space-4);gap:var(--space-3);flex-wrap:wrap">
+          <form method="post" action="${action}">
+            <input type="hidden" name="action" value="rotate">
+            <button class="btn btn-sm" type="submit">Rotate the key</button>
+          </form>
+          <form method="post" action="${action}">
+            <input type="hidden" name="action" value="end-stream">
+            <button class="btn btn-sm" type="submit">End the stream on the server</button>
+          </form>
+        </div>
+        <p class="fine">Rotating makes a new stream and removes this one, so the old key publishes nothing.
+        Ending removes the broadcast and pauses this file — the address stays until you point the file at
+        something else.</p>
+      </div>
+    </div>`;
+}
+
 export function assetManage({
   channel, asset, user, consent = null, flash = null, files = [],
   policy = {}, stats = {}, unlocks = 0,
@@ -8169,6 +8362,14 @@ export function assetManage({
   // which lengths are callable right now, and why the rest are not. Null for every
   // other shape, because a break button on a video is a button nothing can honour.
   live = null,
+  /*
+   * The stream's own machinery: whether this deployment runs a streaming server, the id and
+   * credentials when the address is one of OURS, and the server's answer about whether anything is
+   * being sent. Separate from `live` because they are separate questions — `live` is the break model
+   * and applies to any stream, ours or somebody else's, while this only exists where we can see the
+   * machine. The view reads no environment and no key: every fact here is computed by the route.
+   */
+  studio = null,
   // The newest operator decision about this file, if there is one. A store's
   // owner is told when their shop is restricted (see moderationNotice); before
   // this, a file's owner was told nothing at all — the file simply stopped
@@ -8414,11 +8615,12 @@ ${deleted ? deletedReport(deleted, asset, channel) : ''}
   <section class="section">
     <div class="section-head">
       <h2>The live stream</h2>
-      <p>A live file is the store's own stream: your host serves it, the viewer's browser fetches it from you, and
-      nothing about it is copied, relayed or recorded here. Breaks are yours to call, and every one of them buys
-      clean entries for the people arriving after it — nothing on this page calls one by itself, and there is no
-      way to schedule one.</p>
+      <p>A live file is a stream rather than an upload: whoever runs it serves it, the viewer's browser
+      fetches it from there, and nothing about it is copied, relayed or recorded here. Breaks are yours
+      to call, and every one of them buys clean entries for the people arriving after it — nothing on
+      this page calls one by itself, and there is no way to schedule one.</p>
     </div>
+    ${studioPanel(channel, asset, studio)}
     <div class="panel">
       <div class="panel-head">
         <h2>Where the stream is</h2>
@@ -8432,8 +8634,9 @@ ${deleted ? deletedReport(deleted, asset, channel) : ''}
             <input class="input" id="live-url" name="externalUrl" type="url" value="${esc(live.url || '')}"
                    placeholder="https://stream.example.com/live.m3u8" autocomplete="off">
             <span class="hint">An HLS playlist: <code>https://…/live.m3u8</code>. A page URL is a link, not a
-            stream, and <code>rtmp://</code> would need an ingest server this platform does not run. Saving an
-            empty box takes the stream down.</span>
+            stream, and an <code>rtmp://</code> address is what an encoder speaks — a browser cannot fetch it, so
+            the playlist is what belongs here. Pasting a different address replaces this one; an empty box is
+            refused, because a stream file with no address is a file with nothing to open.</span>
           </div>
           <button class="btn" type="submit">Save the address</button>
         </form>
@@ -8781,7 +8984,6 @@ ${notice ? `
       ${askPanel}
       ${placementPanel}
       ${readPanel}
-      ${livePanelHtml}
       <div class="row" style="gap:var(--space-4);align-items:flex-start">
         <div class="field" style="flex:1 1 140px">
           <label for="a-hours">Access lasts</label>
@@ -8850,6 +9052,25 @@ ${notice ? `
     <span class="fine">Details and unlock terms save together.</span>
   </div>
 </form>
+
+${
+  // THE LIVE PANEL IS OUT HERE ON PURPOSE, AND IT HAS TO STAY OUT.
+  //
+  // It is the one panel on this page that brings its OWN forms — put the file's address, rotate the
+  // key, end the stream, call a break. The panels above it (ask, placement, read) are fields of the
+  // settings form and are inside it deliberately; the live panel cannot be, because HTML FORBIDS
+  // NESTED FORMS and a browser does not refuse the markup — it silently rewires it. Measured in
+  // Chromium on this exact page: the first nested <form> start tag was dropped, so "Rotate the key"
+  // submitted THE SETTINGS FORM (it saved the file's details instead of rotating the key, with no
+  // error anywhere), and the settings' own Save button ended up outside its form element entirely,
+  // so pressing Save submitted nothing. Both bugs were invisible in the source, in an HTML string
+  // that looked perfectly well formed.
+  //
+  // The walk asserts form OWNERSHIP in the browser, not markup, because this is a parse-tree bug
+  // that no server-side test and no string assertion can see.
+  ''
+}
+${livePanelHtml}
 
 <section class="section">
   <div class="section-head">

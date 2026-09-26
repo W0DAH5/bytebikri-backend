@@ -150,6 +150,33 @@ const extOf = (name) => path.extname(String(name || '')).slice(1).toLowerCase();
 export const isLiveUrl = (url) => /\.m3u8(\?|#|$)/i.test(String(url || '')) || /^rtmp/i.test(String(url || ''));
 
 /**
+ * A playlist address this product can KEEP — the database's own rule, in JavaScript.
+ *
+ * `isLiveUrl` above answers "is this shaped like a stream"; this answers "may it be stored", and the
+ * two are not the same question. Migration 0048 puts the second one in the schema:
+ *
+ *     external_url ~ '^https://[^[:space:]]+\.m3u8([?#][^[:space:]]*)?$'
+ *     or external_url ~ '^/[^[:space:]]*\.m3u8([?#][^[:space:]]*)?$'
+ *
+ * — https, or same-origin, and ending in `.m3u8`. The reasons are both viewer-facing: a storefront is
+ * served over https in production, so a plain-http playlist is MIXED CONTENT that the viewer's browser
+ * refuses (the player would be a black rectangle with no error), and a playlist is fetched by the
+ * viewer's own browser, so an address only this server can reach is not a stream at all.
+ *
+ * WHY THIS FUNCTION EXISTS, when the database already enforces it: because a constraint is enforced at
+ * INSERT, and an insert that fails is a 500 — "Something broke" with a request id, for what is really
+ * a configuration mistake somebody can fix. The publish form taught this repository the same lesson
+ * from the other end (multer's refusal never reached the route's catch): the check has to be WHERE THE
+ * DECISION IS MADE, so a refusal can be a sentence. This mirrors the constraint exactly, including its
+ * case-SENSITIVITY, and `app/test/live-url.test.js` asks Postgres itself whether the two agree on a
+ * table of addresses — so the mirror cannot quietly drift from the rule it mirrors.
+ */
+export const storableLiveUrl = (url) => {
+  const value = String(url ?? '');
+  return /^https:\/\/[^\s]+\.m3u8([?#][^\s]*)?$/.test(value) || /^\/[^\s]*\.m3u8([?#][^\s]*)?$/.test(value);
+};
+
+/**
  * The shape of an asset, from the files it actually carries.
  *
  * `files` arrive in the seller's order but the decision does not depend on it.
