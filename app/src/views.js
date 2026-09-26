@@ -95,6 +95,7 @@ import {
 // The cosmetics engine: every look slot, its owner and its values, declared once. The
 // look picker below is this list, drawn — see the module for the ownership rule.
 import { personSlots } from './cosmetics.js';
+import { motifOf, powerOf } from './cosmetic-model.js';
 import {
   PLACEMENT_BOUNDS, PLACEMENTS, planFor, stamp, placementSentence, breakCues, breakSentence,
   betweenCues, breaksSupported,
@@ -927,6 +928,9 @@ function memberPlate({
   const layers = composeName({
     plus: plusRow,
     tier: tierNo ? { tier_no: tierNo, name: tier, accent, glyph } : null,
+    // Power is derived from the membership's own state: `current` means the period is
+    // running, and nothing else does. A tier that ended contributes nothing.
+    tierActive: state === 'active',
   });
   const top = layers.chip?.style === 'gradient';
   const namePalette = layers.name?.palette ?? accent;
@@ -936,6 +940,17 @@ function memberPlate({
   // person layers and forget the others.
   const frame = cardFrame({ frame: layers.frame?.key ?? null, plate: namePalette });
   const ring = avatarRing({ ring: layers.ring?.key ?? null });
+  // THE IDENTITY LAYER: the mark and the mascot, from the same `composeName()` call as
+  // everything else, so a page cannot draw the palette and forget the mark. The two
+  // kinds wear in two places: a `motif` is the 18 px mark inside the name, a `mascot`
+  // is the character on the card, in the corner the frame already owns.
+  const mark = layers.motif && layers.motif.kind === 'motif' ? layers.motif : null;
+  const mascot = layers.motif && layers.motif.kind === 'mascot' ? layers.motif : null;
+  // THE POWER THE CARD CARRIES: one attribute, and the stylesheet does the rest. The
+  // treatments are ADDITIVE — they never replace the person's own ring, frame or
+  // effect, which stay the person's choice — and the attribute is what makes the
+  // treatment readable when the animation is off (the data attribute is the still).
+  const power = layers.power ?? 'standard';
   // The tile's palette is the store's; the RING's is the person's. Only written when the
   // person actually wears a ring — a member with no look keeps the tile exactly as it is,
   // so this changes nothing for anybody who has not bought one. The leading `;` matters:
@@ -944,11 +959,15 @@ function memberPlate({
   // shipped for one probe run (`--plate-b:#5b21b6 --wear-a:#0f766e` is one broken value).
   const ringPalette = ring ? `;${wearStyleAttr(namePalette)}` : '';
   return `<li class="member${me ? ' member--me' : ''}${top ? ' member--top' : ''}${frame.cls ? ` ${frame.cls}` : ''}"
+    data-power="${esc(power)}"
     ${frame.style ? `style="${frame.style}"` : ''}>
   <span class="member-avatar${top ? ' member-avatar--shine' : ''}${ring ? ` ${ring}` : ''}"
         style="${plateStyleAttr(accent)}${ringPalette}" aria-hidden="true">${esc(initial)}</span>
   <span class="member-body">
-    <span class="${nameClass}" style="${plateStyleAttr(namePalette)}">${esc(label)}</span>
+    <span class="${nameClass}" style="${plateStyleAttr(namePalette)}">${esc(label)}${mark ? `
+      <span class="member-mark" data-motif="${esc(mark.key)}" title="${esc(mark.name)}" aria-hidden="true">
+        <img src="${esc(mark.asset)}" alt="">
+      </span>` : ''}</span>
     ${/*
       * ONE ROW FOR THE CHIP AND THE STATE, and that is a layout constraint rather than a
       * preference: `member-body` is a two-row grid, and a bare third child made it three.
@@ -992,6 +1011,10 @@ function memberPlate({
          first). Rows cannot collide with columns, and the card keeps its height. */ ''}
     ${joined ? `<span class="member-since fine">${esc(joined)}</span>` : ''}
   </span>
+  ${mascot ? `
+  <span class="member-mascot${me ? ' is-idle' : ''}" data-motif="${esc(mascot.key)}" aria-hidden="true">
+    <img src="${esc(mascot.asset)}" alt="">
+  </span>` : ''}
 </li>`;
 }
 
@@ -7551,6 +7574,7 @@ ${flashNote(flash)}
         // where names are read most carefully, so a name has to look the same on it
         // as it does on the storefront.
         plusRow: m,
+        state,
       })}</td>
       <td data-label="Joined">${m.joined_at ? longDay(m.joined_at) : '—'}</td>
       <td data-label="State"><span class="pill${state === 'active' ? ' pill-success' : state === 'pending' ? '' : ' pill-warning'}">${esc(label)}</span>
@@ -7703,6 +7727,10 @@ export function plusPage({
   // in this file: no choice, and therefore the default the product already draws.
   const chosenRing = ringOf(look.ring)?.key ?? null;
   const chosenFrame = frameOf(look.frame)?.key ?? null;
+  // The mark: the same graceful answer as every other slot — a key the catalog does
+  // not have is no choice, and the picker pre-checks the drawing the card actually has.
+  const chosenMotif = motifOf(look.motif)?.key ?? null;
+  const chosenMark = chosenMotif ? motifOf(chosenMotif) : null;
   const initial = (name || 'Y').slice(0, 1).toUpperCase();
 
   // The live preview: the reader's own name, in the palette and effect selected
@@ -7753,13 +7781,21 @@ export function plusPage({
   // the page script reads both off the picker's own demo tiles.
   const stageRing = chosenRing ? ringClass(chosenRing) : 'wear-ring';
   const stageFrame = chosenFrame ? frameClass(chosenFrame) : '';
-  const preview = `<div class="plus-preview is-live${stageFrame ? ` ${stageFrame}` : ''}" data-look-stage style="${plateStyleAttr(chosenPlate)}">
+  // The stage wears the power it is selling: this page is the platform's premium, so
+  // the preview shows the power Plus itself carries — never a store's tier, which is
+  // a fact about a different room. `active` is the running check, so a person whose
+  // month has ended sees the plain card until it is paid.
+  const previewPower = powerOf({ storeTierNo: 0, plusRunning: Boolean(active) });
+  const preview = `<div class="plus-preview is-live${stageFrame ? ` ${stageFrame}` : ''}" data-look-stage data-power="${esc(previewPower)}" style="${plateStyleAttr(chosenPlate)}">
     <span class="plus-preview-avatar ${stageRing}" data-look-avatar aria-hidden="true">${esc(initial)}</span>
     <div class="plus-preview-body">
       <span class="plus-preview-row">
-        <span class="${plusNameClasses({ effect: chosenEffect }, 'member-name')}" data-look-name>${esc(name)}</span>
+        <span class="${plusNameClasses({ effect: chosenEffect }, 'member-name')}" data-look-name>${esc(name)}${chosenMark && chosenMark.kind === 'motif' ? `
+          <span class="member-mark" data-motif="${esc(chosenMark.key)}" aria-hidden="true"><img src="${esc(chosenMark.asset)}" alt=""></span>` : ''}</span>
         <span class="store-chip" style="${plateStyleAttr('indigo')}" data-look-chip>Member</span>
       </span>
+      ${chosenMark && chosenMark.kind === 'mascot' ? `
+      <span class="member-mascot is-idle" data-motif="${esc(chosenMark.key)}" aria-hidden="true"><img src="${esc(chosenMark.asset)}" alt=""></span>` : ''}
       <div class="fine" style="margin-top:var(--space-2)" data-look-line>${esc(EFFECTS[chosenEffect].label)} in ${esc(plateOf(chosenPlate).label)}${active ? '' : ' — this is a preview, not something you are wearing yet'}${EFFECTS[chosenEffect].moves ? ' · moving in front of you, and still for anyone whose device asks for less motion' : ' · completely still'}</div>
       <div class="fine" style="margin-top:var(--space-1)">The chip beside your name is a <strong>store’s</strong>, in the creator’s colour — it belongs to them, and nothing bought here can replace it.</div>
     </div>
@@ -7790,6 +7826,10 @@ export function plusPage({
     effect: chosenEffect,
     ring: chosenRing ?? 'orbit',
     frame: chosenFrame ?? 'none',
+    // 'none' is a real tile (a deliberate nothing), so the first save posts a value
+    // for the slot rather than an empty one — the write path and the database check
+    // both already accept that word.
+    motif: chosenMotif ?? 'none',
   };
   const pickerField = (slot) => {
     const current = chosen[slot.key];
@@ -7853,6 +7893,27 @@ export function plusPage({
                 <span class="sr-only">${v.moves ? 'this choice moves' : 'this choice never moves'}</span></span>
             </label>`).join('')}
         </div>
+      </div>`;
+    }
+    if (slot.kind === 'icon') {
+      // The tile IS the drawing, which is the whole point of the kind: a swatch can
+      // promise a colour and a card can promise an effect, but a mark has to be the
+      // mark, at the size it wears. The radio stays in the document, so the form
+      // posts the slot like every other and the write path validates it like every other.
+      return `
+      <div class="field">
+        ${head}
+        <div class="plus-marks" role="radiogroup" aria-labelledby="plus-${esc(slot.key)}-label">
+          ${slot.values.map((v) => `
+            <label class="plus-mark-label${current === v.key ? ' is-on' : ''}"
+                   data-mark-key="${esc(v.key)}" data-mark-label="${esc(v.label)}">
+              <input type="radio" name="${esc(slot.key)}" value="${esc(v.key)}" ${current === v.key ? 'checked' : ''}>
+              <span class="plus-mark-tile" aria-hidden="true">${v.asset ? `<img src="${esc(v.asset)}" alt="">` : ''}</span>
+              <span class="fine">${esc(v.label)}</span>
+              <span class="sr-only">${esc(v.words)}</span>
+            </label>`).join('')}
+        </div>
+        <span class="hint">${esc(slot.hint)}</span>
       </div>`;
     }
     return '';

@@ -838,7 +838,11 @@ if (doorStore) {
     // back to the default silently and the page said "Halo in Indigo" over a look the
     // seeder believed it had set. The store method takes what it is given — the route
     // is what validates — so a seeder has to name a real one.)
-    await store.setPlusLook({ profileId: alicePerson.owner_id, nameplate: 'teal', effect: 'halo' });
+    // The mark: the identity axis (PREMIUM_COSMETICS.md §5). Alice's power is crystal
+    // (her running Plus) and her motif is the golden laughing Buddha — the mascot that
+    // sits on the corner of the card. The pair is the point: the CRYSTAL is how strong
+    // the card wears, the BUDDHA is what it is.
+    await store.setPlusLook({ profileId: alicePerson.owner_id, nameplate: 'teal', effect: 'halo', motif: 'buddha-gold' });
     // Reported from the row, not from the intention: a seeder that says "running" over
     // a cancelled subscription is worse than one that says nothing.
     const running = await store.customerSubscription(alicePerson.owner_id);
@@ -853,7 +857,10 @@ if (doorStore) {
         txnReference: MINE[1], method: 'khalti', payerName: 'Carol',
       });
       if (!waiting.ok) throw new Error(`demo-state: Carol's Plus claim was refused (${waiting.code})`);
-      await store.setPlusLook({ profileId: carolPerson.id, nameplate: 'rose', effect: 'edge' });
+      // Carol's motif is saved while her claim waits — the picker shows it pre-checked,
+      // and it wears the moment the operator matches the payment. A different identity
+      // on the same power: the Golden Dragon where Alice wears the Golden Buddha.
+      await store.setPlusLook({ profileId: carolPerson.id, nameplate: 'rose', effect: 'edge', motif: 'dragon-gold' });
       const held = await store.customerSubscription(carolPerson.id);
       say('carol plus', held?.status === 'pending_payment'
         ? 'claim PLUS-WAITING-8823 waiting in the operator queue'

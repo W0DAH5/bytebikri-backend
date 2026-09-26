@@ -1378,6 +1378,9 @@ async function plusContext(req) {
       // The two outer layers, read from the row the same way the paint is: the form
       // shows what is actually stored, and an unknown value reads as "not chosen".
       ring: me?.plus_ring ?? null, frame: me?.plus_frame ?? null,
+      // The mark, the same way: the picker shows what is stored, and NULL reads as
+      // "not chosen" — the tile that is pre-checked is the drawing on the card.
+      motif: me?.plus_motif ?? null,
     },
     wear: plusWear(me),
     // What this person has bought for other people. Read here rather than on the view

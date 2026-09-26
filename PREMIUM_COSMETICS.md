@@ -195,7 +195,7 @@ MOTIFS`, each entry carrying:
 | Inferno Flame | motif | inferno | one flame, blue core, three embers |
 | Golden Buddha | mascot | gold | laughing, meditating, lotus at the feet |
 | Golden Dragon | mascot | gold | coiled, friendly, ember dots at the tail |
-| Golden Lotus | mascot | gold | six petals, one catching the light — *drawn with the next image budget; in the catalog once its file is on disk* |
+| Golden Lotus | mascot | gold | six petals, one catching the light — the third gold character, drawn and in the catalog |
 
 The style family is matte, not gloss: one restrained metallic gradient, crisp linework,
 no bloom, no 3D, no generic-neon — the deliberate anti-cliché, because the cliché is
@@ -263,9 +263,9 @@ Performance contract (Phase B/C must satisfy it to ship):
   (fire never on a list); `powerOf` over every entitlement combination; `motifsFor`
   unlocks cumulatively; every motif entry is well-formed and **its icon file exists on
   disk** — a catalog that references a file nobody drew is a catalog lying.
-- **The first motif set**, `app/public/img/cosmetics/` — eight tier motifs and two gold
-  mascots in one matte style family (the lotus is the third, drawn with the next image
-  budget), source drawings at 1254². Production variants — 18/36/72 for the motifs, under
+- **The first motif set**, `app/public/img/cosmetics/` — eight tier motifs and three gold
+  mascots in one matte style family (buddha, dragon, lotus — the third was drawn in the
+  next image budget), source drawings at 1254². Production variants — 18/36/72 for the motifs, under
   200 KB for the mascots — are cut in Phases B and D, judged at 18 px first, per the
   Twitch rule.
 

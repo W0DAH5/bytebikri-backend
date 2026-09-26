@@ -52,6 +52,9 @@
 import { randomInt } from 'node:crypto';
 
 import { ACCENTS, ACCENT_KEYS, glyphOf } from './memberships.js';
+// The cosmetic model (power ladder + motifs) — pure data, no cycle: cosmetic-model
+// reads neither this file nor cosmetics.js.
+import { motifOf, powerOf } from './cosmetic-model.js';
 // The product's one clock: `longDay` reads on the shop's timezone (Asia/Kathmandu) in
 // the same format every other date in this app uses. A second date formatter is how a
 // badge ends up a day out from the invoice beside it.
@@ -393,7 +396,10 @@ export function plusWear(row = null) {
   // existed this read "a palette or an effect", and it stays true for those two: a
   // person who has chosen only a ring has still chosen something, and telling them they
   // are wearing nothing would be the product contradicting its own picker.
-  if (!row.nameplate && !row.plus_effect && !row.plus_ring && !row.plus_frame) return null;
+  // The mark: a motif key, or 'none', or null (never chosen). Unknown keys get the
+  // same graceful answer every vocabulary in this file gives — no choice.
+  const motif = motifOf(row.plus_motif)?.key ?? null;
+  if (!row.nameplate && !row.plus_effect && !row.plus_ring && !row.plus_frame && !motif) return null;
   const effect = effectOf(row.plus_effect).key;
   return {
     plate: ACCENTS[row.nameplate] ? row.nameplate : 'indigo',
@@ -402,6 +408,9 @@ export function plusWear(row = null) {
     // vocabulary in this file gives: no choice, and therefore the default.
     ring: ringOf(row.plus_ring)?.key ?? null,
     frame: frameOf(row.plus_frame)?.key ?? null,
+    // The identity: the drawing, its kind, and where it wears. A `motif` is the
+    // 18 px mark beside the name; a `mascot` is the character on the card.
+    motif: motif ? { ...motifOf(motif), chosen: motif } : null,
     effects: EFFECTS,
   };
 }
@@ -434,9 +443,11 @@ export const CHIP_OWNER_LINE =
  *
  * @param {{plus?: object|null, tier?: object|null}} input
  *   `plus` is the row `plusWear()` reads (or null); `tier` is the membership tier
- *   the person holds in THIS store, or null when they hold none.
+ *   the person holds in THIS store, or null when they hold none; `tierActive` says
+ *   whether that membership is inside its period — power is derived, so a tier
+ *   whose period ended contributes nothing, in the same minute.
  */
-export function composeName({ plus = null, tier = null } = {}) {
+export function composeName({ plus = null, tier = null, tierActive = false } = {}) {
   const wear = plusWear(plus);
   const name = wear
     ? { effect: wear.effect, palette: wear.plate, className: wearClass(wear.effect) }
@@ -447,6 +458,16 @@ export function composeName({ plus = null, tier = null } = {}) {
   const ring = wear ? { key: wear.ring, className: ringClass(wear.ring) } : null;
   const frame = wear ? { key: wear.frame, className: frameClass(wear.frame) } : null;
   const tierNo = Number(tier?.tier_no) || 0;
+  const motif = wear?.motif ?? null;
+  // THE POWER THE WEARER CARRIES — derived here, never stored (cosmetic-model.js).
+  // `tier` is the tier the person holds IN THIS STORE; `storeTierNo` counts only
+  // while the membership is actually in force, which the caller says with
+  // `tierActive` (a lapsed membership is no power, in the same minute the files
+  // close). Plus is the platform's payer, so it is a power wherever the person is.
+  const power = powerOf({
+    storeTierNo: tierActive ? tierNo : 0,
+    plusRunning: Boolean(wear),
+  });
   const chip = tierNo
     ? {
       label: String(tier.name ?? '').trim() || (tierNo === 2 ? 'Elite' : 'Member'),
@@ -463,7 +484,7 @@ export function composeName({ plus = null, tier = null } = {}) {
       glyph: glyphOf(tier.glyph)?.key ?? null,
     }
     : null;
-  return { name, chip, ring, frame };
+  return { name, chip, ring, frame, motif, power };
 }
 
 /**

@@ -2837,6 +2837,260 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 }
 
 /* ============================================================================
+   The power: how STRONG the card wears (PREMIUM_COSMETICS.md)
+   ============================================================================
+   The motif decides WHAT the card is; the power decides how STRONG it wears.
+   The power is derived, never stored (cosmetic-model.js), and it reaches the
+   DOM as a single `data-power` attribute on the card. Everything below hangs
+   off that one attribute, so the state is readable with the animation OFF —
+   the edge and the glow are static box-shadows, and only the sheen travels.
+
+   TWO LAYERS, KEPT APART (the rule PREMIUM_LOOK.md exists to enforce):
+   the person's CHOSEN look — ring, frame, effect, mark — is theirs and is never
+   replaced; the power only DRESSES the card they are wearing in. A gold member
+   with a plain ring and a gold member with an orbiting ring both wear the gold
+   power; the ring difference is the person, the gold is the strength.
+
+   BUDGET (PREMIUM_COSMETICS.md §4): transform/opacity only, and ONE moving
+   element per row — the sheen. A moving box-shadow repaints every frame and a
+   roster of thirty rows would hold the compositor awake; the glow is a static
+   shadow so the card can breathe without paying for it.
+   ========================================================================== */
+
+/* The card becomes a stage. `position` anchors the sheen and the mascot;
+   `overflow` clips the sheen so the sweep does not bleed onto the page. Neither
+   touches layout: the card keeps its size, its rows and its flex. */
+[data-power="silver"],
+[data-power="gold"],
+[data-power="crystal"],
+[data-power="inferno"] {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/* The still. Each power is a rim light (a bright 1px inner edge — the metal
+   catching a lamp) and a halo (a soft outer glow in the power's own hue). Both
+   are static: remove every animation below and the card still reads as gold,
+   still reads as crystal, still reads as fire. `inset` before `0 0` so a card
+   that also carries the top tier's own edge keeps BOTH — the power dresses, it
+   never deletes. */
+[data-power="silver"] {
+  --power-ink: 226 232 240;            /* silver-100: the rim, white-hot */
+  --power-glow: 148 163 184;           /* slate-400: the halo */
+  --power-sheen: .55;
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--power-ink) / 1),
+    inset 0 0 0 3px rgba(var(--power-ink) / .4),
+    0 0 26px rgba(var(--power-glow) / .38);
+}
+[data-power="gold"] {
+  --power-ink: 253 230 138;            /* amber-200: the rim */
+  --power-glow: 217 119 6;             /* amber-600: the halo */
+  --power-sheen: .7;
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--power-ink) / 1),
+    inset 0 0 0 3px rgba(var(--power-ink) / .45),
+    0 0 28px rgba(var(--power-glow) / .45),
+    0 0 52px rgba(var(--power-glow) / .18);
+}
+[data-power="crystal"] {
+  --power-ink: 240 249 255;            /* sky-50: white-hot, past silver */
+  --power-glow: 125 211 252;           /* sky-300: a cool halo */
+  --power-sheen: .8;
+  /* Two halos offset a hair — the dispersion a prism gives, with no blur — and a
+     violet inner bevel, because that is what crystal does to white light. */
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--power-ink) / 1),
+    inset 0 0 0 3px rgba(196 181 253 / .4),
+    0 0 24px rgba(var(--power-glow) / .5),
+    0 0 48px rgba(196 181 253 / .3);
+}
+[data-power="inferno"] {
+  --power-ink: 254 215 170;            /* orange-200: a white-hot rim */
+  --power-glow: 234 88 12;             /* orange-600: the heat */
+  --power-sheen: .65;
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--power-ink) / 1),
+    inset 0 0 0 3px rgba(239 68 68 / .35),
+    0 0 28px rgba(var(--power-glow) / .5),
+    0 0 52px rgba(239 68 68 / .28);
+}
+/* Light theme: the halos sit on a light surface, so they pull toward the
+   surface's own hue and sit a little shallower; the rims keep their metal. */
+@media (prefers-color-scheme: light) {
+  [data-power="silver"] { box-shadow:
+    inset 0 0 0 1px rgba(100 116 139 / .85),
+    inset 0 0 0 3px rgba(148 163 184 / .35),
+    0 0 24px rgba(148 163 184 / .34); }
+  [data-power="gold"] { box-shadow:
+    inset 0 0 0 1px rgba(180 83 9 / .7),
+    inset 0 0 0 3px rgba(217 119 6 / .35),
+    0 0 26px rgba(217 119 6 / .4),
+    0 0 48px rgba(217 119 6 / .16); }
+  [data-power="crystal"] { box-shadow:
+    inset 0 0 0 1px rgba(2 132 199 / .65),
+    inset 0 0 0 3px rgba(129 140 248 / .4),
+    0 0 22px rgba(56 189 248 / .42),
+    0 0 44px rgba(129 140 248 / .26); }
+  [data-power="inferno"] { box-shadow:
+    inset 0 0 0 1px rgba(194 65 12 / .75),
+    inset 0 0 0 3px rgba(239 68 68 / .35),
+    0 0 26px rgba(234 88 12 / .45),
+    0 0 48px rgba(239 68 68 / .26); }
+}
+
+/* THE SHEEN — the one moving element, and the reason the metal reads as metal.
+   A band of light, 45° from the horizontal, sized to the card, at rest parked
+   fully off the left edge. `transform` only: the band slides across and the
+   browser composites it, so a thirty-row roster costs one transform per row,
+   and the band is `paused` until someone hovers, focuses, or the page is the
+   live Plus preview (the `.is-live` container rule, the same shape the effects
+   above already use). */
+[data-power="silver"]::before,
+[data-power="gold"]::before,
+[data-power="crystal"]::before,
+[data-power="inferno"]::before {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  inset: -40% -20%;
+  pointer-events: none;
+  background: linear-gradient(
+    45deg,
+    transparent 40%,
+    rgba(var(--power-ink) / var(--power-sheen, .55)) 50%,
+    transparent 60%);
+  transform: translateX(-160%);
+}
+/* Keep the sheen UNDER the card's own ink: the avatar and the name are real
+   children, and `z-index: 0` on a pseudo with `isolation` on the card keeps the
+   band behind them without touching their stacking. */
+.member[data-power] .member-avatar,
+.member[data-power] .member-body,
+.plus-preview[data-power] .plus-preview-avatar,
+.plus-preview[data-power] .plus-preview-body { position: relative; z-index: 1; }
+
+/* The sweep, per power — faster as the power rises, which is the whole point
+   of a ladder (PREMIUM_COSMETICS.md §3: animation intensity is the tier). All
+   four are transform-only, all `paused` at rest. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-power="silver"]::before { animation: power-sheen 8s var(--ease-standard, ease-in-out) infinite paused; }
+  [data-power="gold"]::before   { animation: power-sheen 6s var(--ease-standard, ease-in-out) infinite paused; }
+  [data-power="crystal"]::before{ animation: power-sheen 5s var(--ease-standard, ease-in-out) infinite paused; }
+  [data-power="inferno"]::before{ animation: power-sheen 4s var(--ease-standard, ease-in-out) infinite paused; }
+  [data-power="silver"]:hover::before,
+  [data-power="silver"]:focus-within::before,
+  [data-power="gold"]:hover::before,
+  [data-power="gold"]:focus-within::before,
+  [data-power="crystal"]:hover::before,
+  [data-power="crystal"]:focus-within::before,
+  [data-power="inferno"]:hover::before,
+  [data-power="inferno"]:focus-within::before,
+  .is-live [data-power="silver"]::before, .is-live[data-power="silver"]::before,
+  .is-live [data-power="gold"]::before, .is-live[data-power="gold"]::before,
+  .is-live [data-power="crystal"]::before, .is-live[data-power="crystal"]::before,
+  .is-live [data-power="inferno"]::before, .is-live[data-power="inferno"]::before {
+    animation-play-state: running;
+  }
+}
+@keyframes power-sheen {
+  0%   { transform: translateX(-160%); }
+  42%  { transform: translateX(160%); }
+  100% { transform: translateX(160%); }
+}
+
+/* Reduced motion: the metal stays, the sweep goes. The static edge and halo
+   above already say gold/crystal/fire, so the fallback is a held highlight,
+   not a slower animation — a slower sweep is still motion (WCAG, and the
+   research record in PREMIUM_COSMETICS.md §5). */
+@media (prefers-reduced-motion: reduce) {
+  [data-power="silver"]::before,
+  [data-power="gold"]::before,
+  [data-power="crystal"]::before,
+  [data-power="inferno"]::before {
+    animation: none;
+    /* A deliberate, centred band of light — the brightest angle, held. */
+    transform: translateX(0);
+    opacity: .4;
+  }
+}
+
+/* THE MARK — the motif beside the name, the identity layer (PREMIUM_COSMETICS.md
+   §5). Eighteen pixels, because that is the size a name is read at in a roster
+   and the mark must hold at that size (the Twitch rule, §2). It sits inline
+   after the name's text, so a long name wraps the mark with it rather than the
+   mark drifting; `flex: none` stops the avatar's flex from shrinking it. */
+.member-mark {
+  display: inline-flex;
+  align-items: center;
+  margin-inline-start: .3rem;
+  flex: none;
+}
+.member-mark img {
+  inline-size: 18px;
+  block-size: 18px;
+  display: block;
+  object-fit: contain;
+}
+
+/* THE MASCOT — the character on the card (PREMIUM_COSMETICS.md §0). A resting
+   pose in the corner, one idle breath, and a small reaction when the card is
+   hovered. It is a CHILD of the card, absolutely placed, so it never moves the
+   name, the chip or the date. `is-idle` is set by the view only on the person's
+   OWN card (member--me): a mascot on somebody else's roster row holds its pose,
+   because a row of breathing characters is the exact list this budget forbids. */
+.member-mascot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 2;
+  pointer-events: none;
+}
+.member-mascot img {
+  inline-size: 44px;
+  block-size: 44px;
+  display: block;
+  object-fit: contain;
+  border-radius: 22%;
+  filter: drop-shadow(0 2px 4px rgb(0 0 0 / .45));
+}
+/* The character belongs to the card that holds it: a hair of the power's rim
+   around the tile is what turns "a sticker pasted on" into "a sitter on the
+   frame". Standard power has no mascot to ring (mascots unlock at gold), so the
+   variables are always defined where this applies. */
+[data-power] .member-mascot img {
+  box-shadow: 0 0 0 1px rgba(var(--power-ink) / .55), 0 0 10px rgba(var(--power-glow) / .35);
+}
+@media (prefers-color-scheme: light) {
+  .member-mascot img { filter: drop-shadow(0 2px 4px rgb(0 0 0 / .3)); }
+}
+/* The idle: a 3px rise and fall, four seconds, the breath of a character that is
+   alive. Transform only. Only on the owner's own card. */
+@media (prefers-reduced-motion: no-preference) {
+  .member--me .member-mascot.is-idle img {
+    animation: mascot-breathe 4s ease-in-out infinite alternate;
+  }
+  /* The hover reaction: the character leans into the attention, a touch. */
+  .member:hover .member-mascot img,
+  .member:focus-within .member-mascot img {
+    transform: scale(1.12) rotate(-4deg);
+  }
+}
+@keyframes mascot-breathe {
+  from { transform: translateY(0); }
+  to   { transform: translateY(-3px); }
+}
+/* Reduced motion: the character sits still. The drop-shadow stays, so it still
+   reads as a character on the card, just not breathing. */
+@media (prefers-reduced-motion: reduce) {
+  .member--me .member-mascot.is-idle img { animation: none; }
+  .member:hover .member-mascot img,
+  .member:focus-within .member-mascot img { transform: none; }
+}
+
+
+/* ============================================================================
    The wear: a person's name, in an effect they bought from US
    ============================================================================
    Two layers meet on a storefront's roster, and keeping them apart is the whole
@@ -3457,6 +3711,7 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 @media (max-width: 860px) { .plus-hero-grid { grid-template-columns: 1fr; } }
 .plus-hero h1 { font-size: var(--text-2xl); margin: var(--space-4) 0 var(--space-2); }
 .plus-preview {
+  position: relative;
   display: flex; align-items: center; gap: var(--space-4);
   margin-top: var(--space-5); padding: var(--space-4) var(--space-5);
   border: 1px solid var(--border-subtle); border-radius: var(--radius-lg);
@@ -3495,6 +3750,43 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 .plus-effects { display: grid; gap: var(--space-3); margin-top: var(--space-3); }
 .plus-effect-choice { align-items: center; }
 .plus-effect-demo { flex: 0 0 auto; font-size: var(--text-lg); }
+/* The mark wardrobe. The tile IS the drawing, so the control is a grid of small
+   frames rather than swatches or rows: at 60 px a person judges the mark the way
+   they will read it — as a shape beside a name — and the frame's keyline is the
+   same family as the card that will carry it. The "No mark" tile is an empty
+   frame on purpose: the absence is the product, and a drawing of "nothing" would
+   be a lie. */
+.plus-marks {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(86px, 1fr));
+  gap: var(--space-3); margin-top: var(--space-3);
+}
+.plus-mark-label {
+  position: relative; cursor: pointer;
+  display: grid; justify-items: center; row-gap: 6px;
+  padding: var(--space-3) var(--space-2) var(--space-2);
+  background: var(--surface-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  text-align: center;
+}
+.plus-mark-label input {
+  position: absolute; opacity: 0; inset: 0; margin: 0;
+  inline-size: 100%; block-size: 100%; cursor: pointer;
+}
+.plus-mark-tile { display: grid; place-items: center; inline-size: 60px; block-size: 60px; }
+.plus-mark-tile img { display: block; inline-size: 100%; block-size: 100%; object-fit: contain; }
+.plus-mark-label .fine { font-size: var(--text-xs); line-height: 1.2; color: var(--text-secondary); }
+.plus-mark-label:hover { border-color: var(--border-strong); }
+/* Two ways to be on: `is-on` says what is SAVED (the view writes it), and
+   `:has(input:checked)` says what is about to be saved (the click, before the
+   form posts). Both light the same border, so the picker never lies between a
+   click and a save. */
+.plus-mark-label.is-on,
+.plus-mark-label:has(input:checked) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.plus-mark-label:focus-within { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .plus-avatar { box-shadow: 0 0 0 2px color-mix(in srgb, var(--plate-a, var(--indigo-600)) 45%, transparent); }
 .who-link { display: flex; align-items: center; gap: var(--space-2); text-decoration: none; }
 .who-link:hover .who-name { text-decoration: underline; }

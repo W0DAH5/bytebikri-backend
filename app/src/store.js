@@ -21,6 +21,8 @@ import {
   giftCode,
 } from './plus.js';
 
+import { MOTIF_KEYS } from './cosmetic-model.js';
+
 import { rentPeriod, annualRentNpr, rentWorking, RENT_TERMS } from './billing.js';
 
 /**
@@ -3789,7 +3791,7 @@ export const store = {
       `select m.*, p.display_name, p.email, t.name as tier_name, t.accent, t.dues_npr, t.period_months,
               t.glyph,
               p.nameplate, p.plus_effect as plus_effect,
-              p.plus_ring as plus_ring, p.plus_frame as plus_frame,
+              p.plus_ring as plus_ring, p.plus_frame as plus_frame, p.plus_motif,
               pl.plus_status, pl.plus_period_end
          from memberships m
          join profiles p on p.id = m.profile_id
@@ -3814,7 +3816,7 @@ export const store = {
       // roster's rule (`nameplate`, because that is the name `plusWear()` reads).
       `select m.*, p.display_name, p.email, t.name as tier_name, t.accent, t.dues_npr, t.glyph,
               p.nameplate, p.plus_effect as plus_effect,
-              p.plus_ring as plus_ring, p.plus_frame as plus_frame,
+              p.plus_ring as plus_ring, p.plus_frame as plus_frame, p.plus_motif,
               pl.plus_status, pl.plus_period_end
          from memberships m
          join profiles p on p.id = m.profile_id
@@ -3870,6 +3872,9 @@ export const store = {
               -- store's roster, the same way the palette does: the card is a rendering
               -- of the person, not a surface of the store's.
               p.plus_ring as plus_ring, p.plus_frame as plus_frame,
+              -- The mark wears with the look: the person's identity, on a store's
+              -- roster, the same way the palette does.
+              p.plus_motif,
               pl.plus_status, pl.plus_period_end,
               -- WHEN THE PERIOD ENDS, and it is the one column the card was missing.
               -- The WHERE below filters on status = 'active', and a membership's
@@ -5000,7 +5005,7 @@ export const store = {
    * changed before, during or after an arrangement, and it is stored whether or not
    * anything is worn today.
    */
-  setPlusLook({ profileId, nameplate = null, effect = null, ring = null, frame = null }) {
+  setPlusLook({ profileId, nameplate = null, effect = null, ring = null, frame = null, motif = null }) {
     // The keys are checked HERE as well as at the route, because the route is not the
     // only caller: a seeder, a script or a future admin tool reaches this method
     // directly, and an unrecognised palette used to be stored happily and then render
@@ -5010,16 +5015,20 @@ export const store = {
     const tone = PLUS_EFFECT_KEYS.includes(effect) ? effect : null;
     const band = PLUS_RING_KEYS.includes(ring) ? ring : null;
     const edge = PLUS_FRAME_KEYS.includes(frame) ? frame : null;
+    // 'none' is an explicit choice of nothing and stores as NULL, like the two outer
+    // layers do for their defaults; a key the catalog does not have stores nothing.
+    const mark = motif && MOTIF_KEYS.includes(motif) ? motif : null;
     return one(
       `update profiles
           set nameplate = $2::text,
               plus_effect = $3::text,
               plus_ring = $4::text,
               plus_frame = $5::text,
+              plus_motif = $6::text,
               plus_set_at = now()
         where id = $1
-        returning id, nameplate, plus_effect, plus_ring, plus_frame, plus_set_at`,
-      [profileId, plate, tone, band, edge],
+        returning id, nameplate, plus_effect, plus_ring, plus_frame, plus_motif, plus_set_at`,
+      [profileId, plate, tone, band, edge, mark],
     );
   },
 
@@ -5953,7 +5962,7 @@ export const store = {
               -- fallback indigo while their own palette sat in the row beside it. Same
               -- rule as the roster above; the renderer is handed what it reads.
               p.nameplate, p.plus_effect as plus_effect,
-              p.plus_ring as plus_ring, p.plus_frame as plus_frame,
+              p.plus_ring as plus_ring, p.plus_frame as plus_frame, p.plus_motif,
               pl.plus_status, pl.plus_period_end
          from reviews r join profiles p on p.id = r.buyer_id
          ${PLUS_JOIN}
