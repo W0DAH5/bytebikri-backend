@@ -23,6 +23,7 @@ process.env.DATABASE_URL ||= 'postgres://postgres:postgres@127.0.0.1:55432/byteb
 const { close, query } = await import('../src/db.js');
 const {
   SLOTS, SLOT_KEYS, OWNERS, personSlots, storeSlots, slotOf, itemOf, catalogProblems, LOOK_FIELDS,
+  POWER, POWER_KEYS, powerIndex, powerOf, MOTIFS, MOTIF_KEYS, MOTIF_KINDS, motifOf, motifsFor,
 } = await import('../src/cosmetics.js');
 const { ACCENT_KEYS } = await import('../src/memberships.js');
 const { EFFECT_KEYS, RING_KEYS, FRAME_KEYS, ringClass, frameClass } = await import('../src/plus.js');
@@ -376,4 +377,79 @@ test('every outer value that claims to move rests paused, runs on intent, and st
     assert.ok(reduceAt > runAt,
       `${key}'s reduce block comes before its running state; a later running rule would win`);
   }
+});
+
+// ── The premium cosmetic system: the ladder, the derivation, the wardrobe ────────
+// PREMIUM_COSMETICS.md is the framework; this block is the part of it that is a LAW
+// rather than a preference, so it lives here where a broken budget fails the suite.
+
+test('the power ladder is an order, and the budget never shrinks up it', () => {
+  assert.deepEqual(POWER_KEYS, ['standard', 'silver', 'gold', 'crystal', 'inferno'],
+    'the five levels, in the order the system was defined — a new level is a redesign, not an insert');
+  for (const surface of ['row', 'card', 'stage']) {
+    for (let i = 1; i < POWER.length; i += 1) {
+      const isTheLaw = POWER[i].key === 'inferno' && surface === 'row';
+      if (!isTheLaw) {
+        assert.ok(POWER[i].budget[surface] >= POWER[i - 1].budget[surface],
+          `${POWER[i].key} is weaker than ${POWER[i - 1].key} on ${surface} — the ladder must only get richer`);
+      }
+    }
+  }
+  assert.equal(POWER.find((p) => p.key === 'inferno').budget.row, 0,
+    'inferno carries a row budget — the fire touched a list, and the whole budget argument dies with it');
+  for (const p of POWER) {
+    assert.ok(p.treatment && p.still,
+      `${p.key} is missing treatment or still — a reduced-motion reader would get a fallback nobody audited`);
+  }
+});
+
+test('powerOf derives from the entitlements, and never from a row', () => {
+  assert.equal(powerOf(), 'standard', 'an account with nothing live is standard');
+  assert.equal(powerOf({ storeTierNo: 1 }), 'silver');
+  assert.equal(powerOf({ storeTierNo: 2 }), 'gold', 'the top tier a store may sell is gold, TIERS_MAX = 2');
+  assert.equal(powerOf({ storeTierNo: 99 }), 'gold', 'a bigger number is not a bigger power — the ladder is closed');
+  assert.equal(powerOf({ plusRunning: true }), 'crystal', 'the platform’s payer');
+  assert.equal(powerOf({ plusRunning: true, storeTierNo: 2 }), 'crystal',
+    'two payers, one scale: the higher power in force wins, and the look travels with the person');
+  assert.equal(powerOf({ special: true }), 'inferno');
+  assert.equal(powerOf({ special: true, plusRunning: true, storeTierNo: 2 }), 'inferno',
+    'a grant outruns everything, because it is an operator’s hand, not a price');
+  // What is NOT an input, and why: lapsed. The state layer decides that first
+  // (MEMBERSHIP_AUDIT.md), and a lapsed membership is no power in the same minute
+  // the files close — there is no "ex-gold" look, because gold is a function of a row.
+});
+
+test('the wardrobe unlocks cumulatively, and a level wears everything below it', () => {
+  const silver = new Set(motifsFor('silver').map((m) => m.key));
+  const gold = new Set(motifsFor('gold').map((m) => m.key));
+  const crystal = new Set(motifsFor('crystal').map((m) => m.key));
+  const inferno = new Set(motifsFor('inferno').map((m) => m.key));
+  assert.ok(silver.size >= 1 && [...silver].every((k) => motifOf(k).minPower === 'silver'),
+    'a silver member wears silver motifs — and only silver, nothing above their power');
+  for (const k of silver) assert.ok(gold.has(k), 'gold keeps everything silver had');
+  for (const k of gold) assert.ok(crystal.has(k), 'crystal keeps everything gold had');
+  assert.deepEqual(inferno, new Set(MOTIF_KEYS), 'the grant wears the whole wardrobe');
+  assert.equal(motifsFor('not-a-level').length, 0, 'an unknown level wears nothing, not everything');
+});
+
+test('every motif in the catalog is drawn: the file is on disk, and the words are there', () => {
+  assert.ok(MOTIFS.length >= 8, 'the brief’s eight tier motifs are the floor of the first set');
+  const kinds = new Set(MOTIFS.map((m) => m.kind));
+  assert.ok(kinds.has('motif') && kinds.has('mascot'),
+    'the two-layer system needs both a mark and a character, or it is a badge with extra steps');
+  for (const m of MOTIFS) {
+    assert.ok(MOTIF_KINDS.includes(m.kind), `${m.key} has a kind the catalog does not define`);
+    assert.ok(powerIndex(m.minPower) >= 0, `${m.key} unlocks at a level the ladder does not have`);
+    assert.ok(m.asset.startsWith('/img/cosmetics/'),
+      `${m.key} points at a file that is not a platform-drawn cosmetic: ${m.asset}`);
+    assert.ok(m.treatment && m.still,
+      `${m.key} is missing treatment or still — the static version is a design, not a leftover`);
+    // A catalog that references an icon nobody drew is a catalog lying.
+    const buf = readFileSync(new URL(`../public${m.asset}`, import.meta.url));
+    assert.ok(buf.length > 1000, `${m.key}’s icon at ${m.asset} is not a real drawing`);
+  }
+  // The mascot layer is the brief’s own contribution (the laughing buddha, the
+  // dragon, the lotus) — two of the three gold mascots are drawn this round, the
+  // third with the next turn’s image budget.
+  assert.ok(motifOf('buddha-gold') && motifOf('dragon-gold'), 'the brief’s mascots, in the catalog');
 });
