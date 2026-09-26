@@ -17,7 +17,8 @@
     "check:env": "node scripts/check-env.mjs",
     "shots": "node scripts/shoot.mjs",
     "audit:visual": "node scripts/audit.mjs",
-    "video:check": "node scripts/video-check.mjs"
+    "video:check": "node scripts/video-check.mjs",
+    "mastodon:check": "node scripts/mastodon-check.mjs"
   },
   "dependencies": {
     "express": "^4.19.2",
