@@ -25,6 +25,14 @@
  *     classifies it as a file — the simple path, which is what a test environment
  *     should exercise by default. Putting `--hls` on the command line hands back an
  *     `hls_url` instead, for the playlist path.
+ *   * the media urls carry `Access-Control-Allow-Origin`, because without it the walk's
+ *     playlist check fails for a reason that is about the STUB rather than about the
+ *     product: `hls.js` fetches a playlist with XHR, and a cross-origin XHR with no CORS
+ *     header is blocked by the browser — `net::ERR_FAILED`, in the console and in the walk
+ *     (`VIDEO_STORAGE.md` §10.4). A real host that serves web players sends it. A host that
+ *     does NOT is the failure this stub should be able to reproduce, which is what
+ *     `--no-cors` is for — and with it, the walk's own diagnostic message is the thing under
+ *     test rather than the stub's politeness.
  *   * the media urls it hands out actually SERVE media, out of the demo fixtures in
  *     `app/seed-assets/`. That is what makes `ci/eyes/video-host-walk.mjs` able to
  *     prove the thing that matters most — that a hosted file plays in our player
@@ -67,10 +75,29 @@ const playlistFor = () => Buffer.from([
  * cannot scrub — which would make the walk's own seeking claim false in a way no other
  * test could see.
  */
+const WANT_HLS = process.argv.includes('--hls') || Boolean(process.env.STUB_HLS);
+/* CORS is ON unless asked otherwise, because a host that cannot feed a browser player is the
+ * exception rather than the rule — and a stub whose default is the broken case makes every
+ * run of the walk red for a reason that belongs to the stub. */
+const CORS = !process.argv.includes('--no-cors') && !process.env.STUB_NO_CORS;
+
 const serveBytes = (req, res, type, buf) => {
   if (!buf) return jsonCode(res, 404, { message: 'the stub has no such media — is app/seed-assets present?' });
   const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || ''));
   const headers = { 'content-type': type, 'accept-ranges': 'bytes', 'cache-control': 'no-store' };
+  if (CORS) {
+    // `*` rather than the caller's origin: this is a stub, and a test that had to know the
+    // page's origin to configure it would be testing its own configuration. The exposed
+    // headers are the ones a media client reads to decide whether it can seek.
+    headers['access-control-allow-origin'] = '*';
+    headers['access-control-expose-headers'] = 'content-length, content-range, accept-ranges';
+    if (req.method === 'OPTIONS') {
+      return res.writeHead(204, {
+        ...headers, 'access-control-allow-methods': 'GET, HEAD, OPTIONS',
+        'access-control-allow-headers': 'range, if-range',
+      }).end();
+    }
+  }
   if (!range) {
     res.writeHead(200, { ...headers, 'content-length': buf.length });
     return res.end(buf);
@@ -90,7 +117,6 @@ const serveBytes = (req, res, type, buf) => {
 };
 
 const PORT = Number(process.argv[2]) || 3999;
-const WANT_HLS = process.argv.includes('--hls') || Boolean(process.env.STUB_HLS);
 const files = new Map();
 
 const readBody = (req) => new Promise((resolve) => {
@@ -119,6 +145,7 @@ const server = http.createServer(async (req, res) => {
   // which is exactly why the product can hand a viewer a redirect and still keep them
   // in its own player.
   const media = /^\/media\/([A-Za-z0-9_-]+)(\.mp4|\/index\.m3u8|\/seg(\d+)\.ts)$/.exec(url.pathname);
+  if (media && req.method === 'OPTIONS') return serveBytes(req, res, 'text/plain', Buffer.alloc(0));
   if (media && req.method === 'GET') {
     const [, , what, seg] = media;
     if (what === '.mp4') return serveBytes(req, res, 'video/mp4', MEDIA.mp4);

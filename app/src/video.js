@@ -31,7 +31,6 @@
  * `npm run video:check` exists for the machine that CAN reach them.
  */
 import * as filemoon from './video-filemoon.js';
-import * as apivideo from './video-apivideo.js';
 import * as antmedia from './video-antmedia.js';
 import * as pixeldrain from './video-pixeldrain.js';
 import * as telegraph from './video-telegraph.js';
@@ -49,13 +48,11 @@ export {
  * host is chosen per KIND of media (§10.6):
  *
  *   filemoon    video       the video host, and the one this product deploys with
- *   apivideo    —           A LIVE HOST, not a storage host: it runs the ingest and serves
- *                           the stream, and it declares NO kind, so no file can be routed to
- *                           it. Encoding is free and unlimited, hosting and delivery are
- *                           metered, and the ingest is the thing nothing else here has (§11)
- *   antmedia    —           THE OTHER LIVE HOST, and the one that is ours: Ant Media Server on
- *                           a machine we run, RTMP in and HLS out, so the audience stops
- *                           setting the bill (§12). One of the two is chosen by LIVE_DRIVER
+ *   antmedia    —           THE LIVE HOST: Ant Media Server on a machine we run, RTMP in and
+ *                           HLS out, so the audience stops setting the bill (§12). It declares
+ *                           NO kind, so no file can ever be routed to a stream engine, and it
+ *                           is chosen by LIVE_DRIVER — its own variable, because "who runs the
+ *                           stream" was never the same question as "where the bytes live"
  *   pixeldrain  the rest    a general file host: direct urls, byte ranges, a real delete
  *   telegraph   images      small, permanent, free — and it can never delete one
  *   catbox      development only: its terms forbid being a service's CDN
@@ -63,7 +60,7 @@ export {
  * GoFile is gone: a free account could not produce a playable link at all, and paying for
  * one to serve files this product keeps on its own disk bought nothing.
  */
-export const PROVIDERS = { filemoon, apivideo, antmedia, pixeldrain, telegraph, catbox };
+export const PROVIDERS = { filemoon, antmedia, pixeldrain, telegraph, catbox };
 export const HOSTS = Object.keys(PROVIDERS);
 
 const isHost = (value) => Object.prototype.hasOwnProperty.call(PROVIDERS, value);
@@ -185,7 +182,7 @@ export const ROUTED_KINDS = ['video', 'audio', 'image', 'file'];
  * THE LIVE DRIVER — a second kind of choice, because live is not storage.
  *
  * A media host holds bytes; a live host holds a *stream*. What the seller needs is an
- * ingest address and a key, and what the page needs is an HLS playlist — so api.video's
+ * ingest address and a key, and what the page needs is an HLS playlist — so a hosted host's
  * live half is a different question from `driverForKind`, and it gets its own variable
  * rather than being smuggled into `VIDEO_DRIVER`.
  *
@@ -221,6 +218,51 @@ export const activeHosts = (env = process.env) => {
     found.get(driver).push(kind);
   }
   return [...found].map(([host, kinds]) => ({ host, kinds }));
+};
+
+/**
+ * ── SERVING THEIR BYTES THROUGH OUR OWN ORIGIN ───────────────────────────────
+ *
+ * Two of the hosts in this registry will not always let a BROWSER fetch the file directly:
+ *
+ *   * Pixeldrain's free plan reads a direct browser fetch as a hotlink and answers 403
+ *     (`hotlink_detected`). A store page that redirects to it is a hotlink with extra steps.
+ *   * Catbox's terms forbid it being a service's CDN at all, which is a different kind of
+ *     problem — a licence one, not an HTTP one — and no amount of engineering fixes a term.
+ *
+ * So delivery has two shapes, and the choice is a decision about BANDWIDTH rather than about
+ * code: a redirect is free for us and puts the viewer's browser on the host's connection; a
+ * relay sends every byte through this server, which costs upload but is the only way to serve
+ * a file the host will not hand to a browser. When the host refuses, the relay is what stands
+ * between a working store and a viewer staring at a broken player.
+ *
+ * WHAT IT DOES NOT FIX, said out loud: Catbox's terms. Relaying their bytes still uses them as
+ * this service's CDN — the same thing their operator objects to — so catbox is NOT relayed by
+ * default and stays development-only. The relay is for a host that permits the traffic and
+ * simply wants it to come from the account holder's server rather than from a stranger's tab.
+ *
+ * `MEDIA_RELAY` decides, and every value is legible from the outside:
+ *
+ *   unset            → the hosts that declare `hotlink: 'refused-when-free'` (today: Pixeldrain)
+ *   none             → nobody: every remote file is a 302. Right for a Pro account, and the
+ *                      setting an operator reaches for when our upload is the scarce resource
+ *   all              → every host that stores a file
+ *   a,b,c            → exactly those hosts
+ *
+ * It is a registry question rather than a route question because the answer has to be the same
+ * in the route, the doctor and the boot banner — three places that would otherwise each have
+ * their own copy of "does this host serve browsers".
+ */
+export const RELAY_VAR = 'MEDIA_RELAY';
+
+export const relaysThroughUs = (host, env = process.env) => {
+  const provider = PROVIDERS[host];
+  if (!provider || provider.capabilities.role === 'live') return false;
+  const setting = String(env[RELAY_VAR] ?? '').trim().toLowerCase();
+  if (!setting) return provider.capabilities.hotlink === 'refused-when-free';
+  if (setting === 'none') return false;
+  if (setting === 'all') return true;
+  return setting.split(/[,\s]+/).filter(Boolean).includes(host);
 };
 
 /** The api base of the configured provider, for the messages and the doctor. */
@@ -312,7 +354,7 @@ export function mediaOrigins(env = process.env) {
    * THE LIVE DRIVER'S ORIGINS TOO, and this is not a detail.
    *
    * A deployment can run its files on one host and its live streams on another —
-   * `VIDEO_DRIVER=filemoon LIVE_DRIVER=apivideo` is the likeliest production shape there is.
+   * `VIDEO_DRIVER=filemoon LIVE_DRIVER=antmedia` is the shape this product deploys with.
    * `activeHosts()` answers for the KIND routing only, so building the CSP from it alone
    * would leave a live playlist's origin unnamed: hls.js fetches it with XHR under
    * `connect-src`, the fetch is refused with no error event, and the stream is a black

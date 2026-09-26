@@ -2,8 +2,8 @@
 
 `VIDEO_STORAGE.md` answers *where the bytes live*. This is the other half of a live stream: **who finds
 out about it**. The question that opened it — "what can Mastodon be used for live streams?" — has a short
-answer and a longer one, and the longer one contains a genuinely useful alternative to paying api.video by
-the viewer-minute.
+answer and a longer one, and the longer one contains the alternative that turned out to be the answer: a
+live host we run ourselves, instead of one that bills by the viewer-minute.
 
 **The short answer: Mastodon cannot stream and cannot play a live stream.** Not as a limitation of our
 account — as a fact about the software. Its video is *uploaded files*: MP4/M4V/MOV/WebM up to a per-instance
@@ -82,18 +82,21 @@ So the honest trade, against §11's api.video decision:
 | federation | none built in | ActivityPub, followable from Mastodon |
 | effort to adopt here | **already done** (§11) | a new host, a new deploy, a new failure mode |
 
-**Since this was written, a third option was chosen — and it is the one that makes the table above
-concrete.** [Ant Media Server](https://antmedia.io) (Community Edition, Apache-licensed, free forever) is
+**Since this was written, the self-hosted option was not just chosen — it is now the ONLY live host in
+the code.** The metered provider was removed at the owner's instruction: it is the one that needs a payment
+method before a store can broadcast for real, and the owner has none. So the table's "api.video (bought
+ingest)" column is history, kept because it is the comparison that makes the trade legible, and the shipped
+answer is the third: **Ant Media Server, Community Edition, on a machine of our own**. [Ant Media Server](https://antmedia.io) (Community Edition, Apache-licensed, free forever) is
 self-hosted streaming software in the same family as PeerTube, with a REST API and a panel: RTMP in, HLS
-out, recording, no per-minute meter, no vendor account. It is wired into the same seam as api.video — see
-`VIDEO_STORAGE.md` §12 — under `LIVE_DRIVER=antmedia`. PeerTube remains the option that adds *federation*
+out, recording, no per-minute meter, no vendor account. It is wired into the provider seam every host here
+uses — see `VIDEO_STORAGE.md` §12 — under `LIVE_DRIVER=antmedia`. PeerTube remains the option that adds *federation*
 on top of self-hosting; Ant Media is the option that adds a **REST API and a panel** on top of it. Both
 trade the meter for a server and its bandwidth.
 
 **The part that makes any of this cheap to keep open:** they all put an HLS playlist in front of the same
 product code. `external_url` holds an `.m3u8`, the player plays it, the breaks and the ladder are untouched —
-the abstraction that let api.video arrive without a rewrite is the same one that let Ant Media arrive the
-same way, and that would let PeerTube arrive too. So this is a decision to *defer with a plan*, not an
+the abstraction that let a hosted live service arrive without a rewrite is the same one that let Ant Media
+arrive in its place, and that would let PeerTube arrive too. So this is a decision to *defer with a plan*, not an
 architecture to redo.
 
 ## 4. Credentials, and how they are held
@@ -175,8 +178,10 @@ They deserve separate answers.
 commercial use permitted, no viewer or broadcaster count in the licence. What it costs is a machine and its
 outbound bandwidth — the broadcast's own size, which is arithmetic rather than a vendor's cut
 (`VIDEO_STORAGE.md` §12.2). For a seller with no money, that is a categorically different proposition from a
-per-viewer-minute meter, and it is why this is now the free path while api.video stays available as the
-paid one.
+per-viewer-minute meter — and it is now the ONLY live host in the code, because the metered one was removed
+rather than left switched off. `LIVE_DRIVER` names who runs a stream; today the registry has one answer, and
+a deployment that never installs a server keeps the behaviour it always had: a seller pastes a playlist from
+somewhere else.
 
 **The trap: the key that was pasted is an Enterprise trial, and a trial is not a licence to run a store.**
 Its EULA limits it to one instance and forbids *any* commercial use or use that benefits a third party — and
@@ -186,8 +191,8 @@ sub-second latency is ever needed, the honest routes are a paid licence or one o
 educational/community licences — not a trial key in production.
 
 **The concession to be explicit about:** Community playback is HLS, so 8–12 seconds behind the camera. Live
-chat that keeps up with the audio is not possible at that distance. Products that need that buy WebRTC
-(Enterprise, or a service like api.video).
+chat that keeps up with the audio is not possible at that distance. A product that needs that buys WebRTC
+(the Enterprise edition, or a hosted service that resells ingest).
 
 ### 7.2 Mastodon: it costs nothing, and it does nothing until it is switched on
 

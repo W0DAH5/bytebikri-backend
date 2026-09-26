@@ -27,7 +27,7 @@
  *     it CORS. Community Edition cannot issue play tokens, so this mode is a warning sign
  *     on a self-hosted box, not a configuration to copy.
  *   * **A stream is not `broadcasting` until something publishes to it.** This stub has no
- *     RTMP ingest, so — as with the api.video stub — fetching the playlist is what marks a
+ *     RTMP ingest, so — as the other live stub did before it was removed — fetching the
  *     stream live, which is the closest an HTTP double can honestly come.
  *   * **`--wrong-app` 404s everything**, which is what a real server does when the
  *     configured application name is not one it has. That is the difference the doctor's

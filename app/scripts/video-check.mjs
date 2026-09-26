@@ -23,13 +23,13 @@
  *   npm run video:check -- --drivers                 # all of them, one line each
  *   npm run video:check -- --upload a.mp4            # upload one file, classify, then DELETE it
  *   npm run video:check -- --upload a.jpg --driver=telegraph
- *   npm run video:check -- --driver=apivideo         # the LIVE host: credential + environment
+ *   npm run video:check -- --driver=antmedia         # the LIVE host: the server, the app, the auth
  *   npm run video:check -- --probe-live              # mint a live stream, print the ingest
  *                                                    # addresses, and DELETE the container
  *   npm run video:check -- --probe-telegraph         # is the UNDOCUMENTED image upload alive?
  *
- * `--upload` on the live host is REFUSED, by design: api.video stores nothing for this
- * product (§11.2), so there is no file to send it and nothing it would do with one.
+ * `--upload` on the live host is REFUSED, by design: a stream engine stores nothing for this
+ * product (§12), so there is no file to send it and nothing it would do with one.
  *   npm run video:check -- --upload a.mp4 --keep     # …and leave it there to look at
  *
  * The upload it performs is small on purpose: this is a check, not a backfill. When a
@@ -117,7 +117,7 @@ if (flag('probe-telegraph') || flag('probe-live')) {
  */
 const credentialOf = (host) => video.providers[host].capabilities.needs;
 /** Named so a failure reads as "GET /user did not answer" rather than "something failed". */
-const ENDPOINT_OF_ACCOUNT = { filemoon: 'GET /account', pixeldrain: 'GET /api/user', apivideo: 'POST /auth/api-key' };
+const ENDPOINT_OF_ACCOUNT = { filemoon: 'GET /account', pixeldrain: 'GET /api/user' };
 const credentialless = (host) => video.providers[host].capabilities.credential === false;
 
 console.log('\nVideo host check\n');
@@ -147,6 +147,30 @@ for (const kind of ['video', 'image', 'audio', 'file']) {
   const driver = video.driverForKind(kind);
   const how = driver === 'local' ? 'our own disk' : driver;
   console.log(`    ${kind.padEnd(7)} → ${how}`);
+}
+
+/*
+ * ── HOW THE BYTES REACH A VIEWER, SAID BEFORE ANYTHING ELSE ──────────────────
+ *
+ * This is here rather than in the account report because two of the hosts have no account to
+ * ask (Catbox's userhash, Telegra.ph's absence of one) and would therefore never print it —
+ * and it is exactly those hosts whose delivery behaviour an operator needs to know. A
+ * redirect puts the viewer's browser on the host's connection and costs us nothing; a relay
+ * pipes every byte through this server, which is the only way to serve a host that refuses
+ * browser fetches (Pixeldrain's free plan answers 403 `hotlink_detected`).
+ */
+const factsEarly = video.hostFacts().find((h) => h.host === chosen) || null;
+if (chosen !== 'filemoon' && !factsEarly?.role) {
+  const relayed = video.relaysThroughUs(chosen);
+  says(`delivery: ${relayed
+    ? 'through this server (relayed) — every byte is piped, which costs our upload and works when a host will not serve a browser'
+    : `a redirect to the host${factsEarly?.hotlink === 'refused-when-free'
+      ? ' — and this host refuses browser fetches on a free plan, so a viewer may get a 403' : ''}`}`);
+  says('          MEDIA_RELAY=none stops relaying, all relays every host, or name hosts: MEDIA_RELAY=pixeldrain,catbox');
+}
+if (chosen === 'catbox') {
+  says('          Catbox is NOT relayed by default: their terms forbid being a service\'s CDN, and');
+  says('          piping their bytes through us is still that — the relay is an HTTP fix, not a licence one');
 }
 
 /** `--drivers`: one honest line per provider, then stop. */
@@ -235,49 +259,6 @@ try {
      * a consequence, which is what a warning is for.
      */
     /*
-     * api.video's own tier word, and the facts that decide whether it can serve a store:
-     * the SANDBOX cuts video to 30 seconds, STOPS live at 30 minutes, watermarks both and
-     * deletes them within a day (so it is a test environment, never a store's); the
-     * rate-limit headers say what plan the key is on without anyone reading a dashboard;
-     * and the role line says out loud what this deployment uses the host for, because the
-     * answer to "what does this cost me" starts with "it stores nothing".
-     */
-    if (chosen === 'apivideo') {
-      const caps = video.providers.apivideo.capabilities;
-      says('role: LIVE ONLY — nothing is stored on this host, and no kind of file is routed to it');
-      says(`environment: ${account.sandbox ? 'SANDBOX' : 'production'}`);
-      if (account.sandbox) {
-        bad(`this is a SANDBOX key: video is cropped to ${caps.sandbox.maxSeconds}s, live is STOPPED at `
-          + `${Math.round(caps.sandbox.liveMaxSeconds / 60)} minutes, everything is watermarked and deleted `
-          + `after ${caps.sandbox.deletesAfterHours}h — fine for a demo and for building on, NOT for a store`);
-        /*
-         * THE NEXT STEP IS A BUSINESS STEP, AND AN OPERATOR SHOULD NOT HAVE TO GUESS IT.
-         *
-         * Sandbox is what an account has until somebody puts a payment method on it; that
-         * happens in api.video's dashboard and nowhere else, because this product moves no
-         * money by design. Saying so here turns "the doctor says no" into a one-line fix
-         * rather than a hunt through code for a setting that does not exist. The trial plan
-         * is also time-limited — their terms cap it at twelve monthly periods per entity —
-         * so it is not a destination either way.
-         */
-        says('to run a seller\'s real broadcast, the api.video account itself must be upgraded:');
-        says('a payment method goes on THEIR dashboard (billing there, not in this app — this');
-        says('product moves no money), then a production key is used. Sandbox is free and');
-        says('unlimited for building and demoing, which is what it is for.');
-      } else {
-        /*
-         * We cannot see a plan from the API, so we do not pretend to: the account report
-         * says who the bill belongs to and points at the page that answers it.
-         */
-        says('billing: api.video bills this ACCOUNT directly, by usage (their dashboard → usage).');
-        says('         Nothing in this product moves money, and no in-app payment is involved.');
-      }
-      says(`workspace: ${account.videos ?? 'unknown'} stored item(s) on the account `
-        + '(a leftover here is a recording someone enabled, or an upload made outside this product)');
-      if (account.rate) says(`rate limit: ${account.rate.limit}/min, ${account.rate.remaining} left this window`);
-      says(`costing: ${caps.live.metering}`);
-    }
-    /*
      * A SELF-HOSTED SERVER HAS NO TIER, so the report says what it does have: which address,
      * which application, how it authorises us, and what is on it. The three ways this fails
      * look identical from outside — an unlisted IP, a wrong JWT secret, a wrong application
@@ -301,6 +282,16 @@ try {
         says('      configuration: then the credential travels with the request.');
       }
     }
+    /*
+     * HOW THIS HOST'S BYTES REACH A VIEWER, because it decides whether a store page works.
+     *
+     * A redirect puts the viewer's browser on the host's connection and costs us nothing; a
+     * relay sends every byte through this server, which is the only way to serve a host that
+     * refuses browser fetches (Pixeldrain's free plan answers 403 `hotlink_detected`) and
+     * costs upload. Say which one is in force, and name the switch — an operator who has just
+     * paid for a Pro key wants to stop paying the hop, and one who is blocked wants to know
+     * the relay is already on.
+     */
     if (chosen === 'pixeldrain' && !/pro|premium|paid/i.test(String(account.tier || ''))) {
       says('NOTE: this account is on a free plan. Pixeldrain refuses requests it reads as');
       says('      hotlinks (403 hotlink_detected), and a store page loading its media is');
@@ -483,11 +474,6 @@ if (toUpload && bytes) {
             + 'a viewer\'s browser: the CDN must send Access-Control-Allow-Origin, or the '
             + 'playlist must be served from our own origin (VIDEO_STORAGE.md §10.4 — a '
             + 'bandwidth decision, not a config change)');
-          if (chosen === 'apivideo') {
-            says('THIS host can be switched instead of proxied: every container is created with');
-            says('mp4Support, so APIVIDEO_PLAYBACK=mp4 serves the progressive asset, which a media');
-            says('element loads without CORS (VIDEO_STORAGE.md §11.2, decision 2).');
-          }
         }
       }
       /*
@@ -497,13 +483,14 @@ if (toUpload && bytes) {
        * progressive file that is exactly the right question. On an `.m3u8` it is not:
        * seeking inside HLS is the demuxer's business (hls.js fetches the segment it wants),
        * and a playlist is a few hundred bytes of text that fits in one packet — so a plain
-       * 200 is a correct answer, not a defect. The first version of this loop reported that
-       * as "the media url ignored Range" on api.video, which would have sent an operator
-       * looking for a bug in a host that was behaving.
+       * 200 is a correct answer, not a defect. An earlier version of this loop reported that
+       * as "the media url ignored Range", which would have sent an operator looking for a bug
+       * in a host that was behaving.
        *
-       * When the host has a progressive asset as well — api.video always does, because
-       * `mp4Support` is set at creation (§11.2) — that is what gets probed, since it is the
-       * thing a viewer would actually scrub.
+       * A host that also publishes a PROGRESSIVE asset of the same media is probed on that
+       * instead, because a progressive file is the thing a viewer would actually scrub. The
+       * live hosts here publish HLS and nothing else, so today the playlist is simply not
+       * range-probed — the sentence says so rather than inventing a target.
        */
       let rangeTarget = { ok: false, detail: 'no progressive asset to probe' };
       if (played.kind === 'hls') {
@@ -625,7 +612,7 @@ async function probeRange(url) {
  *
  * This is the one capability no other host in the registry has, and it cannot be proved
  * from this side: creating a stream is a call, but *broadcasting* needs an RTMP push from a
- * machine with ffmpeg (or OBS) and a network that can reach `broadcast.api.video`. So the
+ * machine with ffmpeg (or OBS) and a network that can reach the ingest port. So the
  * probe does what can be done in one command — it mints, reads back the playlist url and the
  * three ingest addresses, confirms the key is there, and deletes the container so nothing is
  * left billing. The push itself is printed as the next step, with the exact command.
@@ -635,16 +622,15 @@ async function probeRange(url) {
  */
 async function probeLive() {
   /*
-   * WHICHEVER LIVE DRIVER IS NAMED, not api.video specifically.
+   * WHICHEVER LIVE DRIVER IS NAMED, which today means the self-hosted server.
    *
-   * There are two now, and they answer the same question — api.video buys the ingest and
-   * meters the audience, Ant Media Server is software on our own machine (§12) — so a probe
-   * that only knew about the first would make the second unverifiable, which is the one
-   * thing a provider round must not be.
-   */
+   * The dispatch below is by provider rather than by name-once, because a live driver is a
+   * capability (§12): anything that declares `capabilities.live` can be probed by the same
+   * command, and a hardcoded provider name is how a second one becomes invisible.
+*/
   const liveName = video.liveDriver();
   if (liveName === 'local') {
-    bad('no LIVE_DRIVER is configured — nothing can mint a stream. Set LIVE_DRIVER=apivideo or LIVE_DRIVER=antmedia');
+    bad('no LIVE_DRIVER is configured — nothing can mint a stream. Set LIVE_DRIVER=antmedia');
     return;
   }
   const provider = video.providers[liveName];

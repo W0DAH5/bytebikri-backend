@@ -2,9 +2,9 @@
  * Ant Media Server, as a LIVE host behind the registry — the second one, and the first that
  * is OURS instead of bought.
  *
- * ── WHAT IT IS, AND HOW IT DIFFERS FROM api.video (§12) ──────────────────────
+ * ── WHAT IT IS, AND WHY IT IS THE ONLY LIVE HOST NOW (§12) ──────────────────
  *
- * api.video sells an ingest and bills per minute delivered; Ant Media Server is software we
+ * The other live host sold an ingest and billed per minute delivered; Ant Media Server is software we
  * run, so the audience stops setting the bill and a server we already pay for becomes the
  * encoder. `LIVE_DRIVER` picks between them, which is what that variable was for: they
  * answer the same question — who runs the stream — and both end as an `.m3u8` in front of
@@ -24,7 +24,7 @@
  *   * **it is never shown to a viewer.** It appears in the playlist url, so it lives behind
  *     our own door like every other bearer url here (§7, §10.6), and the seller's panel is
  *     the only place it is printed. `capabilities.live.keyIsStored` is therefore **true**:
- *     the id IS the key, which is a different promise from api.video's, and a capability
+ *     the id IS the key, which is a different promise from a hosted service's, and a capability
  *     that lies about that would be worse than no capability at all.
  *
  * ── AUTH: TWO MODES, AND THE ONE THAT NEEDS NOTHING ──────────────────────────
@@ -39,7 +39,7 @@
  * ── WHAT THIS MODULE DELIBERATELY DOES NOT HAVE ──────────────────────────────
  *
  * No upload, no playback of stored files, no `acceptsFile`: `capabilities.kinds` is empty,
- * exactly as api.video's is and for a different reason — this host is for RUNNING a stream,
+ * exactly as any live host's is, and for the same reason — this host is for RUNNING a stream,
  * and the product already has three hosts that hold files (§10.6). HLS playback of a live
  * stream is all the player needs from it.
  */
@@ -52,7 +52,7 @@ export const label = 'Ant Media Server';
 export const capabilities = {
   /*
    * LIVE ONLY, and the empty list is the policy — `driverForKind` consults it, so no value
-   * of `VIDEO_DRIVER` can route a byte here. Same mechanism as api.video's (§11.2), for a
+   * of `VIDEO_DRIVER` can route a byte here. The same mechanism the registry has used for a
    * different reason: this is a stream engine, and the product's file hosts are elsewhere.
    */
   role: 'live',

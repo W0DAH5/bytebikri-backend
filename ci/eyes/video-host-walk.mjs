@@ -27,6 +27,11 @@
  *     FILEMOON_TOKEN='147|stub-token-abcdefghijklmnop' \
  *     VIDEO_MEDIA_ORIGINS=http://127.0.0.1:3999 node scripts/boot.mjs
  *
+ *   # NOTE: with Pixeldrain configured, its files are RELAYED (VIDEO_STORAGE.md §13.3) —
+ *   # the stream route answers 200 with `x-bytebikri-relay: 127.0.0.1:4003` instead of a
+ *   # 302, because their free plan refuses a browser fetch. Set MEDIA_RELAY=none to see the
+ *   # redirect behaviour (and the 403 a viewer would get).
+ *
  *   # Pixeldrain  (the general host — any kind; §10.6)
  *   node ci/stub-pixeldrain.mjs 4003 &
  *   PORT=3100 … FILE_DRIVER=pixeldrain PIXELDRAIN_API_BASE=http://127.0.0.1:4003/api \
@@ -223,18 +228,67 @@ try {
   const stream = await read(srcUrl.pathname + srcUrl.search);
   const location = stream.headers().location || '';
   const kind = stream.headers()['x-bytebikri-source'];
-  console.log(`       stream route: ${stream.status()} ${kind ? `(kind ${kind})` : ''} → ${location}`);
-  if (stream.status() !== 302) {
-    fail(`the stream route answered ${stream.status()} for a hosted file instead of redirecting`);
-  } else if (!/^https?:\/\//.test(location)) {
-    fail(`the redirect does not point anywhere usable: ${location}`);
-  } else {
+  const relayedFrom = stream.headers()['x-bytebikri-relay'] || '';
+  console.log(`       stream route: ${stream.status()} ${kind ? `(kind ${kind})` : ''}`
+    + `${relayedFrom ? ` (relayed from ${relayedFrom})` : ''} → ${location}`);
+  /*
+   * ── THREE HONEST ANSWERS, NOT TWO ────────────────────────────────────────────
+   *
+   * This step used to accept exactly one: a 302. That was right while every host here
+   * served browsers, and it stopped being right when Pixeldrain's free plan turned out to
+   * answer a direct browser fetch with 403 `hotlink_detected` (VIDEO_STORAGE.md §13.3) —
+   * because a store page redirecting to it is a hotlink with extra steps, so the bytes now
+   * come THROUGH us instead.
+   *
+   * A relayed 200 and a 200 from our own disk look identical unless the response says which
+   * it is, which is why the route sets `x-bytebikri-relay: <host>`. A walk that could not
+   * tell them apart would print "a file on our disk is served by us" for a file that is
+   * somebody else's bandwidth — true-looking, and false exactly where it matters.
+   */
+  const RELAY_HOSTS = (process.env.EYES_RELAY_HOSTS || '127.0.0.1:4003,pixeldrain.com')
+    .split(',').map((h) => h.trim()).filter(Boolean);
+  if (stream.status() === 302 && /^https?:\/\//.test(location)) {
     ok('the stream route sends the browser to the host', location.slice(0, 72));
+  } else if (stream.status() === 302) {
+    fail(`the redirect does not point anywhere usable: ${location}`);
+  } else if (stream.status() === 200 && relayedFrom) {
+    if (!RELAY_HOSTS.some((h) => relayedFrom.includes(h))) {
+      fail(`the stream route relayed bytes from ${relayedFrom}, which is not a host that refuses browsers`);
+    } else {
+      ok('the host will not serve a browser, so we relay its bytes ourselves', `relayed from ${relayedFrom}`);
+    }
+    /*
+     * And it must still be a real stream rather than a download wearing a media type: a
+     * player seeks, a seek is a Range request, and a relay that swallowed the range and
+     * answered 200 with the whole file would look fine in every screenshot and stutter
+     * forever in a viewer's hand. This asks for the first 100 bytes and expects 206.
+     */
+    const ranged = await page.request.get(BASE + srcUrl.pathname + srcUrl.search, {
+      headers: { range: 'bytes=0-99' }, maxRedirects: 0,
+    });
+    const rangeHeader = ranged.headers()['content-range'] || '';
+    if (ranged.status() === 206 && /^bytes 0-99\//.test(rangeHeader)) {
+      ok('the relay passes Range through, so seeking works', rangeHeader);
+    } else {
+      fail(`the relay answered ${ranged.status()} to a Range request`
+        + `${rangeHeader ? ` (${rangeHeader})` : ' with no content-range'} — a player that cannot seek`);
+    }
+  } else if (stream.status() === 200) {
+    fail('the stream route served a hosted file itself with no x-bytebikri-relay header — '
+      + 'either the relay is not routing this host or it is not saying so');
+  } else {
+    fail(`the stream route answered ${stream.status()} for a hosted file — not a redirect and not a relay`);
   }
 
   const download = await read(srcUrl.pathname.replace(/\/stream$/, '') + srcUrl.search);
-  if (download.status() !== 302) fail(`the download arm answered ${download.status()}, not a redirect`);
-  else ok('the download arm redirects too', (download.headers().location || '').slice(0, 60));
+  if (download.status() === 302) {
+    ok('the download arm redirects too', (download.headers().location || '').slice(0, 60));
+  } else if (download.status() === 200 && download.headers()['x-bytebikri-relay']) {
+    ok('the download arm relays too, and says so',
+      `from ${download.headers()['x-bytebikri-relay']}, as ${(download.headers()['content-disposition'] || '').split(';')[0]}`);
+  } else {
+    fail(`the download arm answered ${download.status()}, neither a redirect nor a relay`);
+  }
 
   // ── 2b. and it PLAYS, in our player, off bytes that came from the host ──────
   //
@@ -407,6 +461,28 @@ try {
         ok('a file at a host is delivered by that host', `(${LOCAL} → ${new URL(to).host})`);
       } else {
         fail(`the route sent the browser somewhere no host was configured (${LOCAL} → ${to.slice(0, 80)})`);
+      }
+    } else if (local.status() === 200 && local.headers()['x-bytebikri-relay']) {
+      // The same host, a different kind: a `.txt` is a `file` kind and belongs at the general
+      // host, whose bytes come back through us. Saying "ours" here was the lie this step was
+      // one line away from telling.
+      ok('a file at a host that refuses browsers is relayed by us',
+        `${LOCAL} → 200, relayed from ${local.headers()['x-bytebikri-relay']}`);
+      /*
+       * AND THE RELAY MUST PASS A RANGE THROUGH. This is the difference between a relay and
+       * a download: a player seeks, a seek is a Range request, and a relay that swallowed the
+       * range (or buffered the file and answered 200) would look fine in a screenshot and
+       * stutter forever in a viewer's hand. Small file, same question.
+       */
+      const rangedLocal = await page.request.get(`${BASE}${u.pathname}${u.search}`, {
+        headers: { range: 'bytes=0-9' }, maxRedirects: 0,
+      });
+      const rangeHeader = rangedLocal.headers()['content-range'] || '';
+      if (rangedLocal.status() === 206 && /^bytes 0-9\//.test(rangeHeader)) {
+        ok('the relay answers a Range request with a range, not the whole file', rangeHeader);
+      } else {
+        fail(`the relay answered ${rangedLocal.status()} to a Range request`
+          + `${rangeHeader ? ` (${rangeHeader})` : ' with no content-range'} — a player that cannot seek`);
       }
     } else if (local.status() === 200) {
       ok('a file on our disk is served by us', `${LOCAL} → 200 ${(local.headers()['content-type'] || '').split(';')[0]}`);

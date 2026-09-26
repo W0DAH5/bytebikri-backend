@@ -521,9 +521,18 @@ matters for each host — `telegraph — cannot delete — a file sent there sta
 `pixeldrain — needs a paid plan to serve` — and `npm run video:check -- --drivers` prints the same table plus
 each host's terms. Both read from `capabilities`, so neither can drift from what the code does.
 
-## 11. api.video: the live ingest, and what "no limit" actually means
+## 11. api.video: the live ingest, and what "no limit" actually means — **HISTORY, REMOVED**
 
-api.video is the fifth host on the list and the only one that is **not a place files live**. It is used
+> **This section is no longer about code in this repository.** The provider was removed at the owner's
+> instruction (commit `68a3bea` and the commit that follows it): it is the metered host, it needs a payment
+> method before a store can broadcast for real, and the owner has none — the live path now runs on Ant Media
+> Server, which is free software on a machine of ours (§12). What remains below is the RESEARCH, kept because
+> it is the reasoning that made §12 readable: how a metered live host behaves, what its sandbox does to a
+> seller's broadcast, and what "no viewer limit" turned out to mean. The code, the stub and the credential are
+> gone; `LIVE_DRIVER` no longer accepts `apivideo` as a value and a typo there is treated as unset, exactly
+> as any other misspelled driver is.
+
+api.video was the fifth host on the list and the only one that is **not a place files live**. It was used
 for one thing — running a seller's live stream — and the reasons are in §11.2 and §11.3. What follows is
 what their own pages say, including the part that is easy to read past.
 
@@ -745,8 +754,9 @@ Ant Media Server ships in two editions and the difference decides everything:
 | playback | **HLS** and DASH/CMAF — 8–12 s latency with the low-latency HLS extras | **WebRTC playback, ≈0.5 s** |
 | rest | REST v2 API, web panel, recording to MP4/WebM/HLS, IP-camera, re-streaming | + adaptive bitrate, GPU encoding, clustering, publish/play token control, mobile SDKs, simulcast |
 
-**The trap in the message that started this round.** The key pasted in — `AMSb9c5b8ea80df1555713832fd920bab`,
-expiring 2026-10-10 — is an **Enterprise trial**, and an Enterprise trial is *not* a free tier. Its own EULA
+**The trap in the message that started this round.** The key that was pasted in (an `AMS…` string,
+expiring 2026-10-10 — the value itself is deliberately NOT recorded here: a licence key in a git repository
+is a key that has leaked, and this one is not ours to publish) is an **Enterprise trial**, and an Enterprise trial is *not* a free tier. Its own EULA
 (§4.1.2) limits it to a single instance and says, in as many words, that it **"shall not use the Software for
 any commercial purposes whatsoever or in any manner intended to benefit, aid, or assist a third party."** A
 platform that runs other people's stores, for their audiences, is a third party being assisted. So the trial
@@ -844,3 +854,93 @@ What cannot be settled from here, in order of risk:
 
 Until those hold, the honest configuration on any deployment here stays **`LIVE_DRIVER` unset**, which
 changes nothing about how the product behaves today: a seller can still paste a playlist they got elsewhere.
+
+---
+
+## 13. Deleting a file, and not being blocked by a host
+
+Two asks arrived together, and they are the same question from two sides: *a seller must be able to take
+something down for real*, and *a third party's mood must not be able to stop the store working*.
+
+### 13.1 "Delete" did not exist
+
+Worth writing down plainly, because the gap was invisible from the outside: until this round the product
+had **no way to delete a file at all**. A seller could pause one — take it off the storefront — and that was
+everything. Every asset in the database was `live`. The seller who uploads the wrong cut, or a picture they
+no longer have the right to show, had no way to take it back, and the platform's only answer was "hide it
+from the list".
+
+Pausing is not that answer, and the new status does not overload it:
+
+| | paused | deleted |
+| --- | --- | --- |
+| storefront | gone | gone |
+| someone who already unlocked | **still watches it** — an unlock buys the file, not the sale | **access voided**: the bytes are gone |
+| the files | still there | destroyed, and their addresses removed |
+| reversible | yes — flip it back | **no** |
+| the row | kept | kept, as a tombstone: unlocks, reports, appeals and audits keep their subject |
+
+Two mechanisms make "deleted" mean it rather than look like it:
+
+* **the addresses go with the bytes.** `asset_files` rows are deleted, so both byte routes 404 because there
+  is no file to look up — not because a page decided to hide a card. The live `external_url` is cleared, and
+  a `cover_url` pointing at somebody else's origin is cleared too (a picture of a deleted file, still being
+  served from a CDN, is the same leak one size smaller).
+* **the state is checked at the byte boundary.** `closedToViewers` (in `moderation.js`, so it can be tested
+  without booting the server) refuses `deleted` with **410 Gone**, refuses a file hidden by reports with 403,
+  and refuses an unpublished one with 404 — for everyone except the owner and an operator. Before this,
+  the byte routes checked the ENTITLEMENT and nothing else, which meant a moderator's take-down left the
+  bytes flowing to anybody holding a token. Pausing is deliberately NOT in that list: making the reversible,
+  everyday action cut off every buyer would teach sellers to reach for the irreversible one instead.
+
+### 13.2 A host that cannot delete
+
+Telegra.ph has no delete endpoint — no key, no account, no call. The old behaviour was to refuse the whole
+delete, which is the worst of the two options available: the seller disowns the picture and we keep serving
+it. What happens now:
+
+1. every file is attempted — local keys unlinked from disk, remote keys deleted at their host;
+2. a host that refuses (or cannot) leaves an **orphan**, recorded in the audit log with the host and the key,
+   and named on the tombstone: *the copy at Telegra.ph still exists at its address; nothing here serves,
+   lists or links it any more, and this delete could not unmake that URL*;
+3. everything local is destroyed anyway, the asset becomes a tombstone, and the unlocks are voided.
+
+The sentence is the point. A delete that claimed more than it did would be worse than the bug it fixes,
+because the seller would stop worrying about a picture that is still up.
+
+### 13.3 The two workarounds, one per host
+
+The registry declares a **delivery** fact now, separate from what a host is for:
+
+* **Pixeldrain** (`hotlink: 'refused-when-free'`) refuses what it reads as a hotlink — `hotlink_detected`,
+  403 — and a 302 from a store's page is exactly that: a browser with the store's referer and no key. So its
+  bytes are **relayed**: the request goes from our server, with our key, and the response is piped to the
+  viewer with Range intact, status passed through, and nothing buffered in memory (a relay that buffered a
+  video would be 300 MB of RAM per viewer). `MEDIA_RELAY=none` turns it off — right for a Pro account, since
+  a relay is our upload rather than the host's connection.
+* **Catbox** is a licence problem, not an HTTP one: their terms forbid being a service's CDN, and piping
+  their bytes through us is still that. So it is **not relayed by default**, stays marked development-only,
+  and the relay is not offered as a cure for a term.
+
+And the other half, which is what makes a host failure survivable at all: **an upload that a host refuses at
+the wire no longer fails the seller's upload.** The pre-check covered the refusals a host publishes (a size
+cap, a kind it does not take); it could not cover an expired key, a free plan reading a datacenter upload as
+abuse, or a host having an afternoon — those threw, and the seller got an error page while the file, which
+was perfectly good, never landed. Now the host is still tried first, and a failure keeps the bytes on our own
+disk with the reason in the log. The driver is still visibly broken to the operator, which is where that
+belongs; the seller just gets a file that works.
+
+**One thing the relay deliberately does not do: HLS.** A playlist names its own segments, so piping a
+playlist through our origin without rewriting those names hands the player a list of urls it is still
+expected to fetch from the host — the same CORS question, hidden one level down. Relaying HLS is a playlist
+REWRITER, which is a real feature rather than a delivery flag; until it exists, the live path stays a
+redirect, where §10.4's answer (name the origin in the policy) already works.
+
+### 13.4 What this does not fix
+
+* **A public URL that was already fetched.** Telegra.ph's copy is still at its address for anyone who saved
+  it. Nothing in this repository can change that; the tombstone says so in as many words.
+* **Catbox's terms** (above), which no code change addresses.
+* **Bandwidth.** A relay is our upload, and it is now in the delivery path for one host. That is a cost the
+  operator should see coming rather than discover on a graph — which is why the doctor prints which mode is
+  in force, and why `MEDIA_RELAY=none` exists.

@@ -69,6 +69,19 @@ export const capabilities = {
    */
   kinds: ['video', 'audio', 'image', 'file'],
   deletable: true,
+  /*
+   * THE ONE DELIVERY FACT THIS HOST HAS, and it is the reason the relay exists.
+   *
+   * A free plan refuses a request it reads as a hotlink (`hotlink_detected`, 403) — and a
+   * 302 from a store's page to their url is exactly that: the browser arrives with the
+   * store's referer and no key. The doctor has warned about it since the host was added;
+   * the relay (`video.js` `relaysThroughUs`) is the answer, because a request that comes
+   * from OUR server with OUR key is the request their API expects.
+   *
+   * `premium` rather than `refused` because it depends on the account: a Pro key hotlinks
+   * fine, and `MEDIA_RELAY=none` is how such a deployment stops paying for the hop.
+   */
+  hotlink: 'refused-when-free',
   policy: {
     commercial: 'premium',
     note: 'hotlinking is a Pro feature (`hotlink_detected` is in its own error list) and '

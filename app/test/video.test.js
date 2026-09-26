@@ -137,13 +137,18 @@ after(async () => {
 const video = await import('../src/video.js');
 const { storage } = await import('../src/store.js');
 
-const withDriver = (fn, { driver = 'filemoon' } = {}) => {
+const withDriver = (fn, { driver = 'filemoon', env = {} } = {}) => {
   const before = { ...process.env };
   process.env.FILEMOON_API_BASE = base;
   process.env.FILEMOON_TOKEN = '147|stub-token-abcdefghijklmnop';
   if (driver) process.env.VIDEO_DRIVER = driver; else delete process.env.VIDEO_DRIVER;
+  // Extra variables for the tests that need a DIFFERENT kind's driver (an image goes by
+  // IMAGE_DRIVER, not VIDEO_DRIVER) or a host whose base points at a server of their own.
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
   const restore = () => {
-    for (const key of ['VIDEO_DRIVER', 'FILEMOON_TOKEN', 'FILEMOON_API_BASE']) {
+    for (const key of ['VIDEO_DRIVER', 'FILEMOON_TOKEN', 'FILEMOON_API_BASE', ...Object.keys(env)]) {
       if (before[key] === undefined) delete process.env[key]; else process.env[key] = before[key];
     }
   };
@@ -394,12 +399,12 @@ before(async () => {
 after(async () => { await new Promise((resolve) => catboxStub.close(resolve)); });
 
 test('the registry knows its hosts, and a misspelled driver is local rather than something else', () => {
-  assert.deepEqual(video.HOSTS, ['filemoon', 'apivideo', 'antmedia', 'pixeldrain', 'telegraph', 'catbox']);
+  assert.deepEqual(video.HOSTS, ['filemoon', 'antmedia', 'pixeldrain', 'telegraph', 'catbox']);
   const live = Object.entries(video.providers).filter(([, p]) => p.capabilities.role === 'live').map(([name]) => name);
-  assert.deepEqual(live, ['apivideo', 'antmedia'],
-    'two live hosts now — one is a service, one is software on a machine the seller owns');
+  assert.deepEqual(live, ['antmedia'],
+    'one live host: software on a machine the seller owns, not somebody else\'s metered service');
   for (const [, p] of Object.entries(video.providers)) {
-    if (p.capabilities.role === 'live') assert.deepEqual(p.capabilities.kinds, [], 'and neither stores a file');
+    if (p.capabilities.role === 'live') assert.deepEqual(p.capabilities.kinds, [], 'and it stores no file at all');
   }
   assert.equal(video.videoDriver({ VIDEO_DRIVER: 'FILEMOON ' }), 'filemoon');
   assert.equal(video.videoDriver({ VIDEO_DRIVER: 'nope' }), 'local',
@@ -709,89 +714,6 @@ test('Telegra.ph: playback is a url from the name, and there is NO delete to cal
   assert.equal(video.providers.telegraph.capabilities.deletable, false);
 });
 
-// ── api.video: two calls to store a video, and the ONLY live ingest here ────
-//
-// Four things are asserted rather than trusted, because each is a decision recorded in
-// VIDEO_STORAGE.md §11 and each would be invisible in a passing test that ignored it:
-//
-//   * the credential goes in the USERNAME field of Basic auth with a trailing colon (the
-//     opposite of Pixeldrain next door, and a key sent as a password authenticates as
-//     nobody);
-//   * containers are created `public: true` — a private container's delivery is a
-//     single-use token, and HLS fetches a manifest plus every segment, so a private
-//     container is a player that breaks on the second request;
-//   * the host is LIVE ONLY in this product, so the double carries no upload routes and the
-//     sandbox numbers that matter are the live ones (30 minutes of stream, 30 seconds of
-//     recording) beside the video crop
-//     is the fallback that does not depend on a CDN's CORS policy;
-//   * the live half mints a stream and hands back an HLS playlist our own player plays —
-//     and the streamKey is a credential the client is given, never one it stores.
-
-const seenApi = [];
-const apiStub = http.createServer(async (req, res) => {
-  const chunks = [];
-  for await (const c of req) chunks.push(c);
-  const body = Buffer.concat(chunks);
-  const url = new URL(req.url, 'http://127.0.0.1');
-  seenApi.push({
-    method: req.method, path: url.pathname, auth: req.headers.authorization,
-    body: body.toString('utf8').slice(0, 400), bytes: body.length,
-  });
-  const json = (code, payload) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)); };
-  // The real scheme: key as USERNAME, trailing colon, empty password.
-  const decoded = String(req.headers.authorization || '').startsWith('Basic ')
-    ? Buffer.from(String(req.headers.authorization).slice(6), 'base64').toString('utf8') : '';
-  const authed = decoded === 'stub-key:';
-  const publicAsset = req.method === 'GET' && /^\/(vod|live)\//.test(url.pathname);
-
-  if (url.pathname === '/auth/api-key' && req.method === 'POST') {
-    return json(200, { token_type: 'Bearer', access_token: 'tok', expires_in: 3600 });
-  }
-  if (!authed && !publicAsset) return json(401, { type: 'about:blank', title: 'Unauthorized', status: 401 });
-
-  /*
-   * NO UPLOAD ROUTES. This host stores nothing in this product, so the in-process double
-   * carries only what the product calls: the credential check, the workspace listing (how
-   * the account check works) and the live half. A stub with routes nothing calls is how a
-   * removed capability goes on looking alive.
-   */
-  if (url.pathname === '/live-streams' && req.method === 'POST') {
-    return json(201, {
-      liveStreamId: 'liSTUB0000000000000001',
-      streamKey: 'cc1b4df0-d1c5-4064-a8f9-9f0368385135',
-      name: 'stub live', public: true, broadcasting: false, record: false,
-      assets: { iframe: '', player: 'p', hls: 'https://live.api.video/liSTUB0000000000000001.m3u8', thumbnail: 't' },
-    });
-  }
-  if (url.pathname === '/live-streams/liSTUB0000000000000001' && req.method === 'GET') {
-    return json(200, {
-      liveStreamId: 'liSTUB0000000000000001', streamKey: 'cc1b4df0-d1c5-4064-a8f9-9f0368385135',
-      name: 'stub live', broadcasting: true, record: true,
-      assets: { hls: 'https://live.api.video/liSTUB0000000000000001.m3u8' },
-    });
-  }
-  if (url.pathname === '/live-streams/liSTUB0000000000000001' && req.method === 'PATCH') {
-    return json(200, { liveStreamId: 'liSTUB0000000000000001', name: 'renamed', broadcasting: false });
-  }
-  if (url.pathname === '/live-streams/liSTUB0000000000000001' && req.method === 'DELETE') return res.writeHead(204).end();
-  if (url.pathname === '/live-streams/liGONE' && req.method === 'DELETE') return json(404, { title: 'not found', status: 404 });
-  /* The workspace listing: the account check reads `pagination.itemsTotal` from it. */
-  if (url.pathname === '/videos' && req.method === 'GET') {
-    return json(200, { data: [], pagination: { itemsTotal: 7, pagesTotal: 1, pageSize: 1, currentPage: 1 } });
-  }
-  return json(404, { title: 'no such endpoint', status: 404 });
-});
-let apiBase = '';
-before(async () => {
-  await new Promise((resolve) => apiStub.listen(0, '127.0.0.1', resolve));
-  apiBase = `http://127.0.0.1:${apiStub.address().port}`;
-});
-after(async () => { await new Promise((resolve) => apiStub.close(resolve)); });
-
-const apiEnv = (extra = {}) => ({
-  ...process.env, VIDEO_DRIVER: 'apivideo', APIVIDEO_API_KEY: 'stub-key', APIVIDEO_BASE: apiBase, ...extra,
-});
-
 /*
  * ── the SECOND live host: Ant Media Server on a machine of our own ──────────
  *
@@ -875,102 +797,80 @@ const amsEnv = (extra = {}) => ({
   ...process.env, LIVE_DRIVER: 'antmedia', ANT_MEDIA_BASE: amsBase, ANT_MEDIA_REST_SECRET: AMS_SECRET, ...extra,
 });
 
-test('api.video: the credential is Basic with the key as the USERNAME and a trailing colon', async () => {
-  const before = seenApi.length;
-  await video.providers.apivideo.account({ env: apiEnv() });
-  const calls = seenApi.slice(before);
-  const expected = `Basic ${Buffer.from('stub-key:').toString('base64')}`;
-  assert.ok(calls.length >= 2, 'the credential check asks the auth endpoint');
-  for (const c of calls) {
-    assert.equal(c.auth, expected,
-      'the key belongs in the USERNAME field with a trailing colon — sent as a password it authenticates as nobody');
-  }
-  assert.ok(calls.some((c) => c.path === '/auth/api-key'), 'POST /auth/api-key is the one call whose purpose is "is this key valid"');
-});
 
 
 
-
-
-test('api.video: the sandbox is detected from the base, because its limits are product limits', async () => {
-  const provider = video.providers.apivideo;
-  assert.equal(provider.isSandbox({ APIVIDEO_BASE: 'https://sandbox.api.video' }), true);
-  assert.equal(provider.isSandbox({ APIVIDEO_BASE: 'https://ws.api.video' }), false);
-  assert.equal(provider.isSandbox({}), false, 'production is the default base');
-  const caps = provider.capabilities.sandbox;
-  assert.equal(caps.maxSeconds, 30, 'sandbox video is cropped to 30 seconds');
-  assert.equal(caps.liveMaxSeconds, 1800,
-    'sandbox LIVE is a different limit from sandbox video: the stream is stopped at 30 minutes');
-  assert.equal(caps.liveRecordSeconds, 30, 'and its recording is cut at 30 seconds');
-  assert.equal(caps.deletesAfterHours, 24);
-  assert.equal(caps.watermark, true, 'the sandbox watermark cannot be removed, so it cannot be sold from');
-});
-
-test('api.video is a LIVE host: no kind of file can be routed to it, whatever the driver says', () => {
-  /*
-   * THE POLICY, AS A TEST RATHER THAN A PARAGRAPH.
-   *
-   * The decision is that this host is not storage: encoding is free and unlimited, but
-   * hosting and delivery are metered per minute, and the hosts we already have hold files
-   * at no marginal cost. What api.video has that nothing else here has is the INGEST, so
-   * that is what we buy and nothing else.
-   *
-   * `capabilities.kinds` is how the registry enforces it — `driverForKind` asks
-   * `hostAccepts`, and `hostAccepts` asks that list. An empty list means there is no
-   * configuration in existence that routes a file here, which is a stronger statement than
-   * a comment in the module saying we do not do that.
-   */
-  const provider = video.providers.apivideo;
-  assert.deepEqual(provider.capabilities.kinds, [],
-    'a storage kind here would be a door we decided not to open');
-  assert.equal(provider.capabilities.role, 'live');
-
-  // And the router agrees, with this host named as loudly as the environment can name it.
-  const env = { VIDEO_DRIVER: 'apivideo', FILE_DRIVER: 'apivideo', APIVIDEO_API_KEY: 'k' };
-  for (const kind of ['video', 'audio', 'image', 'file']) {
-    assert.equal(video.hostAccepts(kind, 'apivideo', env), false, `${kind} must never route to the live host`);
-    assert.notEqual(video.driverForKind(kind, env), 'apivideo', `${kind} must land somewhere that stores it`);
-  }
-  assert.equal(video.driverForKind('video', env), 'local',
-    'nothing else is configured, so the bytes stay on our disk — the fallback that always works');
-
-  // What IS routed there is live, and that is the whole point of the module.
-  assert.equal(video.liveDriver({ ...env, LIVE_DRIVER: 'apivideo' }), 'apivideo');
-  assert.equal(video.liveIngestEnabled({ ...env, LIVE_DRIVER: 'apivideo' }), true);
-});
 
 
 // ── the live half ───────────────────────────────────────────────────────────
 
-test('api.video live: minting a stream hands back an id, a key and a playlist we can play', async () => {
-  const before = seenApi.length;
-  const live = await video.providers.apivideo.createLiveStream({ liveName: 'stub live', env: apiEnv() });
-  assert.equal(live.id, 'liSTUB0000000000000001');
-  assert.equal(live.streamKey, 'cc1b4df0-d1c5-4064-a8f9-9f0368385135');
-  assert.match(live.hls, /^https:\/\/live\.api\.video\/liSTUB0000000000000001\.m3u8$/,
-    'what comes back is an HLS playlist — the exact shape the live panel already stores in external_url');
-  const create = JSON.parse(seenApi.slice(before).find((c) => c.path === '/live-streams').body);
-  assert.equal(create.public, true,
-    'public for the same reason the videos are: a private live url carries a per-viewer token in its PATH');
-  assert.equal(create.record, false, 'live-to-VOD is an hour of hosting, so it is asked for rather than assumed');
+// ── not being blocked by the hosts that do not want to serve a browser ──────
+
+test('a host that refuses the bytes mid-upload does not fail the seller\'s upload', async () => {
+  /*
+   * THE PROMISE: a third party's mood must not be able to stop a seller publishing.
+   *
+   * The stub below answers 500 to every upload — which stands in for the real refusals this
+   * was written for: an API key that expired 30 days after its last use, a free plan that
+   * reads a datacenter upload as abuse, a host having an afternoon. The bytes must land on
+   * OUR disk, the key must say so, and the call must return a usable key rather than throw.
+   */
+  const refusing = http.createServer((req, res) => {
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ success: false, value: 'nope' }));
+  });
+  await new Promise((resolve) => refusing.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${refusing.address().port}/api`;
+  try {
+    const key = await withDriver(async () => storage.put(
+      Buffer.from('a perfectly good image'), 'photo.png', { mimeType: 'image/png' },
+    ), {
+      driver: null,
+      env: { IMAGE_DRIVER: 'pixeldrain', PIXELDRAIN_API_KEY: 'k', PIXELDRAIN_API_BASE: base },
+    });
+    assert.match(key, /^private\//, `the bytes stayed with us, and the key says so: ${key}`);
+    assert.equal(key.includes('pixeldrain'), false, 'a key that named the host would be a lie we could not serve');
+    const written = await storage.get(key);
+    assert.equal(written.toString(), 'a perfectly good image', 'the file is really there');
+  } finally {
+    await new Promise((resolve) => refusing.close(resolve));
+  }
 });
 
-test('api.video live: the ingest addresses are what a seller types into OBS or ffmpeg', () => {
-  const ingest = video.providers.apivideo.ingestFor({ APIVIDEO_STREAM_KEY: 'KEY-123' });
-  assert.equal(ingest.rtmp, 'rtmp://broadcast.api.video/s');
-  assert.equal(ingest.rtmps, 'rtmps://broadcast.api.video:1936/s');
-  assert.equal(ingest.srt, 'srt://broadcast.api.video:6200?streamid=KEY-123',
-    'the key rides in the URL for SRT, which is why it is never stored and never logged');
+test('pixeldrain is served through our own origin, and an operator can turn that off', () => {
+  /*
+   * The 403 `hotlink_detected` is not a bug in anybody's client: their free plan refuses a
+   * request that arrives like a browser with no key, and a 302 from a store's page is exactly
+   * that. The relay is the answer, and it is a policy an operator can reverse — a Pro key
+   * hotlinks fine, and our upload is then the scarce resource.
+   */
+  assert.equal(video.relaysThroughUs('pixeldrain', {}), true, 'the default is "serve it, do not be blocked"');
+  assert.equal(video.relaysThroughUs('pixeldrain', { MEDIA_RELAY: 'none' }), false, 'and it can be turned off');
+  assert.equal(video.relaysThroughUs('catbox', {}), false,
+    'Catbox is NOT relayed: their terms are the problem, and re-serving their bytes through us is still that');
+  assert.equal(video.relaysThroughUs('catbox', { MEDIA_RELAY: 'all' }), true, 'unless an operator insists');
+  assert.equal(video.relaysThroughUs('filemoon', { MEDIA_RELAY: 'pixeldrain' }), false);
+  assert.equal(video.relaysThroughUs('filemoon', { MEDIA_RELAY: 'pixeldrain,filemoon' }), true);
+  assert.equal(video.relaysThroughUs('antmedia', {}), false,
+    'a live host is never relayed: an HLS playlist names its own segments, and piping it without '
+    + 'rewriting them would move the CORS question one level down instead of answering it');
 });
 
-test('api.video live: the state comes from the host — including whether it is live right now', async () => {
-  const state = await video.providers.apivideo.liveStream('liSTUB0000000000000001', { env: apiEnv() });
-  assert.equal(state.broadcasting, true, '`broadcasting` is the only honest "live now" there is');
-  assert.equal(state.hls, 'https://live.api.video/liSTUB0000000000000001.m3u8');
-  const patched = await video.providers.apivideo.updateLiveStream('liSTUB0000000000000001', { name: 'renamed' }, { env: apiEnv() });
-  assert.equal(patched.name, 'renamed');
-  assert.equal(await video.providers.apivideo.removeLiveStream('liSTUB0000000000000001', { env: apiEnv() }), true);
-  assert.equal(await video.providers.apivideo.removeLiveStream('liGONE', { env: apiEnv() }), true, 'a live stream already gone is the outcome we wanted');
+test('the relay is in the delivery path, and HLS is deliberately not', async () => {
+  /*
+   * A source guard, because the branch that matters is one `if` inside a 9000-line route file
+   * and a walk cannot make Pixeldrain answer 403 on demand. What it checks is the two halves
+   * that must both be true: the resolver consults the registry, and both byte routes pipe the
+   * result rather than redirecting it.
+   */
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
+  assert.match(src, /relaysThroughUs\(host\)/, 'the resolver asks the registry, not a hardcoded host');
+  assert.match(src, /found\.kind !== 'hls' && relaysThroughUs/, 'and it refuses HLS, on purpose');
+  const relays = src.match(/return relayBytes\(source\.relay\.url/g) || [];
+  assert.equal(relays.length, 2, 'both byte routes (stream and download) handle a relay');
+  assert.match(src, /x-bytebikri-relay/, 'and a relayed response says so, or a relayed 200 cannot be told from our own');
+  assert.match(src, /from: source\.host/, 'naming the host the bytes came from');
 });
 
 // ── Ant Media Server: our own ingest, and the licence facts that go with it ──
@@ -1071,14 +971,14 @@ test('antmedia: the CSP names the self-hosted origin, because the playlist comes
 });
 
 test('the live driver is its own choice, and a host without a live half cannot pretend', () => {
-  const env = { VIDEO_DRIVER: 'filemoon', FILEMOON_TOKEN: 'k', APIVIDEO_API_KEY: 'k' };
-  assert.equal(video.liveDriver({ ...env, LIVE_DRIVER: 'apivideo' }), 'apivideo');
+  const env = { VIDEO_DRIVER: 'filemoon', FILEMOON_TOKEN: 'k', ANT_MEDIA_BASE: 'https://stream.example:5443' };
+  assert.equal(video.liveDriver({ ...env, LIVE_DRIVER: 'antmedia' }), 'antmedia');
   assert.equal(video.liveDriver({ ...env, LIVE_DRIVER: 'filemoon' }), 'local',
     'Filemoon has no live capability, so naming it as the live driver must not stick');
-  assert.equal(video.liveDriver(env), 'local', 'unset means today\'s behaviour: a seller pastes their own playlist');
-  assert.equal(video.liveIngestEnabled({ ...env, LIVE_DRIVER: 'apivideo' }), true);
-  assert.equal(video.liveIngestEnabled({ ...env, LIVE_DRIVER: 'apivideo', APIVIDEO_API_KEY: undefined }), false,
-    'a driver whose credential is missing is not configured');
+  assert.equal(video.liveDriver(env), 'local', 'unset means the old behaviour: a seller pastes their own playlist');
+  assert.equal(video.liveIngestEnabled({ ...env, LIVE_DRIVER: 'antmedia' }), true);
+  assert.equal(video.liveIngestEnabled({ ...env, LIVE_DRIVER: 'antmedia', ANT_MEDIA_BASE: undefined }), false,
+    'a driver with no server to talk to is not configured');
 });
 
 test('the CSP names the live host even when files go somewhere else', () => {
@@ -1088,10 +988,18 @@ test('the CSP names the live host even when files go somewhere else', () => {
    * leaves a live playlist's origin unnamed, and hls.js is then refused by `connect-src`
    * with no error event at all. A black rectangle in a browser doing what the policy said.
    */
-  const env = { VIDEO_DRIVER: 'filemoon', FILEMOON_TOKEN: 'k', LIVE_DRIVER: 'apivideo', APIVIDEO_API_KEY: 'k' };
+  const env = {
+    VIDEO_DRIVER: 'filemoon', FILEMOON_TOKEN: 'k',
+    LIVE_DRIVER: 'antmedia', ANT_MEDIA_BASE: 'https://stream.example:5443',
+  };
   const origins = video.mediaOrigins(env);
-  assert.ok(origins.includes('https://live.api.video'), 'the live origin must be allowed');
-  assert.ok(origins.includes('https://cdn.api.video'), 'and the VOD asset origin beside it');
+  assert.ok(origins.includes('https://stream.example:5443'),
+    'the live origin must be allowed even though the files go to a different host');
+  // Filemoon contributes no origin of its own (`mediaOrigins` is empty for it, because its
+  // media urls are handed out per file rather than served from a base we name here) — so the
+  // assertion is that the LIVE origin survives the mixed configuration, which is the bug the
+  // test is about, and not that a second origin appears.
+  assert.equal(origins.length, 1);
 });
 
 test('a delete goes to the host that holds the bytes, not to the configured one', async () => {
@@ -1185,8 +1093,8 @@ test('a host is asked whether it takes this KIND of media, and only one of them 
     'Pixeldrain is the generalist now — any file kind, direct urls, a real delete');
   assert.ok(kindsOf('catbox').includes('image'), 'Catbox takes images, which is what most of the web uses it for');
   assert.deepEqual(kindsOf('telegraph'), ['image'], 'the image host is an image host, and that is a limit worth writing down');
-  assert.deepEqual(kindsOf('apivideo'), [],
-    'api.video is the LIVE host — it stores nothing, so it declares no kind and no file can reach it');
+  assert.deepEqual(kindsOf('antmedia'), [],
+    'the live host stores nothing, so it declares no kind and no file can ever reach it');
 
   /*
    * THE VOCABULARY IS `mediaKind`'S, AND THIS IS THE TEST THAT KEEPS IT THAT WAY.
