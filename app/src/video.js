@@ -31,6 +31,7 @@
  * `npm run video:check` exists for the machine that CAN reach them.
  */
 import * as filemoon from './video-filemoon.js';
+import * as apivideo from './video-apivideo.js';
 import * as pixeldrain from './video-pixeldrain.js';
 import * as telegraph from './video-telegraph.js';
 import * as catbox from './video-catbox.js';
@@ -47,6 +48,8 @@ export {
  * host is chosen per KIND of media (§10.6):
  *
  *   filemoon    video       the video host, and the one this product deploys with
+ *   apivideo    video       video infrastructure: transcoding to adaptive HLS, a progressive
+ *                           mp4, and THE LIVE INGEST — the only host here that can run one
  *   pixeldrain  the rest    a general file host: direct urls, byte ranges, a real delete
  *   telegraph   images      small, permanent, free — and it can never delete one
  *   catbox      development only: its terms forbid being a service's CDN
@@ -54,7 +57,7 @@ export {
  * GoFile is gone: a free account could not produce a playable link at all, and paying for
  * one to serve files this product keeps on its own disk bought nothing.
  */
-export const PROVIDERS = { filemoon, pixeldrain, telegraph, catbox };
+export const PROVIDERS = { filemoon, apivideo, pixeldrain, telegraph, catbox };
 export const HOSTS = Object.keys(PROVIDERS);
 
 const isHost = (value) => Object.prototype.hasOwnProperty.call(PROVIDERS, value);
@@ -172,6 +175,32 @@ export function whyLocal(kind, env = process.env, file = null) {
  */
 export const ROUTED_KINDS = ['video', 'audio', 'image', 'file'];
 
+/**
+ * THE LIVE DRIVER — a second kind of choice, because live is not storage.
+ *
+ * A media host holds bytes; a live host holds a *stream*. What the seller needs is an
+ * ingest address and a key, and what the page needs is an HLS playlist — so api.video's
+ * live half is a different question from `driverForKind`, and it gets its own variable
+ * rather than being smuggled into `VIDEO_DRIVER`.
+ *
+ * Unset means today's behaviour, unchanged: a seller points a live file at a playlist
+ * they obtained somewhere else, and nothing here is involved. That default matters — the
+ * live surface, its breaks and its ladder have worked without an ingest server since the
+ * live round, and this variable adds to them rather than replacing them.
+ */
+export const LIVE_VAR = 'LIVE_DRIVER';
+
+export const liveDriver = (env = process.env) => {
+  const value = String((env || {})[LIVE_VAR] || '').trim().toLowerCase();
+  return isHost(value) && PROVIDERS[value].capabilities.live ? value : 'local';
+};
+
+/** Is a live ingest being run for this deployment? The boot line and the seller's panel ask. */
+export const liveIngestEnabled = (env = process.env) => {
+  const driver = liveDriver(env);
+  return driver !== 'local' && configured(driver, env);
+};
+
 /** Is ANY kind of media going to a host? The privacy notice and the boot line ask. */
 export const hostsEnabled = (env = process.env) =>
   ROUTED_KINDS.some((kind) => driverForKind(kind, env) !== 'local');
@@ -273,6 +302,19 @@ export function mediaOrigins(env = process.env) {
    * what this deployment actually uses and nothing else.
    */
   const inUse = new Set(activeHosts(env).map((entry) => entry.host));
+  /*
+   * THE LIVE DRIVER'S ORIGINS TOO, and this is not a detail.
+   *
+   * A deployment can run its files on one host and its live streams on another —
+   * `VIDEO_DRIVER=filemoon LIVE_DRIVER=apivideo` is the likeliest production shape there is.
+   * `activeHosts()` answers for the KIND routing only, so building the CSP from it alone
+   * would leave a live playlist's origin unnamed: hls.js fetches it with XHR under
+   * `connect-src`, the fetch is refused with no error event, and the stream is a black
+   * rectangle in a browser that is doing exactly what the policy told it to. The live
+   * driver is therefore added by name, not by kind.
+   */
+  const live = liveDriver(env);
+  if (live !== 'local' && configured(live, env)) inUse.add(live);
   const declared = [...inUse].flatMap((host) => PROVIDERS[host].mediaOrigins(env));
   const fromEnv = String(env.VIDEO_MEDIA_ORIGINS || '').split(/[,\s]+/).filter(Boolean);
   return [...new Set([...declared, ...fromEnv])];

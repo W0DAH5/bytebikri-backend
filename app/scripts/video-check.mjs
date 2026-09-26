@@ -23,7 +23,10 @@
  *   npm run video:check -- --drivers                 # all of them, one line each
  *   npm run video:check -- --upload a.mp4            # upload one file, classify, then DELETE it
  *   npm run video:check -- --upload a.jpg --driver=telegraph
+ *   npm run video:check -- --driver=apivideo --upload a.mp4
  *   npm run video:check -- --probe-telegraph         # is the UNDOCUMENTED image upload alive?
+ *   npm run video:check -- --probe-live              # mint a live stream, print the ingest
+ *                                                    # addresses, and DELETE the container
  *   npm run video:check -- --upload a.mp4 --keep     # …and leave it there to look at
  *
  * The upload it performs is small on purpose: this is a check, not a backfill. When a
@@ -84,8 +87,15 @@ const chosen = value('driver') || video.videoDriver();
  * able to ask on a machine with no hosts configured at all. It runs here, then leaves
  * unless a driver check was asked for as well.
  */
-if (flag('probe-telegraph')) {
-  await probeTelegraph();
+if (flag('probe-telegraph') || flag('probe-live')) {
+  if (flag('probe-telegraph')) await probeTelegraph();
+  if (flag('probe-live')) await probeLive();
+  /*
+   * A probe is a complete run on its own. The driver check is a separate question — "is the
+   * configured host usable" — and answering it because somebody asked whether an endpoint
+   * exists would report failures nobody asked about (and, with no driver configured, an
+   * `Unknown driver "local"` line that reads like a problem).
+   */
   if (!flag('driver') && !args.some((a) => a.startsWith('--driver='))) {
     console.log(process.exitCode ? '\nvideo host check: FAILED\n' : '\nvideo host check: ok\n');
     process.exit(process.exitCode || 0);
@@ -104,7 +114,7 @@ if (flag('probe-telegraph')) {
  */
 const credentialOf = (host) => video.providers[host].capabilities.needs;
 /** Named so a failure reads as "GET /user did not answer" rather than "something failed". */
-const ENDPOINT_OF_ACCOUNT = { filemoon: 'GET /account', pixeldrain: 'GET /api/user' };
+const ENDPOINT_OF_ACCOUNT = { filemoon: 'GET /account', pixeldrain: 'GET /api/user', apivideo: 'POST /auth/api-key' };
 const credentialless = (host) => video.providers[host].capabilities.credential === false;
 
 console.log('\nVideo host check\n');
@@ -213,6 +223,24 @@ try {
      * This does not fail the check: the key is valid and uploads work. It is a warning with
      * a consequence, which is what a warning is for.
      */
+    /*
+     * api.video's own tier word, and the two facts that decide whether a store can be
+     * served from it: the SANDBOX crops every video to 30 seconds and deletes it after a
+     * day (so it is a test environment, never a store's), and the rate-limit headers say
+     * what plan the key is on without anyone reading a dashboard.
+     */
+    if (chosen === 'apivideo') {
+      says(`environment: ${account.sandbox ? 'SANDBOX' : 'production'}`);
+      if (account.sandbox) {
+        const caps = video.providers.apivideo.capabilities.sandbox;
+        bad('this is a SANDBOX key: videos and live streams are cropped to '
+          + `${caps.maxSeconds}s, watermarked, and deleted after ${caps.deletesAfterHours}h — `
+          + 'fine for a demo, not for a store');
+      }
+      says(`workspace: ${account.videos ?? 'unknown'} video(s) on the account`);
+      if (account.rate) says(`rate limit: ${account.rate.limit}/min, ${account.rate.remaining} left this window`);
+      says('playback: HLS by default; set APIVIDEO_PLAYBACK=mp4 if the playlist is not CORS-readable');
+    }
     if (chosen === 'pixeldrain' && !/pro|premium|paid/i.test(String(account.tier || ''))) {
       says('NOTE: this account is on a free plan. Pixeldrain refuses requests it reads as');
       says('      hotlinks (403 hotlink_detected), and a store page loading its media is');
@@ -261,9 +289,14 @@ if (chosen === 'filemoon') {
   } catch (err) {
     bad(`listing files failed — ${err.message}`);
   }
+} else if (facts && facts.lists) {
+  /*
+   * A host that HAS a listing gets told so, with the count — because "does this host still
+   * hold the files we think it does" is a question an operator asks after an incident, and
+   * the answer should not be "not used for this host" when the endpoint exists.
+   */
+  says(`listing: GET /videos is available (${account && account.videos !== null && account.videos !== undefined ? `${account.videos} item(s) on the account` : 'count not read'})`);
 } else {
-  // The others expose no listing this product uses, and saying so beats an empty section
-  // that reads like a bug.
   says(`no listing: ${chosen === 'catbox' ? 'Catbox exposes none' : 'not used for this host'}`);
 }
 
@@ -369,12 +402,41 @@ if (toUpload && bytes) {
             + 'a viewer\'s browser: the CDN must send Access-Control-Allow-Origin, or the '
             + 'playlist must be served from our own origin (VIDEO_STORAGE.md §10.4 — a '
             + 'bandwidth decision, not a config change)');
+          if (chosen === 'apivideo') {
+            says('THIS host can be switched instead of proxied: every container is created with');
+            says('mp4Support, so APIVIDEO_PLAYBACK=mp4 serves the progressive asset, which a media');
+            says('element loads without CORS (VIDEO_STORAGE.md §11.2, decision 2).');
+          }
         }
       }
-      const probed = await probeRange(played.url);
-      if (probed.ok) ok(`the media url honours Range — seeking works (${probed.detail})`);
-      else if (probed.unreachable) says(`range probe skipped — this machine cannot reach the media url (${probed.detail})`);
-      else bad(`the media url ignored Range, so a viewer cannot scrub (${probed.detail})`);
+      /*
+       * RANGE MEANS SOMETHING ONLY ON A FILE, NOT ON A PLAYLIST.
+       *
+       * This probe asks "can a viewer scrub?" and answers it by asking for two bytes. On a
+       * progressive file that is exactly the right question. On an `.m3u8` it is not:
+       * seeking inside HLS is the demuxer's business (hls.js fetches the segment it wants),
+       * and a playlist is a few hundred bytes of text that fits in one packet — so a plain
+       * 200 is a correct answer, not a defect. The first version of this loop reported that
+       * as "the media url ignored Range" on api.video, which would have sent an operator
+       * looking for a bug in a host that was behaving.
+       *
+       * When the host has a progressive asset as well — api.video always does, because
+       * `mp4Support` is set at creation (§11.2) — that is what gets probed, since it is the
+       * thing a viewer would actually scrub.
+       */
+      let rangeTarget = { ok: false, detail: 'no progressive asset to probe' };
+      if (played.kind === 'hls') {
+        const mp4 = String(played.url).includes('/hls/') ? String(played.url).replace(/\/hls\/manifest\.m3u8.*$/, '/mp4/source.mp4') : null;
+        says(`seeking: ${mp4 ? `the playlist is not a byte-ranged file, so the progressive asset is probed instead (${mp4.split('/').pop()})` : 'the playlist is not a byte-ranged file — seeking is the demuxer\'s business, so Range is not probed here'}`);
+        if (mp4) rangeTarget = await probeRange(mp4);
+        else rangeTarget = { skipped: true, detail: 'playlist only' };
+      } else {
+        rangeTarget = await probeRange(played.url);
+      }
+      if (rangeTarget.ok) ok(`the media url honours Range — seeking works (${rangeTarget.detail})`);
+      else if (rangeTarget.skipped) says('range probe skipped — nothing byte-ranged to ask (see above)');
+      else if (rangeTarget.unreachable) says(`range probe skipped — this machine cannot reach the media url (${rangeTarget.detail})`);
+      else bad(`the media url ignored Range, so a viewer cannot scrub (${rangeTarget.detail})`);
     }
 
     if (flag('keep')) {
@@ -446,6 +508,62 @@ async function probeRange(url) {
     return { ok: false, detail: `answered ${res.status}` };
   } catch (err) {
     return { unreachable: true, detail: err?.cause?.code || err?.message || 'fetch failed' };
+  }
+}
+
+/**
+ * `--probe-live`: mint a live stream, print exactly what a seller would type into their
+ * encoder, and remove the container again.
+ *
+ * This is the one capability no other host in the registry has, and it cannot be proved
+ * from this side: creating a stream is a call, but *broadcasting* needs an RTMP push from a
+ * machine with ffmpeg (or OBS) and a network that can reach `broadcast.api.video`. So the
+ * probe does what can be done in one command — it mints, reads back the playlist url and the
+ * three ingest addresses, confirms the key is there, and deletes the container so nothing is
+ * left billing. The push itself is printed as the next step, with the exact command.
+ *
+ * The streamKey is printed because this is the operator's own terminal and the key is theirs
+ * to use; it is never stored by the app (VIDEO_STORAGE.md §11.2).
+ */
+async function probeLive() {
+  const provider = video.providers.apivideo;
+  if (!provider.configured()) {
+    bad('APIVIDEO_API_KEY is not set — there is no live driver to probe');
+    return;
+  }
+  console.log('\n  api.video live probe\n');
+  console.log(`  base        : ${provider.base()}`);
+  let live = null;
+  try {
+    live = await provider.createLiveStream({ liveName: 'bytebikri-probe' });
+    ok(`a live stream was minted — ${live.id}`);
+    says(`stream key  : ${live.streamKey}`);
+    says(`playlist    : ${live.hls || '(the host did not return one yet)'}`);
+    const ingest = provider.ingestFor({ APIVIDEO_STREAM_KEY: live.streamKey });
+    says('');
+    says('Put these in OBS (Service: Custom), or push with ffmpeg:');
+    says(`  server    : ${ingest.rtmp}`);
+    says(`  stream key: ${live.streamKey}`);
+    says('  ffmpeg    : ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=30 \\');
+    says('                -f lavfi -i sine=frequency=440 -c:v libx264 -preset veryfast \\');
+    says(`                -t 60 -f flv ${ingest.rtmp}/${live.streamKey}`);
+    const state = await provider.liveStream(live.id);
+    says('');
+    says(`broadcasting: ${state.broadcasting ? 'YES — a stream is up' : 'not yet (expected: nothing is pushing)'}`);
+    says('A live file points at that playlist and our own player plays it: the breaks, the cue');
+    says('and the unlock ladder are unchanged, because the url is still an .m3u8.');
+  } catch (err) {
+    bad(`the live probe failed — ${err.message}`);
+  } finally {
+    if (live) {
+      // Never leave a container behind: on a paid plan it is a thing that exists and bills.
+      try {
+        await provider.removeLiveStream(live.id);
+        says(`removed     : ${live.id} (no container left behind)`);
+      } catch (err) {
+        bad(`could not remove the probe stream ${live.id} — delete it by hand: ${err.message}`);
+      }
+    }
   }
 }
 

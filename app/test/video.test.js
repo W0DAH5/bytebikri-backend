@@ -393,7 +393,7 @@ before(async () => {
 after(async () => { await new Promise((resolve) => catboxStub.close(resolve)); });
 
 test('the registry knows its hosts, and a misspelled driver is local rather than something else', () => {
-  assert.deepEqual(video.HOSTS, ['filemoon', 'pixeldrain', 'telegraph', 'catbox']);
+  assert.deepEqual(video.HOSTS, ['filemoon', 'apivideo', 'pixeldrain', 'telegraph', 'catbox']);
   assert.equal(video.videoDriver({ VIDEO_DRIVER: 'FILEMOON ' }), 'filemoon');
   assert.equal(video.videoDriver({ VIDEO_DRIVER: 'nope' }), 'local',
     'a typo in an env file must leave every byte on disk, not pick another host');
@@ -700,6 +700,233 @@ test('Telegra.ph: playback is a url from the name, and there is NO delete to cal
     (e) => e.name === 'VideoApiError' && /no delete endpoint/.test(e.message) && /unconfirmed/.test(e.message),
   );
   assert.equal(video.providers.telegraph.capabilities.deletable, false);
+});
+
+// ── api.video: two calls to store a video, and the ONLY live ingest here ────
+//
+// Four things are asserted rather than trusted, because each is a decision recorded in
+// VIDEO_STORAGE.md §11 and each would be invisible in a passing test that ignored it:
+//
+//   * the credential goes in the USERNAME field of Basic auth with a trailing colon (the
+//     opposite of Pixeldrain next door, and a key sent as a password authenticates as
+//     nobody);
+//   * containers are created `public: true` — a private container's delivery is a
+//     single-use token, and HLS fetches a manifest plus every segment, so a private
+//     container is a player that breaks on the second request;
+//   * `mp4Support: true` is asked for at CREATION, because it cannot be added later and it
+//     is the fallback that does not depend on a CDN's CORS policy;
+//   * the live half mints a stream and hands back an HLS playlist our own player plays —
+//     and the streamKey is a credential the client is given, never one it stores.
+
+const seenApi = [];
+const apiStub = http.createServer(async (req, res) => {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  const body = Buffer.concat(chunks);
+  const url = new URL(req.url, 'http://127.0.0.1');
+  seenApi.push({
+    method: req.method, path: url.pathname, auth: req.headers.authorization,
+    body: body.toString('utf8').slice(0, 400), bytes: body.length,
+  });
+  const json = (code, payload) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)); };
+  // The real scheme: key as USERNAME, trailing colon, empty password.
+  const decoded = String(req.headers.authorization || '').startsWith('Basic ')
+    ? Buffer.from(String(req.headers.authorization).slice(6), 'base64').toString('utf8') : '';
+  const authed = decoded === 'stub-key:';
+  const publicAsset = req.method === 'GET' && /^\/(vod|live)\//.test(url.pathname);
+
+  if (url.pathname === '/auth/api-key' && req.method === 'POST') {
+    return json(200, { token_type: 'Bearer', access_token: 'tok', expires_in: 3600 });
+  }
+  if (!authed && !publicAsset) return json(401, { type: 'about:blank', title: 'Unauthorized', status: 401 });
+
+  if (url.pathname === '/videos' && req.method === 'POST') {
+    return json(201, { videoId: 'viSTUB0000000000000001', assets: { player: 'p', iframe: '', thumbnail: 't' }, status: 'uploaded' });
+  }
+  if (url.pathname === '/videos/viSTUB0000000000000001/source' && req.method === 'POST') {
+    return json(201, {
+      videoId: 'viSTUB0000000000000001', status: 'processing',
+      assets: { player: 'p', iframe: '', thumbnail: 't' },
+    });
+  }
+  if (url.pathname === '/videos/viSTUB0000000000000001') {
+    return json(200, {
+      videoId: 'viSTUB0000000000000001', status: 'playable', title: 'stub', duration: 5, public: true, mp4Support: true,
+      assets: {
+        player: 'p', iframe: '', thumbnail: 't',
+        hls: 'https://cdn.api.video/vod/viSTUB0000000000000001/hls/manifest.m3u8',
+        mp4: 'https://cdn.api.video/vod/viSTUB0000000000000001/mp4/source.mp4',
+      },
+    });
+  }
+  if (url.pathname === '/videos/notready') {
+    return json(200, { videoId: 'notready', status: 'processing', assets: { player: 'p', iframe: '', thumbnail: 't' } });
+  }
+  if (url.pathname === '/videos/viGONE') return json(404, { title: 'video not found', status: 404 });
+  if (url.pathname === '/videos/viSTUB0000000000000001' && req.method === 'DELETE') return res.writeHead(204).end();
+
+  if (url.pathname === '/live-streams' && req.method === 'POST') {
+    return json(201, {
+      liveStreamId: 'liSTUB0000000000000001',
+      streamKey: 'cc1b4df0-d1c5-4064-a8f9-9f0368385135',
+      name: 'stub live', public: true, broadcasting: false, record: false,
+      assets: { iframe: '', player: 'p', hls: 'https://live.api.video/liSTUB0000000000000001.m3u8', thumbnail: 't' },
+    });
+  }
+  if (url.pathname === '/live-streams/liSTUB0000000000000001' && req.method === 'GET') {
+    return json(200, {
+      liveStreamId: 'liSTUB0000000000000001', streamKey: 'cc1b4df0-d1c5-4064-a8f9-9f0368385135',
+      name: 'stub live', broadcasting: true, record: true,
+      assets: { hls: 'https://live.api.video/liSTUB0000000000000001.m3u8' },
+    });
+  }
+  if (url.pathname === '/live-streams/liSTUB0000000000000001' && req.method === 'PATCH') {
+    return json(200, { liveStreamId: 'liSTUB0000000000000001', name: 'renamed', broadcasting: false });
+  }
+  if (url.pathname === '/live-streams/liSTUB0000000000000001' && req.method === 'DELETE') return res.writeHead(204).end();
+  if (url.pathname === '/live-streams/liGONE' && req.method === 'DELETE') return json(404, { title: 'not found', status: 404 });
+  if (url.pathname === '/videos' && req.method === 'GET') {
+    return json(200, { data: [], pagination: { itemsTotal: 7, pagesTotal: 1, pageSize: 1, currentPage: 1 } });
+  }
+  return json(404, { title: 'no such endpoint', status: 404 });
+});
+let apiBase = '';
+before(async () => {
+  await new Promise((resolve) => apiStub.listen(0, '127.0.0.1', resolve));
+  apiBase = `http://127.0.0.1:${apiStub.address().port}`;
+});
+after(async () => { await new Promise((resolve) => apiStub.close(resolve)); });
+
+const apiEnv = (extra = {}) => ({
+  ...process.env, VIDEO_DRIVER: 'apivideo', APIVIDEO_API_KEY: 'stub-key', APIVIDEO_BASE: apiBase, ...extra,
+});
+
+test('api.video: the credential is Basic with the key as the USERNAME and a trailing colon', async () => {
+  const before = seenApi.length;
+  await video.providers.apivideo.account({ env: apiEnv() });
+  const calls = seenApi.slice(before);
+  const expected = `Basic ${Buffer.from('stub-key:').toString('base64')}`;
+  assert.ok(calls.length >= 2, 'the credential check asks the auth endpoint');
+  for (const c of calls) {
+    assert.equal(c.auth, expected,
+      'the key belongs in the USERNAME field with a trailing colon — sent as a password it authenticates as nobody');
+  }
+  assert.ok(calls.some((c) => c.path === '/auth/api-key'), 'POST /auth/api-key is the one call whose purpose is "is this key valid"');
+});
+
+test('api.video: a container is created PUBLIC and with mp4Support, then filled', async () => {
+  const before = seenApi.length;
+  const out = await video.upload(Buffer.from('pretend video'), 'clip.mp4', { mimeType: 'video/mp4', provider: 'apivideo', env: apiEnv() });
+  assert.equal(out.key, 'apivideo/viSTUB0000000000000001');
+  const calls = seenApi.slice(before);
+  assert.deepEqual(calls.map((c) => `${c.method} ${c.path}`), ['POST /videos', 'POST /videos/viSTUB0000000000000001/source'],
+    'two calls: the shell, then the bytes into it');
+  const create = JSON.parse(calls[0].body);
+  assert.equal(create.public, true,
+    'public on purpose: a private container is delivered with a SINGLE-USE token, and HLS fetches a manifest plus every segment');
+  assert.equal(create.mp4Support, true,
+    'asked for at creation because it cannot be added later, and it is the fallback that does not depend on CORS');
+  assert.ok(calls[1].bytes > 0, 'the second call actually carried the file');
+});
+
+test('api.video: playback reads the record — HLS by default, mp4 by configuration', async () => {
+  const hls = await video.playback('viSTUB0000000000000001', { provider: 'apivideo', env: apiEnv() });
+  assert.equal(hls.kind, 'hls', 'an .m3u8 is HLS, and our player attaches hls.js on that word alone');
+  assert.match(hls.url, /hls\/manifest\.m3u8$/);
+
+  const mp4 = await video.playback('viSTUB0000000000000001', { provider: 'apivideo', env: apiEnv({ APIVIDEO_PLAYBACK: 'mp4' }) });
+  assert.equal(mp4.kind, 'file', 'the progressive asset is the fallback for a CDN whose playlist is not CORS-readable');
+  assert.match(mp4.url, /mp4\/source\.mp4$/);
+});
+
+test('api.video: a container that is still encoding fails with the STATUS in the sentence', async () => {
+  await assert.rejects(
+    video.playback('notready', { provider: 'apivideo', env: apiEnv() }),
+    (e) => e.name === 'VideoApiError' && /processing/.test(e.message) && /no playable asset/.test(e.message),
+    'a seller staring at a spinner needs to know it is the host still encoding, not us being broken',
+  );
+});
+
+test('api.video: a delete that 404s is a success, because gone is gone', async () => {
+  assert.equal(await video.remove('viSTUB0000000000000001', { provider: 'apivideo', env: apiEnv() }), true);
+  assert.equal(await video.remove('viGONE', { provider: 'apivideo', env: apiEnv() }), true);
+});
+
+test('api.video: the sandbox is detected from the base, because its limits are product limits', async () => {
+  const provider = video.providers.apivideo;
+  assert.equal(provider.isSandbox({ APIVIDEO_BASE: 'https://sandbox.api.video' }), true);
+  assert.equal(provider.isSandbox({ APIVIDEO_BASE: 'https://ws.api.video' }), false);
+  assert.equal(provider.isSandbox({}), false, 'production is the default base');
+  const caps = provider.capabilities.sandbox;
+  assert.equal(caps.maxSeconds, 30);
+  assert.equal(caps.deletesAfterHours, 24);
+  assert.equal(caps.watermark, true, 'the sandbox watermark cannot be removed, so it cannot be sold from');
+});
+
+test('api.video: a file needing a chunked upload is kept on our disk instead of failing', () => {
+  // `acceptsFile` answers for the FILE, so the router can move on to another host rather
+  // than sending bytes the client cannot deliver in one request.
+  const verdict = video.providers.apivideo.acceptsFile({ mimeType: 'video/mp4', filename: 'huge.mp4', size: 210 * 1024 * 1024 });
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.why, /progressive|chunked/, 'the reason names the upload path that would be needed');
+  assert.equal(video.providers.apivideo.acceptsFile({ mimeType: 'video/mp4', filename: 'clip.mp4', size: 1024 }).ok, true);
+});
+
+// ── the live half ───────────────────────────────────────────────────────────
+
+test('api.video live: minting a stream hands back an id, a key and a playlist we can play', async () => {
+  const before = seenApi.length;
+  const live = await video.providers.apivideo.createLiveStream({ liveName: 'stub live', env: apiEnv() });
+  assert.equal(live.id, 'liSTUB0000000000000001');
+  assert.equal(live.streamKey, 'cc1b4df0-d1c5-4064-a8f9-9f0368385135');
+  assert.match(live.hls, /^https:\/\/live\.api\.video\/liSTUB0000000000000001\.m3u8$/,
+    'what comes back is an HLS playlist — the exact shape the live panel already stores in external_url');
+  const create = JSON.parse(seenApi.slice(before).find((c) => c.path === '/live-streams').body);
+  assert.equal(create.public, true,
+    'public for the same reason the videos are: a private live url carries a per-viewer token in its PATH');
+  assert.equal(create.record, false, 'live-to-VOD is an hour of hosting, so it is asked for rather than assumed');
+});
+
+test('api.video live: the ingest addresses are what a seller types into OBS or ffmpeg', () => {
+  const ingest = video.providers.apivideo.ingestFor({ APIVIDEO_STREAM_KEY: 'KEY-123' });
+  assert.equal(ingest.rtmp, 'rtmp://broadcast.api.video/s');
+  assert.equal(ingest.rtmps, 'rtmps://broadcast.api.video:1936/s');
+  assert.equal(ingest.srt, 'srt://broadcast.api.video:6200?streamid=KEY-123',
+    'the key rides in the URL for SRT, which is why it is never stored and never logged');
+});
+
+test('api.video live: the state comes from the host — including whether it is live right now', async () => {
+  const state = await video.providers.apivideo.liveStream('liSTUB0000000000000001', { env: apiEnv() });
+  assert.equal(state.broadcasting, true, '`broadcasting` is the only honest "live now" there is');
+  assert.equal(state.hls, 'https://live.api.video/liSTUB0000000000000001.m3u8');
+  const patched = await video.providers.apivideo.updateLiveStream('liSTUB0000000000000001', { name: 'renamed' }, { env: apiEnv() });
+  assert.equal(patched.name, 'renamed');
+  assert.equal(await video.providers.apivideo.removeLiveStream('liSTUB0000000000000001', { env: apiEnv() }), true);
+  assert.equal(await video.providers.apivideo.removeLiveStream('liGONE', { env: apiEnv() }), true, 'a live stream already gone is the outcome we wanted');
+});
+
+test('the live driver is its own choice, and a host without a live half cannot pretend', () => {
+  const env = { VIDEO_DRIVER: 'filemoon', FILEMOON_TOKEN: 'k', APIVIDEO_API_KEY: 'k' };
+  assert.equal(video.liveDriver({ ...env, LIVE_DRIVER: 'apivideo' }), 'apivideo');
+  assert.equal(video.liveDriver({ ...env, LIVE_DRIVER: 'filemoon' }), 'local',
+    'Filemoon has no live capability, so naming it as the live driver must not stick');
+  assert.equal(video.liveDriver(env), 'local', 'unset means today\'s behaviour: a seller pastes their own playlist');
+  assert.equal(video.liveIngestEnabled({ ...env, LIVE_DRIVER: 'apivideo' }), true);
+  assert.equal(video.liveIngestEnabled({ ...env, LIVE_DRIVER: 'apivideo', APIVIDEO_API_KEY: undefined }), false,
+    'a driver whose credential is missing is not configured');
+});
+
+test('the CSP names the live host even when files go somewhere else', () => {
+  /*
+   * The shape a real deployment is most likely to have — files on one host, live on another
+   * — and the bug that shape hid: building the media origins from the KIND routing alone
+   * leaves a live playlist's origin unnamed, and hls.js is then refused by `connect-src`
+   * with no error event at all. A black rectangle in a browser doing what the policy said.
+   */
+  const env = { VIDEO_DRIVER: 'filemoon', FILEMOON_TOKEN: 'k', LIVE_DRIVER: 'apivideo', APIVIDEO_API_KEY: 'k' };
+  const origins = video.mediaOrigins(env);
+  assert.ok(origins.includes('https://live.api.video'), 'the live origin must be allowed');
+  assert.ok(origins.includes('https://cdn.api.video'), 'and the VOD asset origin beside it');
 });
 
 test('a delete goes to the host that holds the bytes, not to the configured one', async () => {
