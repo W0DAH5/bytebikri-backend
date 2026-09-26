@@ -598,3 +598,39 @@ Three questions, in the order they matter:
    ```
    while watching `https://live.api.video/<liveStreamId>.m3u8` play in our own player. That is the round
    after this one.
+
+### 11.4 What running it proved — and what only the user's machine still can
+
+Every claim above was exercised against `ci/stub-apivideo.mjs`, which enforces this host's shape rather
+than agreeing with us: Basic auth with the key as the username and a **trailing colon** (a key-as-password
+attempt gets a 401, like the real thing), a container that is not `playable` until bytes are in it, a
+listing route, and asset routes that honour `Range`.
+
+| mode | what it showed |
+| --- | --- |
+| `--drivers` | five hosts on the credential table, `video → apivideo`, and the honest sentence: **video infrastructure — transcoding to adaptive HLS, a progressive mp4, and a live ingest** |
+| `--driver=apivideo --upload` | the key authenticates; a container is created and filled; playback resolves as `hls`; the playlist is **CORS-readable**; the progressive asset answers `206 bytes 0-1/85263`; the delete is confirmed |
+| `--probe-live` | a stream minted (`li3420a370595432befc`), its stream key and **all three ingest addresses** printed ready to paste into OBS or ffmpeg, `broadcasting: not yet` read back truthfully, and the container removed — *no container left behind* |
+| `--no-cors` | the §10.4 wall, modelled: the doctor fails the playlist and names **`APIVIDEO_PLAYBACK=mp4`** as the switch that already exists for it |
+
+**Three things running it changed, which reading it had not.**
+
+1. **A playlist is not a byte-ranged file.** The doctor's Range probe reported "the media url ignored
+   Range" against a host behaving perfectly — `Range` on an `.m3u8` is meaningless (seeking inside HLS is
+   the demuxer's job) and asking for two bytes of a few-hundred-byte text file proves nothing. The probe
+   now asks the *progressive* asset, which is what a viewer actually scrubs, and says so in the log.
+   A check that fails a correct host is worse than no check: it teaches an operator to ignore it.
+2. **The CSP needs the live host by name, not by kind.** `activeHosts()` answers for the kind routing
+   only, so with files on one host and live on another — the likeliest production shape —
+   `mediaOrigins()` left the live origin unnamed and hls.js would be refused by `connect-src` with no
+   error event at all. Found by running `VIDEO_DRIVER=catbox LIVE_DRIVER=apivideo` and reading the
+   header, not by reading the function. There is now a test that names that exact shape.
+3. **A stub that is missing a route hides a broken check.** The credential probe passed while the
+   account check 404'd, because the stub had no `GET /videos`. Both are fixed, which is the point of the
+   stub enforcing the host's shape: it fails the same way the provider would.
+
+Nothing in this round has touched `ws.api.video`. This sandbox has no egress to any media host — a
+request is refused before TLS, and api.video answers a request to its CDN the same way — so the three
+questions in §11.3 are exactly as open as they were: **sandbox or production key, CDN CORS in a real
+browser, and a live stream pushed end to end.** The doctor answers the first two in one command on a
+machine that can reach them; the third needs `ffmpeg` and the one-liner above.
