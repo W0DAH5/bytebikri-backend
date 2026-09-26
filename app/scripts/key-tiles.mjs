@@ -32,7 +32,7 @@ const GATE = Number(process.argv[2] || 70);
 
 const files = ['motif-silver.png', 'motif-gold.png', 'motif-crystal.png', 'motif-royal.png',
   'motif-inferno.png', 'motif-aurora.png', 'motif-prism.png', 'motif-zen.png',
-  'mascot-gold-buddha.png', 'mascot-gold-dragon.png', 'mascot-gold-lotus.png'];
+  'mascot-gold-buddha-base.png', 'mascot-gold-dragon.png', 'mascot-gold-lotus.png'];
 
 const dist = (d, i, r, g, b) => Math.sqrt((d[i] - r) ** 2 + (d[i + 1] - g) ** 2 + (d[i + 2] - b) ** 2);
 

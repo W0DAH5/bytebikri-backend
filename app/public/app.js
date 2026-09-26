@@ -14,6 +14,26 @@
 
   const $ = (sel, root = document) => root.querySelector(sel);
 
+  // ── a cosmetic asset that fails to load ─────────────────────────────────
+  // The scene's markup carries `onerror="this.closest('.mascot-layer').remove()"`,
+  // and this deployment's CSP runs `script-src-attr 'none'` — so that attribute
+  // parses into a DEAD attribute: no error, no console complaint, the handler
+  // simply never runs, and a 404'd mascot would sit on the card as a broken
+  // image icon. `error` does not bubble, hence the capture-phase listener; it
+  // gives the card the answer the attribute was written to give: a scene that
+  // cannot load is no scene, and the card stands without it.
+  document.addEventListener('error', (event) => {
+    const img = event.target;
+    if (!(img instanceof HTMLElement)) return;
+    if (img.matches('.mascot-state--rest, .mascot-state--breath, .mascot-state--blink')) {
+      // A missing state is one less motion, not a broken scene: the base
+      // artwork stands on its own.
+      img.remove();
+    } else if (img.matches('.mascot-state')) {
+      img.closest('.mascot-layer')?.remove();
+    }
+  }, true);
+
   const api = async (url, options = {}) => {
     const res = await fetch(url, {
       credentials: 'same-origin',

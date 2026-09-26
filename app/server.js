@@ -1372,6 +1372,11 @@ async function plusContext(req) {
     plan,
     yearPlan,
     subscription,
+    // The store side of the cosmetic power: the picker locks what the person's
+    // running tier and Plus do not reach, and the route's write path is the
+    // allowlist — the two must read the same ladder, so the page computes it
+    // from the same clock the card uses.
+    maxTier: me ? await store.highestActiveTierFor(me.id) : 0,
     state: plusState({ status: subscription?.status, period_end: subscription?.period_end }),
     look: {
       nameplate: me?.nameplate ?? null, effect: me?.plus_effect ?? null,

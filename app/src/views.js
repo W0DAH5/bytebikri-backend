@@ -95,7 +95,7 @@ import {
 // The cosmetics engine: every look slot, its owner and its values, declared once. The
 // look picker below is this list, drawn — see the module for the ownership rule.
 import { personSlots } from './cosmetics.js';
-import { motifOf, powerOf } from './cosmetic-model.js';
+import { motifOf, powerOf, powerIndex, POWER } from './cosmetic-model.js';
 import {
   PLACEMENT_BOUNDS, PLACEMENTS, planFor, stamp, placementSentence, breakCues, breakSentence,
   betweenCues, breaksSupported,
@@ -130,6 +130,22 @@ import { uploadCapHint } from './upload-limit.js';
 import { hostLabel } from './video.js';
 
 const FAMILY_LABELS = Object.fromEntries(AUDIT_FAMILIES.map((f) => [f.key, f.label]));
+
+// The scene's world: one composition in several states. The base artwork is
+// always present; each state variant (rest / breath / blink) is a full-scene
+// crossfade layer drawn from the same render, so any state, frozen, is the
+// design. Mascots without `states` render the base artwork only — the same
+// markup, one fewer layer.
+function sceneWorld(m) {
+  const states = m.states || {};
+  const stateLayer = (cls, src) => (src
+    ? `\n      <img class="mascot-state ${cls}" src="${esc(src)}" alt="" loading="lazy" onerror="this.remove()">`
+    : '');
+  return `
+      <img class="mascot-state" src="${esc(m.asset)}" alt="" loading="lazy"
+           onerror="this.closest('.mascot-layer').remove()">${stateLayer('mascot-state--rest', states.rest)}${stateLayer('mascot-state--breath', states.breath)}${stateLayer('mascot-state--blink', states.blink)}
+      <span class="mascot-shimmer"></span>`;
+}
 
 const esc = (s) =>
   String(s ?? '')
@@ -901,7 +917,7 @@ function wearStyleAttr(accentKey) {
  * a roster of twelve uploaded avatars is twelve more things to moderate and the
  * plate is about the name anyway.
  */
-function memberPlate({
+export function memberPlate({
   name, accent = 'indigo', tier = null, tierNo = 0, glyph = null,
   joined = null, me = false, plusRow = null, state = null,
 }) {
@@ -958,7 +974,7 @@ function memberPlate({
   // the last declaration and the browser would drop all three — which is exactly how this
   // shipped for one probe run (`--plate-b:#5b21b6 --wear-a:#0f766e` is one broken value).
   const ringPalette = ring ? `;${wearStyleAttr(namePalette)}` : '';
-  return `<li class="member${me ? ' member--me' : ''}${top ? ' member--top' : ''}${frame.cls ? ` ${frame.cls}` : ''}"
+  return `<li class="member${me ? ' member--me' : ''}${top ? ' member--top' : ''}${frame.cls ? ` ${frame.cls}` : ''}${mascot ? ' member--mascot' : ''}"
     data-power="${esc(power)}"
     ${frame.style ? `style="${frame.style}"` : ''}>
   <span class="member-avatar${top ? ' member-avatar--shine' : ''}${ring ? ` ${ring}` : ''}"
@@ -1011,9 +1027,27 @@ function memberPlate({
          first). Rows cannot collide with columns, and the card keeps its height. */ ''}
     ${joined ? `<span class="member-since fine">${esc(joined)}</span>` : ''}
   </span>
+  ${/*
+    * THE SCENE ITSELF (Phase D): the character and its small world. The placeholder
+    * was a 44 px img in the corner — a sticker, and the spec's own rejection line.
+    * The scene is a LAYER, not a sibling: the card's box is exactly what it was
+    * (the layer is absolutely positioned, the tests measure the box with the
+    * cosmetic on and off), the identity is drawn first and is never the scene's
+    * business, and every part is `aria-hidden` — decoration, not content. Every
+    * moving part has its still version in the stylesheet's reduce block, so a
+    * reader who asks for less motion gets the same scene, standing. The missing
+    * asset is met twice: the `onerror` attribute (the rule, as declared) and a
+    * capture-phase listener in app.js, because the deployment CSP runs
+    * `script-src-attr 'none'` and an inline handler attribute parses into a dead
+    * attribute — the listener is the rule that actually runs.
+    */ ''}
   ${mascot ? `
-  <span class="member-mascot${me ? ' is-idle' : ''}" data-motif="${esc(mascot.key)}" aria-hidden="true">
-    <img src="${esc(mascot.asset)}" alt="">
+  <span class="mascot-layer" data-motif="${esc(mascot.key)}" aria-hidden="true">
+    <span class="mascot-aura"></span>
+    <span class="mascot-world">${sceneWorld(mascot)}</span>
+    <span class="mascot-embers"></span>
+    <span class="mascot-embers mascot-embers--late"></span>
+    <span class="mascot-sparkle"></span>
   </span>` : ''}
 </li>`;
 }
@@ -7708,6 +7742,12 @@ export function plusPage({
   plan = null, subscription = null, state = 'none',
   rails = [], railsReady = false, look = { nameplate: null, effect: null, ring: null, frame: null },
   previewWear = null, wear = null,
+  // The strongest store tier this person is still running (0 when none). With the
+  // running check on the Plus itself, it feeds the same ladder the card's power
+  // is drawn from: the picker locks exactly what the route's budget would not
+  // let a card wear — a selectable control that the wardrobe refuses is a form
+  // that lies, and a hidden one is a shop window that is not a shop window.
+  maxTier = 0,
   // The two periods a person may buy (0042). `yearPlan` is the same plan with a
   // twelve-month period, so the second price is read from the table and the discount
   // is derived rather than typed a second time.
@@ -7795,7 +7835,15 @@ export function plusPage({
         <span class="store-chip" style="${plateStyleAttr('indigo')}" data-look-chip>Member</span>
       </span>
       ${chosenMark && chosenMark.kind === 'mascot' ? `
-      <span class="member-mascot is-idle" data-motif="${esc(chosenMark.key)}" aria-hidden="true"><img src="${esc(chosenMark.asset)}" alt=""></span>` : ''}
+      <!-- the stage wears the same scene the roster draws — a picker that
+           previews a sticker while the product renders a world is a form that lies -->
+      <span class="mascot-layer" data-motif="${esc(chosenMark.key)}" aria-hidden="true">
+        <span class="mascot-aura"></span>
+        <span class="mascot-world">${sceneWorld(chosenMark)}</span>
+        <span class="mascot-embers"></span>
+        <span class="mascot-embers mascot-embers--late"></span>
+        <span class="mascot-sparkle"></span>
+      </span>` : ''}
       <div class="fine" style="margin-top:var(--space-2)" data-look-line>${esc(EFFECTS[chosenEffect].label)} in ${esc(plateOf(chosenPlate).label)}${active ? '' : ' — this is a preview, not something you are wearing yet'}${EFFECTS[chosenEffect].moves ? ' · moving in front of you, and still for anyone whose device asks for less motion' : ' · completely still'}</div>
       <div class="fine" style="margin-top:var(--space-1)">The chip beside your name is a <strong>store’s</strong>, in the creator’s colour — it belongs to them, and nothing bought here can replace it.</div>
     </div>
@@ -7831,6 +7879,13 @@ export function plusPage({
     // both already accept that word.
     motif: chosenMotif ?? 'none',
   };
+  /*
+   * WHICH COSMETICS THIS PERSON MAY WEAR — the power, not the price.
+   * The two payers (the store's tier and the running Plus) feed one ladder;
+   * the picker shows every drawn value and locks what the power does not
+   * reach, saying where it unlocks.
+   */
+  const pickerPower = powerOf({ storeTierNo: maxTier, plusRunning: active });
   const pickerField = (slot) => {
     const current = chosen[slot.key];
     const head = `<span class="field-label" id="plus-${esc(slot.key)}-label">${esc(slot.label)}</span>`;
@@ -7900,18 +7955,28 @@ export function plusPage({
       // promise a colour and a card can promise an effect, but a mark has to be the
       // mark, at the size it wears. The radio stays in the document, so the form
       // posts the slot like every other and the write path validates it like every other.
+      const lockedBy = (v) => {
+        const m = motifOf(v.key);
+        if (!m?.minPower) return null;
+        const need = powerIndex(m.minPower);
+        if (need <= powerIndex(pickerPower)) return null;
+        return POWER[need].name;
+      };
       return `
       <div class="field">
         ${head}
         <div class="plus-marks" role="radiogroup" aria-labelledby="plus-${esc(slot.key)}-label">
-          ${slot.values.map((v) => `
-            <label class="plus-mark-label${current === v.key ? ' is-on' : ''}"
-                   data-mark-key="${esc(v.key)}" data-mark-label="${esc(v.label)}">
-              <input type="radio" name="${esc(slot.key)}" value="${esc(v.key)}" ${current === v.key ? 'checked' : ''}>
+          ${slot.values.map((v) => {
+            const level = lockedBy(v);
+            return `
+            <label class="plus-mark-label${current === v.key ? ' is-on' : ''}${level ? ' is-locked' : ''}"
+                   data-mark-key="${esc(v.key)}" data-mark-label="${esc(v.label)}"${level ? ` title="Unlocks with ${esc(level)}"` : ''}>
+              <input type="radio" name="${esc(slot.key)}" value="${esc(v.key)}" ${current === v.key ? 'checked' : ''} ${level ? 'disabled' : ''}>
               <span class="plus-mark-tile" aria-hidden="true">${v.asset ? `<img src="${esc(v.asset)}" alt="">` : ''}</span>
-              <span class="fine">${esc(v.label)}</span>
-              <span class="sr-only">${esc(v.words)}</span>
-            </label>`).join('')}
+              <span class="fine">${esc(v.label)}${level ? ` — unlocks with ${esc(level)}` : ''}</span>
+              <span class="sr-only">${esc(v.words)}${level ? ` (locked, unlocks with ${esc(level)})` : ''}</span>
+            </label>`;
+          }).join('')}
         </div>
         <span class="hint">${esc(slot.hint)}</span>
       </div>`;

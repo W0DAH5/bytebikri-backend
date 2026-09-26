@@ -4661,6 +4661,25 @@ export const store = {
   },
 
   /** A person's arrangement, with the plan's price for display. */
+  /**
+   * The strongest tier this person is STILL running on a store: the max tier_no
+   * among active memberships whose period has not passed. A tier that ended
+   * contributes nothing — power is what is being paid for right now, not what
+   * was ever bought. 0 means "no store tier in force", which is a real answer,
+   * not an error: a person whose month lapsed wears standard until it is paid.
+   */
+  async highestActiveTierFor(profileId) {
+    const row = await one(
+      `select max(m.tier_no) as tier_no
+         from memberships m
+        where m.profile_id = $1
+          and m.status = 'active'
+          and (m.period_end is null or m.period_end > now())`,
+      [profileId],
+    );
+    return row?.tier_no ?? 0;
+  },
+
   customerSubscription(profileId) {
     return one(
       `select cs.*, cp.name as plan_name, cp.price_npr, cp.period_months, cp.capabilities
@@ -5017,7 +5036,10 @@ export const store = {
     const edge = PLUS_FRAME_KEYS.includes(frame) ? frame : null;
     // 'none' is an explicit choice of nothing and stores as NULL, like the two outer
     // layers do for their defaults; a key the catalog does not have stores nothing.
-    const mark = motif && MOTIF_KEYS.includes(motif) ? motif : null;
+    // 'none' is an explicit choice of nothing and stores as 'none', not NULL:
+    // "I took it off" is a state the row can say, and the check allows exactly
+    // the catalog's keys plus that one word.
+    const mark = motif === 'none' || (motif && MOTIF_KEYS.includes(motif)) ? motif : null;
     return one(
       `update profiles
           set nameplate = $2::text,

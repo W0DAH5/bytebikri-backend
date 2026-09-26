@@ -298,6 +298,51 @@ the corner reference colour), so a mascot reads as a character sitting on the ca
 the power's rim, drop-shadowed by its own shape — rather than a photograph pasted on; a mark
 reads as an emblem at 18 px.
 
+## 9b. Phase C — the scene rebuild (the Golden Buddha, as delivered)
+
+The first mascot scene shipped as a medallion: a coin pinned to the card's edge,
+a feather mask around it, the character breathing by the whole image scaling.
+The rebuild replaced all of it. What the card now renders:
+
+- **Four state layers, one composition.** The artwork is a single 3:2 scene —
+  the buddha lounging in a mountain of coin, grapes in hand — drawn once and
+  rendered as four full-scene states: `base` (hand at the mouth), `rest`
+  (hand lowered, grapes in the bowl), `breath` (chest raised), `blink`
+  (eyes closed). Each is a transparent WebP on the artwork's own irregular
+  contour — **no circular crop, no vignette, no sticker ring** — and the
+  motion is a crossfade between states: opacity only, compositor only, on the
+  compositor. Nothing in the block scales, bounces, or translates the
+  artwork. Any single state, frozen, is the full design, so the static card
+  is never a broken frame.
+- **The clocks, deliberately unsynchronized** (`app/public/styles.css`,
+  `buddha-*` keyframes): breath 5.2 s, eating gesture 12.5 s with a long idle,
+  blink once per 9 s, the light across the gold once per 24 s, aura 7 s,
+  embers 14/19 s on two clocks, sparkle once per 11 s, and the 45° gloss —
+  a broad, low, feathered band across the scene's own surface — 26 s per
+  cycle with a ~5 s eased sweep and a long parked idle.
+- **Fixed geometry, real overflow.** On the card the scene is a grid track —
+  `[avatar] [identity] [scene]` — so the text column can never be painted
+  over, and the card's box is fixed whether the scene is present, hidden, or
+  has failed to load (`min-height` holds the row). The world spills past the
+  card's right edge by a constant 5–22 px: a room the card opens onto,
+  measured by the walk, not eyeballed.
+- **Reduced motion is a composition.** Every layer parks: the base artwork
+  stands, the light rests as a static band across the coins, the embers hold
+  their scatter. Nothing disappears into `opacity: 0`.
+- **The catalogue carries the states.** `cosmetic-model.js`'s buddha entry
+  declares `asset` + `states { rest, breath, blink }`; `sceneWorld()` in
+  `views.js` renders whatever a mascot has — a future mascot without states
+  renders the base artwork only, same markup, one fewer layer. No card
+  rewrite is needed for the next seven.
+- **The proof** is `ci/eyes/cosmetic-scene-walk.mjs` (12 sections): four
+  loaded WebP layers, the layer animations running on their own clocks with
+  zero drift over live animation, the box byte-identical with the scene
+  hidden, the overflow fixed, no text under the world, **one scene per
+  wearing card and zero scenes outside cards on every surface** (the
+  duplicate-render check), tablet/mobile simplification, the long-name stress
+  case, the parked reduced-motion frame, missing-state and missing-base
+  removal, the owner's list, and the picker with its live preview.
+
 ## 10. The decisions this document makes — confirm or correct
 
 These are where the brief and the code met and a choice was needed. Each has a

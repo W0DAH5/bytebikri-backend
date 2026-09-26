@@ -29,6 +29,7 @@ const { ACCENT_KEYS } = await import('../src/memberships.js');
 const { EFFECT_KEYS, RING_KEYS, FRAME_KEYS, ringClass, frameClass } = await import('../src/plus.js');
 const { THEME_KEYS } = await import('../src/themes.js');
 const views = await import('../src/views.js');
+const { store } = await import('../src/store.js');
 
 after(async () => { await close(); });
 
@@ -452,4 +453,110 @@ test('every motif in the catalog is drawn: the file is on disk, and the words ar
   // dragon, the lotus) — two of the three gold mascots are drawn this round, the
   // third with the next turn’s image budget.
   assert.ok(motifOf('buddha-gold') && motifOf('dragon-gold'), 'the brief’s mascots, in the catalog');
+});
+
+test('the motif slot is checked by name in the database, like the ring and the frame', async () => {
+  const motifs = await checkList('profiles', 'plus_motif');
+  assert.ok(motifs, 'profiles.plus_motif lost its check constraint — the catalog is no longer the only list');
+  assert.deepEqual(motifs, slotOf('motif').values.map((v) => v.key),
+    'the motif slot and profiles.plus_motif have drifted');
+});
+
+test('the card wears the scene without the scene touching the card', () => {
+  const wearer = { plus_active: true, nameplate: 'teal', plus_effect: 'halo', plus_ring: 'orbit', plus_frame: 'none' };
+  const plate = (plusRow, over = {}) => views.memberPlate({
+    name: 'A very long name that wraps onto two lines in the card', accent: 'violet',
+    tier: 'Elite', tierNo: 2, glyph: 'star', joined: 'since 26 Sept 2026',
+    plusRow, state: 'active', ...over,
+  });
+  const body = (html) => html.match(/<span class="member-body">[\s\S]*?<\/span>\s*(?:<span class="mascot-layer|$)/)?.[0]
+    ?? html.match(/<span class="member-body">[\s\S]*?<\/span>\s*<\/li>/)?.[0];
+
+  // Nothing chosen: the card is byte-for-byte the card it has always been.
+  const plain = plate({ ...wearer });
+  assert.doesNotMatch(plain, /mascot-layer/, 'a card with no motif wears a scene');
+  assert.doesNotMatch(plain, /member--mascot/);
+
+  // 'none' is a choice, and it means no scene — but it is stored, so the row says so.
+  const none = plate({ ...wearer, plus_motif: 'none' });
+  assert.doesNotMatch(none, /mascot-layer/, 'choosing none is not wearing a scene');
+
+  // The scene: the layer, the drawing, and the missing-asset rule, in the card.
+  const buddha = plate({ ...wearer, plus_motif: 'buddha-gold' });
+  assert.match(buddha, /member--mascot/);
+  assert.match(buddha, /data-motif="buddha-gold"/);
+  // The scene is the catalog's own artwork in its state layers — the pin
+  // follows the catalog rather than fixed filenames, so an art swap cannot
+  // silently break the card.
+  const worn = motifOf('buddha-gold');
+  assert.ok(buddha.includes(`<img class="mascot-state" src="${worn.asset}"`),
+    'the card must render the catalog asset for the worn motif');
+  for (const [state, src] of Object.entries(worn.states || {})) {
+    assert.ok(buddha.includes(`<img class="mascot-state mascot-state--${state}" src="${src}"`),
+      `the card must render the ${state} state layer from the catalog`);
+  }
+  assert.match(buddha, /onerror="this\.closest\(\'\.mascot-layer\'\)\.remove\(\)"/,
+    'a scene that cannot load is no scene, and the card must stand without it');
+  assert.match(buddha, /aria-hidden="true"/, 'the scene is decoration; the words are the content');
+
+  // THE CARD ITSELF IS UNTOUCHED. The identity block — name, chip, state, date —
+  // is byte-identical with and without the scene. The scene is a layer over the
+  // card, not a sibling in it, and a cosmetic that rewrites the identity is a
+  // cosmetic that has stopped being a cosmetic.
+  const identity = (html) => {
+    const at = html.indexOf('<span class="member-body">');
+    const end = html.indexOf('</span>', html.indexOf('member-since'));
+    return html.slice(at, end);
+  };
+  assert.equal(identity(plain), identity(buddha),
+    'the scene changed the identity markup — the words moved to make room for the art');
+
+  // The wear is the month's: a look with no running period is not worn, scene included.
+  const lapsed = plate({ ...wearer, plus_motif: 'buddha-gold', plus_active: false, status: 'active', period_end: new Date(Date.now() - 86400000).toISOString() });
+  assert.doesNotMatch(lapsed, /mascot-layer/, 'a lapsed Plus wears nothing, scene included');
+
+  // An unknown key (a row written by hand) reads as no scene, the graceful answer.
+  const unknown = plate({ ...wearer, plus_motif: 'phoenix-gold' });
+  assert.doesNotMatch(unknown, /mascot-layer/, 'a motif the catalog does not know renders a scene');
+});
+test('the picker shows the whole wardrobe and locks what the power does not reach', () => {
+  const user = { id: 'p1', email: 'motif@test.local', display_name: 'N', email_verified_at: '2026-01-01' };
+  const plan = { code: 'plus', name: 'ByteBikri Plus', price_npr: 149, period_months: 1 };
+  // The tile, and only the tile: the slice runs from its opening label to its
+  // closing tag, so a neighbour's lock cannot bleed into this one's assertion.
+  const option = (html, key) => {
+    const at = html.indexOf(`data-mark-key="${key}"`);
+    assert.ok(at > -1, `the picker has no tile for ${key}`);
+    const start = html.lastIndexOf('<label', at);
+    const end = html.indexOf('</label>', at);
+    return html.slice(start, end);
+  };
+  // No arrangement, no tier: standard power. The gold mascot is VISIBLE (the shop
+  // window is never hidden) but LOCKED, and it says where it unlocks — a selectable
+  // control the route would refuse is a form that lies.
+  const standard = views.plusPage({ user, plan, state: 'none', maxTier: 0, rails: [], gifts: [] });
+  const lockedTile = option(standard, 'buddha-gold');
+  assert.match(lockedTile, /is-locked/, 'a gold cosmetic is selectable at standard power');
+  assert.match(lockedTile, /unlocks with Gold/, 'the lock says where the cosmetic unlocks');
+  assert.match(lockedTile, /disabled/, 'the lock is in the control, not just the colour');
+  assert.doesNotMatch(option(standard, 'none'), /is-locked/, '"no cosmetic" is never locked');
+  // A running Plus: crystal, which reaches gold. The same tile, unlocked.
+  const crystal = views.plusPage({ user, plan, state: 'active', maxTier: 0, rails: [], gifts: [] });
+  assert.doesNotMatch(option(crystal, 'buddha-gold'), /is-locked/, 'a running Plus does not reach a gold cosmetic');
+  // And a top store tier reaches it too — the two payers feed one ladder.
+  const gold = views.plusPage({ user, plan, state: 'none', maxTier: 2, rails: [], gifts: [] });
+  assert.doesNotMatch(option(gold, 'buddha-gold'), /is-locked/, 'a top store tier does not reach its own store’s cosmetic');
+});
+test('the write path stores a drawn mascot, a real none, and nothing else', async () => {
+  const person = await store.userByEmailOrCreate('motif-write@test.local');
+  try {
+    assert.equal((await store.setPlusLook({ profileId: person.id, motif: 'buddha-gold' })).plus_motif, 'buddha-gold');
+    assert.equal((await store.setPlusLook({ profileId: person.id, motif: 'none' })).plus_motif, 'none',
+      '“I took it off” is a state the row can say');
+    assert.equal((await store.setPlusLook({ profileId: person.id, motif: 'phoenix-gold' })).plus_motif, null,
+      'a motif that is not drawn is stored as nothing chosen, not as a broken scene');
+    assert.equal((await store.setPlusLook({ profileId: person.id, motif: null })).plus_motif, null);
+  } finally {
+    await query('delete from profiles where id = $1', [person.id]);
+  }
 });

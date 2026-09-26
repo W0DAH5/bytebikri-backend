@@ -3134,61 +3134,304 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   object-fit: contain;
 }
 
-/* THE MASCOT — the character on the card (PREMIUM_COSMETICS.md §0). A resting
-   pose in the corner, one idle breath, and a small reaction when the card is
-   hovered. It is a CHILD of the card, absolutely placed, so it never moves the
-   name, the chip or the date. `is-idle` is set by the view only on the person's
-   OWN card (member--me): a mascot on somebody else's roster row holds its pose,
-   because a row of breathing characters is the exact list this budget forbids. */
-.member-mascot {
+/* ─────────────────────────────────────────────────────────────────────────────
+   THE SCENE: A SMALL LIVING WORLD PINNED TO THE CARD'S RIGHT EDGE
+   (PREMIUM_COSMETICS.md, Phase C — the rebuild)
+
+   A full-body character in a full-body situation: the golden buddha, lounging
+   deep in a mountain of coin, eating grapes — a small private comedy rendered
+   in controlled gold. The card opens onto the scene at its right edge; the
+   scene is a room the card belongs to, not a badge the card wears.
+
+   The rules that keep it a luxury rather than a firecracker:
+
+   * SEPARATE LAYERS, REAL MOTION. The character moves through state layers —
+     the breathing is a crossfade between two chest states, the eating is a
+     crossfade between hand-at-mouth and hand-lowered, the blink is a closing
+     eye. Opacity only, compositor only. There is no scaling, bouncing, or
+     pulsing of the artwork anywhere in this block; the still frame of every
+     layer is the full scene, so a frozen card is a finished picture.
+   * A HIERARCHY OF RHYTHMS. The breathing is seven seconds, the eating an
+     unhurried gesture once every eighteen, the blink once every nine, the
+     light across the gold once every twenty-four. Each layer keeps its own
+     clock; most of the time the scene is simply a person at rest, and that
+     rest is the design.
+   * AN IRREGULAR SILHOUETTE. The scene's edge is the artwork's own contour —
+     coin and body against transparent air. There is no circular crop, no
+     vignette, no sticker ring, no feather mask. Where the scene ends, the
+     gold pile simply ends.
+   * FIXED GEOMETRY. The scene sits in its own grid track on the card; the
+     overflow past the card edge is a fixed offset, not an animation. Nothing
+     here moves text, avatar, or chip.
+
+   THE STILL VERSION IS A COMPOSITION. Under prefers-reduced-motion the state
+   layers park on the base artwork, the light rests as a band across the
+   coins, the embers hold their scatter — and it still looks the part, because
+   a fallback is a design, not a leftover.
+   ──────────────────────────────────────────────────────────────────────────── */
+.member--mascot { position: relative; }
+.mascot-layer { position: absolute; inset: -1px; border-radius: var(--radius-lg); pointer-events: none; }
+
+/* The world: the character and its mountain, one scene per state layer,
+   on the artwork's own irregular contour. It is centred on the card's
+   vertical axis and spills past the right edge deliberately — a room, not a
+   tile. Four states, same composition: base (the hand at the mouth), rest
+   (the hand lowered, grapes in the bowl), breath (the chest raised), blink
+   (the eyes closed). Any single one, frozen, is the design. */
+.mascot-world {
   position: absolute;
-  top: 4px;
-  right: 4px;
-  z-index: 2;
-  pointer-events: none;
+  right: -22px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 172px;
+  height: 114px;
+  z-index: 1;
 }
-.member-mascot img {
-  inline-size: 44px;
-  block-size: 44px;
-  display: block;
-  object-fit: contain;
-  border-radius: 22%;
-  filter: drop-shadow(0 2px 4px rgb(0 0 0 / .45));
+.mascot-state {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
 }
-/* The character belongs to the card that holds it: a hair of the power's rim
-   around the tile is what turns "a sticker pasted on" into "a sitter on the
-   frame". Standard power has no mascot to ring (mascots unlock at gold), so the
-   variables are always defined where this applies. */
-[data-power] .member-mascot img {
-  box-shadow: 0 0 0 1px rgba(var(--power-ink) / .55), 0 0 10px rgba(var(--power-glow) / .35);
-}
-@media (prefers-color-scheme: light) {
-  .member-mascot img { filter: drop-shadow(0 2px 4px rgb(0 0 0 / .3)); }
-}
-/* The idle: a 3px rise and fall, four seconds, the breath of a character that is
-   alive. Transform only. Only on the owner's own card. */
+.mascot-state--rest,
+.mascot-state--breath,
+.mascot-state--blink { opacity: 0; }
+
+/* The breathing: a slow crossfade to the raised chest, in over five seconds,
+   with a rest between breaths. The torso rises; nothing else moves. */
+/* The eating: one complete, unhurried gesture per cycle — the hand
+   leaves the mouth with the grapes, pauses on the belly, comes back — the hand
+   leaves the mouth with the grapes, pauses on the belly, comes back. The
+   long idle between gestures is the point: a person eating grapes, not a
+   GIF of a hand. */
+/* The blink: rare. A two-hundred-millisecond closing once every nine seconds. */
+/* The light across the gold: one broad, low, slow pass per twenty-four
+   seconds. Gold is a material, and materials have light moving over them. */
 @media (prefers-reduced-motion: no-preference) {
-  .member--me .member-mascot.is-idle img {
-    animation: mascot-breathe 4s ease-in-out infinite alternate;
-  }
-  /* The hover reaction: the character leans into the attention, a touch. */
-  .member:hover .member-mascot img,
-  .member:focus-within .member-mascot img {
-    transform: scale(1.12) rotate(-4deg);
-  }
-}
-@keyframes mascot-breathe {
-  from { transform: translateY(0); }
-  to   { transform: translateY(-3px); }
-}
-/* Reduced motion: the character sits still. The drop-shadow stays, so it still
-   reads as a character on the card, just not breathing. */
-@media (prefers-reduced-motion: reduce) {
-  .member--me .member-mascot.is-idle img { animation: none; }
-  .member:hover .member-mascot img,
-  .member:focus-within .member-mascot img { transform: none; }
+  .mascot-state--breath { animation: buddha-breathe 5.2s ease-in-out infinite; }
+  .mascot-state--rest { animation: buddha-eat 12.5s ease-in-out infinite; }
+  .mascot-state--blink { animation: buddha-blink 9s linear infinite; }
+  .mascot-shimmer { animation: buddha-shimmer 24s ease-in-out infinite; }
+  .mascot-aura { animation: mascot-aura 7s ease-in-out infinite alternate; }
+  .mascot-embers { animation: mascot-embers 14s linear infinite; }
+  .mascot-embers--late { animation-duration: 19s; animation-delay: -7s; }
+  .mascot-sparkle { animation: mascot-sparkle 11s ease-in-out infinite; }
 }
 
+@keyframes buddha-breathe {
+  0% { opacity: 0; }
+  30% { opacity: 1; }
+  58% { opacity: 1; }
+  84%, 100% { opacity: 0; }
+}
+@keyframes buddha-eat {
+  0%, 18% { opacity: 0; }
+  /* hand lowered, on the belly */
+  30% { opacity: 1; }
+  /* rest, then the slow lift back to the mouth */
+  62% { opacity: 1; }
+  76%, 100% { opacity: 0; }
+}
+@keyframes buddha-blink {
+  0%, 87% { opacity: 0; }
+  89% { opacity: 1; }
+  92% { opacity: 1; }
+  94%, 100% { opacity: 0; }
+}
+@keyframes buddha-shimmer {
+  0%, 38% { transform: translateX(-120%); opacity: 0; }
+  46% { opacity: .55; }
+  60% { opacity: .55; }
+  68%, 100% { transform: translateX(120%); opacity: 0; }
+}
+
+/* The light itself: a broad diagonal band of warm light, feathered at both
+   edges, that crosses only the coins — never the whole card. */
+.mascot-shimmer {
+  position: absolute;
+  left: -24%;
+  top: 30%;
+  width: 148%;
+  height: 70%;
+  background: linear-gradient(100deg,
+    transparent 34%,
+    color-mix(in srgb, #fff3cf 16%, transparent) 50%,
+    transparent 66%);
+  transform: translateX(-120%);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* The aura: a slow-breathing warm glow behind the mountain. Low amplitude —
+   the gold already says what it is. */
+.mascot-aura {
+  position: absolute;
+  right: -34px;
+  top: calc(50% - 88px);
+  width: 200px;
+  height: 176px;
+  background: radial-gradient(closest-side,
+    color-mix(in srgb, #f5b942 16%, transparent) 30%,
+    transparent 72%);
+  z-index: 0;
+  opacity: .8;
+}
+@keyframes mascot-aura {
+  from { opacity: .62; }
+  to { opacity: .92; }
+}
+
+/* The embers: a few sparks rising off the pile, two clocks, different paths.
+   They are the only particles in the scene, and they are restrained on
+   purpose. */
+.mascot-embers {
+  position: absolute;
+  right: 44px;
+  top: 18px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #ffd48a;
+  box-shadow:
+    8px 10px 0 -1px color-mix(in srgb, #ffd48a 70%, transparent),
+    18px 22px 0 0 color-mix(in srgb, #ffd48a 55%, transparent),
+    -6px 28px 0 -1px color-mix(in srgb, #ffd48a 40%, transparent);
+  z-index: 2;
+  opacity: 0;
+}
+.mascot-embers--late {
+  right: 70px;
+  top: 30px;
+  transform: rotate(180deg);
+}
+@keyframes mascot-embers {
+  0% { transform: translateY(22px); opacity: 0; }
+  12% { opacity: .9; }
+  70% { opacity: .5; }
+  100% { transform: translateY(-26px); opacity: 0; }
+}
+@keyframes mascot-sparkle {
+  0%, 88%, 100% { opacity: 0; transform: scale(.4) rotate(0deg); }
+  92% { opacity: 1; transform: scale(1) rotate(30deg); }
+  96% { opacity: 0; transform: scale(.5) rotate(60deg); }
+}
+.mascot-sparkle {
+  position: absolute;
+  right: 58px;
+  top: 12px;
+  width: 12px;
+  height: 12px;
+  background:
+    linear-gradient(#ffe9bf 46%, transparent 50%) center / 100% 1.5px no-repeat,
+    linear-gradient(#ffe9bf 46%, transparent 50%) center / 1.5px 100% no-repeat;
+  opacity: 0;
+  z-index: 2;
+}
+
+/* The gloss: the broad studio light, 45 degrees, across the scene's own
+   surface. It spends most of its cycle parked; the sweep is five seconds out
+   of twenty-six, eased at both ends — a light, not a loading indicator. */
+.mascot-world::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 220%;
+  height: 220%;
+  transform: translate(-110%, -110%) rotate(45deg);
+  background: linear-gradient(100deg,
+    transparent 38%,
+    color-mix(in srgb, #ffffff 13%, transparent) 50%,
+    transparent 62%);
+  pointer-events: none;
+  z-index: 3;
+  opacity: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .mascot-world::before { animation: mascot-gloss 26s ease-in-out infinite; }
+}
+@keyframes mascot-gloss {
+  0%, 16% { transform: translate(-110%, -110%) rotate(45deg); opacity: 0; }
+  20% { opacity: 1; }
+  36% { opacity: 1; }
+  40%, 100% { transform: translate(210%, 210%) rotate(45deg); opacity: 0; }
+}
+
+/* ── The card grid ─────────────────────────────────────────────────────────
+   [AVATAR] · [IDENTITY] · [SCENE] — three tracks, fixed gaps, the identity
+   column never under the world. The scene cell is the layout's own; the
+   world overflows its cell by a fixed amount, so the card's measured box is
+   identical with the scene on or off. */
+@media (min-width: 561px) {
+  .member--mascot {
+    grid-column: span 2;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) 172px;
+    column-gap: var(--space-3);
+    align-items: center;
+    /* The scene cell is the card's row. If the scene is removed (a failed
+       base artwork) the class stays and the card must keep the box the
+       roster laid out for it — the geometry is fixed, not content-driven. */
+    min-height: calc(132px + var(--space-3) * 2 + 2px);
+  }
+  .member--mascot .member-avatar { grid-column: 1; grid-row: 1 / span 3; }
+  .member--mascot .member-body { grid-column: 2; grid-row: 1 / span 3; }
+  .member--mascot .mascot-layer {
+    position: relative;
+    inset: auto;
+    grid-column: 3;
+    grid-row: 1 / span 3;
+    width: 172px;
+    height: 132px;
+    border-radius: 0;
+  }
+}
+@media (max-width: 560px) {
+  .member--mascot {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) 132px;
+    column-gap: var(--space-3);
+    align-items: center;
+    min-height: calc(112px + var(--space-3) * 2 + 2px);
+  }
+  .member--mascot .member-avatar { grid-column: 1; grid-row: 1 / span 3; }
+  .member--mascot .member-body { grid-column: 2; grid-row: 1 / span 3; }
+  .member--mascot .mascot-layer {
+    position: relative;
+    inset: auto;
+    grid-column: 3;
+    grid-row: 1 / span 3;
+    width: 132px;
+    height: 112px;
+    border-radius: 0;
+  }
+  .member--mascot .mascot-world { width: 132px; height: 88px; right: -12px; }
+  .member--mascot .mascot-aura { right: -20px; top: calc(50% - 70px); width: 156px; height: 140px; }
+  .mascot-embers, .mascot-sparkle { display: none; }
+}
+
+/* The still scene: a deliberate composition, not a leftover. The base artwork
+   stands, the light rests as a band across the coins, the aura is a fixed
+   glow, the embers hold their scatter. Nothing disappears. */
+@media (prefers-reduced-motion: reduce) {
+  .mascot-state--rest,
+  .mascot-state--breath,
+  .mascot-state--blink { animation: none; opacity: 0; }
+  .mascot-shimmer { animation: none; opacity: .32; transform: translateX(24%) rotate(45deg) scaleY(.55); }
+  .mascot-aura { animation: none; opacity: .78; }
+  .mascot-embers { animation: none; opacity: .4; transform: translateY(-10px); }
+  .mascot-embers--late { animation: none; opacity: .28; transform: rotate(180deg) translateY(-6px); }
+  .mascot-sparkle { animation: none; display: none; }
+  .mascot-world::before { animation: none; }
+}
+
+/* A value the person's power does not reach: shown (the shop window is never
+   hidden) but dimmed and disabled, saying where it unlocks. The radio itself is
+   the lock — the colour only says it. */
+.plus-mark-label.is-locked { opacity: 0.5; cursor: not-allowed; }
+.plus-mark-label.is-locked .plus-mark-tile img { filter: grayscale(0.55) brightness(0.8); }
 
 /* ============================================================================
    The wear: a person's name, in an effect they bought from US

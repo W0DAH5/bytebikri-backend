@@ -277,13 +277,22 @@ export const MOTIFS = [
     name: 'Golden Buddha',
     kind: 'mascot',
     minPower: 'gold',
-    asset: '/img/cosmetics/mascot-gold-buddha.png',
-    treatment: 'A small laughing buddha, meditating, lotus at the feet: resting pose, one '
-      + 'slow idle (the sheen across the statue), a hover reaction no bigger than a '
-      + 'nod of the head. It sits on the card’s edge in Phase D; it never performs for '
-      + 'a stranger, and it is never more.',
-    still: 'The resting pose, which is the design — a buddha does not need motion to be '
-      + 'at rest.',
+    // The scene is one composition in four states (see the .mascot-state
+    // layers in styles.css): base is the artwork; the others are crossfade
+    // states drawn from the same render, so any one of them, frozen, is the
+    // design. Mascots without `states` render the base artwork only.
+    asset: '/img/cosmetics/mascot-gold-buddha-base.webp',
+    states: {
+      rest: '/img/cosmetics/mascot-gold-buddha-rest.webp',
+      breath: '/img/cosmetics/mascot-gold-buddha-breath.webp',
+      blink: '/img/cosmetics/mascot-gold-buddha-blink.webp',
+    },
+    treatment: 'A laughing buddha lounging deep in a mountain of coin, eating '
+      + 'grapes: the breathing, an unhurried eating gesture, a rare blink, and '
+      + 'one slow pass of light across the gold. It is a room the card opens '
+      + 'onto, not a badge the card wears.',
+    still: 'The lounging pose, hand lowered, grapes in the bowl — the design '
+      + 'without motion.',
   },
   {
     key: 'dragon-gold',
