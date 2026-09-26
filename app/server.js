@@ -4046,7 +4046,15 @@ APP.get('/s/:slug/a/:assetSlug/read', async (req, res, next) => {
             ? issuePageUrl({ assetId: asset.id, file, userId: req.user.id, step: n, basePath: '' })
             : null,
           alt: `${stepLabel(plan, n)}${step.entryName ? ` — ${step.entryName}` : ''}`,
-          caption: step.kind === 'archive' && step.entryName ? step.entryName : '',
+          // Why there is nothing to draw, said here rather than by the view's fallback. A step
+          // with no url is a step this reader does not draw (a `.cbr`, an `.epub`), and the view's
+          // generic caption for a page it could not produce — "This page could not be opened." —
+          // reads as the site BREAKING, when the truth is that nothing broke and the file is
+          // simply not a set of pages. The refusal notice below the strip carries the full
+          // sentence; this is the one line on the empty frame itself.
+          caption: step.kind === 'archive' && step.entryName ? step.entryName
+            : step.kind === 'file' ? 'No page here — this file is not a set of pages.'
+              : '',
         });
       }
     }

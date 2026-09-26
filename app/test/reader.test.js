@@ -273,6 +273,26 @@ test('a file the reader cannot draw keeps its place and says so', async () => {
   assert.match(html, /Download the file/);
 });
 
+test('a browser that sends octet-stream for a .cbr still gets a reader step', async () => {
+  /*
+   * MEASURED, NOT ASSUMED. The test above builds the mime itself — `application/x-cbr` — and a real
+   * browser does not send it: a `.cbr` uploaded through the publish form in Chromium arrives as
+   * `application/octet-stream`, because the operating system has no mapping for the extension. The
+   * file was therefore classified by its EXTENSION (`DOC_EXT`), not by its mime type, and if that
+   * fallback were ever removed in favour of a mime check, a `.cbr` would quietly stop being a
+   * reader step and become a plain download — the seller's file still published, the reader
+   * feature silently gone, and the test above still passing because it never involved a browser.
+   */
+  const { asset } = await fixture({
+    pages: 1, filename: 'chapter-1.cbr', mime: 'application/octet-stream',
+  });
+  const plan = await store.assetPagePlan(asset);
+  assert.equal(plan.chapters, 1, 'the extension is what makes this a reader at all');
+  assert.equal(plan.steps[0].kind, 'file');
+  assert.equal(plan.steps[0].drawable, false, 'octet-stream does not make a RAR archive drawable');
+  assert.equal((await store.adPlanFor(asset)).cues.length, 0);
+});
+
 test('the store chooses page or scroll, and left to right or right to left', async () => {
   const { asset } = await fixture({ pages: 6 });
   const saved = await store.setReadChoices({ assetId: asset.id, mode: 'scroll', direction: 'rtl' });
