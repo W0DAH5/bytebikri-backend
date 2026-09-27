@@ -146,3 +146,31 @@ print("04 · flicker gif (artwork / recomposition alternating)")
 print(f"\nartwork vs recomposition: mean {diff.mean():.2f}  p99 {np.percentile(diff, 99):.0f}  "
       f"max {diff.max()}  pixels over 32: {int((diff > 32).sum())} of {diff.size}")
 print(f"written to {os.path.relpath(OUT)}")
+
+# ── 05 · the same test, on what the BROWSER painted ─────────────────────────
+# The sheets above compare the files this pipeline writes. This compares the
+# thing a person actually sees: `ci/eyes/rest-pose-proof.mjs` loads the real
+# server, paints the plate + arm + grapes at the artwork's own 768x512 with
+# nothing animating, and paints the original artwork beside it at the same
+# size. Both sides went through the same encoder (this browser), so the
+# encoder is common to them and the difference left is the layering.
+browser_layered = os.path.join(OUT, "30-browser-rest-layered.png")
+browser_original = os.path.join(OUT, "31-browser-rest-original.png")
+if os.path.exists(browser_layered) and os.path.exists(browser_original):
+    lay = np.asarray(Image.open(browser_layered).convert("RGB")).astype(np.int16)
+    org = np.asarray(Image.open(browser_original).convert("RGB")).astype(np.int16)
+    if lay.shape == org.shape:
+        d = np.abs(lay - org).max(axis=2)
+        rows = d.max(axis=1)                      # the worst pixel of each line
+        print(f"\n05 · the browser's own rest composition vs the artwork "
+              f"({org.shape[1]}x{org.shape[0]})")
+        print(f"   mean {d.mean():.2f}  p99 {np.percentile(d, 99):.0f}  max {d.max()}  "
+              f"pixels over 32: {int((d > 32).sum())} of {d.size}")
+        print(f"   worst line {rows.max()}  median line {int(np.median(rows))}  "
+              f"lines over 32: {int((rows > 32).sum())} of {rows.size}")
+        bright = rows.max() - np.median(rows)
+        print("   " + ("the painted scene is the artwork — no line stands out of the "
+                       "picture's own noise" if bright <= 32 else
+                       f"A LINE STANDS {int(bright)} ABOVE THE REST — look at the sheet"))
+    else:
+        print(f"\n05 · browser shots differ in size ({lay.shape} vs {org.shape}) — skipped")
