@@ -97,6 +97,27 @@ const measureCard = (page, nth = 0) => page.evaluate((nth) => {
       transform: getComputedStyle(img).transform,
     }))
     : null;
+  // The parts: the plate and the layers laid over it. `nat` is the artwork's
+  // own size, which is how the image-quality check knows whether the card is
+  // asking for more detail than the file has.
+  const partList = layer
+    ? [...layer.querySelectorAll('.mascot-part')].map((img) => ({
+      cls: img.className.split(' ').pop(),
+      src: img.getAttribute('src'),
+      loaded: img.naturalWidth > 0,
+      nat: [img.naturalWidth, img.naturalHeight],
+      anim: getComputedStyle(img).animationName,
+      opacity: getComputedStyle(img).opacity,
+    }))
+    : null;
+  // The two joints. A part that only fades would pass every other check here;
+  // these are the numbers that say the arm and the grapes actually turn.
+  const joint = (sel) => {
+    const el = layer ? layer.querySelector(sel) : null;
+    if (!el) return null;
+    const cs = getComputedStyle(el);
+    return { anim: cs.animationName, transform: cs.transform, origin: cs.transformOrigin, dur: cs.animationDuration };
+  };
   const partsCount = layer
     ? { aura: layer.querySelectorAll('.mascot-aura').length, embers: layer.querySelectorAll('.mascot-embers').length,
         sparkle: layer.querySelectorAll('.mascot-sparkle').length, imgs: layer.querySelectorAll('img').length,
@@ -110,7 +131,9 @@ const measureCard = (page, nth = 0) => page.evaluate((nth) => {
     box: { w: Math.round(box.width * 10) / 10, h: Math.round(box.height * 10) / 10 },
     hasLayer: Boolean(layer),
     motif: layer?.getAttribute('data-motif') ?? null,
-    states, spill,
+    states, parts: partList, joints: { arm: joint('.mascot-arm'), grapes: joint('.mascot-grapes') },
+    world: world ? { w: Math.round(world.getBoundingClientRect().width), h: Math.round(world.getBoundingClientRect().height) } : null,
+    spill,
     overlap, textUnderWorld, partsCount,
     animAura: anim('.mascot-aura'),
     animGloss: anim('.mascot-world', '::before'),
@@ -126,6 +149,7 @@ const pageSceneAudit = (page) => page.evaluate(() => ({
   cardsWithScene: [...document.querySelectorAll('.member')].filter((m) => m.querySelector('.mascot-layer')).length,
   scenesOutsideCards: [...document.querySelectorAll('.mascot-layer')].filter((l) => !l.closest('.member')).length,
   imgs: document.querySelectorAll('.mascot-state').length,
+  partImgs: document.querySelectorAll('.mascot-part').length,
   canvases: document.querySelectorAll('.mascot-layer canvas').length,
 }));
 
@@ -166,22 +190,65 @@ const nameBack = row.display_name;
 let long = false;
 try {
   // ── 1. the scene, at the card's own size ──────────────────────────────────────────────────────
-  say(1, 'the scene renders as four state layers, every asset loaded and cheap');
+  say(1, 'the scene renders as a plate with parts, every asset loaded and cheap');
   let { p } = await openRoster(1440, 900);
   const i0 = await sceneIndex(p);
   check(i0 >= 0, 'some card on the roster wears a scene');
   let m = await measureCard(p, i0);
-  console.log(`  card ${i0}: ${m.box.w}×${m.box.h}px · motif=${m.motif} · ${m.states?.length ?? 0} state layers`);
+  console.log(`  card ${i0}: ${m.box.w}×${m.box.h}px · motif=${m.motif} · ${m.parts?.length ?? 0} parts · world ${m.world?.w}×${m.world?.h}`);
   check(m.motif === 'buddha-gold', 'it is the golden buddha, not a placeholder key');
-  check(m.states?.length === 4, `four state layers in the card (base + rest + breath + blink), found ${m.states?.length}`);
-  check(m.states?.every((s) => s.loaded), 'every state layer actually loaded');
-  check(m.states?.every((s) => /\.webp$/.test(s.src ?? '')), 'every state is the optimised webp, not a master png');
-  const names = new Set(m.states?.map((s) => s.anim));
-  check(names.has('buddha-breathe'), 'the breathing runs on the breath layer');
-  check(names.has('buddha-eat'), 'the eating runs on the rest layer');
-  check(names.has('buddha-blink'), 'the blink runs on the blink layer');
-  check(m.states?.every((s) => !/matrix/.test(s.transform) || s.transform === 'none'),
-    'no state layer carries a scale/translate transform — the motion is crossfade, not a moved sticker');
+  // The plate is the figure with the arm taken out; the parts are laid over it.
+  check(m.parts?.length === 6, `a plate and five parts (chest, belly, blink, arm, grapes), found ${m.parts?.length}`);
+  check(m.parts?.some((x) => x.cls === 'mascot-part--plate'), 'the plate is in the card');
+  check(m.parts?.every((x) => x.loaded), 'every part actually loaded');
+  check(m.parts?.every((x) => /\.webp$/.test(x.src ?? '')), 'every part is the optimised webp, not a master png');
+  // THE MOTION HAS TO BE REAL. The brief refuses a cross-fade and a moved PNG;
+  // what it asks for is the arm turning at the shoulder and the grapes swinging
+  // on their stem, which is a rotate() on a layer with a joint for an origin.
+  check(m.joints?.arm?.anim === 'buddha-reach', 'the arm carries the reach animation');
+  check(m.joints?.grapes?.anim === 'buddha-grapes', 'the grapes carry a swing of their own');
+  const parts = m.parts ?? [];
+  check(parts.find((x) => x.cls === 'mascot-part--chest')?.anim === 'buddha-breathe',
+    'the chest breathes on its own clock');
+  // The handover is deliberately NOT a fourth clock: the pose must change at
+  // the bottom of the arm's own swing, or the two arms share a frame and the
+  // step reads as a glitch. Same duration as the arm, by design.
+  check(parts.find((x) => x.cls === 'mascot-part--belly')?.anim === 'buddha-belly',
+    'the lowered pose arrives on the handover animation');
+  check(m.joints?.arm?.dur === '24s', `the arm's cycle is 24s (found ${m.joints?.arm?.dur})`);
+  // The origin is written as a percentage of the artwork, so the browser
+  // reports it in the box's pixels; the check is the fraction that matters —
+  // (268,146) of 768x512 is 34.90% x 28.52%, and (370,45) is 48.18% x 8.79%.
+  const frac = (origin) => {
+    const [x, y] = (origin ?? '').split(' ').map(parseFloat);
+    return { x: x / (m.world?.w || 1), y: y / (m.world?.h || 1) };
+  };
+  const aF = frac(m.joints?.arm?.origin); const gF = frac(m.joints?.grapes?.origin);
+  const near = (v, want) => Math.abs(v - want) < 0.02;
+  console.log(`  pivots — arm ${aF.x.toFixed(3)}/${aF.y.toFixed(3)} (want 0.349/0.285) · grapes ${gF.x.toFixed(3)}/${gF.y.toFixed(3)} (want 0.482/0.088)`);
+  check(near(aF.x, 0.349) && near(aF.y, 0.285),
+    `the arm pivots at the shoulder (268,146 of 768x512), not the centre of the picture`);
+  check(near(gF.x, 0.482) && near(gF.y, 0.088),
+    'the grapes pivot at the stem (370,45 of 768x512)');
+  // A rotation, and nothing else. The brief forbids moving/scaling the
+  // picture; a joint that quietly scaled or slid would pass every other check
+  // here, so this reads the matrix itself: for a pure rotation a=d, b=-c, and
+  // the basis stays unit length.
+  const isPureRotation = (t) => {
+    if (!t || t === 'none') return true;
+    const n = t.match(/matrix\(([^)]+)\)/);
+    if (!n) return false;
+    const [a, b, c, d] = n[1].split(',').map(Number);
+    return Math.abs(a - d) < 0.02 && Math.abs(b + c) < 0.02 && Math.abs(a * a + b * b - 1) < 0.04;
+  };
+  check(isPureRotation(m.joints?.arm?.transform), `the arm turns without scaling or sliding (${m.joints?.arm?.transform})`);
+  check(isPureRotation(m.joints?.grapes?.transform), `the grapes swing without scaling (${m.joints?.grapes?.transform})`);
+  // §21: the artwork must be bigger than the box it is drawn in — the browser
+  // must not be inventing detail. 172 CSS px at 2x wants 344 real pixels.
+  const plateNat = parts.find((x) => x.cls === 'mascot-part--plate')?.nat ?? [0, 0];
+  const want = (m.world?.w ?? 0) * 2;
+  console.log(`  artwork ${plateNat[0]}px wide for a ${m.world?.w}px box at 2x (needs ${want}px)`);
+  check(plateNat[0] >= want, `the artwork has 2x headroom, ${plateNat[0]} >= ${want}`);
   check(m.partsCount && m.partsCount.canvases === 0, 'no canvas — the effects are CSS');
   check(m.partsCount && m.partsCount.embers === 2 && m.partsCount.sparkle === 1 && m.partsCount.aura === 1,
     'the particle budget: two embers, one sparkle, one aura');
@@ -255,7 +322,7 @@ try {
     });
     const a2 = await pageSceneAudit(p2);
     console.log(`  ${w}px ${tag}: ${m2.box.w}×${m2.box.h}px · embers=${m2.embersDisplay} · sparkle=${m2.sparkleDisplay} · world=${m2.spill?.w}×${m2.spill?.h}`);
-    check(m2.states?.every((s) => s.loaded), `${tag}: every state layer still loads`);
+    check(m2.parts?.every((s) => s.loaded), `${tag}: every part still loads`);
     check(m2.overlap.length === 0, `${tag}: no text overlap${m2.overlap.length ? `: ${m2.overlap.join('; ')}` : ''}`);
     check(!m2.textUnderWorld, `${tag}: no text under the world${m2.textUnderWorld ? ` (${m2.textUnderWorld.cls})` : ''}`);
     check(clipped.length === 0, `${tag}: no clipped name or date${clipped.length ? `: ${clipped.join(', ')}` : ''}`);
@@ -296,7 +363,7 @@ try {
     const layer = document.querySelector('.member-roster .member .mascot-layer');
     if (!layer) return null;
     return {
-      states: [...layer.querySelectorAll('.mascot-state')].map((img) => ({
+      states: [...layer.querySelectorAll('.mascot-part')].map((img) => ({
         cls: img.className.split(' ').pop(),
         anim: getComputedStyle(img).animationName,
         opacity: getComputedStyle(img).opacity,
@@ -307,34 +374,36 @@ try {
     };
   });
   console.log(`  parked: ${JSON.stringify(parked)}`);
-  const baseVisible = parked?.states?.find((s) => s.cls === 'mascot-state');
-  const othersHidden = parked?.states?.filter((s) => s.cls !== 'mascot-state')?.every((s) => parseFloat(s.opacity) === 0);
-  check(baseVisible && baseVisible.anim === 'none', 'the base artwork stands, animation parked');
-  check(othersHidden, 'the state layers are parked at opacity 0 — the still is the base composition');
+  const plateStill = parked?.states?.find((s) => s.cls === 'mascot-part--plate');
+  const othersHidden = parked?.states?.filter((s) => s.cls !== 'mascot-part--plate' && s.cls !== 'mascot-part--arm' && s.cls !== 'mascot-part--berries')
+    ?.every((s) => parseFloat(s.opacity) === 0);
+  check(plateStill && plateStill.anim === 'none', 'the plate stands, animation parked');
+  check(othersHidden, 'the pose layers are parked at opacity 0 — the still is the plate in its own pose');
+  check(parked?.states?.every((s) => s.anim === 'none'), 'no part is left animating under reduced motion');
   check(parked?.aura === 'none' && parked?.gloss === 'none', 'aura and gloss are parked too');
   check(parseFloat(parked?.shimmer ?? '0') > 0, 'the light rests as a static band across the coins — nothing disappears');
   await pRed.locator('.member-roster').first().screenshot({ path: `${OUT}/04-scene-reduced-motion.png` });
   await pRed.context().close();
 
   // ── 10. a failed state asset: the scene keeps standing; a failed base: the card stands ───────
-  say(10, 'a missing state loses one motion; a missing base is no scene');
+  say(10, 'a missing part loses that motion; a missing plate is no scene');
   const { p: pF } = await openRoster(1440, 900);
   const iF = await sceneIndex(pF);
   await pF.evaluate((nth) => {
     const card = document.querySelectorAll('.member-roster .member')[nth];
-    const rest = card.querySelector('.mascot-state--rest');
-    rest.src = '/img/cosmetics/definitely-missing.webp';
+    const chest = card.querySelector('.mascot-part--chest');
+    chest.src = '/img/cosmetics/definitely-missing.webp';
   }, iF);
   const stateGone = await pF.waitForFunction(
-    (nth) => !document.querySelectorAll('.member-roster .member')[nth]?.querySelector('.mascot-state--rest'),
+    (nth) => !document.querySelectorAll('.member-roster .member')[nth]?.querySelector('.mascot-part--chest'),
     iF, { timeout: 3000 },
   ).then(() => true).catch(() => false);
   const afterState = await measureCard(pF, iF);
-  check(stateGone, 'the missing state layer removed itself — the scene still stands with three layers');
-  check(afterState.hasLayer && afterState.states?.length === 3, 'the base, breath and blink remain');
+  check(stateGone, 'a part that cannot load removes itself — the scene still stands');
+  check(afterState.hasLayer && afterState.parts?.length === 5, 'the plate, the arm and the rest remain');
   await pF.evaluate((nth) => {
     const card = document.querySelectorAll('.member-roster .member')[nth];
-    card.querySelector('.mascot-state').src = '/img/cosmetics/definitely-missing.webp';
+    card.querySelector('.mascot-part--plate').src = '/img/cosmetics/definitely-missing.webp';
   }, iF);
   const layerGone = await pF.waitForFunction(
     (nth) => !document.querySelectorAll('.member-roster .member')[nth]?.querySelector('.mascot-layer'),

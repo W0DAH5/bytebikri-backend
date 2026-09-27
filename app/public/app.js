@@ -25,7 +25,17 @@
   document.addEventListener('error', (event) => {
     const img = event.target;
     if (!(img instanceof HTMLElement)) return;
-    if (img.matches('.mascot-state--rest, .mascot-state--breath, .mascot-state--blink')) {
+    // The scene's layers are the plate and the parts over it, so the answer
+    // depends on which one went missing:
+    if (img.matches('.mascot-part--plate')) {
+      // No plate, no figure — a part has nothing to be laid on.
+      img.closest('.mascot-layer')?.remove();
+    } else if (img.matches('.mascot-part')) {
+      // A missing part is one less motion, not a broken scene: the chest not
+      // breathing still leaves a complete buddha, and the card never shows a
+      // broken-image icon.
+      img.remove();
+    } else if (img.matches('.mascot-state--rest, .mascot-state--breath, .mascot-state--blink')) {
       // A missing state is one less motion, not a broken scene: the base
       // artwork stands on its own.
       img.remove();

@@ -1,0 +1,97 @@
+
+[1] the scene renders as a plate with parts, every asset loaded and cheap
+  ok   some card on the roster wears a scene
+  card 0: 415.2×158px · motif=buddha-gold · 6 parts · world 172×114
+  ok   it is the golden buddha, not a placeholder key
+  ok   a plate and five parts (chest, belly, blink, arm, grapes), found 6
+  ok   the plate is in the card
+  ok   every part actually loaded
+  ok   every part is the optimised webp, not a master png
+  ok   the arm carries the reach animation
+  ok   the grapes carry a swing of their own
+  ok   the chest breathes on its own clock
+  ok   the lowered pose arrives on the handover animation
+  ok   the arm's cycle is 24s (found 24s)
+  pivots — arm 0.349/0.285 (want 0.349/0.285) · grapes 0.482/0.088 (want 0.482/0.088)
+  ok   the arm pivots at the shoulder (268,146 of 768x512), not the centre of the picture
+  ok   the grapes pivot at the stem (370,45 of 768x512)
+  ok   the arm turns without scaling or sliding (matrix(1, 0, 0, 1, 0, 0))
+  ok   the grapes swing without scaling (matrix(0.998773, 0.0495212, -0.0495212, 0.998773, 0, 0))
+  artwork 768px wide for a 172px box at 2x (needs 344px)
+  ok   the artwork has 2x headroom, 768 >= 344
+  ok   no canvas — the effects are CSS
+  ok   the particle budget: two embers, one sparkle, one aura
+
+[2] hide the scene — the card must be exactly the same size
+  ok   box-identical with the scene present or removed (layout is not the scene’s business)
+
+[3] the world spills past the card edge by a fixed, undrifting amount
+  ok   the world overflows the card's right edge (5px) — a room, not a tile
+  ok   overflow and card box did not drift over 3.2 s of live animation (drift 0.00px)
+
+[4] no word on the card is drawn under the world
+  ok   no text-on-text overlap
+  ok   no text intersects the world's box
+
+[5] exactly one scene per eligible card, none anywhere else on the page
+  layers=1 cardsWithScene=1 outsideCards=0 imgs=0 canvases=0
+  ok   no scene renders outside a card (no page-level duplicate)
+  ok   one scene per wearing card — no double render
+  ok   in this roster exactly one member wears the scene
+
+[6] the rhythms are running on their own clocks — aura, gloss, shimmer, particles
+  ok   the aura breathes (animation: mascot-aura)
+  ok   the gloss sweeps (animation: mascot-gloss)
+  gloss cycle: 26s
+  ok   the gloss is a long cycle with a long pause — not a sweep machine
+  ok   the light crosses the gold (animation: buddha-shimmer 26s)
+
+[7] narrower viewports: the scene shrinks and the effects thin out
+  1024px tablet: 474×158px · embers=block · sparkle=block · world=172×114
+  ok   tablet: every part still loads
+  ok   tablet: no text overlap
+  ok   tablet: no text under the world
+  ok   tablet: no clipped name or date
+  ok   tablet: still one scene per card
+  390px mobile: 350×138px · embers=none · sparkle=none · world=132×88
+  ok   mobile: every part still loads
+  ok   mobile: no text overlap
+  ok   mobile: no text under the world
+  ok   mobile: no clipped name or date
+  ok   mobile: still one scene per card
+  ok   mobile: embers and sparkle are gone at small size — the scene keeps only aura + character
+
+[8] a long username beside the scene — the text axis under stress
+  long name: 415.2×163px · overlap=0 · textUnderWorld=null
+  ok   long name: no text overlap
+  ok   long name: nothing under the world — the scene yields to the words
+  ok   long name: the name wraps rather than clipping
+
+[9] prefers-reduced-motion: the world stands still and still reads as gold
+  ok   the artwork and the tier survive — nothing information-bearing is motion
+  parked: {"states":[{"cls":"mascot-part--plate","anim":"none","opacity":"1"},{"cls":"mascot-part--chest","anim":"none","opacity":"0"},{"cls":"mascot-part--belly","anim":"none","opacity":"0"},{"cls":"mascot-part--blink","anim":"none","opacity":"0"},{"cls":"mascot-part--arm","anim":"none","opacity":"1"},{"cls":"mascot-part--berries","anim":"none","opacity":"1"}],"aura":"none","gloss":"none","shimmer":"0.32"}
+  ok   the plate stands, animation parked
+  ok   the pose layers are parked at opacity 0 — the still is the plate in its own pose
+  ok   no part is left animating under reduced motion
+  ok   aura and gloss are parked too
+  ok   the light rests as a static band across the coins — nothing disappears
+
+[10] a missing part loses that motion; a missing plate is no scene
+  ok   a part that cannot load removes itself — the scene still stands
+  ok   the plate, the arm and the rest remain
+  ok   the missing base artwork removed the whole scene — no broken-image icon
+
+[11] the owner’s list: the scene travels with the person, the other cards stay untouched
+  bob   a-really-very-long-username-that-wraps-onto-two-lines (scene:buddha-gold)
+  ok   a member without the cosmetic is exactly the card it has always been
+  ok   the scene travels with the person onto the seller’s own list, from the same row
+  ok   owner list: one scene per wearing card, no strays
+
+[12] the plus page: the worn motif is checked, the out-of-reach ones are locked
+  none:·  silver-star:·  golden-sun:·  zen-enso:·  crystal-prism:·  royal-crown:·  aurora-ribbons:·  prism-refraction:·  inferno-flame:·🔒  buddha-gold:✓  dragon-gold:·  lotus-gold:·
+  ok   the worn motif is pre-checked
+  ok   locked inferno-flame says where it unlocks: "erno Flame — a mark beside your name: On"
+
+fixture (display name) is back where it was found
+
+walk complete — 0 finding(s)
