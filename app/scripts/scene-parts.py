@@ -291,7 +291,11 @@ SOLID = A_bq >= 0.98
 # chest and must not move. Everywhere else — limb against sky, antialiased rim —
 # it is the limb.
 PLATE_REGION = M & SOLID & (A_rq >= 0.5) & ~G
-ARM_REGION = M & ~PLATE_REGION
+# The soft rim within reach of the joint rides with the anchor.
+_rim = M & ~SOLID
+_near_joint = np.asarray(dil(Image.fromarray((PLATE_REGION * 255).astype(np.uint8)), 6)) > 128
+ANCHOR_REGION = PLATE_REGION | (_rim & _near_joint)
+ARM_REGION = M & ~ANCHOR_REGION
 plate_rgb = np.clip(np.asarray(base_q.convert("RGB")).astype(np.float32) * (~(M & SOLID))[:, :, None]
                     + fill_rgb * (M & SOLID)[:, :, None], 0, 255)
 # In PLATE_REGION the alpha is the ARTWORK's own while the COLOUR is the
@@ -300,7 +304,7 @@ plate_rgb = np.clip(np.asarray(base_q.convert("RGB")).astype(np.float32) * (~(M 
 # Reading the alpha from the arm-down state here would make the resting pose
 # composite to A_r: a translucent chest wherever the two disagreed about
 # softness.
-plate_a = np.where(M, 0.0, A_bq)
+plate_a = np.where(M & SOLID, A_rq, np.where(M, 0.0, A_bq))
 
 plate = Image.merge("RGBA", (*[Image.fromarray(plate_rgb[:, :, c].astype(np.uint8)) for c in range(3)],
                              Image.fromarray((plate_a * 255).round().astype(np.uint8))))
@@ -397,7 +401,7 @@ arm = Image.merge("RGBA", (*[Image.fromarray(base_rgb_rebuilt[:, :, c]) for c in
 # It carries the ARTWORK's own pixels and alpha, so at rest anchor + limb tile
 # the footprint exactly and the recomposition is exact again; and being static,
 # it is what the limb's edge slides OVER rather than away from.
-anchor_alpha = np.where(PLATE_REGION, A_bq, 0.0)
+anchor_alpha = np.where(ANCHOR_REGION, A_bq, 0.0)
 anchor = Image.merge("RGBA", (*base_q.convert("RGB").split(),
                               Image.fromarray((anchor_alpha * 255).round().astype(np.uint8))))
 # The grapes keep the artwork's pixels and its alpha, exactly as drawn: they are
@@ -546,7 +550,7 @@ for _deg in (7, 15):
                       ).astype(np.float32) / 255.0
     _anc = np.asarray(anchor.getchannel('A')).astype(np.float32) / 255.0
     _cov = _rot + _anc * (1 - _rot) + plate_a * (1 - _rot) * (1 - _anc)
-    _gap = (_cov < 0.55) & _interior
+    _gap = (_cov < 0.55) & (A_rq > 0.5)
     _ys, _xs = np.where(_gap)
     print(f"   THE GAP at -{_deg}deg: {int(_gap.sum()):5d} px of body go see-through inside the figure"
           + (f"  bbox x[{_xs.min()}-{_xs.max()}] y[{_ys.min()}-{_ys.max()}]" if len(_xs) else ""))
