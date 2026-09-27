@@ -524,7 +524,16 @@ over(diff(recompose(), base_q), None, "2. layered scene vs its own source")
 served_plate = Image.open(os.path.join(DIR, "part-plate-armless.webp")).convert("RGBA")
 served_arm = Image.open(os.path.join(DIR, "part-arm-raised.webp")).convert("RGBA")
 served_grapes = Image.open(os.path.join(DIR, "part-grapes-raised.webp")).convert("RGBA")
-served = served_plate.copy(); served.alpha_composite(served_arm); served.alpha_composite(served_grapes)
+# THE ANCHOR IS PART OF THE STACK. These three lines assemble the scene by hand
+# while `recompose()` — the in-memory test — had been taught about the anchor.
+# So the served-file test measured a scene the card never builds and reported a
+# seam of mean 22 along the cut where the real stack measures 4.89: the
+# missing layer was the test's, not the artwork's. A picture assembled by hand
+# has to name every layer the card names, and when the rig gains one the
+# assemblies have to be found and taught. Two of them were.
+served_anchor = Image.open(os.path.join(DIR, "part-arm-anchor.webp")).convert("RGBA")
+served = served_plate.copy(); served.alpha_composite(served_anchor)
+served.alpha_composite(served_arm); served.alpha_composite(served_grapes)
 d_served = diff(served, base)
 over(d_served, None, "3. layered scene (served) vs the artwork")
 
@@ -713,10 +722,11 @@ print(f"  scene total: {total / 1024:.0f} KB "
 # acceptance test in the units the card actually delivers — the layers read
 # back off disk, composited in order, against the artwork as the card has it.
 served_files = [Image.open(os.path.join(DIR, n)).convert("RGBA") for n in
-                ("part-plate-armless.webp", "part-arm-raised.webp", "part-grapes-raised.webp")]
+                ("part-plate-armless.webp", "part-arm-anchor.webp", "part-arm-raised.webp",
+                 "part-grapes-raised.webp")]
 served_back = served_files[0].copy()
-served_back.alpha_composite(served_files[1])
-served_back.alpha_composite(served_files[2])
+for layer in served_files[1:]:
+    served_back.alpha_composite(layer)
 d_back = diff(served_back, base)
 over(d_back, None, "5. served files vs the artwork")
 over(d_back, edge, "5a. along the cut (served)")
