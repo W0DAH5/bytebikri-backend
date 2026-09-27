@@ -300,7 +300,7 @@ plate_rgb = np.clip(np.asarray(base_q.convert("RGB")).astype(np.float32) * (~(M 
 # Reading the alpha from the arm-down state here would make the resting pose
 # composite to A_r: a translucent chest wherever the two disagreed about
 # softness.
-plate_a = np.where(PLATE_REGION, A_bq, np.where(M & SOLID, A_rq, np.where(M, 0.0, A_bq)))
+plate_a = np.where(M, 0.0, A_bq)
 
 plate = Image.merge("RGBA", (*[Image.fromarray(plate_rgb[:, :, c].astype(np.uint8)) for c in range(3)],
                              Image.fromarray((plate_a * 255).round().astype(np.uint8))))
@@ -388,6 +388,18 @@ else:
 arm_alpha = np.where(ARM_REGION, A_bq, 0.0)
 arm = Image.merge("RGBA", (*[Image.fromarray(base_rgb_rebuilt[:, :, c]) for c in range(3)],
                            Image.fromarray((arm_alpha * 255).round().astype(np.uint8))))
+
+# THE SHOULDER ANCHOR. The rig is two pieces, not one: the robe and chest around
+# the joint stay where they are, and the limb swings off them. Without it the
+# limb's cut edge slides across the body and the arm tears open at the shoulder
+# — the defect that made this split necessary.
+#
+# It carries the ARTWORK's own pixels and alpha, so at rest anchor + limb tile
+# the footprint exactly and the recomposition is exact again; and being static,
+# it is what the limb's edge slides OVER rather than away from.
+anchor_alpha = np.where(PLATE_REGION, A_bq, 0.0)
+anchor = Image.merge("RGBA", (*base_q.convert("RGB").split(),
+                              Image.fromarray((anchor_alpha * 255).round().astype(np.uint8))))
 # The grapes keep the artwork's pixels and its alpha, exactly as drawn: they are
 # the one layer that is a straight copy of the picture, because they are the one
 # layer that has to survive being looked at while it moves.
@@ -439,6 +451,7 @@ chest_breath.putalpha(ImageChops.multiply(chest_breath.getchannel("A"), chest_ma
 def recompose():
     """grapes over arm over plate — the scene in its resting pose."""
     out = plate.copy()
+    out.alpha_composite(anchor)
     out.alpha_composite(arm)
     out.alpha_composite(grapes_part)
     return out
@@ -531,7 +544,8 @@ for _deg in (7, 15):
     _rot = np.asarray(arm.rotate(-_deg, resample=Image.BICUBIC, center=(268.0, 146.0),
                                  expand=False, fillcolor=(0, 0, 0, 0)).getchannel("A")
                       ).astype(np.float32) / 255.0
-    _cov = _rot + plate_a * (1 - _rot)
+    _anc = np.asarray(anchor.getchannel('A')).astype(np.float32) / 255.0
+    _cov = _rot + _anc * (1 - _rot) + plate_a * (1 - _rot) * (1 - _anc)
     _gap = (_cov < 0.55) & _interior
     _ys, _xs = np.where(_gap)
     print(f"   THE GAP at -{_deg}deg: {int(_gap.sum()):5d} px of body go see-through inside the figure"
@@ -669,6 +683,7 @@ def save(img, name, lossless=False, quality=94):
 
 print("parts:")
 save_plate(plate, "part-plate-armless.webp")
+save(anchor, "part-arm-anchor.webp", lossless=True)
 save(arm, "part-arm-raised.webp", lossless=True)
 save(grapes_part, "part-grapes-raised.webp", lossless=True)
 save(lowered, "part-arm-lowered.webp", lossless=True)
