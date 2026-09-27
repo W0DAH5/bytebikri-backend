@@ -3253,56 +3253,83 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 /* The light across the gold: one broad, low, slow pass per twenty-four
    seconds. Gold is a material, and materials have light moving over them. */
 @media (prefers-reduced-motion: no-preference) {
-  /* The character's clocks, and it is not one clock. The arm reaches on a
-     seventeen-second cycle with a long idle, the grapes swing on their own
-     nine-and-a-half, the chest breathes on five-and-a-half, the eyes close once
-     in nine. Nothing lines up with anything, which is the difference between a
-     character and a screen saver (TARGET.md §15). */
-  .mascot-arm { animation: buddha-reach 17s cubic-bezier(.42,0,.32,1) infinite; }
+  /* THE CHARACTER'S CLOCK, and it is not one clock.
+
+     The arm carries the grapes up toward the mouth, pauses, comes back down to
+     the belly, eats there, and returns — twenty-four seconds for the whole
+     gesture, most of it idle. The grapes swing on their stem on their own
+     nine-and-a-half, out of step with the arm carrying them. The chest breathes
+     on five-and-a-half, and its phase is offset so the breath does not begin
+     when the gesture does. The eyes close once in ten. Nothing lines up with
+     anything, which is the difference between a character and a screen saver
+     (TARGET.md §15). */
+  .mascot-arm { animation: buddha-reach 24s cubic-bezier(.42,0,.32,1) infinite; }
   .mascot-grapes { animation: buddha-grapes 9.5s ease-in-out infinite; animation-delay: -2.4s; }
-  .mascot-part--chest { animation: buddha-breathe 5.6s ease-in-out infinite; }
+  .mascot-part--chest { animation: buddha-breathe 5.6s ease-in-out infinite; animation-delay: -1.7s; }
   .mascot-part--blink { animation: buddha-blink 9.7s linear infinite; }
-  /* The pose change: the arm comes down to the belly and back, rarely. The swap
-     happens at the LOWEST point of the swing, where the two arms are closest
-     together, so the least is asked of the eye. */
-  .mascot-part--belly { animation: buddha-lower 34s ease-in-out infinite; }
+  /* The arm-down state is a REPLACEMENT, never an addition: two arms in one
+     frame is the failure this arrangement exists to prevent. So the handover
+     is a tenth of the cycle — about a third of a second — and it happens at
+     the bottom of the swing, where the arm is lowest and the shoulder is the
+     last thing the eye is on (§5, §7, §8). */
+  .mascot-part--belly { animation: buddha-belly 24s ease-in-out infinite; }
   .mascot-state--breath { animation: buddha-breathe 5.2s ease-in-out infinite; }
   .mascot-state--rest { animation: buddha-eat 12.5s ease-in-out infinite; }
   .mascot-state--blink { animation: buddha-blink 9s linear infinite; }
-  .mascot-shimmer { animation: buddha-shimmer 24s ease-in-out infinite; }
+  /* The gloss: one slow pass, then a long time doing nothing. A reflection that
+     repeats is a stripe on the screen; the pause is what makes it light, and it
+     is most of the cycle (§14). */
+  .mascot-shimmer { animation: buddha-shimmer 26s ease-in-out infinite; }
   .mascot-aura { animation: mascot-aura 7s ease-in-out infinite alternate; }
   .mascot-embers { animation: mascot-embers 14s linear infinite; }
   .mascot-embers--late { animation-duration: 19s; animation-delay: -7s; }
   .mascot-sparkle { animation: mascot-sparkle 11s ease-in-out infinite; }
 }
 
-/* The reach: the arm turns about the shoulder, comes down, pauses, goes back
-   up, and then does nothing for two thirds of the cycle. The pause at the
-   bottom is the eating beat; the idle is the point — a person eating grapes,
-   not a GIF of an arm (TARGET.md §7). */
+/* THE GESTURE, one keyframe list, because it is one movement.
+
+     0s - 2s       the grapes rise a little toward the mouth — the lift
+     2s - 4.5s     the pause at the mouth: the eating beat
+   4.5s - 6.5s     back down to arm's length
+   6.5s - 11.5s    idle
+  11.5s - 15s      the long descent, past where the wrist alone would carry it
+                   — this is the shoulder doing the work
+    15s - 18s      the belly, where the eating happens
+    18s - 21.5s    the rise back to arm's length
+  21.5s - 24s      idle, and then again
+
+   Fifteen degrees about the shoulder is the whole travel on purpose: it moves
+   the fist most of the way to the belly, and more would break the elbow, which
+   is drawn for the pose it is drawn in (§7). */
 @keyframes buddha-reach {
-  0%, 30% { transform: rotate(0deg); }
-  44% { transform: rotate(-15deg); }
-  54% { transform: rotate(-15.5deg); }
-  70%, 100% { transform: rotate(0deg); }
+  0% { transform: rotate(0deg); }
+  8.33% { transform: rotate(6deg); }
+  18.75% { transform: rotate(5.4deg); }
+  27.08% { transform: rotate(0deg); }
+  47.92% { transform: rotate(-2.4deg); }
+  62.5% { transform: rotate(-15deg); }
+  75% { transform: rotate(-15deg); }
+  89.58% { transform: rotate(-2deg); }
+  100% { transform: rotate(0deg); }
 }
 
-/* The grapes swing on their stem, out of step with the arm carrying them: a few
-   degrees of drift, and the beat of settling after it (§8). */
+/* The grapes drift on their stem. The stem is where they were cut from, so the
+   cluster moves while the hand holding it does not: a few degrees is a grape,
+   ten would be a pendulum (§8). */
 @keyframes buddha-grapes {
   0%, 100% { transform: rotate(-4.5deg); }
-  38% { transform: rotate(4.5deg); }
-  52% { transform: rotate(2deg); }
-  68% { transform: rotate(5deg); }
-  84% { transform: rotate(-1.5deg); }
+  34% { transform: rotate(4deg); }
+  51% { transform: rotate(1.5deg); }
+  67% { transform: rotate(5deg); }
+  83% { transform: rotate(-1.5deg); }
 }
 
-/* The pose change: the lowered arm arrives as the raised arm reaches the bottom
-   of its travel, and stays for the long middle of the cycle. */
-@keyframes buddha-lower {
-  0%, 44% { opacity: 0; }
-  50%, 62% { opacity: 1; }
-  68%, 100% { opacity: 0; }
+/* The handover, at the bottom of the swing: the raised arm gives its pose up as
+   the arm-down state takes it (§5). */
+@keyframes buddha-belly {
+  0%, 60.4% { opacity: 0; }
+  62.9%, 74.2% { opacity: 1; }
+  77%, 100% { opacity: 0; }
 }
 
 @keyframes buddha-breathe {
@@ -3326,7 +3353,15 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   94%, 100% { opacity: 0; }
 }
 @keyframes buddha-shimmer {
-  0%, 38% { transform: translateX(-120%); opacity: 0; }
+  /* Parked at the left, out of frame, for the first third of the cycle. */
+  0%, 32% { transform: translateX(-120%); opacity: 0; }
+  /* In, across, and out in four seconds — the sweep is short and the idle is
+     long, which is what a studio light does (§14). */
+  35% { opacity: .5; }
+  42% { opacity: .5; }
+  46% { transform: translateX(120%); opacity: 0; }
+  100% { transform: translateX(120%); opacity: 0; }
+}
   46% { opacity: .55; }
   60% { opacity: .55; }
   68%, 100% { transform: translateX(120%); opacity: 0; }
