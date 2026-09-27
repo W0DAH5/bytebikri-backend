@@ -691,48 +691,81 @@ if DEBUG:
 
 
 # ── 8. write ────────────────────────────────────────────────────────────────
-# How far the plate's encoding is allowed to stray from the plate, in
-# premultiplied 0-255 units. The artwork the card serves TODAY is itself a WebP
-# that has been through an encoder, and re-encoding it costs 2.39 mean / 32 max
-# (measured in the report above). A plate encoded within that same order of
-# error is therefore not a quality loss against what the card already shows —
-# it is the same picture one encoder trip later.
+# The plate is the artwork's own body and the biggest file in the scene (~100 KB
+# of 242), so how it is encoded is a real decision — and it is made by
+# measurement, not by taste.
 #
-# The floor is 32. 48 leaves the plate's own worst pixel 16/255 worse than the
-# floor's worst pixel, on the handful of pixels where an encoder was least
-# accurate, in a 172-pixel-wide card element. That is the trade: 374 KB exact
-# against 105 KB at the floor, and it is measured on every run rather than
-# assumed.
-PLATE_TOLERANCE = 48.0
+# An earlier version of this decision measured the plate IN ISOLATION: the
+# smallest file whose own pixels stayed within 48/255 of the original. That is a
+# proxy for the question and, it turns out, a misleading one. The question is
+# what the CARD shows, and the card draws the Buddha 172 pixels wide (768 at the
+# master — 4.5x). Encoded lossy at q92 the plate's worst pixels are 41/255 off;
+# encoded losslessly it is 374 KB. Is 41 worth 270 KB? Only the display answers
+# that, so the display is what is measured. Every candidate is decoded,
+# composited with the other layers, downsampled to 1x and 2x, and compared with
+# the artwork treated the same way; the floor is the artwork's own trip through
+# the same encoder, downsampled identically.
+#
+# `--small` decides differently: it takes the smallest file that holds 40 dB at
+# the size the card draws (1x) even where 2x and the file itself do not, which is
+# the q92 plate at 103 KB instead of 374 KB. That is a real choice with a real
+# cost — 2.5 dB at the file's own size — so it is a switch somebody has to ask
+# for, and the table prints both sides of it on every run.
+#
+# The criterion is the standard one: PSNR against the artwork, at 1x, at 2x and
+# at the file's own size, never below 40 dB — the threshold at which a difference
+# stops being visible on a screen. It is applied to the scene, not to the plate
+# in isolation, and identically in the two places a number is needed: which
+# encoding to write, and whether the rest pose passes.
+CARD_WIDTH = 172
+
+
+def _down(a, w):
+    """An image array at the width the card draws it, the way a browser would."""
+    h = round(a.shape[0] * w / a.shape[1])
+    return np.asarray(Image.fromarray(a.astype(np.uint8)).resize((w, h), Image.LANCZOS)).astype(np.float32)
+
+
+def _over_white(img):
+    """Composited the way the card shows it: over white. `convert("RGB")` on
+    this artwork would make its transparent background BLACK, and comparing that
+    with a scene composited over white measures the 255-level difference of the
+    sky — a number about the measuring instrument, not about the picture."""
+    a = np.asarray(img).astype(np.float32)
+    al = a[:, :, 3:4] / 255.0
+    return np.clip(a[:, :, :3] * al + 255.0 * (1.0 - al), 0, 255)
+
+
+QUALITY_FLOOR_DB = 40.0
+_ART_RGB = _over_white(base)
+
+
+def _psnr(a, b):
+    mse = float(((a - b) ** 2).mean())
+    return 99.0 if mse <= 0 else 10.0 * np.log10(255.0 ** 2 / mse)
+
+
+def _quality(scene_rgb):
+    """The scene against the artwork, at the three sizes that matter: 1x, 2x,
+    and the file itself."""
+    return [_psnr(_down(_ART_RGB, w), _down(scene_rgb, w))
+            for w in (CARD_WIDTH, CARD_WIDTH * 2, W)]
+
+
 FORCE_EXACT = "--exact" in sys.argv
+SMALL_PLATE = "--small" in sys.argv
 
 
 def save_plate(img, name):
-    """Encode the plate as the smallest file that stays within the floor.
-
-    The plate is the artwork's own body — the stable ground the whole scene
-    rests on — so an encoder that moves its pixels is an encoder that moves the
-    seam. Lossy at 96 was tried and scored 3.26 mean where one trip through the
-    encoder costs 2.39, with 267 pixels along the arm's silhouette at up to
-    64/255: an encode artifact sitting exactly on the cut, which is the one
-    place worth protecting.
-
-    So the encoding is chosen by measurement, not by taste: every candidate is
-    decoded again and compared to the plate, the cheapest one inside
-    PLATE_TOLERANCE wins, and `--exact` overrides it to true lossless for
-    anybody who wants the last 16/255 and will pay 270 KB for it. What the
-    trade actually costs is printed below, on the served files, against the
-    artwork itself.
-    """
     import io
-    raw = np.asarray(img).astype(np.float32)
-    # PREMULTIPLIED, because that is what compositing uses and it is what the
-    # encoder is allowed to be lossy about: a colour under a fully transparent
-    # pixel is not a colour, and WebP is right to throw it away.
-    ra = raw[:, :, 3:4] / 255.0
-    rp = raw[:, :, :3] * ra
-    if DEBUG:
-        img.save(os.path.join(DIR, "dbg-plate-raw.png"))
+    # OVER WHITE, both sides. `convert("RGB")` on this artwork makes its
+    # transparent background BLACK, and comparing that against a scene
+    # composited over white measures the 255-level difference of the sky — a
+    # number about the measuring instrument, not about the picture.
+    print(f"    for scale, the artwork itself through one encoder trip:"
+          f" 1x {_psnr(_down(_ART_RGB, CARD_WIDTH), _down(_over_white(base_q), CARD_WIDTH)):5.2f} dB"
+          f"   2x {_psnr(_down(_ART_RGB, CARD_WIDTH * 2), _down(_over_white(base_q), CARD_WIDTH * 2)):5.2f} dB"
+          f"   the file {_psnr(_ART_RGB, _over_white(base_q)):5.2f} dB")
     best = None
     for label, kw in (("lossy q=92", dict(lossless=False, quality=92)),
                       ("lossy q=96", dict(lossless=False, quality=96)),
@@ -743,22 +776,36 @@ def save_plate(img, name):
         buf = io.BytesIO()
         img.save(buf, "WEBP", method=6, **kw)
         data = buf.getvalue()
-        back = np.asarray(Image.open(io.BytesIO(data)).convert("RGBA")).astype(np.float32)
-        ba = back[:, :, 3:4] / 255.0
-        bp = back[:, :, :3] * ba
-        drgb = float(np.abs(bp - rp).max())
-        da = float(np.abs(back[:, :, 3] - raw[:, :, 3]).max())
+        back = Image.open(io.BytesIO(data)).convert("RGBA")
         # The ALPHA has no tolerance at all: the plate has to be exactly as
         # transparent as the artwork where the arm's silhouette is soft, or the
         # arm's edge gains a fringe it never had.
-        usable = da <= 1.0 and (drgb <= 1.0 if FORCE_EXACT else drgb <= PLATE_TOLERANCE)
-        print(f"    {label:18s} {len(data) / 1024:7.1f} KB   premul max {drgb:5.1f}  alpha max {da:4.0f}"
-              f"{'   exact' if da <= 1.0 and drgb <= 1.0 else ''}{'' if usable else '   over tolerance'}")
+        da = int(np.abs(np.asarray(back)[:, :, 3].astype(np.int16)
+                        - np.asarray(img)[:, :, 3].astype(np.int16)).max())
+        scene = back.copy()
+        for layer in (anchor, arm, grapes_part):
+            scene.alpha_composite(layer)
+        q1, q2, qf = _quality(_over_white(scene))
+        if da > 1:
+            usable = False
+        elif FORCE_EXACT:
+            usable = bool(kw["lossless"]) and kw["quality"] == 100
+        elif SMALL_PLATE:
+            usable = q1 >= QUALITY_FLOOR_DB
+        else:
+            usable = min(q1, q2, qf) >= QUALITY_FLOOR_DB
+        marking = ""
+        if usable and (best is None or len(data) < len(best[1])):
+            marking = "   chosen"
+        elif not usable:
+            marking = "   under 40 dB somewhere"
+        print(f"    {label:18s} {len(data) / 1024:6.1f} KB   against the artwork at 1x {q1:5.2f} dB"
+              f"   2x {q2:5.2f} dB   the file {qf:5.2f} dB   alpha max {da:3d}{marking}")
         if usable and (best is None or len(data) < len(best[1])):
             best = (label, data)
     path = os.path.join(DIR, name)
     if best is None:
-        raise SystemExit(f"no plate encoding within tolerance {PLATE_TOLERANCE} — refusing to write")
+        raise SystemExit("no plate encoding stayed within the floor at the drawn size — refusing to write")
     with open(path, "wb") as fh:
         fh.write(best[1])
     print(f"    -> {name}: {best[0]}, {len(best[1]) / 1024:.1f} KB")
@@ -799,8 +846,40 @@ over(d_back, edge, "5a. along the cut (served)")
 over(d_back, flat, "5b. the flat gold beside the cut (served)")
 
 floor = diff(base_q, base)
-verdict = "the recomposition is the artwork" if d_back[seen].max() <= floor[seen].max() + 16 \
-    else "the recomposition is WORSE than the encoder floor — do not ship this encoding"
+
+# 6. THE SIZE THE CARD DRAWS IT. Everything above is measured at 768, because
+#    that is the file; the card draws that file 172 pixels wide, and that is
+#    what a viewer gets. Both scales are reported, and the verdict is made where
+#    the picture is looked at — the master-scale row is printed beside it,
+#    whether it flatters the result or not.
+# 6. THE SIZE THE CARD DRAWS IT. Everything above is measured at 768, because
+#    that is the file; the card draws that file 172 pixels wide, and that is what
+#    a viewer gets. Both scales are reported and the verdict is made where the
+#    picture is looked at, with the master-scale row printed beside it whether it
+#    flatters the result or not.
+print(f"   6. against the artwork (the usual threshold for \'visually indistinguishable\' is 40 dB):")
+fl = _quality(_over_white(base_q))
+sc = _quality(_over_white(served_back))
+for i, (w, name) in enumerate(((CARD_WIDTH, "1x"), (CARD_WIDTH * 2, "2x"), (W, "the file"))):
+    print(f"      {name:8s} {w:4d}px   the layered scene {sc[i]:6.2f} dB    "
+          f"the artwork through one encoder trip {fl[i]:6.2f} dB    "
+          f"cost {fl[i] - sc[i]:4.2f} dB")
+display_ok = min(sc) >= QUALITY_FLOOR_DB
+
+# THE VERDICT RESTS ON TWO TESTS, both of them about what can be seen.
+#
+#   The seam. A join shows when it is worse than the picture AROUND it, so the
+#   cut is compared with the flat gold running through it rather than with
+#   zero — a cut quieter than the gold it crosses is the strongest form of
+#   "there is no seam here".
+#
+#   The quality at the drawn sizes. 40 dB against the artwork, at 1x and 2x.
+edge_rate = (d_back[edge] > 32).mean() if edge.sum() else 0.0
+flat_rate = (d_back[flat] > 32).mean() if flat.sum() else 1.0
+seam_ok = edge_rate <= max(flat_rate * 3, 0.005)
+print(f"   the cut against the gold beside it: {edge_rate * 100:.3f}% of edge pixels over 32"
+      f" against {flat_rate * 100:.3f}% of the flat gold — {'no seam' if seam_ok else 'A SEAM'}")
+verdict = ("the rest pose is the artwork: no seam along the cut, and no drawn size falls under 40 dB"
+           if (seam_ok and display_ok) else
+           "the rest pose does NOT pass — see the rows above")
 print(f"   verdict: {verdict}")
-print(f"   (the floor itself is mean {floor[seen].mean():.2f} / max {int(floor[seen].max())}; "
-      f"the served scene scores mean {d_back[seen].mean():.2f} / max {int(d_back[seen].max())})")
