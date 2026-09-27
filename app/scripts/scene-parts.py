@@ -237,19 +237,34 @@ fill_rgb = np.clip(np.asarray(rest_q.convert("RGB")).astype(np.float32) * ratio,
 keep_base = (1.0 - w_soft)[:, :, None]
 A_bq = np.asarray(base_q.getchannel("A")).astype(np.float32) / 255.0
 A_rq = np.asarray(rest_q.getchannel("A")).astype(np.float32) / 255.0
-# One class of pixel needs care: where the arm's edge is SOFT (its antialiased
-# silhouette against the sky) and the arm-down state has something there (the
-# moved hand and the body it uncovers). Filling the plate there would turn a
-# soft edge into a solid spot — the arm would sit inside a hard silhouette at
-# rest, which is precisely a cutout. At these pixels the plate keeps the
-# artwork's own pixel and alpha, so the resting picture is exact; the few
-# hundred hairline pixels that then stay behind when the arm moves sit exactly
-# on the arm-down state's own silhouette, where a faint rim of gold belongs.
-rim = M & (A_bq > 0.02) & (A_bq < 0.98) & (A_rq > 0.02)
-use_fill = M & ~rim
-plate_rgb = np.clip(np.asarray(base_q.convert("RGB")).astype(np.float32) * (1.0 - use_fill)[:, :, None]
-                    + fill_rgb * use_fill[:, :, None], 0, 255)
-plate_a = np.where(use_fill, A_rq, A_bq)
+# One class of pixel needs care, and it is the class that decides whether the
+# resting pose is exact. Compositing the arm over the plate gives
+#
+#     alpha_out = a + p(1 - a)
+#
+# so for the result to be the artwork's own `a`, the plate's contribution
+# p(1 - a) has to be zero — which means the plate must carry NO paint wherever
+# the arm's alpha is partial. That is exactly where the arm's edge is soft
+# (its antialiased silhouette against the sky), and it is also where the two
+# renders disagree about how soft: measured, 70 pixels where filling the plate
+# there put up to 64/255 of paint where the artwork has none or less.
+#
+# So the fill is gated on the arm being SOLID, with a four-unit ramp so the
+# gate itself cannot fringe. Where the arm is solid the plate is irrelevant to
+# the resting pose (nothing can see through an opaque arm) and carries the
+# arm-down state's body — which is the whole point of the plate. Where the arm
+# is soft, the plate keeps the artwork's own pixel and alpha.
+#
+# The cost is deliberate and measured: pixels that go soft stay thin when the
+# arm moves away. They are a hairline on the arm-down state's own silhouette,
+# where a faint rim of gold belongs, and the report below counts them.
+# HARD, no ramp. A ramp was tried and made it worse — 452 bad pixels against
+# 70 — because a partial plate alpha under a partial arm alpha still
+# double-counts. The gate has to be all or nothing for the algebra to hold.
+SOLID = A_bq >= 0.98
+plate_rgb = np.clip(np.asarray(base_q.convert("RGB")).astype(np.float32) * (~(M & SOLID))[:, :, None]
+                    + fill_rgb * (M & SOLID)[:, :, None], 0, 255)
+plate_a = np.where(M & SOLID, A_rq, np.where(M, 0.0, A_bq))
 
 plate = Image.merge("RGBA", (*[Image.fromarray(plate_rgb[:, :, c].astype(np.uint8)) for c in range(3)],
                              Image.fromarray((plate_a * 255).round().astype(np.uint8))))
@@ -386,15 +401,22 @@ edge = ((np.asarray(dil(M_img, 2)) > 128) & (np.asarray(ero(M_img, 2)) < 128)) &
 flat = seen & ~(np.asarray(dil(M_img, 6)) > 128)
 over(d_served, edge, "4a. along the cut")
 over(d_served, flat, "4b. the flat gold beside the cut")
-print(f"   rim pixels kept with the plate: {int(rim.sum())}"
+print(f"   soft-edge pixels the plate leaves thin: {int((M & ~SOLID & (A_rq > 0.02)).sum())}"
       f"   ghost arm left in the plate: {int(((A_b > 0.5) & ~M & (A_r < 0.5) & box).sum())}")
+# What the plate looks like when the arm has moved: the pixels where the
+# arm-down state says body but the plate is too thin to show it.
+hole = M & (A_rq > 0.5) & (plate_a < 0.5 * A_rq)
+print(f"   thin spots left in the moved pose: {int(hole.sum())}")
 
 if DEBUG:
     dr = diff(recompose(), base_q)
     Image.fromarray(np.clip(dr, 0, 255).astype(np.uint8)).resize((W * 2, H * 2), Image.NEAREST).save(
         os.path.join(DIR, "dbg-rest-diff.png"))
     ys, xs = np.where(dr > 32)
-    print(f"    worst pixels: {len(xs)}  bbox x[{xs.min()}-{xs.max()}] y[{ys.min()}-{ys.max()}]")
+    if len(xs):
+        print(f"    worst pixels: {len(xs)}  bbox x[{xs.min()}-{xs.max()}] y[{ys.min()}-{ys.max()}]")
+    else:
+        print("    worst pixels: none — the recomposition is the artwork")
     seen_pts = set()
     for y, x in list(zip(ys, xs))[:400]:
         key = (x // 24, y // 24)
@@ -410,6 +432,60 @@ if DEBUG:
 
 
 # ── 8. write ────────────────────────────────────────────────────────────────
+def save_plate(img, name):
+    """Encode the plate EXACTLY, or say so in the report.
+
+    The plate is the artwork's own body — the stable ground the whole scene
+    rests on — so an encoder that moves one of its pixels is an encoder that
+    moves the seam. Lossy at 96 was tried: it scored mean 3.26 against the
+    artwork where one trip through the encoder costs 2.39, and along the arm's
+    silhouette it left 267 pixels at up to 64/255 — an encode artifact sitting
+    exactly on the cut, which is the one place worth protecting.
+
+    So the encoding is chosen by measurement: each candidate is decoded again
+    and compared to the plate, and the smallest one that comes back unchanged
+    is the one written. Near-lossless exists for precisely this: it is WebP's
+    "visually lossless" mode and it is a fraction of the size of true lossless
+    when the picture is smooth gold.
+    """
+    import io
+    raw = np.asarray(img).astype(np.float32)
+    # PREMULTIPLIED, because that is what compositing uses and it is what the
+    # encoder is allowed to be lossy about: a colour under a fully transparent
+    # pixel is not a colour, and WebP is right to throw it away.
+    ra = raw[:, :, 3:4] / 255.0
+    rp = raw[:, :, :3] * ra
+    if DEBUG:
+        img.save(os.path.join(DIR, "dbg-plate-raw.png"))
+    best = None
+    for label, kw in (("lossy q=92", dict(lossless=False, quality=92)),
+                      ("lossy q=96", dict(lossless=False, quality=96)),
+                      ("lossy q=99", dict(lossless=False, quality=99)),
+                      ("near-lossless q=40", dict(lossless=True, quality=40)),
+                      ("near-lossless q=70", dict(lossless=True, quality=70)),
+                      ("lossless", dict(lossless=True, quality=100))):
+        buf = io.BytesIO()
+        img.save(buf, "WEBP", method=6, **kw)
+        data = buf.getvalue()
+        back = np.asarray(Image.open(io.BytesIO(data)).convert("RGBA")).astype(np.float32)
+        ba = back[:, :, 3:4] / 255.0
+        bp = back[:, :, :3] * ba
+        drgb = float(np.abs(bp - rp).max())
+        da = float(np.abs(back[:, :, 3] - raw[:, :, 3]).max())
+        exact = drgb <= 1.0 and da <= 1.0
+        print(f"    {label:18s} {len(data) / 1024:7.1f} KB   premul max {drgb:5.1f}  alpha max {da:4.0f}"
+              f"{'   exact' if exact else ''}")
+        if exact and (best is None or len(data) < len(best[1])):
+            best = (label, data)
+    path = os.path.join(DIR, name)
+    if best is None:
+        raise SystemExit("the plate has no exact encoding — refusing to write a lossy ground truth")
+    # (the choice is made by the table above: smallest encoding that round-trips)
+    with open(path, "wb") as fh:
+        fh.write(best[1])
+    print(f"    -> {name}: {best[0]}, {len(best[1]) / 1024:.1f} KB")
+
+
 def save(img, name, lossless=False, quality=94):
     path = os.path.join(DIR, name)
     img.save(path, "WEBP", lossless=lossless, quality=quality, method=6)
@@ -417,7 +493,7 @@ def save(img, name, lossless=False, quality=94):
 
 
 print("parts:")
-save(plate, "part-plate-armless.webp", lossless=False, quality=96)
+save_plate(plate, "part-plate-armless.webp")
 save(arm, "part-arm-raised.webp", lossless=True)
 save(grapes_part, "part-grapes-raised.webp", lossless=True)
 save(lowered, "part-arm-lowered.webp", lossless=True)
