@@ -304,16 +304,45 @@ The first mascot scene shipped as a medallion: a coin pinned to the card's edge,
 a feather mask around it, the character breathing by the whole image scaling.
 The rebuild replaced all of it. What the card now renders:
 
-- **Four state layers, one composition.** The artwork is a single 3:2 scene —
-  the buddha lounging in a mountain of coin, grapes in hand — drawn once and
-  rendered as four full-scene states: `base` (hand at the mouth), `rest`
-  (hand lowered, grapes in the bowl), `breath` (chest raised), `blink`
-  (eyes closed). Each is a transparent WebP on the artwork's own irregular
-  contour — **no circular crop, no vignette, no sticker ring** — and the
-  motion is a crossfade between states: opacity only, compositor only, on the
-  compositor. Nothing in the block scales, bounces, or translates the
-  artwork. Any single state, frozen, is the full design, so the static card
-  is never a broken frame.
+- **One plate, and the parts that move.** The scene is no longer four whole
+  pictures cross-faded into each other. That was the first attempt and it was
+  wrong twice over: a cross-fade between two whole scenes is a dissolve, not an
+  animation — the character never moves — and the four renders are four
+  separate generations of the same figure, so they differ across the whole
+  frame (78k pixels between `base` and `rest`, most of it coin texture) and
+  every fade shimmered the entire pile.
+  What the card renders now is **one static plate** — the figure, the coins and
+  the environment, with the raised arm taken out and the chest behind it
+  rebuilt from the arm-down state's own pixels — and **five parts laid over
+  it**: the arm, the grapes, the chest, the eyes, and the lowered arm. The
+  coins exist in exactly one place and never change, so coin shimmer from
+  state-swapping is not tuned down, it is structurally impossible.
+- **The extraction is exact, and it is measured.** `scripts/scene-parts.py`
+  cuts the parts from the states the card already serves, using the artwork's
+  own alpha (never an invented silhouette) and a **binary** mask — over the arm
+  the composite takes the arm's pixel, beside it the plate's, and both are the
+  same pixel of the same drawing. Recomposed in its resting pose the layered
+  scene differs from the original artwork by **mean 0.00, max 3 of 255, with
+  zero pixels over 32** across all 393,216. Once encoded, the seam scores
+  **4.89 against 4.95 for the flat gold beside it** — against a measured
+  encoder floor of 3.80. A seam that costs what the picture costs is not a
+  seam. The browser's own canvas composite of the *served* files reproduces the
+  artwork to mean 3.05 / max 42, and the untouched coin pile differs **more**
+  (5.77) than the cut does (3.56), because coins carry more detail for the
+  encoder to lose.
+- **Nothing is punched through.** The first version handed the grape pixels to
+  the grape layer and left the arm with a hole where they were — exact at rest,
+  because the cluster is opaque, and a hand with a grape-shaped bite in it the
+  moment the cluster swung. The pixels the cluster hides are now **rebuilt by
+  diffusion from the hand around them** — the one place a pixel is invented,
+  and only under the opaque cluster, which is why the recomposition is still
+  exact. Measured across the swing's extremes, pixels exposed with nothing
+  behind them fell from **141 and 278 to 14 and 2**, and those two are the
+  cluster's own soft edge, where a background's grain belongs.
+- **The grapes are a child of the arm, by markup.** `views.js` nests the
+  grape layer inside `.mascot-arm`, so the cluster cannot detach from the hand:
+  the arm's rotation carries it and the grapes' own swing composes on top.
+  The cluster hangs free of the body, so what a swing reveals is air.
 - **The clocks, deliberately unsynchronized** (`app/public/styles.css`,
   `buddha-*` keyframes): breath 5.2 s, eating gesture 12.5 s with a long idle,
   blink once per 9 s, the light across the gold once per 24 s, aura 7 s,
@@ -329,10 +358,12 @@ The rebuild replaced all of it. What the card now renders:
 - **Reduced motion is a composition.** Every layer parks: the base artwork
   stands, the light rests as a static band across the coins, the embers hold
   their scatter. Nothing disappears into `opacity: 0`.
-- **The catalogue carries the states.** `cosmetic-model.js`'s buddha entry
-  declares `asset` + `states { rest, breath, blink }`; `sceneWorld()` in
-  `views.js` renders whatever a mascot has — a future mascot without states
-  renders the base artwork only, same markup, one fewer layer. No card
+- **The catalogue carries the parts.** `cosmetic-model.js`'s buddha entry
+  declares `asset` (the plate) + `parts { chest, arm, grapes, belly, blink }`;
+  `sceneWorld()` in `views.js` renders whatever a mascot has — a mascot that
+  declares only an `asset` is one picture (the dragon and the lotus are drawn
+  that way today), and a mascot that still declares `states` keeps the older
+  crossfade path, so an art swap never has to be all-or-nothing. No card
   rewrite is needed for the next seven.
 - **The proof** is `ci/eyes/cosmetic-scene-walk.mjs` (12 sections): four
   loaded WebP layers, the layer animations running on their own clocks with

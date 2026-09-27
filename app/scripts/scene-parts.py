@@ -281,9 +281,89 @@ ImageDraw.Draw(fist).ellipse([344, 16, 400, 60], fill=255)
 G_img = ImageChops.subtract(dil(G_img, 1), dil(fist, 1))
 G = np.asarray(G_img) > 128
 
-arm_alpha = np.where(M & ~G, A_bq, 0.0)
-arm = Image.merge("RGBA", (*base_q.convert("RGB").split(),
+# THE ARM UNDERNEATH THE GRAPES, reconstructed rather than punched through.
+#
+# The obvious move is to hand the grape pixels to the grape layer and leave the
+# arm with a hole where they were (`M & ~G`). At rest it is exact — the grapes
+# are opaque and cover the hole — and it is what this file did first. But the
+# cluster swings on its stem, and the moment it does, that hole is a hand with
+# a grape-shaped bite out of it. The brief names it: "no transparent holes".
+#
+# So the pixels the cluster hides are REBUILT, by diffusion from the hand
+# around them. This is the one place in this pipeline where a pixel is invented
+# rather than taken from the artwork, and two things keep it honest:
+#
+#   * it is invented only where the artwork is SOLID (`A_bq >= 0.98`) — under an
+#     opaque grape, where no pixel of the result can be seen at rest. The
+#     recomposition test below still has to come out exact, and does.
+#   * it is diffused from the ARM's own pixels, never from the sky. The fist and
+#     the forearm are smooth polished gold, which is exactly what a Laplace fill
+#     reproduces well; the alternative (letting it bleed in the transparent
+#     background) would ring the hand with white.
+def diffuse_fill(rgb, unknown, source, iterations=4000):
+    """Fill `unknown` by relaxing toward the average of its solved neighbours.
+
+    Jacobi on the 4-neighbourhood — the discrete Laplace equation, which is the
+    smoothest field that agrees with the boundary. Zero-flux at barriers (a
+    pixel the fill may not spread from is simply not a neighbour), so the hand's
+    own colours flow outward and the background's do not.
+    """
+    filled = np.zeros_like(unknown)
+    filled[source] = True
+    work = rgb.copy()
+    # Start from the average of the source colours: closer than a flat guess, so
+    # the relaxation has less to do and fewer iterations to do it in.
+    work[unknown] = rgb[source].mean(axis=0) if source.any() else 0.0
+    known = source
+    spread = unknown | known
+    for _ in range(iterations):
+        acc = np.zeros_like(work)
+        cnt = np.zeros(unknown.shape, np.float32)
+        for axis, shift in ((0, 1), (0, -1), (1, 1), (1, -1)):
+            v = np.roll(work, shift, axis=axis)
+            m = np.roll(spread, shift, axis=axis)
+            acc += v * m[:, :, None]
+            cnt += m
+        ok = unknown & (cnt > 0)
+        work[ok] = (acc[ok] / cnt[ok][:, None])
+    return work
+
+
+hidden = M & G & SOLID
+if hidden.any():
+    ys, xs = np.where(hidden)
+    pad = 28
+    y0, y1 = max(0, ys.min() - pad), min(H, ys.max() + pad + 1)
+    x0, x1 = max(0, xs.min() - pad), min(W, xs.max() + pad + 1)
+    box_h = np.zeros((H, W), bool); box_h[y0:y1, x0:x1] = True
+    sub_unknown = hidden & box_h
+    # Sources: the arm's own solid pixels, in the neighbourhood, minus anything
+    # the grapes own. `~G` keeps grape colours from being smeared into the hand.
+    sub_source = M & ~G & SOLID & box_h
+    rgb_arr = np.asarray(base_q.convert("RGB")).astype(np.float32)
+    filled_rgb = diffuse_fill(rgb_arr, sub_unknown, sub_source)
+    base_rgb_rebuilt = np.clip(filled_rgb, 0, 255).astype(np.uint8)
+else:
+    base_rgb_rebuilt = np.asarray(base_q.convert("RGB")).astype(np.uint8)
+
+# The arm keeps the artwork's OWN alpha where the artwork shows it — the whole
+# footprint EXCEPT the cluster's soft rim.
+#
+# That exception is the whole subtlety, and getting it wrong cost a measured
+# regression (max 42 -> 66, pixels over 32 more than doubled) before the test
+# caught it. The rim pixels are where the grape's silhouette is antialiased
+# against the sky: the grape layer carries partial alpha there, and if the arm
+# carries the SAME partial alpha underneath it, the two compound — `a + a(1-a)`
+# instead of `a` — and every edge in the cluster goes hard. So the arm is given
+# alpha under the cluster only where the cluster is SOLID, which is precisely
+# where nothing of the arm can be seen at rest; at the rim the arm stays empty
+# and the grape keeps its own edge, as drawn.
+arm_alpha = np.where(M & (~G | SOLID), A_bq, 0.0)
+arm = Image.merge("RGBA", (*[Image.fromarray(base_rgb_rebuilt[:, :, c]) for c in range(3)],
                            Image.fromarray((arm_alpha * 255).round().astype(np.uint8))))
+# The grapes keep the artwork's pixels and its alpha, exactly as drawn: they are
+# the one layer that is a straight copy of the picture, because they are the one
+# layer that has to survive being looked at while it moves.
 grapes_alpha = np.where(G, A_bq, 0.0)
 grapes_part = Image.merge("RGBA", (*base_q.convert("RGB").split(),
                                    Image.fromarray((grapes_alpha * 255).round().astype(np.uint8))))
@@ -407,6 +487,33 @@ print(f"   soft-edge pixels the plate leaves thin: {int((M & ~SOLID & (A_rq > 0.
 # arm-down state says body but the plate is too thin to show it.
 hole = M & (A_rq > 0.5) & (plate_a < 0.5 * A_rq)
 print(f"   thin spots left in the moved pose: {int(hole.sum())}")
+
+# 5. THE SWING. The arm's own hole used to be where the grapes are: with the
+#    cluster handed to its own layer and the arm punched around it (`M & ~G`),
+#    the resting pose was still exact — the grapes are opaque and covered it —
+#    and swinging them exposed a hand with a grape-shaped bite in it. This is
+#    the test that catches that, and it has to be a test rather than a look,
+#    because at rest the defect is invisible by construction.
+#
+#    The cluster is swung to the extremes its keyframes reach (+5 / -4.5 deg
+#    about the stem at 370,45) and the pixels it uncovers are counted, split by
+#    whether anything opaque is left behind them.
+PIVOT, ANGLES = (370.0, 45.0), (5.0, -4.5)
+rest_cover = np.asarray(grapes_part.getchannel("A")).astype(np.float32) / 255.0 > 0.9
+solid_arm = np.asarray(arm.getchannel("A")).astype(np.float32) / 255.0 > 0.9
+plate_solid = plate_a > 0.5
+for ang in ANGLES:
+    swung = grapes_part.rotate(-ang, resample=Image.BICUBIC, center=PIVOT, expand=False,
+                               fillcolor=(0, 0, 0, 0))
+    swung_cover = np.asarray(swung.getchannel("A")).astype(np.float32) / 255.0 > 0.9
+    uncovered = rest_cover & ~swung_cover
+    behind = solid_arm | plate_solid
+    holes = uncovered & ~behind
+    print(f"   grapes swung {ang:+.1f} deg: uncovers {int(uncovered.sum())} px, "
+          f"of which {int(holes.sum())} have nothing behind them")
+    if holes.any():
+        ys, xs = np.where(holes)
+        print(f"      worst hole cluster x[{xs.min()}-{xs.max()}] y[{ys.min()}-{ys.max()}]")
 
 if DEBUG:
     dr = diff(recompose(), base_q)
