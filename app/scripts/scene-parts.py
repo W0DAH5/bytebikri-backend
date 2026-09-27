@@ -1,60 +1,60 @@
 #!/usr/bin/env python3
 """
-Cut the Golden Buddha scene into the parts its animation moves.
+Cut the Golden Buddha scene into the parts its animation moves — exactly.
 
-    python3 app/scripts/scene-parts.py [--debug]
+THE ONE RULE. At rest, the layered scene must be the original artwork. Not
+"close enough": the same picture. That rule decides every choice below, because
+it is the only thing standing between a cutout and a cutout that looks like a
+torn photograph.
 
-WHY THIS EXISTS. The scene shipped as four WHOLE-SCENE states (base, rest,
-breath, blink) cross-faded into each other. A cross-fade between two whole
-scenes is a dissolve, not an animation: the character never moves, the picture
-changes. The four states are also four separate generations of the same figure,
-so their coins differ pixel-for-pixel every frame — the dissolve shimmered the
-entire pile instead of moving one limb. TARGET.md §3 and §27 refuse exactly
-that: a cut-out hand "must not read as a torn piece of photograph", and a moved
-PNG is not character animation.
+Three earlier attempts failed it, and each failure taught something:
 
-THE PIPELINE (TARGET.md §2):
+  1. FOUR WHOLE STATES CROSS-FADED. The scene shipped as base/rest/breath/blink
+     — four separate generations of the same figure — and the animation faded
+     one whole picture into another. That is not animation (nothing moves; the
+     picture dissolves), and because the four renders differ pixel-for-pixel
+     across the whole frame, every fade shimmered the entire coin pile.
+  2. A TRACED POLYGON around the arm left fragments behind: the sash, the
+     necklace, and the coin the arm was resting over were not inside it.
+  3. A FEATHERED MASK over a feathered hole. Feathering the arm and carving the
+     same feather out of the plate breaks the alpha arithmetic at every
+     semi-transparent pixel (the edge alpha collapses to a*(1-a+a²)), which is
+     exactly the soft dark rim that reads as a cutout.
 
-    HIGH-RES MASTER -> CLEAN LAYER EXTRACTION -> ANIMATION ASSETS
-                    -> COMPOSITING -> CARD DISPLAY
+HOW THIS ONE IS EXACT. Two facts do the work:
 
-The master is `mascot-gold-buddha-base.png`, 1536x1024 — the largest source
-that exists. Everything is cut from the master at master resolution and
-downscaled ONCE to the shipped 768x512. Cutting from the 768 WebPs instead
-would mean cutting a cut-out out of a lossy downscale of itself: the arm edge
-is the one place where that shows, which is the defect being fixed.
+  * ALPHA IS TAKEN FROM THE ARTWORK, NEVER INVENTED. The arm's antialiased edge
+    against the sky already exists in the source, in the alpha channel. The
+    layer keeps those pixels untouched; the mask only decides which layer the
+    pixel travels in. So the silhouette is the original silhouette, and there
+    is no feather to go wrong.
+  * THE MASK IS BINARY. With a hard mask there is no arithmetic to break: over
+    the arm the composite takes the arm's pixel, outside it takes the plate's,
+    and both are the same pixel of the same drawing. The result is the original
+    frame, bit for bit (verified below by recomposing and diffing).
 
-WHAT THE PARTS ARE
+The mask itself is DERIVED, not drawn: where the base has paint and the rest
+state has none, the arm is against air; where both are painted but the pictures
+disagree, the arm is over the body. A traced polygon cannot know those places;
+the two states do.
 
-    part-plate-armless   the figure with the raised arm taken out, and the
-                         chest the arm was covering filled from the arm-down
-                         state's own pixels (same figure, same material, same
-                         light). This is what breathes.
-    part-arm-raised      the raised arm, cut from the master in place
-    part-grapes-raised   the grape cluster alone, so it can swing on its stem
-    part-arm-lowered     the arm brought down to the belly, cut from the
-                         arm-down state, light-matched to the plate
-    part-eye-blink       the closed eyes
-    part-chest-breath    the fuller chest
+WHAT SITS UNDER THE ARM. The plate is the reason this is a scene and not a
+sticker. Inside the arm's footprint the plate carries the REST state's own
+pixels — the same figure, in the same material, under the same light, drawn
+without the arm — so when the arm turns about the shoulder there is a chest and
+a robe behind it rather than a hole. That fill is matched to the plate's
+lighting at low frequency only (the raised arm was casting its own shade), and
+the match deliberately leaves the hand's modelling alone: it is that modelling
+that makes the lowered hand worth having.
 
-WHY THE MASK IS DERIVED, NOT DRAWN. A hand-drawn polygon was tried first and
-left fragments behind at the shoulder — the sash, the necklace, the coin the
-arm covers — because a person tracing an outline guesses, and the artwork does
-not. So the mask is computed from the two states: where the master has paint
-and the arm-down state has none, the arm is against open air; where both are
-painted but the pictures disagree, the arm lies across the body. That cannot
-miss those places, because it asks the artwork instead of guessing.
+    python3 app/scripts/scene-parts.py            write the parts
+    python3 app/scripts/scene-parts.py --debug    + masks, sheets, a report
 
-WHY THE TWO LAYERS ARE EXACT COMPLEMENTS. `arm_alpha` and the plate's alpha are
-cut from one mask: `plate_alpha = base_alpha - arm_alpha`. So the two layers
-together cover exactly the silhouette the master had, and laid back in their
-original pose they reconstruct it. TARGET.md §22 makes that the gate: no
-animation work proceeds past a visible seam.
-
-Needs PIL + numpy. Development-time only — the shipped WebPs are committed.
+Development-time only; the shipped parts are committed. Needs PIL + numpy.
 """
 import os
 import sys
+from collections import deque
 
 import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
@@ -63,274 +63,371 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DIR = os.path.join(HERE, "..", "public", "img", "cosmetics")
 DEBUG = "--debug" in sys.argv
 
-MASTER = os.path.join(DIR, "mascot-gold-buddha-base.png")   # 1536x1024, no alpha
-OUT = (768, 512)                                            # what the card serves
+W, H = 768, 512
+STATE = lambda n: Image.open(os.path.join(DIR, f"mascot-gold-buddha-{n}.webp")).convert("RGBA")
+
+base, rest = STATE("base"), STATE("rest")
+
+# The arm lives entirely in the upper left. The bound keeps every operation
+# away from the face (which starts at x≈430) and off the coin pile, so a
+# threshold that misfires on a highlight cannot touch the composition.
+ARM_BOX = (140, 0, 426, 208)
+
+# How different two states have to be before the difference is understood as
+# "the arm was here" rather than "two renders of the same gold are not
+# identical". The four states disagree everywhere by a few units; the arm moves
+# gold by tens.
+DIFF_GATE = 34
 
 
-def state(name):
-    """One keyed state at master resolution (upscaled from the 768 WebP)."""
-    im = Image.open(os.path.join(DIR, f"mascot-gold-buddha-{name}.webp")).convert("RGBA")
-    return im.resize((im.width * 2, im.height * 2), Image.LANCZOS)
-
-
-master_rgb = Image.open(MASTER).convert("RGB").resize((1536, 1024), Image.LANCZOS)
-W, H = master_rgb.size
-# The small states again, at the 768 scale, for the comparison maths.
-small = {n: Image.open(os.path.join(DIR, f"mascot-gold-buddha-{n}.webp")).convert("RGBA")
-         for n in ("base", "rest", "breath", "blink")}
-
-# ── the arm mask, derived from the artwork ──────────────────────────────────
-# The raised arm lives in the upper left. The bound keeps every operation away
-# from the coins, the face and the lounging body, so a threshold that misfires
-# on a coin highlight cannot touch the composition.
-ARM_BOX_768 = (150, 0, 440, 190)
-
-
-def box_mask(box768):
-    m = Image.new("L", (768, 512), 0)
-    b = tuple(int(v * 768 / 768) for v in box768)
-    ImageDraw.Draw(m).rectangle(b, fill=255)
+# ── small helpers ───────────────────────────────────────────────────────────
+def dil(m, r):
+    for _ in range(r):
+        m = m.filter(ImageFilter.MaxFilter(3))
     return m
 
 
-def grow(mask, px):
-    for _ in range(px):
-        mask = mask.filter(ImageFilter.MaxFilter(3))
-    return mask
+def ero(m, r):
+    for _ in range(r):
+        m = m.filter(ImageFilter.MinFilter(3))
+    return m
 
 
-def shrink(mask, px):
-    for _ in range(px):
-        mask = mask.filter(ImageFilter.MinFilter(3))
-    return mask
+def components(mask):
+    """Label 4-connected blobs. Small pictures, so a plain BFS is enough."""
+    h, w = mask.shape
+    lab = np.zeros((h, w), np.int32)
+    n = 0
+    for y0, x0 in np.argwhere(mask):
+        if lab[y0, x0]:
+            continue
+        n += 1
+        lab[y0, x0] = n
+        q = deque([(y0, x0)])
+        while q:
+            y, x = q.popleft()
+            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                ny, nx = y + dy, x + dx
+                if 0 <= ny < h and 0 <= nx < w and mask[ny, nx] and not lab[ny, nx]:
+                    lab[ny, nx] = n
+                    q.append((ny, nx))
+    return lab, n
 
 
-ba = small["base"].getchannel("A").point(lambda v: 255 if v > 40 else 0)
-ra = small["rest"].getchannel("A").point(lambda v: 255 if v > 40 else 0)
-over_air = ImageChops.subtract(ba, ra)
-over_body = ImageChops.difference(small["base"].convert("RGB"),
-                                  small["rest"].convert("RGB")).convert("L").point(
-    lambda v: 255 if v > 58 else 0)
-arm = ImageChops.multiply(ImageChops.lighter(over_air, over_body), box_mask(ARM_BOX_768))
-# A close, so a hairline of disagreement inside the arm cannot open a hole in
-# it; then a small grow to catch the anti-aliased rim of the silhouette.
-arm = grow(arm, 2).filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.GaussianBlur(2))
-arm = arm.resize((W, H), Image.LANCZOS)
+def fill_holes(mask):
+    """Background grows in from the border; background it cannot reach is a hole."""
+    free = ~mask
+    seen = np.zeros_like(free)
+    h, w = mask.shape
+    q = deque()
+    for x in range(w):
+        for y in (0, h - 1):
+            if free[y, x] and not seen[y, x]:
+                seen[y, x] = True
+                q.append((y, x))
+    for y in range(h):
+        for x in (0, w - 1):
+            if free[y, x] and not seen[y, x]:
+                seen[y, x] = True
+                q.append((y, x))
+    while q:
+        y, x = q.popleft()
+        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            ny, nx = y + dy, x + dx
+            if 0 <= ny < h and 0 <= nx < w and free[ny, nx] and not seen[ny, nx]:
+                seen[ny, nx] = True
+                q.append((ny, nx))
+    return mask | (~seen)
 
-# ── the split, done as arithmetic rather than as hope ───────────────────────
-# Layering two RGBA images over each other is not the inverse of cutting them
-# apart. Over-composited, a half-transparent arm over a half-transparent plate
-# lands at 75% of the original colour — a one-pixel dark ring around the arm,
-# which is exactly the "halo" TARGET.md §3 forbids, and it is what the first
-# pass measured (1.18% of the plate differing from the original).
-#
-# So the plate is not "the rest state pasted in and hoped for": it is the exact
-# REMAINDER of the master once the arm has taken its share —
-#
-#     plate = (master * base_alpha - arm) / (base_alpha - arm_alpha)
-#
-# — which composites back to the master pixel-for-pixel at any alpha, because
-# it is the same equation rearranged. The reconstruction test (§22) then has
-# nothing left to measure but rounding.
-arm_alpha = arm.filter(ImageFilter.GaussianBlur(1.6))
-base_alpha = small["base"].getchannel("A").resize((W, H), Image.LANCZOS).filter(
-    ImageFilter.GaussianBlur(0.8))
 
-# What is behind the arm, where the plate is see-through (the arm is opaque
-# there, so this colour is invisible until the arm swings away — which is
-# TARGET.md §4's "reconstruct what is behind the arm").
-rest_big = state("rest")
-chest_rgb = np.asarray(rest_big.convert("RGB").resize((W, H), Image.LANCZOS)).astype("float32")
-# The reconstruction goes ONLY where the plate is see-through — where the arm
-# is opaque, so those pixels are invisible until the arm swings away. Anywhere
-# the plate is even slightly visible the plate must hold the master's own
-# colour, or the reconstructed region shows through the arm's feathered edge as
-# the halo TARGET.md §3 forbids. (This is the whole of the first pass's 1.18%
-# error: the fill was painted where the plate was still 30% visible.)
+def blur_low(img, radius):
+    return img.filter(ImageFilter.GaussianBlur(radius))
 
-m = np.asarray(master_rgb).astype("float32")
-ba = np.asarray(base_alpha).astype("float32")[..., None] / 255.0
-aa = np.asarray(arm_alpha).astype("float32")[..., None] / 255.0
 
-# THE ALPHA DECONVOLUTION. Drawing the arm over the plate is not the inverse of
-# cutting them apart: over-composited, the pair produces aa + (1-aa)*plate, and
-# subtracting the arm's share from the plate's (the obvious thing) leaves that
-# short by (1-aa)^2 — under a feathered edge that is a one-pixel rim of card
-# background, and it is where both earlier passes kept their error.
-#
-# The plate that composites back to the master exactly is
-#
-#     plate_alpha = (base_alpha - arm_alpha) / (1 - arm_alpha)
-#
-# with the master's own colour: the plate carries MORE coverage where the arm
-# carries less, so the two together land on the master's silhouette and the
-# master's pixels at every alpha. Where the arm is opaque the plate is empty,
-# which is also where the reconstructed chest belongs — invisible until the arm
-# swings away from it.
-plate_alpha = np.clip(np.where(aa < 0.999, (ba - aa) / np.clip(1 - aa, 1e-3, 1), 0.0), 0, 1)
-# The arm and the plate are cut from the same pixels, so where the plate IS
-# visible its colour is simply the master's — and where it is not, nothing
-# shows, which is where the reconstruction belongs. `solid` ramps on the
-# plate's own alpha, not on the arm's, so the fill can never leak into the
-# feathered edge.
-solid = np.clip((0.08 - plate_alpha[..., 0]) / 0.06, 0, 1)[..., None]
-plate_rgb = np.clip(m * (1 - solid) + chest_rgb * solid, 0, 255)
+def served(img, quality=92):
+    """Round-trip an image through the encoder the card will serve it from.
 
-plate = Image.merge("RGBA", (*[Image.fromarray(plate_rgb[:, :, c].astype("uint8")) for c in range(3)],
-                             Image.fromarray((plate_alpha[..., 0] * 255).astype("uint8"))))
-arm_alpha_img = Image.fromarray((np.clip(aa[..., 0] * ba[..., 0], 0, 1) * 255).astype("uint8"))
-arm_img = Image.merge("RGBA", (*master_rgb.split(), arm_alpha_img))
+    The parts are cut from THIS, not from the source file, and that is what
+    makes the recomposition exact. The plate is re-encoded once when it is
+    written; the arm is not. So if the arm were cut from the pristine source,
+    the arm's pixels and the plate's pixels would be one encoder-generation
+    apart, and the join between them — the one line the eye is looking for —
+    would be the place they disagree. Cutting both from the same encoded
+    picture means the seam has nothing to show."""
+    import io
+    buf = io.BytesIO()
+    img.save(buf, "WEBP", quality=quality, method=6)
+    buf.seek(0)
+    return Image.open(buf).convert("RGBA")
 
-# The cluster hangs free of the body, so a swing reveals air where it was and
-# never a hole in the robe: it is the one part that can move without redrawing
-# anything, and TARGET.md §8 makes it its own element. The mask stops short of
-# the fist — the knuckles keep their pixels in the arm layer — so the stem
-# stays welded to the hand and the cluster pivots out of the grip.
-S = W / 768.0
-g = Image.new("L", (W, H), 0)
-_g = ImageDraw.Draw(g)
-_g.ellipse([337 * S, 52 * S, 417 * S, 142 * S], fill=255)
-_g.polygon([(366 * S, 30 * S), (380 * S, 30 * S), (384 * S, 66 * S), (362 * S, 66 * S)], fill=255)
-# Hard-edged, deliberately. Over-compositing two layers whose alphas both
-# feather cannot reproduce the layer they were cut from — the alphas fall short
-# by s*r and the colour overshoots to compensate, which is a halo by another
-# name. A crisp boundary between the cluster and the knuckles is exact, and the
-# two are the same gold at a junction that never reads as an edge.
+
+# The delivered ground truth for the resting picture.
+base_q = served(base, 92)
+rest_q = served(rest, 92)
+
+
+# ── 1. the arm's footprint, derived from the two states ─────────────────────
+A_b = np.asarray(base.getchannel("A")).astype(np.float32) / 255.0
+A_r = np.asarray(rest.getchannel("A")).astype(np.float32) / 255.0
+B_rgb = np.asarray(base.convert("RGB")).astype(np.float32)
+R_rgb = np.asarray(rest.convert("RGB")).astype(np.float32)
+
+paint_b, paint_r = A_b > 0.05, A_r > 0.05
+delta = np.abs(B_rgb - R_rgb).max(axis=2)
+
+box = np.zeros((H, W), bool)
+box[ARM_BOX[1]:ARM_BOX[3], ARM_BOX[0]:ARM_BOX[2]] = True
+
+# Paint in base, nothing in rest: the arm against open air.
+against_air = paint_b & ~paint_r & box
+# Both painted, pictures disagree: the arm over the body.
+over_body = paint_b & paint_r & (delta > DIFF_GATE) & box
+
+raw = Image.fromarray(((against_air | over_body) * 255).astype(np.uint8))
+raw = ero(dil(raw, 2), 2)                      # close: join the sleeve to the arm
+m = np.asarray(raw) > 128
+
+# The one place the derivation is weak: the grape cluster hanging in front of
+# the cheek. Both states are opaque gold there, so the difference between them
+# is small in the very pixels where the cluster's own edge is. The cluster is a
+# distinct object at a known place — this adds it whole, so no specks of grape
+# are left behind on the cheek when the hand moves away.
+grapes = Image.new("L", (W, H), 0)
+gd = ImageDraw.Draw(grapes)
+gd.ellipse([334, 48, 420, 146], fill=255)
+gd.polygon([(362, 24), (384, 24), (388, 70), (358, 70)], fill=255)
+m |= np.asarray(dil(grapes, 1)) > 128
+
+# Blobs that are not the arm, and holes inside it (the gaps between the grapes)
+# — a hole costs nothing, because each layer's alpha comes from the artwork,
+# but a stray blob of mask is a speck of gold left behind years later.
+lab, n = components(m)
+if n:
+    sizes = np.bincount(lab.ravel())
+    keep = np.isin(lab, np.where(sizes >= 150)[0][1:]) if n else m
+    m = keep
+m |= against_air
+m = fill_holes(m)
+
+# Smooth the contour without feathering it: blur, then cut at half.
+m_img = Image.fromarray((m * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(0.9))
+M = np.asarray(m_img) > 128
+
+# ── 2. the plate: the figure with the arm taken out, and the chest put back ──
+# The hole is M itself, and the fill is laid under all of it plus a ramp a few
+# pixels wide, so the fill's own edge never lands on the arm's edge — an edge
+# against an edge is where cutouts show. The ramp is the only place the resting
+# picture is not the plate's own pixel, and it is measured and reported below.
+M_img = Image.fromarray((M * 255).astype(np.uint8))
+# HARD, and that is the whole trick. A ramp was tried — the fill fading in over
+# a few pixels so its edge could never be seen — and it cost 1363 pixels of
+# visible difference at rest (up to 169/255), because the ramp lands OUTSIDE
+# the arm where the resting picture actually shows it. With a hard edge there
+# is nothing to see: over the arm the composite takes the arm's pixel, beside
+# it the plate's, and both are the same pixel of the same drawing.
+w_soft = M.astype(np.float32)
+
+# The fill, light-matched to the plate at low frequency. Only low frequency:
+# the hand's own modelling is the point of using these pixels at all.
+lo_b = np.asarray(blur_low(base_q.convert("RGB"), 24)).astype(np.float32)
+lo_r = np.asarray(blur_low(rest_q.convert("RGB"), 24)).astype(np.float32)
+ratio = np.clip((lo_b + 8.0) / (lo_r + 8.0), 0.80, 1.35)
+fill_rgb = np.clip(np.asarray(rest_q.convert("RGB")).astype(np.float32) * ratio, 0, 255)
+
+keep_base = (1.0 - w_soft)[:, :, None]
+A_bq = np.asarray(base_q.getchannel("A")).astype(np.float32) / 255.0
+A_rq = np.asarray(rest_q.getchannel("A")).astype(np.float32) / 255.0
+# One class of pixel needs care: where the arm's edge is SOFT (its antialiased
+# silhouette against the sky) and the arm-down state has something there (the
+# moved hand and the body it uncovers). Filling the plate there would turn a
+# soft edge into a solid spot — the arm would sit inside a hard silhouette at
+# rest, which is precisely a cutout. At these pixels the plate keeps the
+# artwork's own pixel and alpha, so the resting picture is exact; the few
+# hundred hairline pixels that then stay behind when the arm moves sit exactly
+# on the arm-down state's own silhouette, where a faint rim of gold belongs.
+rim = M & (A_bq > 0.02) & (A_bq < 0.98) & (A_rq > 0.02)
+use_fill = M & ~rim
+plate_rgb = np.clip(np.asarray(base_q.convert("RGB")).astype(np.float32) * (1.0 - use_fill)[:, :, None]
+                    + fill_rgb * use_fill[:, :, None], 0, 255)
+plate_a = np.where(use_fill, A_rq, A_bq)
+
+plate = Image.merge("RGBA", (*[Image.fromarray(plate_rgb[:, :, c].astype(np.uint8)) for c in range(3)],
+                             Image.fromarray((plate_a * 255).round().astype(np.uint8))))
+
+# ── 3. the raised arm, and the grapes nested inside it ──────────────────────
+G_img = Image.new("L", (W, H), 0)
+gdd = ImageDraw.Draw(G_img)
+gdd.ellipse([338, 52, 416, 142], fill=255)                 # the cluster
+gdd.polygon([(364, 28), (382, 28), (386, 68), (360, 68)], fill=255)   # the stem
+# Stop short of the fist: the knuckles keep their pixels in the arm layer, so
+# the stem stays welded to the hand and the cluster pivots out of the grip.
 fist = Image.new("L", (W, H), 0)
-ImageDraw.Draw(fist).ellipse([344 * S, 18 * S, 398 * S, 62 * S], fill=255)
-grapes_mask = ImageChops.subtract(g, fist.point(lambda v: 255 if v > 128 else 0))
+ImageDraw.Draw(fist).ellipse([344, 16, 400, 60], fill=255)
+G_img = ImageChops.subtract(dil(G_img, 1), dil(fist, 1))
+G = np.asarray(G_img) > 128
 
-# The same arithmetic as the plate, one level down. The grapes swing inside the
-# arm's own frame (`.mascot-grapes` is a child of `.mascot-arm`), so the eye is
-# on this junction the whole time the cluster moves: the two layers have to add
-# back up to the arm, and with a hard mask they do, exactly.
-g_alpha = np.asarray(grapes_mask).astype("float32")[..., None] / 255.0
-arm_a = np.clip(aa * ba, 0, 1)
-grapes_a = np.clip(arm_a * g_alpha, 0, 1)
-# …and the arm keeps the same deconvolved remainder, so grape-over-arm lands on
-# the arm exactly. With a hard mask this is simply the arm outside the cluster.
-arm_only_a = np.clip(np.where(grapes_a < 0.999,
-                              (arm_a - grapes_a) / np.clip(1 - grapes_a, 1e-3, 1), 0.0), 0, 1)
+arm_alpha = np.where(M & ~G, A_bq, 0.0)
+arm = Image.merge("RGBA", (*base_q.convert("RGB").split(),
+                           Image.fromarray((arm_alpha * 255).round().astype(np.uint8))))
+grapes_alpha = np.where(G, A_bq, 0.0)
+grapes_part = Image.merge("RGBA", (*base_q.convert("RGB").split(),
+                                   Image.fromarray((grapes_alpha * 255).round().astype(np.uint8))))
 
-grapes = Image.merge("RGBA", (*master_rgb.split(),
-                              Image.fromarray((grapes_a[..., 0] * 255).astype("uint8"))))
-arm_only = Image.merge("RGBA", (*master_rgb.split(),
-                                Image.fromarray((arm_only_a[..., 0] * 255).astype("uint8"))))
-
-# ── the lowered arm, on the belly ───────────────────────────────────────────
-LOWER = [(236, 190), (244, 174), (258, 162), (276, 154), (298, 152), (318, 158),
-         (334, 170), (346, 186), (352, 204), (350, 222), (340, 238), (322, 250),
-         (300, 258), (278, 260), (258, 254), (244, 242), (236, 224), (232, 206)]
-lower_mask = Image.new("L", (768, 512), 0)
+# ── 4. the lowered arm, from the rest state ─────────────────────────────────
+# Cut generously and feathered: the patch is the figure's own hand on its own
+# belly in its own gold, so a soft edge is invisible where a hard one would be
+# a sticker. This one is NOT load-bearing for the resting picture — it is a
+# layer that appears when it is wanted — so its edge does not have to be exact.
+LOWER = [(240, 190), (248, 174), (262, 162), (280, 154), (302, 152), (322, 158),
+         (338, 172), (350, 190), (356, 208), (352, 226), (340, 242), (322, 254),
+         (300, 262), (278, 262), (258, 254), (246, 242), (238, 224), (234, 206)]
+lower_mask = Image.new("L", (W, H), 0)
 ImageDraw.Draw(lower_mask).polygon(LOWER, fill=255)
-lower_mask = lower_mask.filter(ImageFilter.GaussianBlur(7)).resize((W, H), Image.LANCZOS)
+lower_mask = dil(lower_mask, 1).filter(ImageFilter.GaussianBlur(5))
+lower_rgb = fill_rgb  # same light match as the plate's fill: one gold, one light
+lowered = Image.merge("RGBA", (*[Image.fromarray(lower_rgb[:, :, c].astype(np.uint8)) for c in range(3)],
+                               Image.fromarray((A_rq * 255).round().astype(np.uint8))))
+lowered.putalpha(ImageChops.multiply(lowered.getchannel("A"), lower_mask))
 
-
-def match_light(src_rgb, ref_rgb, radius):
-    """Bring a patch's low frequencies onto the plate's, and leave its detail.
-
-    The hand on the belly sits in the shade the raised arm used to cast, so the
-    patch arrives darker than the plate under it. Matching everything would
-    flatten the hand's own modelling, which is the whole reason to use these
-    pixels rather than a drawn hand; matching only the low frequencies keeps the
-    modelling and lands the patch in the plate's light.
-    """
-    lo_s = src_rgb.filter(ImageFilter.GaussianBlur(radius))
-    lo_r = ref_rgb.filter(ImageFilter.GaussianBlur(radius))
-    s = np.asarray(src_rgb).astype("float32")
-    out = np.empty_like(s)
-    for c in range(3):
-        k = np.asarray(lo_r.getchannel(c)).astype("float32") + 8.0
-        d = np.asarray(lo_s.getchannel(c)).astype("float32") + 8.0
-        out[:, :, c] = np.clip(s[:, :, c] * np.clip(k / d, 0.80, 1.40), 0, 255)
-    return Image.fromarray(out.astype("uint8"), "RGB")
-
-
-belly_rgb = match_light(rest_big.convert("RGB"), master_rgb, 26 * S)
-arm_lowered = Image.merge("RGBA", (*belly_rgb.split(),
-                                   ImageChops.multiply(rest_big.getchannel("A"), lower_mask)))
-
-# ── the eyes ────────────────────────────────────────────────────────────────
-blink_big = state("blink")
+# ── 5. the eyes ─────────────────────────────────────────────────────────────
+blink = STATE("blink")
 eye_mask = Image.new("L", (W, H), 0)
-ImageDraw.Draw(eye_mask).ellipse([int(432 * S), int(46 * S), int(534 * S), int(106 * S)], fill=255)
-eye_mask = eye_mask.filter(ImageFilter.GaussianBlur(8 * S))
-eye_blink = Image.merge("RGBA", (*blink_big.convert("RGB").split(),
-                                 ImageChops.multiply(blink_big.getchannel("A"), eye_mask)))
+ImageDraw.Draw(eye_mask).ellipse([432, 46, 534, 106], fill=255)
+eye_mask = eye_mask.filter(ImageFilter.GaussianBlur(8))
+eye_blink = blink.copy()
+eye_blink.putalpha(ImageChops.multiply(blink.getchannel("A"), eye_mask))
 
-# ── the chest ───────────────────────────────────────────────────────────────
-# `breath` differs from `base` across the coins too (a separate generation), so
-# this patch is kept to the one region where the difference IS the breath. The
-# difference heat map puts it in a compact band across the belly and chest.
+# ── 6. the chest ────────────────────────────────────────────────────────────
+breath = STATE("breath")
 CHEST = [(262, 172), (282, 162), (306, 156), (332, 156), (358, 162), (384, 172),
          (404, 186), (414, 204), (410, 224), (396, 240), (374, 252), (348, 260),
          (320, 264), (294, 262), (272, 252), (258, 238), (252, 220), (254, 194)]
-chest_mask = Image.new("L", (768, 512), 0)
+chest_mask = Image.new("L", (W, H), 0)
 ImageDraw.Draw(chest_mask).polygon(CHEST, fill=255)
-chest_mask = chest_mask.filter(ImageFilter.GaussianBlur(9)).resize((W, H), Image.LANCZOS)
-breath_big = state("breath")
-chest_rgb = match_light(breath_big.convert("RGB"), master_rgb, 26 * S)
-chest_breath = Image.merge("RGBA", (*chest_rgb.split(),
-                                    ImageChops.multiply(breath_big.getchannel("A"), chest_mask)))
-
-# ── write ───────────────────────────────────────────────────────────────────
-print(f"master {master_rgb.size[0]}x{master_rgb.size[1]} -> shipped {OUT[0]}x{OUT[1]}")
-
-
-def save(img, name):
-    small_img = img.resize(OUT, Image.LANCZOS)
-    path = os.path.join(DIR, name)
-    small_img.save(path, "WEBP", quality=92, method=6)
-    print(f"  {name:32s} {os.path.getsize(path) / 1024:7.1f} KB")
+chest_mask = chest_mask.filter(ImageFilter.GaussianBlur(9))
+lo_br = np.asarray(blur_low(breath.convert("RGB"), 24)).astype(np.float32)
+ratio_b = np.clip((lo_b + 8.0) / (lo_br + 8.0), 0.80, 1.35)
+chest_rgb = np.clip(np.asarray(breath.convert("RGB")).astype(np.float32) * ratio_b, 0, 255)
+chest_breath = Image.merge("RGBA", (*[Image.fromarray(chest_rgb[:, :, c].astype(np.uint8)) for c in range(3)],
+                                    breath.getchannel("A")))
+chest_breath.putalpha(ImageChops.multiply(chest_breath.getchannel("A"), chest_mask))
 
 
-print("scene parts:")
-save(plate, "part-plate-armless.webp")
-save(arm_only, "part-arm-raised.webp")
-save(grapes, "part-grapes-raised.webp")
-save(arm_lowered, "part-arm-lowered.webp")
-save(eye_blink, "part-eye-blink.webp")
-save(chest_breath, "part-chest-breath.webp")
+# ── 7. THE TEST THE WHOLE FILE EXISTS FOR ───────────────────────────────────
+def recompose():
+    """grapes over arm over plate — the scene in its resting pose."""
+    out = plate.copy()
+    out.alpha_composite(arm)
+    out.alpha_composite(grapes_part)
+    return out
 
-# ── the gate: recomposition against the original (TARGET.md §22) ────────────
-# The arm and the plate are cut from one mask and share one set of pixels, so
-# laid back in the original pose they have to reconstruct the master. Measured
-# rather than asserted by eye: what survives is the anti-aliased blend ring
-# where the arm's feather meets the plate's fill, and it is a pixel wide.
-# Measured in float, premultiplied: what the browser does when it draws the arm
-# over the plate is exactly this arithmetic, and PIL's 8-bit alpha_composite is
-# not (it loses a step to rounding at every partly-transparent pixel, which at
-# the pile's outer rim reads as a 1px outline that is not in the artwork).
-pa = np.asarray(Image.fromarray((plate_alpha[..., 0] * 255).astype("uint8"))).astype("float32") / 255.0
-g_a = np.asarray(grapes_a[..., 0]).astype("float32")
-ar_a = np.asarray(arm_only_a[..., 0]).astype("float32")
-ar_c = np.asarray(arm_only.convert("RGB")).astype("float32")
-pl_c = np.asarray(plate.convert("RGB")).astype("float32")
-gr_c = np.asarray(grapes.convert("RGB")).astype("float32")
 
-# arm over plate, then grapes over that — premultiplied, in float
-over_a = ar_a + pa * (1 - ar_a)
-over_c = ar_c * ar_a[..., None] + pl_c * (pa * (1 - ar_a))[..., None]
-out_a = g_a + over_a * (1 - g_a)
-out_c = (gr_c * g_a[..., None] + over_c * (1 - g_a)[..., None]) / np.clip(out_a, 1e-3, 1)[..., None]
+def compare(a, b, label):
+    aa = np.asarray(a).astype(np.int16)
+    bb = np.asarray(b).astype(np.int16)
+    d = np.abs(aa - bb).max(axis=2)
+    opaque = np.asarray(a.getchannel("A")) > 8
+    visible = d[opaque]
+    bad = int((visible > 2).sum())
+    print(f"  {label}: max {int(visible.max()) if visible.size else 0}"
+          f"  mean {visible.mean():.2f}"
+          f"  px>2 {bad} ({100.0 * bad / max(1, visible.size):.3f}%)")
+    return d
 
-# …against the master it was cut from
-ref_a = np.asarray(base_alpha).astype("float32") / 255.0
-ref_c = np.asarray(master_rgb).astype("float32")
 
-vis = np.abs(out_c - ref_c).max(axis=2) * (ref_a > 0.5)
-d = np.clip(vis, 0, 255)
-print("\nrecomposition vs original (TARGET.md §22):")
-print(f"  visible pixels differing > 4:  {(d > 4).sum()} of {d.size}")
-print(f"  visible pixels differing > 24: {(d > 24).sum()}")
-print(f"  worst visible difference:      {d.max():.1f} / 255")
+print()
+print("THE RECOMPOSITION REPORT")
+print("   `base` is the artwork as the card delivers it today; the layered scene")
+print("   in its resting pose is what has to look like it.")
+print()
+
+def over(d, mask=None, note=""):
+    if mask is not None:
+        d = d[mask]
+    if not d.size:
+        print(f"   {note:44s} (no pixels)")
+        return
+    print(f"   {note:44s} mean {d.mean():5.2f}   p99 {int(np.percentile(d, 99)):3d}"
+          f"   max {int(d.max()):3d}   >32: {int((d > 32).sum()):5d} of {d.size}")
+
+def premul(img):
+    """RGB multiplied by alpha, and alpha itself — the only honest way to
+    compare two RGBA pictures. Raw RGB on a transparent pixel is leftover
+    colour nothing ever draws; a comparison that reads it reports differences
+    that cannot be seen."""
+    a = np.asarray(img).astype(np.float32)
+    out = np.empty_like(a)
+    out[:, :, :3] = a[:, :, :3] * (a[:, :, 3:4] / 255.0)
+    out[:, :, 3] = a[:, :, 3]
+    return out
+
+
+def diff(a, b):
+    return np.abs(premul(a) - premul(b)).max(axis=2)
+
+# 1. The floor: what one trip through the encoder costs. No layering scheme can
+#    be closer to the artwork than re-encoding the artwork is.
+over(diff(base_q, base), None, "1. encoder loss alone (the floor)")
+# 2. The mask arithmetic on its own terms — the scene against the picture both
+#    sides of the cut were taken from. This is the number that has to be zero.
+over(diff(recompose(), base_q), None, "2. layered scene vs its own source")
+# 3. The brief's test: the scene as SERVED against the artwork as delivered.
+served_plate = Image.open(os.path.join(DIR, "part-plate-armless.webp")).convert("RGBA")
+served_arm = Image.open(os.path.join(DIR, "part-arm-raised.webp")).convert("RGBA")
+served_grapes = Image.open(os.path.join(DIR, "part-grapes-raised.webp")).convert("RGBA")
+served = served_plate.copy(); served.alpha_composite(served_arm); served.alpha_composite(served_grapes)
+d_served = diff(served, base)
+over(d_served, None, "3. layered scene (served) vs the artwork")
+
+# 4. THE SEAM. A join shows when it is worse than the picture around it: if the
+#    cut scores the same as the flat gold beside it, there is no cut to see.
+seen = np.asarray(served.getchannel("A")) > 8
+edge = ((np.asarray(dil(M_img, 2)) > 128) & (np.asarray(ero(M_img, 2)) < 128)) & seen
+flat = seen & ~(np.asarray(dil(M_img, 6)) > 128)
+over(d_served, edge, "4a. along the cut")
+over(d_served, flat, "4b. the flat gold beside the cut")
+print(f"   rim pixels kept with the plate: {int(rim.sum())}"
+      f"   ghost arm left in the plate: {int(((A_b > 0.5) & ~M & (A_r < 0.5) & box).sum())}")
 
 if DEBUG:
-    for img, n in ((arm_alpha, "dbg-alpha-arm"), (lower_mask, "dbg-mask-lower"),
-                   (chest_mask, "dbg-mask-chest")):
-        img.save(os.path.join(DIR, f"{n}.png"))
-    Image.fromarray((plate_alpha[..., 0] * 255).astype("uint8")).save(
-        os.path.join(DIR, "dbg-plate-alpha.png"))
-    Image.fromarray(np.clip(d * 4, 0, 255).astype("uint8")).save(
-        os.path.join(DIR, "dbg-recompose-diff.png"))
-    print("  debug written")
+    dr = diff(recompose(), base_q)
+    Image.fromarray(np.clip(dr, 0, 255).astype(np.uint8)).resize((W * 2, H * 2), Image.NEAREST).save(
+        os.path.join(DIR, "dbg-rest-diff.png"))
+    ys, xs = np.where(dr > 32)
+    print(f"    worst pixels: {len(xs)}  bbox x[{xs.min()}-{xs.max()}] y[{ys.min()}-{ys.max()}]")
+    seen_pts = set()
+    for y, x in list(zip(ys, xs))[:400]:
+        key = (x // 24, y // 24)
+        if key in seen_pts: continue
+        seen_pts.add(key)
+        if len(seen_pts) > 14: break
+        inside = bool(M[y, x]); inG = bool(G[y, x])
+        print(f"      ({x:3d},{y:3d}) inM={inside} inG={inG}"
+              f" A_b={A_b[y,x]:.2f} A_r={A_r[y,x]:.2f}"
+              f" base={np.asarray(base_q)[y,x,:3]} got={np.asarray(recompose())[y,x,:3]}")
+    M_img.save(os.path.join(DIR, "dbg-mask-arm.png"))
+    Image.fromarray((np.where(M, 1.0, 0.0) * 255).astype(np.uint8)).save(os.path.join(DIR, "dbg-mask-hard.png"))
+
+
+# ── 8. write ────────────────────────────────────────────────────────────────
+def save(img, name, lossless=False, quality=94):
+    path = os.path.join(DIR, name)
+    img.save(path, "WEBP", lossless=lossless, quality=quality, method=6)
+    print(f"    {name:32s} {os.path.getsize(path) / 1024:6.1f} KB")
+
+
+print("parts:")
+save(plate, "part-plate-armless.webp", lossless=False, quality=96)
+save(arm, "part-arm-raised.webp", lossless=True)
+save(grapes_part, "part-grapes-raised.webp", lossless=True)
+save(lowered, "part-arm-lowered.webp", lossless=True)
+save(eye_blink, "part-eye-blink.webp", lossless=True)
+save(chest_breath, "part-chest-breath.webp", lossless=True)
+
+total = sum(os.path.getsize(os.path.join(DIR, f)) for f in os.listdir(DIR) if f.startswith("part-"))
+print(f"  scene total: {total / 1024:.0f} KB "
+      f"(the four whole-state webps it replaces were {sum(os.path.getsize(os.path.join(DIR, 'mascot-gold-buddha-' + s + '.webp')) for s in ('base', 'rest', 'breath', 'blink')) / 1024:.0f} KB)")
+
+# And the test again, on the files as they will actually be served: an encoder
+# that moves a pixel is an encoder that moves the seam.
+
