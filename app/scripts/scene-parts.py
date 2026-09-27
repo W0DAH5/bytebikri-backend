@@ -140,6 +140,10 @@ def fill_holes(mask):
     return mask | (~seen)
 
 
+def pd_gt(arr, t):
+    return arr > t
+
+
 def blur_low(img, radius):
     return img.filter(ImageFilter.GaussianBlur(radius))
 
@@ -412,17 +416,62 @@ grapes_part = Image.merge("RGBA", (*base_q.convert("RGB").split(),
                                    Image.fromarray((grapes_alpha * 255).round().astype(np.uint8))))
 
 # ── 4. the lowered arm, from the rest state ─────────────────────────────────
-# Cut generously and feathered: the patch is the figure's own hand on its own
-# belly in its own gold, so a soft edge is invisible where a hard one would be
-# a sticker. This one is NOT load-bearing for the resting picture — it is a
-# layer that appears when it is wanted — so its edge does not have to be exact.
-LOWER = [(240, 190), (248, 174), (262, 162), (280, 154), (302, 152), (322, 158),
-         (338, 172), (350, 190), (356, 208), (352, 226), (340, 242), (322, 254),
-         (300, 262), (278, 262), (258, 254), (246, 242), (238, 224), (234, 206)]
-lower_mask = Image.new("L", (W, H), 0)
-ImageDraw.Draw(lower_mask).polygon(LOWER, fill=255)
-lower_mask = dil(lower_mask, 1).filter(ImageFilter.GaussianBlur(5))
-lower_rgb = fill_rgb  # same light match as the plate's fill: one gold, one light
+# CUT FROM THE ARTWORK, not from a hand-drawn outline — and built so that its
+# boundary cannot be a seam at all.
+#
+# This layer shipped as a polygon with a 5px feather, on the argument that a
+# patch of the figure's own hand on its own belly is the same gold either side
+# of the cut, so a soft edge would pass. Measured, it does not: 1880 edge pixels
+# crossing nothing but solid body with the colour changing across them by up to
+# 94/255 — a soft rectangle lying on the stomach.
+#
+# Three attempts got here, and the first two are worth recording because they
+# failed in instructive ways:
+#
+#   1. The hand's outline, derived from rest-vs-base. The mask was right and the
+#      edge was still visible: the hand casts its OWN SHADOW, and the shadow
+#      belongs to the hand, so a mask cut to the fingers ends inside a falloff
+#      where the two states disagree.
+#   2. The same outline grown until its boundary reached "quiet ground" — but
+#      measured against the base state, while inside the arm's footprint the
+#      plate is the LIGHT-MATCHED body, not the base. Judged against the wrong
+#      picture the boundary looked quiet and the seam measured 172/255.
+#
+# What works is not a shape question at all. THE PATCH IS THE PLATE, EXCEPT
+# WHERE THE HAND IS. It carries the plate's own pixels everywhere, so wherever
+# it is not the hand it is invisible — it composites the colour that was already
+# there. And its boundary is DEFINED as the place where rest stops differing
+# from the plate: at that threshold the two are within a few units of each
+# other, so the alpha ramp from 0 to 1 crosses two nearly identical colours.
+# There is no edge to place, and so no edge to get wrong.
+_P = np.asarray(plate.convert("RGB")).astype(np.int16)
+_R = np.asarray(rest_q.convert("RGB")).astype(np.int16)
+_pd = np.abs(_R - _P).max(axis=2)
+
+LOWER_BOX = (200, 138, 404, 302)
+lower_box = np.zeros((H, W), bool)
+lower_box[LOWER_BOX[1]:LOWER_BOX[3], LOWER_BOX[0]:LOWER_BOX[2]] = True
+
+# The hand, its grapes and their shadow: everything in the lower frame the rest
+# state has that the plate does not.
+hand = (pd_gt(_pd, 26)) & lower_box & (A_rq > 0.05)
+hand_img = ero(dil(Image.fromarray((hand * 255).astype(np.uint8)), 2), 2)
+_lab, _n = components(np.asarray(hand_img) > 128)
+if _n:
+    _sizes = np.bincount(_lab.ravel())
+    _keep = np.isin(_lab, np.where(_sizes >= 120)[0][1:])
+    hand_img = Image.fromarray((_keep * 255).astype(np.uint8))
+hand = fill_holes(np.asarray(hand_img) > 128)
+
+# Measured, not asserted: how far apart the two colours are along the boundary
+# the threshold just drew. This is the number that says whether an edge can be
+# seen, and it is the number the first two attempts did not check.
+_hb = hand & ~(np.asarray(ero(Image.fromarray((hand * 255).astype(np.uint8)), 1)) > 128)
+_boundary_delta = int(_pd[_hb].max()) if _hb.any() else 0
+
+lower_mask = Image.fromarray((hand * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(1.0))
+# The colour: the plate's own, replaced by the rest state's where the hand is.
+lower_rgb = np.where(hand[:, :, None], _R.astype(np.float32), _P.astype(np.float32))
 lowered = Image.merge("RGBA", (*[Image.fromarray(lower_rgb[:, :, c].astype(np.uint8)) for c in range(3)],
                                Image.fromarray((A_rq * 255).round().astype(np.uint8))))
 lowered.putalpha(ImageChops.multiply(lowered.getchannel("A"), lower_mask))
@@ -573,6 +622,23 @@ for _deg in (7, 15):
     _ys, _xs = np.where(_gap)
     print(f"   THE GAP at -{_deg}deg: {int(_gap.sum()):5d} px of body go see-through inside the figure"
           + (f"  bbox x[{_xs.min()}-{_xs.max()}] y[{_ys.min()}-{_ys.max()}]" if len(_xs) else ""))
+
+# 4c. THE BELLY PATCH, against the picture it exists to reproduce. The patch is
+#     not part of the resting pose (it appears only while the hand is down), so
+#     the recomposition above cannot judge it. What judges it is the rest state:
+#     hand on belly, same light, same figure. The first measurement of this used
+#     the change across the patch's own outline, which counts the hand's real
+#     silhouette as a defect — a hand against a belly is supposed to have an
+#     edge. Against the rest state, the only thing counted is what is actually
+#     wrong.
+_belly_on = plate.copy(); _belly_on.alpha_composite(lowered)
+_bx = (210, 150, 390, 290)
+_bd = np.abs(np.asarray(_belly_on.convert("RGB")).astype(np.int16)[_bx[1]:_bx[3], _bx[0]:_bx[2]]
+             - np.asarray(rest_q.convert("RGB")).astype(np.int16)[_bx[1]:_bx[3], _bx[0]:_bx[2]]).max(axis=2)
+print(f"   4c. the belly patch       vs the rest state: mean {_bd.mean():5.2f}  p99 {np.percentile(_bd, 99):4.0f}  "
+      f">32: {int((_bd > 32).sum()):5d} of {_bd.size}")
+print(f"        (the polygon build it replaces scored mean 13.57, p99 72, >32: 1535; "
+      f"no patch at all scores mean 27.92, >32: 5130)")
 
 # 5. THE SWING. The arm's own hole used to be where the grapes are: with the
 #    cluster handed to its own layer and the arm punched around it (`M & ~G`),
