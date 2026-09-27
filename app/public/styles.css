@@ -3302,7 +3302,7 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
    the fist most of the way to the belly, and more would break the elbow, which
    is drawn for the pose it is drawn in (§7). */
 @keyframes buddha-reach {
-  0% { transform: rotate(0deg); }
+  0% { transform: rotate(0deg); opacity: 1; }
   8.33% { transform: rotate(6deg); }
   18.75% { transform: rotate(5.4deg); }
   27.08% { transform: rotate(0deg); }
@@ -3310,7 +3310,20 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   62.5% { transform: rotate(-15deg); }
   75% { transform: rotate(-15deg); }
   89.58% { transform: rotate(-2deg); }
-  100% { transform: rotate(0deg); }
+  100% { transform: rotate(0deg); opacity: 1; }
+  /* THE HANDOVER IS A STATE CHANGE, NOT A MOVEMENT, so it takes no time at all.
+     Two attempts taught this the expensive way. A half-second cross-fade showed
+     two hands and two bunches of grapes in one frame, at fifty per cent each,
+     plainly visible. A hundred-and-forty-millisecond one still showed a ghost
+     of the raised arm hanging over the head — a tenth of a second is six frames
+     of a ghost, which the eye finds immediately.
+     So the swap is a STEP: two keyframes a hundredth of a per cent apart, which
+     is two milliseconds and less than one frame at any refresh rate. The pose
+     changes between frames, and the eye reads a hand that has moved. */
+  60.39% { opacity: 1; }
+  60.4% { opacity: 0; }
+  75.99% { opacity: 0; }
+  76% { opacity: 1; }
 }
 
 /* The grapes drift on their stem. The stem is where they were cut from, so the
@@ -3324,12 +3337,13 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   83% { transform: rotate(-1.5deg); }
 }
 
-/* The handover, at the bottom of the swing: the raised arm gives its pose up as
-   the arm-down state takes it (§5). */
+/* The handover, at the bottom of the swing: the arm-down state takes the pose
+   the moment the raised arm lets it go (§5), and gives it back the same way —
+   quickly, at the ends of the gesture, never during the eating beat. */
 @keyframes buddha-belly {
-  0%, 60.4% { opacity: 0; }
-  62.9%, 74.2% { opacity: 1; }
-  77%, 100% { opacity: 0; }
+  0%, 60.39% { opacity: 0; }
+  60.4%, 75.99% { opacity: 1; }
+  76%, 100% { opacity: 0; }
 }
 
 @keyframes buddha-breathe {
