@@ -159,7 +159,7 @@ function sceneWorld(m) {
   if (parts.arm) {
     return `
       <img class="mascot-part mascot-part--plate" src="${esc(m.asset)}" alt="" loading="lazy"
-           onerror="this.closest('.mascot-layer').remove()">${part('mascot-part--chest', parts.chest)}${part('mascot-part--belly', parts.belly)}${part('mascot-part--blink', parts.blink)}
+           onerror="this.closest('.mascot-layer').remove()">${part('mascot-part--chest', parts.chest)}${part('mascot-part--belly', parts.belly)}${part('mascot-part--blink', parts.blink)}${part('mascot-part--anchor', parts.anchor)}
       <span class="mascot-arm">
         <img class="mascot-part mascot-part--arm" src="${esc(parts.arm)}" alt="" loading="lazy" onerror="this.remove()">
         <span class="mascot-grapes">${part('mascot-part--berries', parts.grapes)}</span>

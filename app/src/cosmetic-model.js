@@ -299,6 +299,7 @@ export const MOTIFS = [
     parts: {
       chest: '/img/cosmetics/part-chest-breath.webp',
       arm: '/img/cosmetics/part-arm-raised.webp',
+      anchor: '/img/cosmetics/part-arm-anchor.webp',
       grapes: '/img/cosmetics/part-grapes-raised.webp',
       belly: '/img/cosmetics/part-arm-lowered.webp',
       blink: '/img/cosmetics/part-eye-blink.webp',

@@ -3222,6 +3222,11 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 .mascot-part--chest,
 .mascot-part--belly,
 .mascot-part--blink { opacity: 0; }
+/* The shoulder anchor never animates and is never hidden: it is the joint the
+   limb swings from. Its pixels are the artwork's own, so at rest it and the
+   limb tile the footprint exactly; while the limb moves, it is what the limb
+   slides over instead of tearing away from. */
+.mascot-part--anchor { opacity: 1; }
 /* The stacking is the composition's, not the DOM's: the plate is the still the
    parts are laid over and is pinned to the bottom of the scene, so a part can
    never slip behind the figure it was cut from when the markup is reordered. */
