@@ -3198,6 +3198,50 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 .mascot-state--breath,
 .mascot-state--blink { opacity: 0; }
 
+/* ── THE PARTS ───────────────────────────────────────────────────────────────
+   The scene is a plate with the moving parts laid over it, and every part is
+   cut at the plate's own 768x512 and drawn at inset:0. So a part cannot drift
+   from the plate it was cut from: alignment is by construction, not by measured
+   offsets that go stale when somebody edits one number.
+
+   The two parts that carry the character are rotations ABOUT A JOINT:
+   `.mascot-arm` turns about the shoulder and `.mascot-grapes` about the stem.
+   Those origins are the joints' real positions in the 768x512 artwork —
+   (268,146) and (370,45) — written as percentages, so they survive the artwork
+   being drawn at any size. A part that scaled or slid as a whole would be the
+   moved-PNG failure TARGET.md §27 names; a rotation about a joint is the thing
+   itself.
+   ─────────────────────────────────────────────────────────────────────────── */
+.mascot-part {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+}
+.mascot-part--chest,
+.mascot-part--belly,
+.mascot-part--blink { opacity: 0; }
+/* The stacking is the composition's, not the DOM's: the plate is the still the
+   parts are laid over and is pinned to the bottom of the scene, so a part can
+   never slip behind the figure it was cut from when the markup is reordered. */
+.mascot-part--plate { z-index: 0; }
+/* The arm image is only the paint — `.mascot-arm` carries the shoulder pivot and
+   the rotation, and the berries ride above it inside their own pivot. */
+.mascot-part--arm { z-index: 1; }
+.mascot-arm {
+  position: absolute;
+  inset: 0;
+  transform-origin: 34.90% 28.52%;
+  will-change: transform;
+}
+.mascot-grapes {
+  position: absolute;
+  inset: 0;
+  transform-origin: 48.18% 8.79%;
+  will-change: transform;
+}
+
 /* The breathing: a slow crossfade to the raised chest, in over five seconds,
    with a rest between breaths. The torso rises; nothing else moves. */
 /* The eating: one complete, unhurried gesture per cycle — the hand
@@ -3209,6 +3253,19 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 /* The light across the gold: one broad, low, slow pass per twenty-four
    seconds. Gold is a material, and materials have light moving over them. */
 @media (prefers-reduced-motion: no-preference) {
+  /* The character's clocks, and it is not one clock. The arm reaches on a
+     seventeen-second cycle with a long idle, the grapes swing on their own
+     nine-and-a-half, the chest breathes on five-and-a-half, the eyes close once
+     in nine. Nothing lines up with anything, which is the difference between a
+     character and a screen saver (TARGET.md §15). */
+  .mascot-arm { animation: buddha-reach 17s cubic-bezier(.42,0,.32,1) infinite; }
+  .mascot-grapes { animation: buddha-grapes 9.5s ease-in-out infinite; animation-delay: -2.4s; }
+  .mascot-part--chest { animation: buddha-breathe 5.6s ease-in-out infinite; }
+  .mascot-part--blink { animation: buddha-blink 9.7s linear infinite; }
+  /* The pose change: the arm comes down to the belly and back, rarely. The swap
+     happens at the LOWEST point of the swing, where the two arms are closest
+     together, so the least is asked of the eye. */
+  .mascot-part--belly { animation: buddha-lower 34s ease-in-out infinite; }
   .mascot-state--breath { animation: buddha-breathe 5.2s ease-in-out infinite; }
   .mascot-state--rest { animation: buddha-eat 12.5s ease-in-out infinite; }
   .mascot-state--blink { animation: buddha-blink 9s linear infinite; }
@@ -3217,6 +3274,35 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   .mascot-embers { animation: mascot-embers 14s linear infinite; }
   .mascot-embers--late { animation-duration: 19s; animation-delay: -7s; }
   .mascot-sparkle { animation: mascot-sparkle 11s ease-in-out infinite; }
+}
+
+/* The reach: the arm turns about the shoulder, comes down, pauses, goes back
+   up, and then does nothing for two thirds of the cycle. The pause at the
+   bottom is the eating beat; the idle is the point — a person eating grapes,
+   not a GIF of an arm (TARGET.md §7). */
+@keyframes buddha-reach {
+  0%, 30% { transform: rotate(0deg); }
+  44% { transform: rotate(-15deg); }
+  54% { transform: rotate(-15.5deg); }
+  70%, 100% { transform: rotate(0deg); }
+}
+
+/* The grapes swing on their stem, out of step with the arm carrying them: a few
+   degrees of drift, and the beat of settling after it (§8). */
+@keyframes buddha-grapes {
+  0%, 100% { transform: rotate(-4.5deg); }
+  38% { transform: rotate(4.5deg); }
+  52% { transform: rotate(2deg); }
+  68% { transform: rotate(5deg); }
+  84% { transform: rotate(-1.5deg); }
+}
+
+/* The pose change: the lowered arm arrives as the raised arm reaches the bottom
+   of its travel, and stays for the long middle of the cycle. */
+@keyframes buddha-lower {
+  0%, 44% { opacity: 0; }
+  50%, 62% { opacity: 1; }
+  68%, 100% { opacity: 0; }
 }
 
 @keyframes buddha-breathe {
@@ -3419,6 +3505,16 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   .mascot-state--rest,
   .mascot-state--breath,
   .mascot-state--blink { animation: none; opacity: 0; }
+  /* The parts park in the pose they were cut in — the arm up with the grapes,
+     the chest at rest, the eyes open. A still, not a slow animation: nothing
+     here is caught mid-gesture, and the chest and the eyes are alternative
+     states of what is already drawn, so parking the plate is the whole picture
+     (TARGET.md §25). */
+  .mascot-arm,
+  .mascot-grapes { animation: none; transform: none; }
+  .mascot-part--chest,
+  .mascot-part--belly,
+  .mascot-part--blink { animation: none; opacity: 0; }
   .mascot-shimmer { animation: none; opacity: .32; transform: translateX(24%) rotate(45deg) scaleY(.55); }
   .mascot-aura { animation: none; opacity: .78; }
   .mascot-embers { animation: none; opacity: .4; transform: translateY(-10px); }

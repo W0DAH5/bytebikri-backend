@@ -489,12 +489,30 @@ test('the card wears the scene without the scene touching the card', () => {
   // follows the catalog rather than fixed filenames, so an art swap cannot
   // silently break the card.
   const worn = motifOf('buddha-gold');
-  assert.ok(buddha.includes(`<img class="mascot-state" src="${worn.asset}"`),
-    'the card must render the catalog asset for the worn motif');
-  for (const [state, src] of Object.entries(worn.states || {})) {
-    assert.ok(buddha.includes(`<img class="mascot-state mascot-state--${state}" src="${src}"`),
-      `the card must render the ${state} state layer from the catalog`);
+  assert.ok(buddha.includes(`<img class="mascot-part mascot-part--plate" src="${worn.asset}"`),
+    'the card must render the catalog plate for the worn motif');
+  // THE PARTS ARE THE ANIMATION (TARGET.md §3, §27). A whole-scene crossfade is
+  // a dissolve, not motion — the scene is a plate with the moving parts laid
+  // over it, and each part has to reach the page from the catalog rather than
+  // from a filename written here.
+  for (const [part, src] of Object.entries(worn.parts || {})) {
+    assert.ok(buddha.includes(src), `the card must render the ${part} part from the catalog`);
   }
+  // The two that move the character do so about a joint, and the joints are
+  // written in the artwork's own coordinates. A part that only faded would pass
+  // the lines above; these are what make it a character instead of a slideshow.
+  const css = readFileSync(new URL('../public/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /\.mascot-arm \{[\s\S]{0,200}?transform-origin:\s*34\.90%\s*28\.52%/,
+    'the arm must pivot at the shoulder (268,146 of 768x512)');
+  assert.match(css, /\.mascot-grapes \{[\s\S]{0,200}?transform-origin:\s*48\.18%\s*8\.79%/,
+    'the grapes must swing from the stem (370,45 of 768x512)');
+  assert.match(css, /@keyframes buddha-reach \{[\s\S]{0,400}?rotate\(-15deg\)/,
+    'the arm has to actually rotate, not fade');
+  assert.match(css, /@keyframes buddha-grapes \{[\s\S]{0,400}?rotate\(/,
+    'the grapes have to actually swing, not fade');
+  // …and the plate itself must never be moved, scaled or pulsed (§27).
+  assert.doesNotMatch(css, /\.mascot-part--plate \{[^}]*animation/,
+    'the plate is the still the parts move against — it is never animated');
   assert.match(buddha, /onerror="this\.closest\(\'\.mascot-layer\'\)\.remove\(\)"/,
     'a scene that cannot load is no scene, and the card must stand without it');
   assert.match(buddha, /aria-hidden="true"/, 'the scene is decoration; the words are the content');

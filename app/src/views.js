@@ -131,16 +131,42 @@ import { hostLabel } from './video.js';
 
 const FAMILY_LABELS = Object.fromEntries(AUDIT_FAMILIES.map((f) => [f.key, f.label]));
 
-// The scene's world: one composition in several states. The base artwork is
-// always present; each state variant (rest / breath / blink) is a full-scene
-// crossfade layer drawn from the same render, so any state, frozen, is the
-// design. Mascots without `states` render the base artwork only — the same
-// markup, one fewer layer.
+// The scene's world: the character, cut into the parts that move.
+//
+// A mascot is a PLATE with parts laid over it. Every part is cut at the plate's
+// own size and drawn at inset:0 (see .mascot-part), so the parts align by
+// construction rather than by eye — there is no second coordinate system to get
+// wrong. The arm hangs off a pivot at the shoulder and the grapes off one at
+// the stem, which is what makes this motion instead of a dissolve.
+//
+// Two shapes, because the catalogue carries both. A mascot that declares
+// `parts` is a layered scene; a mascot with only an `asset` is one picture, and
+// the same markup renders it (the dragon and the lotus are drawn that way
+// today). A mascot with `states` keeps the older crossfade path, so an art swap
+// is never all-or-nothing.
 function sceneWorld(m) {
+  const parts = m.parts || {};
   const states = m.states || {};
+  const part = (cls, src) => (src
+    ? `\n        <img class="mascot-part ${cls}" src="${esc(src)}" alt="" loading="lazy" onerror="this.remove()">`
+    : '');
   const stateLayer = (cls, src) => (src
     ? `\n      <img class="mascot-state ${cls}" src="${esc(src)}" alt="" loading="lazy" onerror="this.remove()">`
     : '');
+
+  // The layered scene. The plate is the whole figure minus the arm; if the
+  // plate cannot load there is no figure to lay parts on, so the scene goes.
+  if (parts.arm) {
+    return `
+      <img class="mascot-part mascot-part--plate" src="${esc(m.asset)}" alt="" loading="lazy"
+           onerror="this.closest('.mascot-layer').remove()">${part('mascot-part--chest', parts.chest)}${part('mascot-part--belly', parts.belly)}${part('mascot-part--blink', parts.blink)}
+      <span class="mascot-arm">
+        <img class="mascot-part mascot-part--arm" src="${esc(parts.arm)}" alt="" loading="lazy" onerror="this.remove()">
+        <span class="mascot-grapes">${part('mascot-part--berries', parts.grapes)}</span>
+      </span>
+      <span class="mascot-shimmer"></span>`;
+  }
+
   return `
       <img class="mascot-state" src="${esc(m.asset)}" alt="" loading="lazy"
            onerror="this.closest('.mascot-layer').remove()">${stateLayer('mascot-state--rest', states.rest)}${stateLayer('mascot-state--breath', states.breath)}${stateLayer('mascot-state--blink', states.blink)}

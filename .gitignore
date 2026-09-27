@@ -16,3 +16,6 @@ app/.data/
 
 # Design reference images pulled during research — scratch, never shipped.
 /image-search/
+
+# Scene-part build diagnostics (scene-parts.py --debug)
+app/public/img/cosmetics/dbg-*

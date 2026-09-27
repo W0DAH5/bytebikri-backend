@@ -277,22 +277,39 @@ export const MOTIFS = [
     name: 'Golden Buddha',
     kind: 'mascot',
     minPower: 'gold',
-    // The scene is one composition in four states (see the .mascot-state
-    // layers in styles.css): base is the artwork; the others are crossfade
-    // states drawn from the same render, so any one of them, frozen, is the
-    // design. Mascots without `states` render the base artwork only.
-    asset: '/img/cosmetics/mascot-gold-buddha-base.webp',
-    states: {
-      rest: '/img/cosmetics/mascot-gold-buddha-rest.webp',
-      breath: '/img/cosmetics/mascot-gold-buddha-breath.webp',
-      blink: '/img/cosmetics/mascot-gold-buddha-blink.webp',
+    // THE SCENE IS PARTS, NOT PICTURES (TARGET.md §3, §5). It shipped as four
+    // whole-scene states cross-faded into each other, and a cross-fade between
+    // whole scenes is a dissolve: the character never moves, the picture
+    // changes. The four states were also four separate generations of the same
+    // figure, so their coins differed pixel-for-pixel and every dissolve
+    // shimmered the whole pile.
+    //
+    // The scene is now a PLATE with the moving parts laid over it, cut once by
+    // `scripts/scene-parts.py` from the 1536x1024 master: the plate is the
+    // figure with the raised arm taken out (and the chest that arm was covering
+    // filled from the arm-down state's own pixels), and `parts` are the arm,
+    // the grapes, the chest, the eyes and the lowered arm. Every part is cut at
+    // the plate's own size and drawn at inset:0, so a part cannot drift from
+    // the plate it was cut from — alignment is by construction.
+    //
+    // What moves: the arm turns about the shoulder, the grapes swing from the
+    // stem, the chest rises, the eyes close. The plate itself never scales,
+    // slides or pulses (§27).
+    asset: '/img/cosmetics/part-plate-armless.webp',
+    parts: {
+      chest: '/img/cosmetics/part-chest-breath.webp',
+      arm: '/img/cosmetics/part-arm-raised.webp',
+      grapes: '/img/cosmetics/part-grapes-raised.webp',
+      belly: '/img/cosmetics/part-arm-lowered.webp',
+      blink: '/img/cosmetics/part-eye-blink.webp',
     },
     treatment: 'A laughing buddha lounging deep in a mountain of coin, eating '
-      + 'grapes: the breathing, an unhurried eating gesture, a rare blink, and '
-      + 'one slow pass of light across the gold. It is a room the card opens '
-      + 'onto, not a badge the card wears.',
-    still: 'The lounging pose, hand lowered, grapes in the bowl — the design '
-      + 'without motion.',
+      + 'grapes: the arm turns from the shoulder and the grapes swing on their '
+      + 'stem, the chest rises, the eyes close once in a while, and one slow '
+      + 'pass of light crosses the gold. It is a room the card opens onto, not '
+      + 'a badge the card wears.',
+    still: 'The lounging pose, the hand up with the grapes — the design without '
+      + 'motion.',
   },
   {
     key: 'dragon-gold',
