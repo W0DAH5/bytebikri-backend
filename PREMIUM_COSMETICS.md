@@ -358,6 +358,25 @@ The rebuild replaced all of it. What the card now renders:
 - **Reduced motion is a composition.** Every layer parks: the base artwork
   stands, the light rests as a static band across the coins, the embers hold
   their scatter. Nothing disappears into `opacity: 0`.
+- **Resolution: the master is real, and it is held in reserve.** The scene is
+  cut from the 768×512 states because they are what carry **alpha** — the
+  silhouette the artwork itself drew, which every exactness number above is
+  measured against. A 1536×1024 master (`mascot-gold-buddha-base.png`) is
+  tracked beside them and is visibly sharper: at 1:1 its coin engravings, rims
+  and facets are detail, where the 768 artwork scaled up is mush.
+  It is not what ships, for a measured reason. The master is flattened on an
+  opaque near-white stage (`alpha` is 255 everywhere), so using it means
+  recovering the silhouette — and `app/scripts/master-alpha.py` recovers it and
+  checks the result against the drawn alpha. The shape holds up: **IoU 0.9933**,
+  contour distance **median 0.0 px, p90 1.0 px, mean 0.82 px at 768** — under a
+  fifth of a display pixel at the card's 172 px. The antialiased band does not:
+  it is solved rather than read, and coverage there differs on 58% of edge
+  pixels. So a scene rebuilt from the master trades **an exact silhouette for
+  twice the resolution**, and the resolution is not needed: 768 is 4.5× the
+  CSS size and 2.2× the retina device size of the largest presentation the card
+  gives it (the walk asserts that headroom). The master is the source for any
+  future larger presentation, with the measurement above saying exactly how far
+  it can be trusted.
 - **The catalogue carries the parts.** `cosmetic-model.js`'s buddha entry
   declares `asset` (the plate) + `parts { chest, arm, grapes, belly, blink }`;
   `sceneWorld()` in `views.js` renders whatever a mascot has — a mascot that
