@@ -261,15 +261,6 @@ A_rq = np.asarray(rest_q.getchannel("A")).astype(np.float32) / 255.0
 # HARD, no ramp. A ramp was tried and made it worse — 452 bad pixels against
 # 70 — because a partial plate alpha under a partial arm alpha still
 # double-counts. The gate has to be all or nothing for the algebra to hold.
-SOLID = A_bq >= 0.98
-plate_rgb = np.clip(np.asarray(base_q.convert("RGB")).astype(np.float32) * (~(M & SOLID))[:, :, None]
-                    + fill_rgb * (M & SOLID)[:, :, None], 0, 255)
-plate_a = np.where(M & SOLID, A_rq, np.where(M, 0.0, A_bq))
-
-plate = Image.merge("RGBA", (*[Image.fromarray(plate_rgb[:, :, c].astype(np.uint8)) for c in range(3)],
-                             Image.fromarray((plate_a * 255).round().astype(np.uint8))))
-
-# ── 3. the raised arm, and the grapes nested inside it ──────────────────────
 G_img = Image.new("L", (W, H), 0)
 gdd = ImageDraw.Draw(G_img)
 gdd.ellipse([338, 52, 416, 142], fill=255)                 # the cluster
@@ -280,6 +271,42 @@ fist = Image.new("L", (W, H), 0)
 ImageDraw.Draw(fist).ellipse([344, 16, 400, 60], fill=255)
 G_img = ImageChops.subtract(dil(G_img, 1), dil(fist, 1))
 G = np.asarray(G_img) > 128
+
+SOLID = A_bq >= 0.98
+
+# ── THE MASK HAS TWO JOBS, AND THEY ARE NOT THE SAME SHAPE ──────────────────
+# It was one mask, and that was the defect the user saw: the arm's connection to
+# the shoulder tore open as it moved. The mask's lower half is ~10,000 pixels of
+# ROBE AND CHEST — everything that differs between the two states — so a slab of
+# torso rotated with the limb, and its cut edge slid across the body.
+#
+#   PLATE_REGION — the chest and robe the raised limb was covering. It stays
+#     still, drawn from the arm-down state's own pixels, so what the limb
+#     uncovers when it moves is the body it was hiding.
+#   ARM_REGION — the limb itself: silhouetted against open air, plus every soft
+#     edge. This is what rotates.
+#
+# One question per pixel decides: is there BODY behind it in the arm-down state?
+# Where there is (and the base is solid, and it is not a grape) the pixel is the
+# chest and must not move. Everywhere else — limb against sky, antialiased rim —
+# it is the limb.
+PLATE_REGION = M & SOLID & (A_rq >= 0.5) & ~G
+ARM_REGION = M & ~PLATE_REGION
+plate_rgb = np.clip(np.asarray(base_q.convert("RGB")).astype(np.float32) * (~(M & SOLID))[:, :, None]
+                    + fill_rgb * (M & SOLID)[:, :, None], 0, 255)
+# In PLATE_REGION the alpha is the ARTWORK's own while the COLOUR is the
+# arm-down state's body — two different jobs. The alpha keeps the resting pose
+# exact (composite = A_b), the colour is what shows once the limb has moved off.
+# Reading the alpha from the arm-down state here would make the resting pose
+# composite to A_r: a translucent chest wherever the two disagreed about
+# softness.
+plate_a = np.where(PLATE_REGION, A_bq, np.where(M & SOLID, A_rq, np.where(M, 0.0, A_bq)))
+
+plate = Image.merge("RGBA", (*[Image.fromarray(plate_rgb[:, :, c].astype(np.uint8)) for c in range(3)],
+                             Image.fromarray((plate_a * 255).round().astype(np.uint8))))
+
+# ── 3. the raised arm, and the grapes nested inside it ──────────────────────
+
 
 # THE ARM UNDERNEATH THE GRAPES, reconstructed rather than punched through.
 #
@@ -329,7 +356,7 @@ def diffuse_fill(rgb, unknown, source, iterations=4000):
     return work
 
 
-hidden = M & G & SOLID
+hidden = ARM_REGION & G & SOLID
 if hidden.any():
     ys, xs = np.where(hidden)
     pad = 28
@@ -339,7 +366,7 @@ if hidden.any():
     sub_unknown = hidden & box_h
     # Sources: the arm's own solid pixels, in the neighbourhood, minus anything
     # the grapes own. `~G` keeps grape colours from being smeared into the hand.
-    sub_source = M & ~G & SOLID & box_h
+    sub_source = ARM_REGION & ~G & SOLID & box_h
     rgb_arr = np.asarray(base_q.convert("RGB")).astype(np.float32)
     filled_rgb = diffuse_fill(rgb_arr, sub_unknown, sub_source)
     base_rgb_rebuilt = np.clip(filled_rgb, 0, 255).astype(np.uint8)
@@ -358,7 +385,7 @@ else:
 # alpha under the cluster only where the cluster is SOLID, which is precisely
 # where nothing of the arm can be seen at rest; at the rim the arm stays empty
 # and the grape keeps its own edge, as drawn.
-arm_alpha = np.where(M & (~G | SOLID), A_bq, 0.0)
+arm_alpha = np.where(ARM_REGION, A_bq, 0.0)
 arm = Image.merge("RGBA", (*[Image.fromarray(base_rgb_rebuilt[:, :, c]) for c in range(3)],
                            Image.fromarray((arm_alpha * 255).round().astype(np.uint8))))
 # The grapes keep the artwork's pixels and its alpha, exactly as drawn: they are
@@ -487,6 +514,28 @@ print(f"   soft-edge pixels the plate leaves thin: {int((M & ~SOLID & (A_rq > 0.
 # arm-down state says body but the plate is too thin to show it.
 hole = M & (A_rq > 0.5) & (plate_a < 0.5 * A_rq)
 print(f"   thin spots left in the moved pose: {int(hole.sum())}")
+
+# 4c. THE GAP. Coverage lost INSIDE the figure when the limb rotates: the body
+#     going see-through where the arm has moved off it. This is a different
+#     failure from the grapes' holes — it is the shoulder tearing open — and it
+#     cannot be seen at rest, which is why it is measured.
+try:
+    import scipy  # noqa: F401
+    _has_scipy = True
+except Exception:
+    _has_scipy = False
+from PIL import Image as _Im
+_union = np.maximum(A_bq, A_rq)
+_interior = np.asarray(_Im.fromarray((_union * 255).astype(np.uint8)).filter(ImageFilter.MinFilter(9))).astype(np.float32) / 255.0 > 0.9
+for _deg in (7, 15):
+    _rot = np.asarray(arm.rotate(-_deg, resample=Image.BICUBIC, center=(268.0, 146.0),
+                                 expand=False, fillcolor=(0, 0, 0, 0)).getchannel("A")
+                      ).astype(np.float32) / 255.0
+    _cov = _rot + plate_a * (1 - _rot)
+    _gap = (_cov < 0.55) & _interior
+    _ys, _xs = np.where(_gap)
+    print(f"   THE GAP at -{_deg}deg: {int(_gap.sum()):5d} px of body go see-through inside the figure"
+          + (f"  bbox x[{_xs.min()}-{_xs.max()}] y[{_ys.min()}-{_ys.max()}]" if len(_xs) else ""))
 
 # 5. THE SWING. The arm's own hole used to be where the grapes are: with the
 #    cluster handed to its own layer and the arm punched around it (`M & ~G`),
