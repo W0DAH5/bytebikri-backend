@@ -3222,10 +3222,13 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
 .mascot-part--chest,
 .mascot-part--belly,
 .mascot-part--blink { opacity: 0; }
-/* The shoulder anchor never animates and is never hidden: it is the joint the
-   limb swings from. Its pixels are the artwork's own, so at rest it and the
-   limb tile the footprint exactly; while the limb moves, it is what the limb
-   slides over instead of tearing away from. */
+/* The limb's backdrop: the joint, and the gold the limb is standing in front
+   of. Its pixels are the artwork's own, so at rest it and the limb tile the
+   footprint exactly; while the limb moves it is what the limb slides OVER
+   instead of tearing away from. It is the RAISED pose's furniture, though, and
+   that is the half that was missing: left up while the hand is down it sits on
+   the shoulder as a torn-off piece of the photograph, so it steps aside with
+   the limb, on the same two-millisecond step, and comes back with it. */
 .mascot-part--anchor { opacity: 1; }
 /* The stacking is the composition's, not the DOM's: the plate is the still the
    parts are laid over and is pinned to the bottom of the scene, so a part can
@@ -3278,6 +3281,10 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
      the bottom of the swing, where the arm is lowest and the shoulder is the
      last thing the eye is on (§5, §7, §8). */
   .mascot-part--belly { animation: buddha-belly 24s ease-in-out infinite; }
+  /* The limb's backdrop leaves with the limb. Same two-millisecond step, same
+     instant: the pose changes between frames, and the raised pose's gold does
+     not sit on the shoulder while the hand is on the belly. */
+  .mascot-part--anchor { animation: buddha-limb-presence 24s linear infinite; }
   .mascot-state--breath { animation: buddha-breathe 5.2s ease-in-out infinite; }
   .mascot-state--rest { animation: buddha-eat 12.5s ease-in-out infinite; }
   .mascot-state--blink { animation: buddha-blink 9s linear infinite; }
@@ -3349,6 +3356,12 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   0%, 60.39% { opacity: 0; }
   60.4%, 75.99% { opacity: 1; }
   76%, 100% { opacity: 0; }
+}
+
+@keyframes buddha-limb-presence {
+  0%, 60.39% { opacity: 1; }
+  60.4%, 75.99% { opacity: 0; }
+  76%, 100% { opacity: 1; }
 }
 
 @keyframes buddha-breathe {
@@ -3569,6 +3582,8 @@ body:has(.consent) .footer { padding-bottom: 8rem; }
   .mascot-part--chest,
   .mascot-part--belly,
   .mascot-part--blink { animation: none; opacity: 0; }
+  /* The still scene is the raised pose, and the anchor is part of it. */
+  .mascot-part--anchor { animation: none; opacity: 1; }
   .mascot-shimmer { animation: none; opacity: .32; transform: translateX(24%) rotate(45deg) scaleY(.55); }
   .mascot-aura { animation: none; opacity: .78; }
   .mascot-embers { animation: none; opacity: .4; transform: translateY(-10px); }
