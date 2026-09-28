@@ -297,32 +297,32 @@ SOLID = A_bq >= 0.98
 PLATE_REGION = M & SOLID & (A_rq >= 0.5) & ~G
 # The soft rim within reach of the joint rides with the anchor.
 _rim = M & ~SOLID
-# WHAT THE LIMB IS STANDING IN FRONT OF, and how far out it is worth carrying.
+# WHAT THE LIMB IS STANDING IN FRONT OF.
 #
 # The tear that was reported is not a cut and not a seam: it is the SECOND
-# DRAWING's silhouette. Swing the limb and the pixels it leaves behind are
-# filled from the arm-down state — except where the arm-down state has nothing
-# there, which is everywhere along its own shoulder line. So a wedge of open air
-# opens between the limb and the drape, and a wedge of open air in the middle of
-# a figure is exactly what a tear is. The arm-down picture cannot answer this
-# question: it is a different pose, not a photograph of what was behind the arm.
+# DRAWING's silhouette. Swing the limb, and the pixels it leaves behind are
+# filled from the arm-down state — except where the arm-down state has nothing,
+# which is everywhere along its own shoulder line, because the two poses do not
+# agree about where the drape ends. So a wedge of open air opens between the
+# limb and the drape, and open air in the middle of a figure is a tear, because
+# that is what it is.
 #
-# What can answer it is the arm-down picture's own gold, carried outward. So the
-# backdrop the limb travels on is that state's content extended into the gap the
-# limb leaves, as far as the limb can travel in the pose it is drawn in: fifteen
-# degrees about the shoulder, which at the far edge of the drape is about
-# twenty-six pixels.
-_known = A_rq > 0.02
-_band = np.asarray(dil(Image.fromarray((_known * 255).astype(np.uint8)), 26)) > 128
-# The limb's soft edge, where the arm-down state has body behind it. Nothing
-# here against open sky: pinning a sky-facing rim to a static layer is the
-# floating gold arc the first attempt at this produced (round55/shoulder-before-after).
-RIM_REGION = _rim & _known
-# The limb keeps everything the anchor does not own at rest. The anchor may sit
-# UNDER the limb's solid interior — that overlapping half is invisible while the
-# limb is there — but the limb must still be drawn: claiming those pixels for the
-# anchor is what emptied the arm layer, and the encoder probe refused to write a
-# plate over it, which is the probe working.
+# The arm-down picture cannot answer this question: it is a different pose, not
+# a photograph of what was behind the arm. Nothing can, which is why the answer
+# is not to invent the missing drape — a first version did exactly that, and the
+# invented gold read as a pale streak lying across the shoulder. The answer is
+# to keep the ARTWORK's own pixels behind the limb: the limb then slides over
+# its own picture, and what it uncovers is the drawing as drawn, at worst an
+# edge's width out of step. No invented pixels anywhere, at any angle.
+#
+# There is no separate region for this. The anchor's footprint IS the limb's
+# footprint, and the resting pose is the artwork because the limb covers the
+# copy of itself exactly. The plate's arm-down body is what shows through when
+# the limb is gone; the anchor is what shows through while it is here.
+#
+# The limb keeps everything it drew except the soft edge, which rides the anchor
+# so the limb's cut never lands on the limb's antialiasing.
+RIM_REGION = _rim
 ARM_REGION = M & ~(PLATE_REGION | RIM_REGION)
 plate_rgb = np.clip(np.asarray(base_q.convert("RGB")).astype(np.float32) * (~(M & SOLID))[:, :, None]
                     + fill_rgb * (M & SOLID)[:, :, None], 0, 255)
@@ -430,25 +430,18 @@ arm = Image.merge("RGBA", (*[Image.fromarray(base_rgb_rebuilt[:, :, c]) for c in
 # anchor), so the recomposition is exact, and static is what makes the limb's
 # edge slide over the joint instead of away from it.
 #
-# WHERE THE LIMB IS ALWAYS ON TOP — its solid interior — the anchor may carry
-# what the limb UNCOVERS: the arm-down state's own gold, continued past where
-# that state runs out. At rest not one of those pixels is visible; they exist
-# for the four seconds a cycle when the limb has moved off them.
+# THE ANCHOR IS THE ARTWORK. Every pixel of the raised picture, at the artwork's
+# own alpha, under the limb — because that is the one thing that is true at every
+# angle. At rest the limb covers the copy of itself exactly, so the picture is
+# the artwork and the recomposition is exact; as the limb turns, what it uncovers
+# is the drawing rather than a hole where the drawing used to be.
 #
-# And the anchor leaves with the limb (see `buddha-limb-presence` in
-# styles.css). It is the RAISED pose's furniture; left up while the hand is
-# down it sits on the shoulder as a torn-off piece of the photograph, which is
-# the other half of the report this fixes.
-_ext_unknown = M & ~_known & _band
-_backdrop_rgb = np.asarray(rest_q.convert("RGB")).astype(np.float32)
-if _ext_unknown.any():
-    _backdrop_rgb = np.clip(diffuse_fill(_backdrop_rgb, _ext_unknown,
-                                         _known & _band, iterations=1500), 0, 255)
-_backdrop_rgb = np.where((PLATE_REGION | RIM_REGION)[:, :, None], B_rgb, _backdrop_rgb)
-anchor_alpha = np.where(PLATE_REGION | RIM_REGION, A_bq,
-                        np.where(M & SOLID & _band, 1.0, 0.0))
-anchor = Image.merge("RGBA", (*[Image.fromarray(_backdrop_rgb[:, :, c].astype(np.uint8))
-                                for c in range(3)],
+# And it leaves with the limb (see `buddha-limb-presence` in styles.css). It is
+# the RAISED pose's furniture; left up while the hand is down it sits on the
+# shoulder as a torn-off piece of the photograph, which is the other half of the
+# report this fixes.
+anchor_alpha = np.where(M, A_bq, 0.0)
+anchor = Image.merge("RGBA", (*base_q.convert("RGB").split(),
                               Image.fromarray((anchor_alpha * 255).round().astype(np.uint8))))
 # The grapes keep the artwork's pixels and its alpha, exactly as drawn: they are
 # the one layer that is a straight copy of the picture, because they are the one
@@ -660,7 +653,11 @@ for _deg in (7, 15):
                       ).astype(np.float32) / 255.0
     _anc = np.asarray(anchor.getchannel('A')).astype(np.float32) / 255.0
     _cov = _rot + _anc * (1 - _rot) + plate_a * (1 - _rot) * (1 - _anc)
-    _gap = (_cov < 0.55) & (A_rq > 0.5)
+    # INSIDE the figure, not at its edge. Without this the count is dominated by
+    # the artwork's own antialiased boundary, where `_cov` is partial because the
+    # picture is: 375 pixels of "see-through body" that are nothing but the
+    # figure's outline. A hole is a thin spot surrounded by the figure.
+    _gap = (_cov < 0.55) & (A_rq > 0.5) & _interior
     _ys, _xs = np.where(_gap)
     print(f"   THE GAP at -{_deg}deg: {int(_gap.sum()):5d} px of body go see-through inside the figure"
           + (f"  bbox x[{_xs.min()}-{_xs.max()}] y[{_ys.min()}-{_ys.max()}]" if len(_xs) else ""))
