@@ -1,0 +1,76 @@
+{
+  "reference": "mascot-gold-buddha-base.webp (the arm-raised drawing; unchanged)",
+  "second_source": "mascot-gold-buddha-rest.webp (arm-down; same character, same light)",
+  "generated": {
+    "exemplar_fill_pixels": 13739,
+    "contact_shadow": "derived from the limb's silhouette, not painted"
+  },
+  "regions": {
+    "chest behind the arm": {
+      "box": [
+        196,
+        108,
+        312,
+        196
+      ],
+      "from_arm_down_state": 432,
+      "reconstructed_generated": 2035,
+      "needs": "painting"
+    },
+    "shoulder socket": {
+      "box": [
+        238,
+        112,
+        300,
+        178
+      ],
+      "from_arm_down_state": 273,
+      "reconstructed_generated": 1546,
+      "needs": "painting"
+    },
+    "robe / drape continuation": {
+      "box": [
+        246,
+        146,
+        344,
+        214
+      ],
+      "from_arm_down_state": 31,
+      "reconstructed_generated": 5,
+      "needs": "painting"
+    },
+    "necklace continuation": {
+      "box": [
+        282,
+        40,
+        452,
+        156
+      ],
+      "from_arm_down_state": 4968,
+      "reconstructed_generated": 8590,
+      "needs": "painting"
+    },
+    "back of the elbow": {
+      "box": [
+        296,
+        58,
+        384,
+        134
+      ],
+      "from_arm_down_state": 1090,
+      "reconstructed_generated": 5559,
+      "needs": "painting"
+    },
+    "gold / pile continuity": {
+      "box": [
+        146,
+        148,
+        420,
+        214
+      ],
+      "from_arm_down_state": 164,
+      "reconstructed_generated": 1420,
+      "needs": "painting"
+    }
+  }
+}
