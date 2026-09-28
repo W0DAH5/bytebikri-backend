@@ -198,7 +198,11 @@ try {
   console.log(`  card ${i0}: ${m.box.w}×${m.box.h}px · motif=${m.motif} · ${m.parts?.length ?? 0} parts · world ${m.world?.w}×${m.world?.h}`);
   check(m.motif === 'buddha-gold', 'it is the golden buddha, not a placeholder key');
   // The plate is the figure with the arm taken out; the parts are laid over it.
-  check(m.parts?.length === 6, `a plate and five parts (chest, belly, blink, arm, grapes), found ${m.parts?.length}`);
+  // SIX of them. The anchor joined the rig with the region split — it is what
+  // the limb's edge slides over at the joint — and this count (and the two
+  // below) predated it: a walk that still expects the old rig reports the new
+  // one as broken.
+  check(m.parts?.length === 7, `a plate and six parts (chest, belly, blink, anchor, arm, grapes), found ${m.parts?.length}`);
   check(m.parts?.some((x) => x.cls === 'mascot-part--plate'), 'the plate is in the card');
   check(m.parts?.every((x) => x.loaded), 'every part actually loaded');
   check(m.parts?.every((x) => /\.webp$/.test(x.src ?? '')), 'every part is the optimised webp, not a master png');
@@ -375,7 +379,10 @@ try {
   });
   console.log(`  parked: ${JSON.stringify(parked)}`);
   const plateStill = parked?.states?.find((s) => s.cls === 'mascot-part--plate');
-  const othersHidden = parked?.states?.filter((s) => s.cls !== 'mascot-part--plate' && s.cls !== 'mascot-part--arm' && s.cls !== 'mascot-part--berries')
+  // The still is the RAISED pose parked: the plate, the limb, its fruit and the
+  // joint it swings from are all part of that pose. What must be hidden is the
+  // alternative states (chest, belly, blink), which are poses the still is not.
+  const othersHidden = parked?.states?.filter((s) => s.cls !== 'mascot-part--plate' && s.cls !== 'mascot-part--arm' && s.cls !== 'mascot-part--berries' && s.cls !== 'mascot-part--anchor')
     ?.every((s) => parseFloat(s.opacity) === 0);
   check(plateStill && plateStill.anim === 'none', 'the plate stands, animation parked');
   check(othersHidden, 'the pose layers are parked at opacity 0 — the still is the plate in its own pose');
@@ -400,7 +407,7 @@ try {
   ).then(() => true).catch(() => false);
   const afterState = await measureCard(pF, iF);
   check(stateGone, 'a part that cannot load removes itself — the scene still stands');
-  check(afterState.hasLayer && afterState.parts?.length === 5, 'the plate, the arm and the rest remain');
+  check(afterState.hasLayer && afterState.parts?.length === 6, 'the plate, the arm and the rest remain');
   await pF.evaluate((nth) => {
     const card = document.querySelectorAll('.member-roster .member')[nth];
     card.querySelector('.mascot-part--plate').src = '/img/cosmetics/definitely-missing.webp';
