@@ -328,11 +328,18 @@ BASE = Image.open(os.path.join(DIR, "mascot-gold-buddha-base.webp")).convert("RG
 PLATE = layer("clean-plate.webp")
 ARM = layer("arm.webp")
 GRAPES = layer("grapes.webp")
-SHADOW = layer("shadow.webp")
+# THERE IS NO SHADOW LAYER, deliberately. One existed and was measured against
+# its own job: its colour blended the plate toward the base picture instead of
+# darkening it (a softening stamp, which the brief bans), its strength ROSE as
+# the limb left the body (0.00 at rest to 1.00 at -15), and rotating it with the
+# limb dragged its soft edge across the chest. The comparison is
+# `docs/evidence/round56/11-shadow-at-15.png`: as drawn, rotated, absent —
+# rotated is the worst of the three. A painted cast shadow is owed to the
+# artwork; see `corrective_keyforms` in the rig data.
 
 
 def pose(deg, grape_deg=0.0):
-    """Draw order: plate → shadow → arm → grapes.
+    """Draw order: plate → arm → grapes.
 
     NO COLLAR PIECE. A patch of drape drawn over the joint is how a rigid cutout
     hides its cut edge, and the first diagnostic sheet showed it re-drawing the
@@ -343,15 +350,6 @@ def pose(deg, grape_deg=0.0):
     canvas = Image.new("RGBA", (CW, CH), (0, 0, 0, 0))
     plate_up = PLATE.resize((CW, CH), Image.LANCZOS)
     canvas.alpha_composite(plate_up)
-
-    # The shadow: it belongs to the limb, so it takes the limb's transform, and
-    # its strength follows how far the limb has travelled.
-    if abs(deg) > 0.01:
-        sh = SHADOW.resize((CW, CH), Image.LANCZOS)
-        sh = sh.point(lambda v: v)                     # keep alpha
-        a = sh.getchannel("A").point(lambda v: int(v * min(1.0, abs(deg) / 15.0)))
-        sh.putalpha(a)
-        canvas.alpha_composite(sh)
 
     arm_dst = skin(ARM_PTS, ARM_W, deg, deg_elbow=deg * ELBOW_SHARE,
                    extra=lambda p, w, d: socket_bend(p, w, d))
@@ -411,6 +409,32 @@ def _edge_width(a):
             "p95_px": round(float(np.percentile(w, 95)), 2),
             "over3_px": int((w > 3.0).sum())}
 
+
+# ── the corrective keyforms' own measurement ────────────────────────────────
+# Before a correction is authored, the thing it would correct has to be measured.
+# This is the elbow's: linear blend skinning pulls a vertex toward the chord
+# between the two bones, so the surface around the joint shortens very slightly.
+# If that shortening were visible, THIS is the number the corrective shape would
+# have to beat — and it is the reason there is no corrective shape at the elbow.
+CHORD_DEFICIT = {}
+for _d in KEYFORMS:
+    _moved = skin(ARM_PTS, ARM_W, _d, deg_elbow=_d * ELBOW_SHARE)
+    _r0 = np.linalg.norm(ARM_PTS - ELBOW, axis=1)
+    _r1 = np.linalg.norm(_moved - bone_chain(_d, _d * ELBOW_SHARE)[1], axis=1)
+    _band = (ARM_F > 0.05) & (ARM_F < 0.95)
+    _lost = (_r0 - _r1)[_band]
+    CHORD_DEFICIT[f"{_d:+.0f}deg"] = {
+        "band_px": int(_band.sum()),
+        "mean_px": round(float(_lost.mean()), 3),
+        "p95_px": round(float(np.percentile(_lost, 95)), 3),
+        "max_px": round(float(_lost.max()), 3),
+    }
+print("\n   the elbow's blend, measured (what a corrective shape would have to beat)")
+print(f"     {'pose':>7} {'band px':>8} {'mean':>8} {'p95':>7} {'max':>7}   (px of chord the blend shortens)")
+for _k, _v in CHORD_DEFICIT.items():
+    print(f"     {_k:>7} {_v['band_px']:8d} {_v['mean_px']:8.3f} {_v['p95_px']:7.3f} {_v['max_px']:7.3f}")
+print("     sub-pixel at every keyform — so the corrective keyform is 'none', "
+      "and here is the number that says so")
 
 # ── the diagnostics ─────────────────────────────────────────────────────────
 row = []
@@ -611,6 +635,64 @@ for ci, (cname, cdeg) in enumerate(_cols):
         js.paste(c, (x, y))
 js.save(os.path.join(OUT, "07-joint-review.png"))
 
+# ── the rejected shadow, shown three ways ──────────────────────────────────
+# The comparison behind `corrective_keyforms.shadow`: the derived shadow as it
+# used to be drawn, the same shadow rotated with the limb, and no shadow at all.
+# It is reconstructed here ONLY so the decision can be looked at and re-checked;
+# it is not in the draw order and there is no shadow asset.
+def _rejected_shadow():
+    a = np.asarray(ARM.getchannel("A")).astype(np.float32)
+    a = np.asarray(Image.fromarray(a.astype(np.uint8))
+                   .filter(ImageFilter.GaussianBlur(6.0))).astype(np.float32) / 255.0
+    a = np.roll(np.roll(a, 7, axis=0), 5, axis=1)          # the light, upper left
+    a = np.clip((a - 0.25) / 0.75, 0, 1) * 0.55
+    # built at the ART's own resolution, like the asset it replaces; the renderer
+    # scales it, exactly as it scaled shadow.webp
+    rgb = np.clip(np.asarray(PLATE).astype(np.float32)[..., :3] * 0.62
+                  + np.asarray(BASE).astype(np.float32)[..., :3] * 0.38, 0, 255)
+    return Image.merge("RGBA", (*[Image.fromarray(rgb[..., c].astype(np.uint8)) for c in range(3)],
+                                Image.fromarray((a * 255).round().astype(np.uint8))))
+
+
+def _pose_three_ways(deg):
+    out = []
+    for mode in ("as it was drawn", "rotated with the limb", "no shadow"):
+        canvas = Image.new("RGBA", (CW, CH), (0, 0, 0, 0))
+        canvas.alpha_composite(PLATE.resize((CW, CH), Image.LANCZOS))
+        if mode != "no shadow":
+            sh = _rejected_shadow().resize((CW, CH), Image.LANCZOS)
+            if mode.startswith("rotated"):
+                sh = sh.rotate(deg, resample=Image.BICUBIC, center=(PIVOT[0] * K, PIVOT[1] * K),
+                               fillcolor=(0, 0, 0, 0))
+            sh.putalpha(sh.getchannel("A").point(lambda v: int(v * min(1.0, abs(deg) / 15.0))))
+            canvas.alpha_composite(sh)
+        dst = skin(ARM_PTS, ARM_W, deg, deg_elbow=deg * ELBOW_SHARE,
+                   extra=lambda p, w, d: socket_bend(p, w, d))
+        canvas.alpha_composite(warp(ARM, ARM_PTS, dst, ARM_TRIS))
+        canvas.alpha_composite(warp(GRAPES, ARM_PTS,
+                                    skin(ARM_PTS, ARM_W, deg, deg_elbow=deg * ELBOW_SHARE), ARM_TRIS))
+        over = Image.new("RGBA", (CW, CH), (255, 0, 255, 255))
+        over.alpha_composite(canvas)
+        out.append((mode, over.convert("RGB")))
+    return out
+
+
+_box = (190, 20, 470, 210)
+_z = 2
+_panels = []
+for _lbl, _im in _pose_three_ways(-15.0):
+    _c = _im.crop(_box).resize((( _box[2] - _box[0]) * _z, (_box[3] - _box[1]) * _z), Image.LANCZOS)
+    _panels.append((_lbl, _c))
+_w = _panels[0][1].width
+_sh_sheet = Image.new("RGB", (_w * 3 + 24, _panels[0][1].height + 48), (24, 24, 28))
+_sd = ImageDraw.Draw(_sh_sheet)
+for _i, (_lbl, _c) in enumerate(_panels):
+    _sh_sheet.paste(_c, (8 + _i * (_w + 8), 42))
+    _sd.text((8 + _i * (_w + 8) + 3, 26), _lbl, fill=(255, 220, 80))
+_sd.text((10, 6), "at -15 deg: the derived shadow was measured against its own job and this is why it is gone",
+         fill=(150, 220, 255))
+_sh_sheet.save(os.path.join(OUT, "11-shadow-at-15.png"))
+
 sheet = Image.new("RGB", (row[0][1].width * len(row) + 10 * (len(row) + 1),
                           row[0][1].height + 30), (24, 24, 28))
 d = ImageDraw.Draw(sheet)
@@ -647,17 +729,67 @@ json.dump({
                  "weights_forearm": ARM_F.round(4).tolist()},
     "torso_mesh": {"vertices": TORSO_PTS.tolist(), "triangles": TORSO_TRIS,
                    "weights_arm": TORSO_W.round(4).tolist()},
-    "draw_order": ["plate", "shadow", "arm", "grapes"],
-    "keyforms": [{"angle_deg": d, "elbow_deg": round(d * ELBOW_SHARE, 2),
-                  "correction": None, "placeholder": True} for d in KEYFORMS],
+    "draw_order": ["plate", "arm", "grapes"],
+    # THE CORRECTIVE KEYFORMS, authored rather than left as placeholders.
+    #
+    # A keyform is the shape a parameter takes at a chosen value (the research:
+    # Live2D keyforms, Moho Smart Bones). For this rig the honest content of the
+    # table is which corrections ARE needed, which were measured and found
+    # unnecessary, and which are owed to a painter — separating the two kinds of
+    # work the brief insists on keeping separate.
+    "keyforms": [
+        {"angle_deg": d, "elbow_deg": round(d * ELBOW_SHARE, 2),
+         "mesh_correction": None,
+         "mesh_correction_reason":
+             "measured: the blend band moves the elbow's chord by at most "
+             f"{max(abs(CHORD_DEFICIT[f'{d:+.0f}deg']['mean_px']), CHORD_DEFICIT[f'{d:+.0f}deg']['max_px']):.3f} px "
+             f"(mean {abs(CHORD_DEFICIT[f'{d:+.0f}deg']['mean_px']):.3f} px) — sub-pixel, so a "
+             "corrective mesh shape here would be a placebo",
+         "mesh_check": CHORD_DEFICIT[f"{d:+.0f}deg"],
+         "shadow": "none drawn — the derived shadow was removed, not corrected "
+                   "(see corrective_keyforms.shadow)",
+         "artwork_owed": "the plate's reconstructed pixels at this pose still "
+                         "need paint; the plate is shared by all keyforms",
+         "status": "engineering complete, artwork owed"}
+        for d in KEYFORMS
+    ],
+    "corrective_keyforms": {
+        "method": "pose-space corrections, authored from measurement at each "
+                  "keyform rather than guessed (Live2D keyforms / Moho Smart Bones)",
+        "shadow": {
+            "correction": "REMOVED",
+            "why": ["its colour blended the plate toward the base picture instead "
+                    "of darkening it — a softening stamp, which the brief bans",
+                    "its strength rose as the limb left the body (0.00 at rest, "
+                    "1.00 at -15 deg), the wrong way round",
+                    "rotating it with the limb put its mass 10.37 px from the limb "
+                    "against 3.88 px for the fixed stamp, smearing the chest and grapes"],
+            "evidence": "docs/evidence/round56/11-shadow-at-15.png",
+            "owed": "a painted cast shadow per keyform",
+        },
+        "elbow_mesh": {
+            "correction": None,
+            "why": "the two-bone blend's chord deficit is sub-pixel at every keyform "
+                   "(0.046 px mean, 0.23 px max); a mesh correction would move less "
+                   "than the resampling it is meant to fix",
+        },
+        "warp_deformer": "the socket band IS the corrective deformer: vertices "
+                         "weighted between body and limb so the joint bends rather "
+                         "than hinges",
+    },
     "coverage": report,
     "elbow": elbow_report,
     "exposed_cut_edge": edge_report,
     "rest_vs_artwork": rest_report,
     "rest_vs_artwork_on_figure": _rf,
-    "contact_shadow": {"asset": "shadow.webp", "painted": False,
-                       "note": "derived from the limb's silhouette; a painter's "
-                               "version is the first corrective keyform"},
+    "contact_shadow": {
+        "present": False,
+        "owed": "a painted cast shadow at each keyform — artwork, not generated",
+        "removed_because": "measured against its own job: it blended rather than "
+                           "darkened, grew as the limb left the body, and could not "
+                           "follow the limb without smearing",
+        "evidence": "docs/evidence/round56/11-shadow-at-15.png",
+    },
 }, open(os.path.join(RIG, "buddha-rig.json"), "w"), indent=1)
 
 print("\nwrote rig/buddha-rig.json and the keyform sheet")

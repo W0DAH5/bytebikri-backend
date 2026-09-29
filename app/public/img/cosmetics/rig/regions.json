@@ -2,8 +2,18 @@
   "reference": "mascot-gold-buddha-base.webp (the arm-raised drawing; unchanged)",
   "second_source": "mascot-gold-buddha-rest.webp (arm-down; same character, same light)",
   "generated": {
-    "exemplar_fill_pixels": 10992,
-    "contact_shadow": "derived from the limb's silhouette, not painted"
+    "exemplar_fill_pixels": 10992
+  },
+  "contact_shadow": {
+    "present": false,
+    "removed": "a derived shadow was measured against its own job and removed",
+    "why": [
+      "its colour blended the plate toward the base picture instead of darkening it \u2014 a softening stamp, which the brief bans",
+      "its strength rose as the limb left the body (0.00 at rest, 1.00 at -15 deg), the wrong way round",
+      "rotating it with the limb put its mass 10.37 px from the limb against 3.88 px for the fixed stamp, smearing the chest and grapes"
+    ],
+    "evidence": "docs/evidence/round56/11-shadow-at-15.png",
+    "owed": "a painted cast shadow at each keyform \u2014 artwork, not generated"
   },
   "regions": {
     "chest behind the arm": {

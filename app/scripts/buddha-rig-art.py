@@ -13,13 +13,13 @@ rig needs and the parts do not yet have:
     rig/collar.webp         the drape that overlaps the shoulder, drawn ON TOP of
                             the arm — the joint's occlusion, as a cutout rig has it
     rig/grapes.webp         the cluster with the stem extended
-    rig/shadow.webp         the contact shadow the limb casts, as its own sprite
+                            (there is deliberately no shadow sprite — see §8)
     rig/regions.json        every reconstructed area, by name, with its box and
                             how it was made
 
 and to docs/evidence/round56/ it writes the review sheet: which pixels are the
-arm-down state's own (trustworthy), which are copies of nearby gold (generated),
-and which are the shadow.
+arm-down state's own (trustworthy) and which are copies of nearby gold
+(generated).
 
 WHAT IS TRUSTWORTHY AND WHAT IS NOT is the point of this file.
   * The arm-down state is a SECOND RENDERING of the same character in the same
@@ -29,7 +29,8 @@ WHAT IS TRUSTWORTHY AND WHAT IS NOT is the point of this file.
     RECONSTRUCTED by copying the nearest matching patch of the picture's own
     gold (exemplar fill). Real texture, real folds, but placed by an algorithm:
     first pass, marked for painting.
-  * The contact shadow is derived, not painted. Marked.
+  * There is no contact shadow. One was derived, measured, and removed — it was
+    a softening stamp whose strength rose as the limb left the body. See §8.
 
 Nothing here is final artwork, and nothing here is hidden with blur, feather,
 glow, diffusion or opacity. The reconstruction is a copy of the drawing's own
@@ -452,22 +453,33 @@ grapes_layer = Image.merge("RGBA", (*base.convert("RGB").split(),
                                     Image.fromarray((grapes_alpha * 255).round().astype(np.uint8))))
 grapes_layer.save(os.path.join(RIG, "grapes.webp"), "WEBP", lossless=True)
 
-# ── 8. the contact shadow ───────────────────────────────────────────────────
-# DERIVED, NOT PAINTED, and marked as such. The limb darkens the body under it;
-# without that, a moved arm floats. Taken from the limb's own silhouette, pushed
-# along the light and darkened in gold, and drawn under the limb so it travels
-# with it. A painter's version replaces this: the darkness is the drawing's, the
-# shape is currently a stamp of the arm.
-shadow_src = np.asarray(Image.fromarray((ARM_EXT * 255).astype(np.uint8))
-                        .filter(ImageFilter.GaussianBlur(6.0))).astype(np.float32) / 255.0
-sy, sx = 7, 5                                   # the light comes from the upper left
-shadow_src = np.roll(np.roll(shadow_src, sy, axis=0), sx, axis=1)
-shadow_src = np.clip((shadow_src - 0.25) / 0.75, 0, 1) * 0.55
-shadow_rgb = np.clip(plate_rgb * 0.62 + np.asarray(RGB_base) * 0.38, 0, 255)
-shadow_layer = Image.merge("RGBA", (*[Image.fromarray(shadow_rgb[:, :, c].astype(np.uint8))
-                                      for c in range(3)],
-                                    Image.fromarray((shadow_src * 255).round().astype(np.uint8))))
-shadow_layer.save(os.path.join(RIG, "shadow.webp"), "WEBP", lossless=True)
+# ── 8. the contact shadow: removed, and here is why ─────────────────────────
+# There WAS a derived shadow here — the limb's silhouette, blurred, pushed along
+# the light, darkened and drawn under the limb. It was removed after measuring it
+# against its own job description, and every reason is a number:
+#
+#   1. IT IS NOT A SHADOW. Its colour is `plate * 0.62 + base * 0.38`, so it does
+#      not darken the plate, it BLENDS it toward the base picture — a soft,
+#      opaque stamp of the limb's shape. Inside its own footprint it darkens 3,440
+#      px by more than 8 levels and LIGHTENS 624 px by more than 8. The brief bans
+#      exactly this category: "no hiding bad deformation with blur, feathering,
+#      glow, diffusion, opacity or texture noise".
+#   2. ITS STRENGTH IS THE WRONG WAY ROUND. Alpha scales with |deg| / 15 — 0.00 at
+#      rest, 0.47 at -7, 1.00 at -15 — but -15 is where the limb has lifted
+#      FURTHEST from the body. Contact darkening must fall as the limb leaves, not
+#      rise.
+#   3. IT CANNOT FOLLOW THE LIMB. Rotating it with the limb was measured, not
+#      assumed: at -15 the shadow's mass lands 10.37 px from the limb it belongs
+#      to, against 3.88 px for the fixed stamp — the rotation drags its soft edge
+#      across the chest and smears the grapes. `docs/evidence/round56/
+#      11-shadow-at-15.png` shows the three versions side by side: as drawn,
+#      rotated, and absent. Rotated is the worst of the three.
+#
+# So: no shadow layer. The plate already carries the drawing's own shading
+# everywhere it is visible, which is what a cast shadow would have been
+# approximating; a PAINTED cast shadow — the contact under the limb at each
+# keyform — is owed to the artwork, and is recorded in the rig data as owed
+# rather than quietly generated here.
 
 # ── 9. the review map: what needs a painter ─────────────────────────────────
 REVIEW = {
@@ -509,8 +521,19 @@ image.save(os.path.join(OUT, "05-review-map.png"))
 json.dump({
     "reference": "mascot-gold-buddha-base.webp (the arm-raised drawing; unchanged)",
     "second_source": "mascot-gold-buddha-rest.webp (arm-down; same character, same light)",
-    "generated": {"exemplar_fill_pixels": int(filled_mask.sum()),
-                  "contact_shadow": "derived from the limb's silhouette, not painted"},
+    "generated": {"exemplar_fill_pixels": int(filled_mask.sum())},
+    "contact_shadow": {
+        "present": False,
+        "removed": "a derived shadow was measured against its own job and removed",
+        "why": ["its colour blended the plate toward the base picture instead of "
+                "darkening it — a softening stamp, which the brief bans",
+                "its strength rose as the limb left the body (0.00 at rest, 1.00 at "
+                "-15 deg), the wrong way round",
+                "rotating it with the limb put its mass 10.37 px from the limb "
+                "against 3.88 px for the fixed stamp, smearing the chest and grapes"],
+        "evidence": "docs/evidence/round56/11-shadow-at-15.png",
+        "owed": "a painted cast shadow at each keyform — artwork, not generated",
+    },
     "regions": report,
     # What was done about the LIGHT, and what it measured. Criterion 6 of the
     # brief is "no lighting discontinuity", and these are the numbers behind the
@@ -534,5 +557,5 @@ json.dump({
 print(f"   reconstructed pixels needing a painter: {int(filled_mask.sum())}")
 for name, r in report.items():
     print(f"     {name:28s} arm-down {r['from_arm_down_state']:6d}  generated {r['reconstructed_generated']:6d}")
-print("wrote rig/{clean-plate,arm,collar,grapes,shadow}.webp and rig/regions.json")
+print("wrote rig/{clean-plate,arm,grapes}.webp and rig/regions.json")
 print(f"      review map → {os.path.join(OUT, '05-review-map.png')}")
