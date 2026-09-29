@@ -50,7 +50,29 @@ FIST = np.array([372.0, 44.0])            # the hand, for the bone axis
 AXIS = (FIST - PIVOT) / np.linalg.norm(FIST - PIVOT)
 LIMB_LEN = float(np.linalg.norm(FIST - PIVOT))
 STEM = np.array([370.0, 46.0])            # the grape cluster's stem pivot
+
+# ── THE ELBOW ───────────────────────────────────────────────────────────────
+# Measured from the drawing, not guessed: the limb's centreline is the centroid
+# of the limb's own pixels in rings about the glenoid, and the elbow is where
+# that line turns fastest — r = 54..66 art px, at (300.5, 94.6). It is a GENTLE
+# bend: the interior angle at the elbow is 157.6 degrees, i.e. the arm is drawn
+# 22 degrees off straight. That number is the budget for this joint. A rig that
+# bends it 40 degrees is drawing an elbow the picture never had, which is the
+# failure mode PREMIUM_COSMETICS already records ("more would break the elbow,
+# which is drawn for the pose it is drawn in").
+ELBOW = np.array([300.5, 94.6])
+FOREARM_LEN = float(np.linalg.norm(FIST - ELBOW))
+FOREARM_AXIS = (FIST - ELBOW) / FOREARM_LEN
+ELBOW_REST_DEG = float(np.degrees(np.arccos(np.clip(
+    ((PIVOT - ELBOW) @ (FIST - ELBOW)) /
+    (np.linalg.norm(PIVOT - ELBOW) * FOREARM_LEN), -1, 1))))
+
 KEYFORMS = (-15.0, -7.0, 6.0)
+# How much of the shoulder's turn the elbow takes. PLACEHOLDER — this is the
+# value a corrective keyform will replace with a painted one, chosen to stay
+# inside the drawn elbow's budget at every keyform (0.35 x 15 = 5.3 deg against
+# a 22-degree allowance).
+ELBOW_SHARE = -0.35
 
 # ── meshes ──────────────────────────────────────────────────────────────────
 # The arm's mesh is densest where it bends. A dozen vertices at the socket, a
@@ -154,9 +176,24 @@ def weight_torso(pts):
     return 0.30 * np.exp(-(d / 62.0) ** 2)
 
 
+def weight_forearm(pts):
+    """How much of each vertex belongs to the FOREARM bone rather than the upper
+    arm: the second half of a two-bone chain, with the band centred on the elbow
+    the drawing has. A vertex at the joint is 50/50, so the surface bends across
+    it instead of hinging on it — the rule the research found in Rive's weights.
+    Measured along the forearm's own axis, so the band is perpendicular to the
+    bone rather than to the picture's axes.
+    """
+    d = (pts - ELBOW) @ FOREARM_AXIS
+    band = 0.42 * FOREARM_LEN
+    t = np.clip(d / band + 0.5, 0, 1)
+    return t * t * (3 - 2 * t)
+
+
 ARM_PTS, ARM_TRIS = build_arm_mesh()
 TORSO_PTS, TORSO_TRIS = build_torso_mesh()
 ARM_W = weight_arm(ARM_PTS)
+ARM_F = weight_forearm(ARM_PTS)
 TORSO_W = weight_torso(TORSO_PTS)
 
 # ── skinning ────────────────────────────────────────────────────────────────
@@ -167,14 +204,59 @@ def rot(deg, about):
     return lambda p: (p - about) @ R.T + about
 
 
-def skin(pts, w, deg, extra=None):
-    """Linear blend skinning: the body transform and the limb transform, mixed
-    per vertex by its weight. This is the whole difference from a rotation."""
-    R = rot(deg, PIVOT)
-    moved = (1.0 - w)[:, None] * pts + w[:, None] * R(pts)
+def skin(pts, w, deg, extra=None, deg_elbow=None):
+    """Linear blend skinning over a TWO-BONE chain.
+
+    `w` is how much of the vertex belongs to the limb rather than the body;
+    `deg_elbow` (when given) is the forearm bone's own rotation, applied as a
+    child of the shoulder: the elbow travels with the shoulder first, and then
+    the forearm turns about where the elbow has arrived. That is what a joint
+    chain is, and it is the difference between an elbow that bends and a limb
+    that swings rigidly. The body transform is the identity, so w = 0 is
+    untouched.
+    """
+    if deg_elbow is None:
+        deg_elbow = deg * ELBOW_SHARE
+    R1 = rot(deg, PIVOT)
+    E1 = R1(ELBOW[None, :])[0]                  # the elbow after the shoulder turn
+    R2 = rot(deg_elbow, E1)
+    upper = R1(pts)
+    fore = R2(upper)
+    u = ARM_F[:, None] if pts.shape == ARM_PTS.shape else 0.0
+    limb = (1.0 - u) * upper + u * fore
+    moved = (1.0 - w)[:, None] * pts + w[:, None] * limb
     if extra is not None:
         moved = moved + extra(pts, w, deg)
     return moved
+
+
+def _interior(a, b, c):
+    v1, v2 = a - b, c - b
+    n1, n2 = np.linalg.norm(v1), np.linalg.norm(v2)
+    if n1 < 1e-6 or n2 < 1e-6:
+        return float("nan")
+    return float(np.degrees(np.arccos(np.clip(v1 @ v2 / (n1 * n2), -1, 1))))
+
+
+def bone_chain(deg, deg_elbow):
+    """Where the three joints of the chain end up: rigid, exact, and the thing a
+    runtime will evaluate."""
+    R1 = rot(deg, PIVOT)
+    E1 = R1(ELBOW[None, :])[0]
+    R2 = rot(deg_elbow, E1)
+    return PIVOT, E1, R2(R1(FIST[None, :]))[0]
+
+
+def elbow_angle_deg(dst):
+    """The interior angle the PICTURE has at the elbow, read from the deformed
+    mesh. It differs from the skeleton's angle by the blend band, and that is not
+    a bug: at the joint the surface is half body and half limb, so its bend is
+    softer than the bone's. Both numbers are reported."""
+    def nearest(p):
+        d = np.linalg.norm(ARM_PTS - p, axis=1)
+        return int(np.argmin(d))
+    ia, ib, ic = nearest(PIVOT), nearest(ELBOW), nearest(FIST)
+    return _interior(dst[ia], dst[ib], dst[ic])
 
 
 def shoulder_warp(pts, w, deg):
@@ -271,11 +353,15 @@ def pose(deg, grape_deg=0.0):
         sh.putalpha(a)
         canvas.alpha_composite(sh)
 
-    arm_dst = skin(ARM_PTS, ARM_W, deg, extra=lambda p, w, d: socket_bend(p, w, d))
+    arm_dst = skin(ARM_PTS, ARM_W, deg, deg_elbow=deg * ELBOW_SHARE,
+                   extra=lambda p, w, d: socket_bend(p, w, d))
     canvas.alpha_composite(warp(ARM, ARM_PTS, arm_dst, ARM_TRIS))
 
     if abs(grape_deg) > 0.01:
-        g = warp(GRAPES, ARM_PTS, skin(ARM_PTS, ARM_W, deg) + 0, ARM_TRIS)
+        # The fruit rides the HAND, so it takes the whole chain, elbow included:
+        # a grape that followed only the shoulder would drift out of the fist the
+        # moment the forearm moved.
+        g = warp(GRAPES, ARM_PTS, skin(ARM_PTS, ARM_W, deg, deg_elbow=deg * ELBOW_SHARE), ARM_TRIS)
         canvas.alpha_composite(g.rotate(grape_deg, resample=Image.BICUBIC,
                                         center=(STEM[0] * K, STEM[1] * K),
                                         fillcolor=(0, 0, 0, 0)))
@@ -300,10 +386,37 @@ def mesh_health(pts, tris, dst, label):
     return bad
 
 
+def _edge_width(a):
+    """How wide the alpha ramp is along a layer's own outline: 1 / |grad alpha|.
+    A cut stays a cut (the drawing's own edge is the reference); a feathered
+    edge, or a ragged one, shows up as a wider or more spread ramp.
+
+    A HALO WAS RULED OUT HERE, by measurement rather than by eye. WebP discards
+    RGB under a fully transparent pixel (checked against PNG, which keeps it), so
+    the encoder's junk does sit under the cut edge — but the warp only mixes
+    pixels AT the edge, and there the artwork is the limb's own bright rim light.
+    Warping the layer as decoded, and warping a copy whose transparent pixels had
+    been re-coloured from their painted neighbours (6,543 px), gave the same
+    band: same pixel count, same mean RGB [195,154,75] at rest and [222,191,105]
+    at -15 deg. So no colour bleed is applied, none is needed, and what reads as
+    brightness along the outline is the drawing."""
+    band = (a > 0.15) & (a < 0.85)
+    if band.sum() < 40:
+        return {"px": int(band.sum())}
+    gy, gx = np.gradient(a)
+    g = np.hypot(gx, gy)[band]
+    g = g[g > 1e-4]
+    w = 1.0 / g
+    return {"px": int(band.sum()), "median_px": round(float(np.median(w)), 2),
+            "p95_px": round(float(np.percentile(w, 95)), 2),
+            "over3_px": int((w > 3.0).sum())}
+
+
 # ── the diagnostics ─────────────────────────────────────────────────────────
 row = []
 report = {}
 health = {}
+edge_report = {}
 for deg in (0.0,) + KEYFORMS:
     img = pose(deg)
     ground = Image.new("RGBA", (CW, CH), (255, 0, 255, 255))
@@ -318,8 +431,17 @@ for deg in (0.0,) + KEYFORMS:
     report[f"{deg:+.0f}deg"] = {"uncovered_px_4x": holes,
                                 "coverage_px_4x": int((a > 0.05).sum())}
     src = ARM_PTS
-    dst = skin(ARM_PTS, ARM_W, deg)
+    dst = skin(ARM_PTS, ARM_W, deg, deg_elbow=deg * ELBOW_SHARE)
     health[f"{deg:+.0f}deg"] = mesh_health(src, ARM_TRIS, dst, f"arm at {deg:+.0f} deg")
+    # THE CUT EDGE, measured. The limb is a cut piece, so its boundary has to
+    # stay a cut: about as crisp as the ARTWORK'S OWN outline, which is what the
+    # rest pose gives for free. A wider ramp is the feathered edge the brief
+    # forbids; a ragged one spreads the same numbers. width = 1 / |grad alpha|.
+    ga = np.asarray(warp(ARM, ARM_PTS, dst, ARM_TRIS).getchannel("A")).astype(np.float32) / 255.0
+    edge_report[f"{deg:+.0f}deg"] = _edge_width(ga)
+    if deg == 0.0:
+        edge_report["the drawing's own edge"] = _edge_width(
+            np.asarray(ARM.getchannel("A")).astype(np.float32) / 255.0)
     row.append((deg, ground.resize((CW // 2, CH // 2), Image.LANCZOS)))
 
 print("\n   coverage, at 4x — a hole inside the figure is the failure this sheet exists to catch")
@@ -338,16 +460,156 @@ for i, deg in enumerate((0.0,) + KEYFORMS):
     g.alpha_composite(img)
     g = g.convert("RGB")
     gd = ImageDraw.Draw(g)
-    dst = skin(ARM_PTS, ARM_W, deg, extra=lambda p, w, d: socket_bend(p, w, d)) * K / 2
+    dst = (skin(ARM_PTS, ARM_W, deg, deg_elbow=deg * ELBOW_SHARE,
+                extra=lambda p, w, d: socket_bend(p, w, d))) * K / 2
     for tri in ARM_TRIS:
         gd.line([tuple(dst[j]) for j in list(tri) + [tri[0]]], fill=(80, 220, 255), width=1)
     for j, p in enumerate(dst):
-        col = (255, 90, 90) if ARM_W[j] < 0.5 else (255, 220, 80)
+        # Colour now says which BONE owns the vertex: body side red, upper arm
+        # amber, forearm green — so the joint's blend band is visible at a glance.
+        if ARM_W[j] < 0.5:
+            col = (255, 90, 90)
+        elif ARM_F[j] < 0.5:
+            col = (255, 220, 80)
+        else:
+            col = (110, 240, 140)
         gd.ellipse([p[0] - 1.4, p[1] - 1.4, p[0] + 1.4, p[1] + 1.4], fill=col)
+    # the elbow itself, and the two bones out of it
+    e = skin(np.array([ELBOW], np.float32), np.array([1.0], np.float32), deg,
+             deg_elbow=deg * ELBOW_SHARE)[0] * K / 2
+    pv = skin(np.array([PIVOT], np.float32), np.array([0.0], np.float32), deg,
+              deg_elbow=deg * ELBOW_SHARE)[0] * K / 2
+    fs = skin(np.array([FIST], np.float32), np.array([1.0], np.float32), deg,
+              deg_elbow=deg * ELBOW_SHARE)[0] * K / 2
+    gd.line([tuple(pv), tuple(e), tuple(fs)], fill=(255, 90, 200), width=2)
+    gd.ellipse([e[0] - 3, e[1] - 3, e[0] + 3, e[1] + 3], outline=(255, 90, 200), width=2)
     x = 10 + i * (g.width + 10)
     wire.paste(g, (x, 26))
-    wd.text((x + 3, 8), f"{deg:+.0f}deg  mesh + weights (red = body side)", fill=(255, 220, 80))
+    wd.text((x + 3, 8), f"{deg:+.0f}deg  red body / amber upper arm / green forearm, pink = the bone chain",
+            fill=(255, 220, 80))
 wire.save(os.path.join(OUT, "06-mesh-wireframe.png"))
+
+# THE REST POSE IS THE ARTWORK. Same test scene-parts.py runs, on the rig's own
+# assets: composite at 0 deg against the drawing, over white.
+_base = Image.open(os.path.join(DIR, "mascot-gold-buddha-base.webp")).convert("RGBA")
+_rest = pose(0.0)
+_bg = Image.new("RGBA", (CW, CH), (255, 255, 255, 255))
+_bg.alpha_composite(_rest.resize((CW, CH), Image.LANCZOS) if _rest.size != (CW, CH) else _rest)
+_ref = Image.new("RGB", (CW, CH), (255, 255, 255))
+_ref.paste(_base.resize((CW, CH), Image.LANCZOS), (0, 0), _base.resize((CW, CH), Image.LANCZOS))
+_d = np.abs(np.asarray(_bg.convert("RGB"), np.int16) - np.asarray(_ref, np.int16)).max(axis=2)
+# ON THE FIGURE means the drawing's own silhouette: everywhere outside it both
+# images are the same white, which would flatter the average.
+_fig_mask = np.asarray(_base.resize((CW, CH), Image.LANCZOS))[..., 3] > 24
+rest_report = {"mean": round(float(_d.mean()), 3), "p99": round(float(np.percentile(_d, 99)), 1),
+               "max": int(_d.max()), "over32": int((_d > 32).sum()),
+               "of": int(_d.size)}
+print(f"\n   rest pose vs the artwork it was cut from")
+print(f"     whole canvas   mean {rest_report['mean']:6.3f}  p99 {rest_report['p99']:5.1f}  "
+      f"max {rest_report['max']:3d}  >32: {rest_report['over32']:6d} of {rest_report['of']}")
+_rf = {"mean": round(float(_d[_fig_mask].mean()), 3),
+       "p99": round(float(np.percentile(_d[_fig_mask], 99)), 1),
+       "over32": int((_d[_fig_mask] > 32).sum()), "of": int(_fig_mask.sum())}
+print(f"     on the figure  mean {_rf['mean']:6.3f}  p99 {_rf['p99']:5.1f}  "
+      f"           >32: {_rf['over32']:6d} of {_rf['of']}  "
+      f"({100.0 * _rf['over32'] / max(_rf['of'], 1):.2f}%)")
+
+# the same difference, drawn: white = the rig put back what the drawing had,
+# black = where it differs, so the debt has a location and not just a number.
+Image.fromarray((255 - np.clip(_d * 3, 0, 255)).astype(np.uint8)).convert("RGB").save(
+    os.path.join(OUT, "07-rest-diff.png"))
+
+# ── the elbow, on its own sheet and in numbers ──────────────────────────────
+elbow_report = {}
+crops_elbow = []
+for deg in (0.0,) + KEYFORMS:
+    dst = skin(ARM_PTS, ARM_W, deg, deg_elbow=deg * ELBOW_SHARE)
+    ang = elbow_angle_deg(dst)
+    p1, e1, f1 = bone_chain(deg, deg * ELBOW_SHARE)
+    skel = _interior(p1, e1, f1)
+    # how far the HAND travelled: with the elbow in the chain this is less than a
+    # rigid swing of the whole limb, and that difference is the joint working.
+    ia = int(np.argmin(np.linalg.norm(ARM_PTS - FIST, axis=1)))
+    moved = float(np.linalg.norm(dst[ia] - ARM_PTS[ia]))
+    rigid = float(np.linalg.norm(rot(deg, PIVOT)(FIST[None, :])[0] - FIST))
+    elbow_report[f"{deg:+.0f}deg"] = {
+        "elbow_interior_deg": round(skel, 2),
+        "elbow_mesh_interior_deg": round(ang, 2),
+        "elbow_bend_vs_rest_deg": round(skel - ELBOW_REST_DEG, 2),
+        "hand_travel_art_px": round(moved, 2),
+        "hand_travel_if_rigid_art_px": round(rigid, 2),
+        "elbow_driver_deg": round(deg * ELBOW_SHARE, 2),
+    }
+    # A closeup of the joint, at the canvas's own resolution, for the eye.
+    g = Image.new("RGBA", pose(deg).size, (24, 24, 28, 255))
+    g.alpha_composite(pose(deg))
+    cx, cy = ELBOW * K
+    r = 100
+    x0 = max(0, min(int(cx) - r, CW - 2 * r))
+    y0 = max(0, min(int(cy) - r, CH - 2 * r))
+    crops_elbow.append((deg, g.convert("RGB").crop((x0, y0, x0 + 2 * r, y0 + 2 * r))))
+
+print("\n   the cut edge — the arm layer's own outline, 1 / |grad alpha|")
+print(f"     {'pose':>22} {'edge px':>8} {'median':>9} {'p95':>6} {'wide':>6}   "
+      f"(the master's parts have HARD alpha: any ramp here is the warp's resampling, not a feather)")
+for k, v in edge_report.items():
+    if "median_px" not in v:
+        print(f"     {k:>22} {v['px']:8d}   (too few edge pixels to measure)"); continue
+    print(f"     {k:>22} {v['px']:8d} {v['median_px']:11.2f}px {v['p95_px']:5.2f}  "
+          f"{v['over3_px']:5d} wider than 3px")
+
+print("\n   the elbow joint, measured from the deformed mesh")
+print(f"     {'pose':>7} {'skeleton':>9} {'picture':>8} {'bend':>7} {'hand travel':>12} "
+      f"{'if rigid':>9} {'driver':>7}")
+for k, v in elbow_report.items():
+    print(f"     {k:>7} {v['elbow_interior_deg']:9.1f} {v['elbow_mesh_interior_deg']:8.1f} "
+          f"{v['elbow_bend_vs_rest_deg']:7.1f} {v['hand_travel_art_px']:10.1f}px "
+          f"{v['hand_travel_if_rigid_art_px']:7.1f}px {v['elbow_driver_deg']:6.1f}")
+
+cw, ch = crops_elbow[0][1].size
+ez = Image.new("RGB", (cw * len(crops_elbow) + 8 * (len(crops_elbow) + 1), ch + 42), (24, 24, 28))
+ed = ImageDraw.Draw(ez)
+for i, (deg, c) in enumerate(crops_elbow):
+    x = 8 + i * (cw + 8)
+    ez.paste(c, (x, 38))
+    v = elbow_report[f"{deg:+.0f}deg"]
+    ed.text((x + 3, 6), f"{deg:+.0f}deg   elbow {v['elbow_bend_vs_rest_deg']:+.1f} deg of bend",
+            fill=(255, 220, 80))
+    ed.text((x + 3, 22), f"hand travels {v['hand_travel_art_px']:.1f}px  (rigid would be "
+                         f"{v['hand_travel_if_rigid_art_px']:.1f}px)", fill=(150, 200, 255))
+ez.save(os.path.join(OUT, "07-elbow-closeup.png"))
+
+# ── the joint review: the places the gate names, at 2x, against the drawing ──
+# Engineering QA says the mesh does not fold. This sheet is for the EYE: the
+# shoulder socket, the elbow, and the necklace under the arm, each shown in the
+# drawing and in every pose, so a seam cannot hide behind a number.
+_windows = [("shoulder + elbow", (284.0, 120.0), 96),
+            ("chest + necklace under the arm", (262.0, 196.0), 96)]
+_cols = [("the drawing", None)] + [(f"{d:+.0f}deg", d) for d in (0.0,) + KEYFORMS]
+_art = Image.open(os.path.join(DIR, "mascot-gold-buddha-base.webp")).convert("RGBA").resize((CW, CH), Image.LANCZOS)
+_artc = Image.new("RGBA", (CW, CH), (255, 0, 255, 255)); _artc.alpha_composite(_art)
+z, pad, lab = 2, 8, 26
+pw, ph = int(96 * 2 * z), int(96 * 2 * z)
+js = Image.new("RGB", (pad + len(_cols) * (pw + pad),
+                       lab + len(_windows) * (ph + lab + pad)), (24, 24, 28))
+jd = ImageDraw.Draw(js)
+for ci, (cname, cdeg) in enumerate(_cols):
+    x = pad + ci * (pw + pad)
+    jd.text((x + 3, 4), cname, fill=(255, 220, 80))
+    for ri, (wname, (ax, ay), half) in enumerate(_windows):
+        y = lab + ri * (ph + lab + pad)
+        jd.text((x + 3, y - 14), wname if ci == 0 else "", fill=(150, 220, 255))
+        if cdeg is None:
+            src = _artc
+        else:
+            src = Image.new("RGBA", (CW, CH), (0, 0, 0, 0)); src.alpha_composite(pose(cdeg))
+            over = Image.new("RGBA", (CW, CH), (255, 0, 255, 255)); over.alpha_composite(src); src = over
+        cx, cy = ax * K, ay * K
+        r = half * K
+        x0 = max(0, min(int(cx - r), CW - int(2 * r))); y0 = max(0, min(int(cy - r), CH - int(2 * r)))
+        c = src.convert("RGB").crop((x0, y0, x0 + int(2 * r), y0 + int(2 * r))).resize((pw, ph), Image.LANCZOS)
+        js.paste(c, (x, y))
+js.save(os.path.join(OUT, "07-joint-review.png"))
 
 sheet = Image.new("RGB", (row[0][1].width * len(row) + 10 * (len(row) + 1),
                           row[0][1].height + 30), (24, 24, 28))
@@ -362,13 +624,40 @@ json.dump({
     "pivot_art_px": PIVOT.tolist(),
     "bone_axis": AXIS.tolist(),
     "limb_length_art_px": LIMB_LEN,
+    # THE CHAIN, as data. shoulder -> elbow -> wrist, with the elbow's position
+    # measured from the drawing's own centreline and its rest angle recorded so a
+    # runtime never has to guess what "straight" meant in a rotated document.
+    "bones": [
+        {"name": "shoulder", "joint_art_px": PIVOT.tolist(), "length_art_px": 0.0,
+         "parent": None, "role": "the glenoid; the limb's whole turn happens here"},
+        {"name": "upperArm", "joint_art_px": PIVOT.tolist(),
+         "length_art_px": float(np.linalg.norm(ELBOW - PIVOT)), "parent": "shoulder",
+         "tip_art_px": ELBOW.tolist()},
+        {"name": "forearm", "joint_art_px": ELBOW.tolist(), "length_art_px": FOREARM_LEN,
+         "parent": "upperArm", "tip_art_px": FIST.tolist(),
+         "rest_interior_deg": round(ELBOW_REST_DEG, 1)},
+        {"name": "hand", "joint_art_px": FIST.tolist(), "length_art_px": 0.0,
+         "parent": "forearm"},
+    ],
+    "elbow_art_px": ELBOW.tolist(),
+    "elbow_rest_interior_deg": round(ELBOW_REST_DEG, 1),
+    "elbow_share_of_shoulder": ELBOW_SHARE,
     "arm_mesh": {"vertices": ARM_PTS.tolist(), "triangles": ARM_TRIS,
-                 "weights_arm": ARM_W.round(4).tolist()},
+                 "weights_arm": ARM_W.round(4).tolist(),
+                 "weights_forearm": ARM_F.round(4).tolist()},
     "torso_mesh": {"vertices": TORSO_PTS.tolist(), "triangles": TORSO_TRIS,
                    "weights_arm": TORSO_W.round(4).tolist()},
     "draw_order": ["plate", "shadow", "arm", "grapes"],
-    "keyforms": list(KEYFORMS),
+    "keyforms": [{"angle_deg": d, "elbow_deg": round(d * ELBOW_SHARE, 2),
+                  "correction": None, "placeholder": True} for d in KEYFORMS],
     "coverage": report,
+    "elbow": elbow_report,
+    "exposed_cut_edge": edge_report,
+    "rest_vs_artwork": rest_report,
+    "rest_vs_artwork_on_figure": _rf,
+    "contact_shadow": {"asset": "shadow.webp", "painted": False,
+                       "note": "derived from the limb's silhouette; a painter's "
+                               "version is the first corrective keyform"},
 }, open(os.path.join(RIG, "buddha-rig.json"), "w"), indent=1)
 
 print("\nwrote rig/buddha-rig.json and the keyform sheet")

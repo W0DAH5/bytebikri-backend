@@ -38,6 +38,12 @@ AXIS = np.array(rig["bone_axis"])
 PTS = np.asarray(rig["arm_mesh"]["vertices"], np.float32)
 TRIS = rig["arm_mesh"]["triangles"]
 W = np.asarray(rig["arm_mesh"]["weights_arm"], np.float32)
+# The QA measures the rig that SHIPS, so it takes the second bone from the rig
+# data too. Measuring a single-bone version of a two-bone rig would be a report
+# about a rig nobody is going to use.
+WF = np.asarray(rig["arm_mesh"]["weights_forearm"], np.float32)
+ELBOW = np.array(rig.get("elbow_art_px", rig["bones"][2]["joint_art_px"]))
+ELBOW_SHARE = rig.get("elbow_share_of_shoulder", 0.0)
 L = rig["limb_length_art_px"]
 
 print("engineering: the deformation, measured\n")
@@ -48,31 +54,143 @@ arm_lum = arm_img                    # luminance field of the limb at rest
 
 
 def rot(deg):
+    """Rotation about the shoulder."""
     a = np.radians(deg)
     c, s = np.cos(a), np.sin(a)
     R = np.array([[c, -s], [s, c]])
     return lambda p: (p - PIVOT) @ R.T + PIVOT
 
 
+def rot_about(deg, centre):
+    """Rotation about an arbitrary joint. The elbow's turn has to be about the
+    ELBOW — composing it as a rotation about the shoulder instead is a different
+    (and wrong) transform, and it was in this file for one run. Caught by
+    comparing this file's skin() against rig-buddha.py's."""
+    a = np.radians(deg)
+    c, s = np.cos(a), np.sin(a)
+    R = np.array([[c, -s], [s, c]])
+    return lambda p: (p - centre[None, :]) @ R.T + centre[None, :]
+
+
 def skin(deg):
-    R = rot(deg)
-    return (1 - W)[:, None] * PTS + W[:, None] * R(PTS)
+    """The same two-bone chain rig-buddha.py poses: the shoulder turns, and the
+    forearm turns about the elbow that the shoulder carried with it."""
+    R1 = rot(deg)
+    e1 = R1(ELBOW[None, :])[0]
+    R2 = rot_about(deg * ELBOW_SHARE, e1)
+    upper = R1(PTS)
+    fore = R2(upper)
+    limb = (1 - WF)[:, None] * upper + WF[:, None] * fore
+    return (1 - W)[:, None] * PTS + W[:, None] * limb
 
 
-def limb_width(pts, w):
-    """Width across the limb, at each radius: the distance between the extreme
-    vertices at that radius, in the direction perpendicular to the bone."""
+CHAIN = [PIVOT, ELBOW, np.asarray(rig["bones"][2]["tip_art_px"], np.float32)]
+
+
+def station_of(p):
+    """How far along the chain a vertex sits, in art px of arc length.
+
+    Bins by RADIUS ABOUT THE PIVOT were the first pass's metric, and they are
+    wrong the moment there are two bones: the forearm's vertices move out of the
+    bin they started in, so a bin compares one part of the limb against another.
+    Arc length along the chain does not have that problem — a station is the same
+    piece of arm in every pose, which is what "does it keep its volume" has to
+    mean.
+    """
+    best, bs, acc = 1e9, 0.0, 0.0
+    for i in range(len(CHAIN) - 1):
+        a, b = CHAIN[i], CHAIN[i + 1]
+        ab = b - a
+        t = float(np.clip((p - a) @ ab / (ab @ ab), 0, 1))
+        d = np.linalg.norm(p - (a + t * ab))
+        if d < best:
+            best, bs = d, acc + t * float(np.linalg.norm(ab))
+        acc += float(np.linalg.norm(ab))
+    return bs
+
+
+def bone_point(s):
+    """Where arc length s sits on the rest chain."""
+    acc = 0.0
+    for i in range(len(CHAIN) - 1):
+        seg = float(np.linalg.norm(CHAIN[i + 1] - CHAIN[i]))
+        if s <= acc + seg or i == len(CHAIN) - 2:
+            t = float(np.clip((s - acc) / seg, 0, 1))
+            return CHAIN[i] + t * (CHAIN[i + 1] - CHAIN[i])
+        acc += seg
+    return CHAIN[-1]
+
+
+def posed_chain(deg):
+    """The chain's own three joints after the same skinning the limb gets."""
+    R1 = rot(deg)
+    e1 = R1(ELBOW[None, :])[0]
+    R2 = rot_about(deg * ELBOW_SHARE, e1)
+    f = R2(R1(np.asarray([CHAIN[2]])))[0]
+    return [PIVOT, e1, f]
+
+
+def _stations(pts):
     import collections
-    perp = np.array([AXIS[1], -AXIS[0]])
-    r = np.linalg.norm(pts - PIVOT, axis=1)
+    st = np.array([station_of(p) for p in pts])
     bins = collections.defaultdict(list)
-    for i, rad in enumerate(r):
-        bins[round(rad / 20.0)].append(float((pts[i] - PIVOT) @ perp))
-    return {k: max(v) - min(v) for k, v in bins.items() if len(v) > 3}
+    for i, s in enumerate(st):
+        bins[int(s // 12)].append(i)
+    return bins
+
+
+def limb_width(pts):
+    """Perpendicular extent of the limb, per station along the rest chain."""
+    bins = _stations(PTS)
+    out = {}
+    for k, idx in bins.items():
+        if len(idx) < 6:
+            continue
+        a, b = bone_point(k * 12 + 6), bone_point(k * 12 + 18)
+        d = b - a
+        n = np.linalg.norm(d)
+        if n < 1e-6:
+            continue
+        perp = np.array([d[1], -d[0]]) / n
+        v = (pts[idx] - a) @ perp
+        out[k] = float(v.max() - v.min())
+    return out
+
+
+def limb_width_posed(deg):
+    """The same stations, measured on the posed mesh about the posed chain —
+    the honest version of the metric, so the two numbers are comparable."""
+    bins = _stations(PTS)
+    pts = skin(deg)
+    ch = posed_chain(deg)
+
+    def point_at(s):
+        acc = 0.0
+        for i in range(len(CHAIN) - 1):
+            seg = float(np.linalg.norm(CHAIN[i + 1] - CHAIN[i]))
+            if s <= acc + seg or i == len(CHAIN) - 2:
+                t = float(np.clip((s - acc) / seg, 0, 1))
+                return ch[i] + t * (ch[i + 1] - ch[i])
+            acc += seg
+        return ch[-1]
+
+    out = {}
+    for k, idx in bins.items():
+        if len(idx) < 6:
+            continue
+        a, b = point_at(k * 12 + 6), point_at(k * 12 + 18)
+        d = b - a
+        n = np.linalg.norm(d)
+        if n < 1e-6:
+            continue
+        perp = np.array([d[1], -d[0]]) / n
+        v = (pts[idx] - a) @ perp
+        out[k] = float(v.max() - v.min())
+    return out
 
 
 rest = skin(0.0)
-base_width = limb_width(rest, W)
+base_width = limb_width(PTS)
 
 
 def grad_energy(lum, pts, tris):
@@ -93,7 +211,7 @@ def grad_energy(lum, pts, tris):
 
 for deg in (0.0, -7.0, -15.0, 6.0):
     dst = skin(deg)
-    w2 = limb_width(dst, W)
+    w2 = limb_width_posed(deg)
     ratio = [w2[k] / base_width[k] for k in sorted(base_width) if k in w2 and base_width[k] > 4]
     area = []
     for a, b, c in TRIS:
@@ -105,8 +223,15 @@ for deg in (0.0, -7.0, -15.0, 6.0):
             area.append(n2 / o)
     area = np.asarray(area)
     ge = grad_energy(arm_lum, dst, TRIS)
+    worst = min(((w2[k] / base_width[k], k) for k in sorted(base_width)
+                 if k in w2 and base_width[k] > 4), default=(float("nan"), -1))
+    at = f" (worst station {worst[1] * 12}px along the arm)" if deg else ""
     print(f"{deg:>+7.0f} {'-' if deg == 0 else f'{min(ratio):.2f} - {max(ratio):.2f}x':>22} "
-          f"{np.median(area):>10.2f} / {np.percentile(area, 99):>8.2f} {ge:>18.1f}")
+          f"{np.median(area):>10.2f} / {np.percentile(area, 99):>8.2f} {ge:>18.1f}{at}")
+    if deg:
+        print(f"{'':>7}   triangles over 1.25x area: {int((np.asarray(area) > 1.25).sum())} of {len(area)};  "
+              f"station widths: " + " ".join(f"{k * 12}px={w2[k]:.0f}" for k in sorted(w2)
+                                             if k in base_width and base_width[k] > 4))
 
 print("\nartwork: what a painter still has to fix")
 gen = regions["generated"]["exemplar_fill_pixels"]

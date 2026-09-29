@@ -8,6 +8,60 @@
   -0.7002086668924692
  ],
  "limb_length_art_px": 145.67086187704115,
+ "bones": [
+  {
+   "name": "shoulder",
+   "joint_art_px": [
+    268.0,
+    146.0
+   ],
+   "length_art_px": 0.0,
+   "parent": null,
+   "role": "the glenoid; the limb's whole turn happens here"
+  },
+  {
+   "name": "upperArm",
+   "joint_art_px": [
+    268.0,
+    146.0
+   ],
+   "length_art_px": 60.81290981362428,
+   "parent": "shoulder",
+   "tip_art_px": [
+    300.5,
+    94.6
+   ]
+  },
+  {
+   "name": "forearm",
+   "joint_art_px": [
+    300.5,
+    94.6
+   ],
+   "length_art_px": 87.5934358271212,
+   "parent": "upperArm",
+   "tip_art_px": [
+    372.0,
+    44.0
+   ],
+   "rest_interior_deg": 157.6
+  },
+  {
+   "name": "hand",
+   "joint_art_px": [
+    372.0,
+    44.0
+   ],
+   "length_art_px": 0.0,
+   "parent": "forearm"
+  }
+ ],
+ "elbow_art_px": [
+  300.5,
+  94.6
+ ],
+ "elbow_rest_interior_deg": 157.6,
+ "elbow_share_of_shoulder": -0.35,
  "arm_mesh": {
   "vertices": [
    [
@@ -2254,6 +2308,203 @@
    1.0,
    1.0,
    1.0
+  ],
+  "weights_forearm": [
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0201,
+   0.0598,
+   0.0978,
+   0.1215,
+   0.1248,
+   0.107,
+   0.0724,
+   0.0314,
+   0.0024,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   0.0553,
+   0.1788,
+   0.3156,
+   0.4339,
+   0.5183,
+   0.5639,
+   0.5699,
+   0.5365,
+   0.4638,
+   0.355,
+   0.2213,
+   0.0,
+   0.0,
+   0.0048,
+   0.1492,
+   0.389,
+   0.623,
+   0.8002,
+   0.9091,
+   0.9628,
+   0.9826,
+   0.9848,
+   0.9715,
+   0.9305,
+   0.8407,
+   0.6848,
+   0.0,
+   0.0002,
+   0.1889,
+   0.5394,
+   0.842,
+   0.9899,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   0.9999,
+   0.0,
+   0.1235,
+   0.5676,
+   0.9348,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   0.0054,
+   0.4327,
+   0.933,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   0.1345,
+   0.8014,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   0.2213,
+   0.9113,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0,
+   1.0
   ]
  },
  "torso_mesh": {
@@ -2941,9 +3192,24 @@
   "grapes"
  ],
  "keyforms": [
-  -15.0,
-  -7.0,
-  6.0
+  {
+   "angle_deg": -15.0,
+   "elbow_deg": 5.25,
+   "correction": null,
+   "placeholder": true
+  },
+  {
+   "angle_deg": -7.0,
+   "elbow_deg": 2.45,
+   "correction": null,
+   "placeholder": true
+  },
+  {
+   "angle_deg": 6.0,
+   "elbow_deg": -2.1,
+   "correction": null,
+   "placeholder": true
+  }
  ],
  "coverage": {
   "+0deg": {
@@ -2952,15 +3218,96 @@
   },
   "-15deg": {
    "uncovered_px_4x": 0,
-   "coverage_px_4x": 200129
+   "coverage_px_4x": 199946
   },
   "-7deg": {
    "uncovered_px_4x": 0,
-   "coverage_px_4x": 199896
+   "coverage_px_4x": 199883
   },
   "+6deg": {
    "uncovered_px_4x": 0,
-   "coverage_px_4x": 199794
+   "coverage_px_4x": 199802
   }
+ },
+ "elbow": {
+  "+0deg": {
+   "elbow_interior_deg": 157.59,
+   "elbow_mesh_interior_deg": 166.13,
+   "elbow_bend_vs_rest_deg": 0.0,
+   "hand_travel_art_px": 0.0,
+   "hand_travel_if_rigid_art_px": 0.0,
+   "elbow_driver_deg": -0.0
+  },
+  "-15deg": {
+   "elbow_interior_deg": 152.34,
+   "elbow_mesh_interior_deg": 159.27,
+   "elbow_bend_vs_rest_deg": -5.25,
+   "hand_travel_art_px": 30.51,
+   "hand_travel_if_rigid_art_px": 38.03,
+   "elbow_driver_deg": 5.25
+  },
+  "-7deg": {
+   "elbow_interior_deg": 155.14,
+   "elbow_mesh_interior_deg": 162.91,
+   "elbow_bend_vs_rest_deg": -2.45,
+   "hand_travel_art_px": 14.29,
+   "hand_travel_if_rigid_art_px": 17.79,
+   "elbow_driver_deg": 2.45
+  },
+  "+6deg": {
+   "elbow_interior_deg": 159.69,
+   "elbow_mesh_interior_deg": 168.93,
+   "elbow_bend_vs_rest_deg": 2.1,
+   "hand_travel_art_px": 12.29,
+   "hand_travel_if_rigid_art_px": 15.25,
+   "elbow_driver_deg": -2.1
+  }
+ },
+ "exposed_cut_edge": {
+  "+0deg": {
+   "px": 179,
+   "median_px": 1.7,
+   "p95_px": 2.02,
+   "over3_px": 1
+  },
+  "the drawing's own edge": {
+   "px": 0
+  },
+  "-15deg": {
+   "px": 268,
+   "median_px": 2.01,
+   "p95_px": 2.76,
+   "over3_px": 8
+  },
+  "-7deg": {
+   "px": 300,
+   "median_px": 2.04,
+   "p95_px": 2.78,
+   "over3_px": 10
+  },
+  "+6deg": {
+   "px": 324,
+   "median_px": 2.07,
+   "p95_px": 2.86,
+   "over3_px": 12
+  }
+ },
+ "rest_vs_artwork": {
+  "mean": 1.445,
+  "p99": 42.0,
+  "max": 255,
+  "over32": 3961,
+  "of": 315104
+ },
+ "rest_vs_artwork_on_figure": {
+  "mean": 2.041,
+  "p99": 57.0,
+  "over32": 3395,
+  "of": 198270
+ },
+ "contact_shadow": {
+  "asset": "shadow.webp",
+  "painted": false,
+  "note": "derived from the limb's silhouette; a painter's version is the first corrective keyform"
  }
 }
