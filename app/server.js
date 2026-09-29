@@ -286,6 +286,70 @@ APP.use('/live-demo', express.static(path.join(__dirname, 'seed-assets/live-demo
     if (filePath.endsWith('.m3u8')) res.type('application/vnd.apple.mpegurl');
   },
 }));
+/*
+ * The animation evidence, in the browser, in development only.
+ *
+ * The rig's diagnostics are PNGs written by `app/scripts/rig-buddha.py` into
+ * `docs/evidence/`, and the brief asks for them to be inspectable independently
+ * of the final animation. Without this they are files an operator has to find on
+ * disk; with it they are a page. Nothing here ships: production does not mount
+ * the directory at all, so the diagnostics are not on the public web and cannot
+ * be mistaken for the product.
+ */
+if (process.env.NODE_ENV !== 'production') {
+  const EVIDENCE = path.join(__dirname, '..', 'docs', 'evidence');
+  APP.use('/evidence/files', express.static(EVIDENCE, { maxAge: '0', etag: true }));
+  APP.get('/evidence', async (req, res) => {
+    let rounds = [];
+    try {
+      rounds = (await fs.readdir(EVIDENCE, { withFileTypes: true }))
+        .filter((e) => e.isDirectory() && /^round\d+/.test(e.name))
+        .map((e) => e.name)
+        .sort((a, b) => Number(b.match(/\d+/)[0]) - Number(a.match(/\d+/)[0]));
+    } catch { /* no evidence directory: the page says so rather than 500s */ }
+    // One round at a time, newest by default. There are fifty-six of them and
+    // every one holds dozens of sheets: showing them all at once is a page
+    // nobody can read, and the round being worked on is the one being looked at.
+    const asked = String(req.query.round || '');
+    const round = rounds.includes(asked) ? asked : rounds[0];
+    let files = [];
+    if (round) {
+      try {
+        files = (await fs.readdir(path.join(EVIDENCE, round)))
+          .filter((f) => /\.(png|md)$/.test(f))
+          .sort();
+      } catch { /* unreadable round: show the switcher and an empty body */ }
+    }
+    const nav = rounds.map((r) => `<a class="${r === round ? 'on' : ''}" href="/evidence?round=${r}">${r}</a>`).join(' ');
+    const rows = files.map((f) => {
+      const src = `/evidence/files/${round}/${encodeURIComponent(f)}`;
+      const isDoc = f.endsWith('.md');
+      return `<section><h3><a href="${src}">${f}</a></h3>${isDoc ? '' :
+        `<a href="${src}"><img src="${src}" alt="${f}" loading="lazy"></a>`}</section>`;
+    }).join('\n');
+    res.type('html').send(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Animation evidence${round ? ' · ' + round : ''}</title>
+<style>
+ body{margin:0;background:#141418;color:#e8e6e0;font:14px/1.5 ui-sans-serif,system-ui,sans-serif}
+ header{padding:18px 22px;border-bottom:1px solid #2c2c33;position:sticky;top:0;background:#141418;z-index:2}
+ h1{margin:0 0 8px;font-size:17px;letter-spacing:.01em}
+ p{margin:0 0 10px;color:#9a978f;max-width:78ch}
+ nav{display:flex;flex-wrap:wrap;gap:6px}
+ nav a{font:12px ui-monospace,monospace;color:#9a978f;border:1px solid #2c2c33;border-radius:4px;padding:2px 7px}
+ nav a.on{color:#141418;background:#d9b96a;border-color:#d9b96a}
+ section{padding:16px 22px;border-bottom:1px solid #22222a}
+ h3{margin:0 0 10px;font-size:13px;font-weight:600;color:#d9b96a;font-family:ui-monospace,monospace}
+ a{color:inherit;text-decoration:none} a:hover h3{text-decoration:underline}
+ img{max-width:100%;height:auto;display:block;border:1px solid #2c2c33;background:#0c0c0f}
+</style>
+<header><h1>The animation evidence</h1>
+<p>Written by the rig scripts and served here in development only — the production
+build does not mount this directory. Sheets open full size when clicked.</p>
+<nav>${nav}</nav></header>
+${rows || '<section><p>Nothing in this round.</p></section>'}`);
+  });
+}
+
 APP.set('trust proxy', 1);   // behind Cloudflare/Vercel, so req.ip is the client
 
 // Rate limits. Named per purpose so a flood of one does not exhaust another.
