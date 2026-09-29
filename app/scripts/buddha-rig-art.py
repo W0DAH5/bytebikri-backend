@@ -125,13 +125,150 @@ ARM_EXT = (ARM | (SOCKET & FIGURE))
 # diagnostic sheet exposed. Above y≈150 the arm-down state is chest, shoulder
 # and necklace: the body the raised arm is hiding, and nothing else.
 YY = np.arange(H)[:, None]
-REAL = (A_rest > 0.9) & (YY < 150)
-GENERATED = reach & ~REAL
+# AND INSIDE THE FIGURE. The plate exists to reconstruct HIDDEN PARTS OF THE
+# FIGURE, never to paint background. Without this clause the arm-down state's
+# own opaque backdrop came through wherever it was opaque — measured: 1,109 px
+# outside the drawing's silhouette at rest, 432 of them pale, some pure white —
+# which is a light sliver round the figure on a dark card, i.e. a halo. Outside
+# the silhouette the plate now keeps the drawing's own alpha, so the card's
+# backdrop shows through exactly as it always did.
+# AND ONLY UNDER THE ARM LAYER. The plate is drawn FIRST and the arm layer over
+# it, so at rest the plate is on screen exactly where the arm layer is
+# transparent — and in the drawing those pixels are visible artwork, not hidden
+# background. Taking the arm-down state's pixels there (the socket wedge, the
+# chest beside the joint) replaced pixels the drawing shows with pixels from a
+# different pose: measured, 1,105 px differing by more than 32 levels at rest.
+# The rule that removes the whole class of error:
+#
+#   OUTSIDE THE ARM LAYER THE PLATE IS THE MASTER, PIXEL FOR PIXEL.
+#
+# and inside it, the plate is free — that is the only place the drawing has
+# nothing to show. Asserted below, so it cannot silently stop being true.
+HIDDEN = ARM_EXT
+REAL = (A_rest > 0.9) & (YY < 150) & FIGURE & HIDDEN
+
+# AND ONLY WHERE THE LIMB HIDES THE DRAWING. `reach` is the limb's whole travel,
+# and using it as the fill region was wrong by measurement: at +6 deg the limb
+# sweeps over the HEAD, so the head's own pixels were classified as missing and
+# overwritten with exemplar patches — visible at rest, as the grey speckle the
+# rest-diff sheet had been showing over the head and the pile since the first
+# pass. The plate is drawn UNDER the limb, so everything the limb does not cover
+# is on screen: only ARM_EXT (the limb plus the socket it turns in) may be
+# reconstructed, and everywhere else the plate keeps the drawing's own pixels.
+# `reach` is still what the coverage and review sheets report, because that IS
+# the region the limb can uncover.
+# ONLY WHERE THE DRAWING HIDES THE TRUTH: inside the limb's own rest footprint.
+#
+# This is the rule the last two attempts were groping for, and it is simpler than
+# both. The plate is the backdrop BEHIND the limb. Everywhere the limb does not
+# cover, the drawing already shows what belongs there and those pixels are real —
+# so they are the plate. Only under the limb is there nothing to show, and that is
+# the only place a reconstruction belongs.
+#
+#   reach (swath)  what the limb can uncover — for coverage and the review sheets
+#   ARM_EXT        the limb plus the socket it turns in — the arm LAYER's alpha
+#   GENERATED      under the limb at rest — the plate's reconstruction, and nothing else
+GENERATED = HIDDEN & FIGURE & ~REAL
 print(f"arm-down state gives real pixels for {int((reach & REAL).sum()):6d}; "
       f"{int(GENERATED.sum()):6d} have no source and are reconstructed")
 
 plate_rgb = np.where(REAL[:, :, None], RGB_rest, RGB_base)
-plate_a = np.where(REAL, A_rest, np.where(FIGURE, 1.0, A_base))
+
+# THE INVARIANT, checked rather than intended.
+_outside = ~HIDDEN
+_diff = np.abs(plate_rgb - RGB_base).max(axis=2)
+print(f"   outside the arm layer, the plate is the master: "
+      f"{int((_diff[_outside] > 4).sum())} px differ by more than 4 levels")
+assert int((_diff[_outside] > 4).sum()) == 0, "the plate must not repaint what the drawing shows"
+# The plate's alpha is the DRAWING'S OWN, except where the arm-down state really
+# supplies pixels: this is the master's edge, reproduced, not a stamp.
+#
+# Forcing it to 1.0 inside FIGURE was the first attempt, and it is wrong by
+# measurement: FIGURE is `A_base > 0.05`, so the whole antialiased boundary ring
+# became fully opaque — 1,109 px outside the drawing's own silhouette at rest,
+# 432 of them pale, some pure white. On the card's dark backdrop that is a light
+# rim round the figure: a halo, made by a mask being asked to be a silhouette.
+plate_a = np.where(REAL, A_rest, A_base)
+
+# ── 3. the light, before the fill ───────────────────────────────────────────
+# Two related corrections, both standard clean-plate finishing steps and both
+# measurable. The exemplar fill copies the DRAWING'S OWN pixels, but it chooses
+# which pixels by texture alone, so it can drop a patch of the wrong brightness
+# into a hole; and any copied patch arrives with its own lighting, so its edge
+# can be a step. Neither is painted over here. The fill is GUIDED by the light
+# the drawing already has around the hole, and afterwards the seam is matched
+# with a HARMONIC correction — a Laplace membrane, not a blur — so the copied
+# detail survives and only the low frequency moves.
+def _shift(a, dy, dx):
+    """a displaced by (dy, dx), edges replicated."""
+    out = np.empty_like(a)
+    ys = slice(max(dy, 0), a.shape[0] + min(dy, 0))
+    yd = slice(max(-dy, 0), a.shape[0] + min(-dy, 0))
+    xs = slice(max(dx, 0), a.shape[1] + min(dx, 0))
+    xd = slice(max(-dx, 0), a.shape[1] + min(-dx, 0))
+    out[yd, xd] = a[ys, xs]
+    if dy > 0: out[:dy] = out[dy:dy + 1]
+    if dy < 0: out[dy:] = out[dy - 1:dy]
+    if dx > 0: out[:, :dx] = out[:, dx:dx + 1]
+    if dx < 0: out[:, dx:] = out[:, dx - 1:dx]
+    return out
+
+
+def _at(a, dy, dx):
+    """The value at the NEIGHBOUR (dy, dx) of each pixel."""
+    return _shift(a, -dy, -dx)
+
+
+def _fit(a, size):
+    return np.asarray(Image.fromarray(a.astype(np.float32), "F").resize(size, Image.BILINEAR),
+                      dtype=np.float32)
+
+
+def harmonic(d, free, factor=4, iters=900):
+    """Extend ring values `d` smoothly into `free`: the field that matches the
+    seam and does nothing else. Solved on a coarser grid because illumination IS
+    low frequency — a correction carrying detail would repaint what the fill
+    copied, which is the failure this is here to avoid."""
+    H, W = free.shape
+    h, w = max(H // factor, 8), max(W // factor, 8)
+    f = _fit(free.astype(np.float32), (w, h)) > 0.5
+    inner = f & ~(_shift(f, 1, 0) & _shift(f, -1, 0) & _shift(f, 0, 1) & _shift(f, 0, -1))
+    c = np.where(inner, _fit(d, (w, h)), 0.0)
+    upd = f & ~inner
+    for _ in range(iters):
+        nxt = (_shift(c, 1, 0) + _shift(c, -1, 0) + _shift(c, 0, 1) + _shift(c, 0, -1)) / 4.0
+        delta = np.where(upd, nxt - c, 0.0)
+        c = np.where(upd, nxt, c)
+        if np.abs(delta).max() < 0.02:
+            break
+    return _fit(c, (W, H))
+
+
+def harmonic_exact(d, free, ring, init, iters=240):
+    """The same membrane at full resolution, seeded by the coarse solve. The
+    coarse pass gets the shape of the lighting right; this one makes the seam
+    itself match, which is the whole point — a correction that only approximates
+    the boundary leaves the step it was supposed to remove."""
+    c = init.copy()
+    upd = free & ~ring
+    c[ring] = d[ring]
+    for _ in range(iters):
+        nxt = (_shift(c, 1, 0) + _shift(c, -1, 0) + _shift(c, 0, 1) + _shift(c, 0, -1)) / 4.0
+        delta = np.where(upd, nxt - c, 0.0)
+        c = np.where(upd, nxt, c)
+        if np.abs(delta).max() < 0.05:
+            break
+    return c
+
+
+def lum(rgb):
+    return rgb @ np.array([0.2126, 0.7152, 0.0722], np.float32)
+
+
+# The light the drawing already has around the hole, extended into it: this is
+# what the fill's patch choice is scored against.
+L0 = lum(plate_rgb)
+LIGHT_HINT = harmonic(L0, GENERATED)
 
 # ── 3. exemplar fill: copy the drawing's own gold into the gaps ─────────────
 # Criminisi-style exemplar inpainting, simplified for one image: fill from the
@@ -139,7 +276,8 @@ plate_a = np.where(REAL, A_rest, np.where(FIGURE, 1.0, A_base))
 # patch found in the known picture. The texture, folds and highlights are the
 # drawing's own — nothing is synthesised — but which patch goes where is the
 # algorithm's choice, and every pixel it writes is recorded.
-def exemplar_fill(rgb, known, target, patch=7, search=64, stride=3):
+def exemplar_fill(rgb, known, target, patch=7, search=64, stride=3,
+                  guide=None, guide_weight=9.0):
     h, w = known.shape
     out = rgb.copy()
     filled = known.copy()
@@ -189,6 +327,12 @@ def exemplar_fill(rgb, known, target, patch=7, search=64, stride=3):
             cand = out[yy, xx]                               # (N, P, 3)
             ref = out[np.clip(y + py, 0, h - 1), np.clip(x + px, 0, w - 1)]  # (P, 3)
             ssd = ((cand - ref[None]) ** 2).sum(axis=(1, 2))
+            if guide is not None:
+                # A patch that is the right texture but the wrong brightness is
+                # the wrong patch. The weight is deliberately small: texture
+                # still chooses, the light only breaks ties and steers.
+                cmean = cand.mean(axis=2).mean(axis=1)          # (N,)
+                ssd = ssd + guide_weight * (cmean - guide[y, x]) ** 2
             ssd[~ok.all(axis=1)] = 1e18
             ssd[~good] = 1e18
             i = int(np.argmin(ssd))
@@ -209,9 +353,74 @@ NO_SOURCE = ARM_EXT
 if GENERATED.any() and "--skip-inpaint" not in sys.argv:
     print("   reconstructing (exemplar fill) …")
     _usable = ~GENERATED & FIGURE & ~NO_SOURCE & (YY < 150)
-    plate_rgb, filled_mask = exemplar_fill(plate_rgb, _usable, GENERATED)
+    plate_rgb, filled_mask = exemplar_fill(
+        plate_rgb, _usable, GENERATED,
+        guide=None if "--no-guide" in sys.argv else LIGHT_HINT)
 else:
     filled_mask = np.zeros_like(GENERATED)
+
+# ── 3c. the seam: match it harmonically, and measure it before and after ────
+FREE = filled_mask.copy()
+RING = FREE & ~(_shift(FREE, 1, 0) & _shift(FREE, -1, 0) & _shift(FREE, 0, 1) & _shift(FREE, 0, -1))
+NBR = ((1, 0), (-1, 0), (0, 1), (0, -1))
+KNOWN = ~FREE & FIGURE
+
+
+def seam_step(lu):
+    """Mean |this pixel - its known neighbours| along the seam, in luminance
+    levels. A lighting discontinuity is exactly this number being large."""
+    total = np.zeros_like(lu)
+    n = np.zeros_like(lu)
+    for dy, dx in NBR:
+        k = _at(KNOWN.astype(np.float32), dy, dx) > 0.5
+        total = total + np.where(k, _at(lu, dy, dx), 0.0)
+        n = n + k
+    ok = RING & (n > 0)
+    if not ok.any():
+        return 0.0
+    return float(np.abs(lu[ok] - total[ok] / np.maximum(n[ok], 1)).mean())
+
+
+CONTROL = KNOWN & (np.asarray(Image.fromarray((FREE * 255).astype(np.uint8))
+                              .filter(ImageFilter.MaxFilter(7))).astype(np.float32) > 0)
+before = seam_step(lum(plate_rgb))
+# The control: the drawing's OWN local contrast, in the band just outside the
+# reconstruction. A seam is only a lighting discontinuity if it is a step the
+# drawing would not have had at that place.
+_total = np.zeros_like(L0); _n = np.zeros_like(L0)
+for dy, dx in NBR:
+    _total = _total + _at(L0, dy, dx); _n = _n + 1.0
+_ctrl = float(np.abs(L0[CONTROL] - (_total[CONTROL] / _n[CONTROL])).mean())
+d_ring = np.zeros_like(L0)
+total = np.zeros_like(L0)
+n = np.zeros_like(L0)
+Lfill = lum(plate_rgb)
+for dy, dx in NBR:
+    k = _at(KNOWN.astype(np.float32), dy, dx) > 0.5
+    total = total + np.where(k, _at(Lfill, dy, dx), 0.0)
+    n = n + k
+ok = RING & (n > 0)
+d_ring[ok] = total[ok] / np.maximum(n[ok], 1) - Lfill[ok]
+CORR = harmonic_exact(d_ring, FREE, RING, harmonic(d_ring, FREE))
+G_detail_before = float(np.abs(_at(Lfill, 0, 1) - Lfill)[FREE].mean())
+plate_rgb[FREE] = np.clip(plate_rgb[FREE] + CORR[FREE, None], 0, 255)
+after = seam_step(lum(plate_rgb))
+G_detail_after = float(np.abs(_at(lum(plate_rgb), 0, 1) - lum(plate_rgb))[FREE].mean())
+print(f"   the light: seam step {before:6.2f} -> {after:6.2f} luminance levels "
+      f"({100 * (1 - after / max(before, 1e-6)):.0f}% of the step removed)")
+print(f"   for scale: the drawing's own local contrast just outside the reconstruction "
+      f"is {_ctrl:5.2f} luminance levels")
+_big = (np.abs(CORR) > 30) & FREE
+print(f"   the correction itself: mean |c| {float(np.abs(CORR[FREE]).mean()):5.2f}, "
+      f"max {float(np.abs(CORR[FREE]).max()):5.2f} levels, "
+      f"{int(_big.sum())} px over 30 — a repaint would show up here")
+if _big.any():
+    _ys, _xs = np.nonzero(_big)
+    _i = int(np.argmax(np.abs(CORR[_big])))
+    print(f"     worst at x={_xs[_i]} y={_ys[_i]} ({CORR[_ys[_i], _xs[_i]]:+.0f} levels); "
+          f"{int(_big.sum())} px in {len(np.unique(_xs // 32) )} column-bands")
+print(f"   the detail the fill copied: mean |dL/dx| inside the reconstruction "
+      f"{G_detail_before:5.2f} -> {G_detail_after:5.2f} (a blur would flatten this)")
 
 # ── 4. the plate, as a layer ────────────────────────────────────────────────
 plate = Image.merge("RGBA", (*[Image.fromarray(plate_rgb[:, :, c].clip(0, 255).astype(np.uint8))
@@ -269,6 +478,15 @@ REVIEW = {
     "back of the elbow":      (296, 58, 384, 134),
     "gold / pile continuity": (146, 148, 420, 214),
 }
+# The correction, drawn: it should be a smooth field matching the seam, not a
+# blotch. Saved as evidence beside the review map.
+_seamvis = np.asarray(plate.copy()).copy()
+_c = np.clip(50 + CORR * 3, 0, 255).astype(np.uint8)
+_seamvis[..., :3][FREE] = np.stack([_c[FREE], np.full(int(FREE.sum()), 200, np.uint8),
+                                    np.full(int(FREE.sum()), 255 - _c[FREE], np.uint8)], axis=1)
+Image.fromarray(_seamvis).save(os.path.join(OUT, "05-seam-correction.png"))
+
+# ── 9b. the correction, drawn ───────────────────────────────────────────────
 vis = np.asarray(plate.copy()).copy()
 _known = REAL & reach
 vis[..., :3][_known] = (0.45 * vis[..., :3][_known] + 0.55 * np.array([40, 220, 90])).astype(np.uint8)
@@ -294,6 +512,23 @@ json.dump({
     "generated": {"exemplar_fill_pixels": int(filled_mask.sum()),
                   "contact_shadow": "derived from the limb's silhouette, not painted"},
     "regions": report,
+    # What was done about the LIGHT, and what it measured. Criterion 6 of the
+    # brief is "no lighting discontinuity", and these are the numbers behind the
+    # claim: the fill is steered by the drawing's own light field, and the seam
+    # is matched with a harmonic membrane, not a blur.
+    "light": {
+        "seam_step_before": round(before, 2),
+        "seam_step_after": round(after, 2),
+        "seam_step_drawing_control": round(_ctrl, 2),
+        "units": "luminance levels (0-255), mean |pixel - known neighbours| along the seam",
+        "correction_levels": {"mean": round(float(np.abs(CORR[FREE]).mean()), 2),
+                              "max": round(float(np.abs(CORR[FREE]).max()), 2),
+                              "over30_px": int(((np.abs(CORR) > 30) & FREE).sum())},
+        "detail_kept": {"mean_abs_dLdx_before": round(G_detail_before, 2),
+                        "mean_abs_dLdx_after": round(G_detail_after, 2),
+                        "note": "a blur would flatten this; the membrane moved only low frequency"},
+        "invariant": "outside the arm layer the plate is the master, pixel for pixel",
+    },
 }, open(os.path.join(RIG, "regions.json"), "w"), indent=2)
 
 print(f"   reconstructed pixels needing a painter: {int(filled_mask.sum())}")

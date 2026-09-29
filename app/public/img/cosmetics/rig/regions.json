@@ -2,7 +2,7 @@
   "reference": "mascot-gold-buddha-base.webp (the arm-raised drawing; unchanged)",
   "second_source": "mascot-gold-buddha-rest.webp (arm-down; same character, same light)",
   "generated": {
-    "exemplar_fill_pixels": 13739,
+    "exemplar_fill_pixels": 10992,
     "contact_shadow": "derived from the limb's silhouette, not painted"
   },
   "regions": {
@@ -13,8 +13,8 @@
         312,
         196
       ],
-      "from_arm_down_state": 432,
-      "reconstructed_generated": 2035,
+      "from_arm_down_state": 366,
+      "reconstructed_generated": 1871,
       "needs": "painting"
     },
     "shoulder socket": {
@@ -24,8 +24,8 @@
         300,
         178
       ],
-      "from_arm_down_state": 273,
-      "reconstructed_generated": 1546,
+      "from_arm_down_state": 207,
+      "reconstructed_generated": 1392,
       "needs": "painting"
     },
     "robe / drape continuation": {
@@ -35,9 +35,9 @@
         344,
         214
       ],
-      "from_arm_down_state": 31,
-      "reconstructed_generated": 5,
-      "needs": "painting"
+      "from_arm_down_state": 0,
+      "reconstructed_generated": 0,
+      "needs": "review only"
     },
     "necklace continuation": {
       "box": [
@@ -46,8 +46,8 @@
         452,
         156
       ],
-      "from_arm_down_state": 4968,
-      "reconstructed_generated": 8590,
+      "from_arm_down_state": 2914,
+      "reconstructed_generated": 7753,
       "needs": "painting"
     },
     "back of the elbow": {
@@ -57,8 +57,8 @@
         384,
         134
       ],
-      "from_arm_down_state": 1090,
-      "reconstructed_generated": 5559,
+      "from_arm_down_state": 795,
+      "reconstructed_generated": 5522,
       "needs": "painting"
     },
     "gold / pile continuity": {
@@ -68,9 +68,26 @@
         420,
         214
       ],
-      "from_arm_down_state": 164,
-      "reconstructed_generated": 1420,
-      "needs": "painting"
+      "from_arm_down_state": 0,
+      "reconstructed_generated": 0,
+      "needs": "review only"
     }
+  },
+  "light": {
+    "seam_step_before": 22.73,
+    "seam_step_after": 0.45,
+    "seam_step_drawing_control": 8.05,
+    "units": "luminance levels (0-255), mean |pixel - known neighbours| along the seam",
+    "correction_levels": {
+      "mean": 7.87,
+      "max": 140.43,
+      "over30_px": 636
+    },
+    "detail_kept": {
+      "mean_abs_dLdx_before": 11.05,
+      "mean_abs_dLdx_after": 10.89,
+      "note": "a blur would flatten this; the membrane moved only low frequency"
+    },
+    "invariant": "outside the arm layer the plate is the master, pixel for pixel"
   }
 }

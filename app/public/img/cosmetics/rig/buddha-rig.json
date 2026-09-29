@@ -3214,19 +3214,19 @@
  "coverage": {
   "+0deg": {
    "uncovered_px_4x": 0,
-   "coverage_px_4x": 199622
+   "coverage_px_4x": 198556
   },
   "-15deg": {
    "uncovered_px_4x": 0,
-   "coverage_px_4x": 199946
+   "coverage_px_4x": 198922
   },
   "-7deg": {
    "uncovered_px_4x": 0,
-   "coverage_px_4x": 199883
+   "coverage_px_4x": 198854
   },
   "+6deg": {
    "uncovered_px_4x": 0,
-   "coverage_px_4x": 199802
+   "coverage_px_4x": 198768
   }
  },
  "elbow": {
@@ -3293,16 +3293,16 @@
   }
  },
  "rest_vs_artwork": {
-  "mean": 1.445,
-  "p99": 42.0,
-  "max": 255,
-  "over32": 3961,
+  "mean": 0.124,
+  "p99": 1.0,
+  "max": 232,
+  "over32": 203,
   "of": 315104
  },
  "rest_vs_artwork_on_figure": {
-  "mean": 2.041,
-  "p99": 57.0,
-  "over32": 3395,
+  "mean": 0.197,
+  "p99": 2.0,
+  "over32": 203,
   "of": 198270
  },
  "contact_shadow": {
