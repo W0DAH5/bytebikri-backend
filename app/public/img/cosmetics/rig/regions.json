@@ -11,31 +11,31 @@
   "never": "a render -> a new master -> a new extraction -> a new generation",
   "space": "master pixels, 1536x1024",
   "generated": {
-    "exemplar_fill_pixels": 33015,
+    "exemplar_fill_pixels": 28227,
     "source": "the master's own pixels only"
   },
   "light": {
-    "seam_step_before": 14.69,
-    "seam_step_after": 0.35,
-    "seam_step_master_control": 5.23,
+    "seam_step_before": 10.06,
+    "seam_step_after": 0.25,
+    "seam_step_master_control": 4.67,
     "correction_levels": {
-      "mean": 4.61,
-      "max": 162.39
+      "mean": 3.17,
+      "max": 127.6
     },
     "detail_kept": {
-      "mean_abs_dLdx_before": 9.18,
-      "mean_abs_dLdx_after": 9.18
+      "mean_abs_dLdx_before": 8.35,
+      "mean_abs_dLdx_after": 8.31
     }
   },
   "separation": {
-    "arm_px": 36850,
-    "grapes_px": 21269,
+    "arm_px": 37579,
+    "grapes_px": 21373,
     "overlap_px": 0,
     "hand_px_in_grapes": 0,
-    "cluster_px": 20599,
-    "stem_px": 670,
+    "cluster_px": 20705,
+    "stem_px": 668,
     "stem_rows": 104,
-    "group_px": 48009,
+    "group_px": 48246,
     "stem_width_px": [
       2,
       17
@@ -44,7 +44,7 @@
     "figure_mean_luminance": 121.9,
     "above_the_grip_all_stem": true,
     "fingers_over_the_fruit_top_px": 6,
-    "fruit_cast_shadow_on_the_chin_px": 425,
+    "fruit_cast_shadow_on_the_chin_px": 434,
     "finger_line_master_y": 118,
     "chin_x": 775,
     "grip": [
@@ -66,72 +66,58 @@
   "regions": {
     "the chin and neck behind the fruit": {
       "box": [
-        482,
-        11,
+        464,
+        16,
         835,
-        309
+        328
       ],
-      "reconstructed_generated": 31433,
+      "reconstructed_generated": 27686,
       "provenance": "RECONSTRUCTED from the master's own gold; no photo, no model, no other pose",
       "centroid": [
-        658,
-        160
+        649,
+        172
       ]
     },
     "the chin and neck behind the fruit (2)": {
       "box": [
-        715,
-        23,
-        751,
-        71
+        758,
+        178,
+        802,
+        206
       ],
-      "reconstructed_generated": 615,
+      "reconstructed_generated": 365,
       "provenance": "RECONSTRUCTED from the master's own gold; no photo, no model, no other pose",
       "centroid": [
-        733,
-        47
-      ]
-    },
-    "the chin and neck behind the fruit (3)": {
-      "box": [
-        766,
-        129,
-        783,
-        181
-      ],
-      "reconstructed_generated": 521,
-      "provenance": "RECONSTRUCTED from the master's own gold; no photo, no model, no other pose",
-      "centroid": [
-        774,
-        155
-      ]
-    },
-    "the chin and neck behind the fruit (4)": {
-      "box": [
-        760,
-        112,
-        769,
-        124
-      ],
-      "reconstructed_generated": 79,
-      "provenance": "RECONSTRUCTED from the master's own gold; no photo, no model, no other pose",
-      "centroid": [
-        764,
-        118
+        780,
+        192
       ]
     },
     "chest and shoulder socket behind the raised arm": {
       "box": [
-        491,
-        217,
-        497,
-        226
+        412,
+        344,
+        434,
+        357
       ],
-      "reconstructed_generated": 59,
+      "reconstructed_generated": 78,
       "provenance": "RECONSTRUCTED from the master's own gold; no photo, no model, no other pose",
       "centroid": [
-        494,
-        221
+        423,
+        350
+      ]
+    },
+    "chest and shoulder socket behind the raised arm (2)": {
+      "box": [
+        306,
+        398,
+        317,
+        409
+      ],
+      "reconstructed_generated": 51,
+      "provenance": "RECONSTRUCTED from the master's own gold; no photo, no model, no other pose",
+      "centroid": [
+        311,
+        403
       ]
     }
   },

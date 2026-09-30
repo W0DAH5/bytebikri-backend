@@ -95,8 +95,14 @@ FIGURE = MATTE > 0.0
 
 def up(mask_768):
     """A 768 mask in master space. Thresholded at 110/255 deliberately: 128
-    re-flips antialiased boundary pixels, and the boundary is the art."""
-    im = Image.fromarray((mask_768 * 255).astype(np.uint8)).resize((MW, MH), Image.LANCZOS)
+    re-flips antialiased boundary pixels, and the boundary is the art.
+
+    Resampled BILINEAR, not LANCZOS. At an exact 2x upscale Lanczos rings, and
+    the ring lands on a two-pixel period along the mask's edge: rotated, the
+    limb's silhouette comes out scalloped — beads along the arm, visible at 1x.
+    Bilinear is the exact interpolation between the drawn samples, so the edge
+    stays a smooth curve and its position does not move."""
+    im = Image.fromarray((mask_768 * 255).astype(np.uint8)).resize((MW, MH), Image.BILINEAR)
     return np.asarray(im).astype(np.float32) / 255.0 > 110.0 / 255.0
 
 
@@ -267,6 +273,26 @@ def _kept(mask, angles, pivot):
         keep &= _rotated(mask, a, pivot) & _rotated(mask, -a, pivot)
     return keep
 
+
+# ── THE FIGURE'S OWN RIM BELONGS TO THE LIMB ────────────────────────────────
+# The master's silhouette is antialiased and the limb mask is cut from the drawn
+# separation, so along the arm's outer contour the silhouette runs 1-2 px wider
+# than the mask. Those pixels are the arm's own edge. Left out of the limb they
+# sit in the plate, and when the arm moves they stay behind as a stale gold
+# sliver — beaded, because the silhouette's rim is not a straight line. Measured
+# on the revealed pose: a chain of gold specks floating in the sky along the
+# arm's former edge.
+#
+# So wherever the limb meets the page, the figure's rim joins the limb. The
+# layers copy the master's own pixels, so the resting pose cannot change; what
+# changes is that the arm now carries its own antialiased edge when it moves.
+_rim = MATTE.astype(bool) & _dil(~MATTE.astype(bool), 2) & _dil(_LIMB, 4)
+_snap_n = int((_rim & ~_LIMB).sum())
+ARM_M = ARM_M | (_rim & ~GRAPES_M)
+GRAPES_M = GRAPES_M | (_rim & ~ARM_M)
+_LIMB = ARM_M | GRAPES_M
+print(f"  the figure's own rim along the limb's edge: {_snap_n:,} px joined the limb "
+      f"(the arm keeps its antialiased silhouette)")
 
 # (a) WHICH HIDDEN PIXELS ARE EVER SEEN. The intended gesture is the CSS's own
 #     keyframes: the arm runs from 0 to -15 degrees (with a +6 on the way in) and
@@ -776,5 +802,7 @@ data = {
 with open(os.path.join(RIG, "regions.json"), "w") as fh:
     json.dump(data, fh, indent=2)
 
-print("wrote rig/{clean-plate,arm,grapes}.webp and rig/regions.json")
+Image.fromarray((filled_mask * 255).astype(np.uint8)).save(
+    os.path.join(RIG, "reconstructed-mask.png"))
+print("wrote rig/{clean-plate,arm,grapes}.webp, rig/reconstructed-mask.png and rig/regions.json")
 print(f"      review map → {os.path.join(OUT, '05-review-map.png')}")
