@@ -217,81 +217,71 @@ r_piv = np.hypot(xx - PIVOT[0], yy - PIVOT[1])
 SOCKET = GROUP & (r_piv < 90.0) & FIGURE
 ARM_M = (ARM_M | SOCKET) & ~GRAPES_M
 
-# ── 4. WHAT IS BEHIND THE GROUP ─────────────────────────────────────────────
-# When the limb swings it uncovers whatever was behind it, so the plate has to
-# know which of two things that is — and the artist's own armless plate says:
-# transparent behind means the page showed through there, opaque-and-different
-# means the body was behind.
+# ── 4. WHAT IS BEHIND THE LIMB — and it is not the artist's plate ───────────
+# The previous build answered "what is behind the arm?" from
+# `part-plate-armless.webp`. That file is not the artist's: `scene-parts.py`
+# writes it, and this repo's own note from before the reset already said why it
+# cannot answer the question —
 #
-# This matters most at the fruit, where the cluster hangs half over the
-# background and half over the chin it throws a shadow onto. Treating all of it
-# as "hidden body" would reconstruct gold into empty air; treating none of it
-# would leave the chin's painted shadow behind when the fruit swings away — a
-# stale smudge, which is the same class of defect as the old build's 698 px of
-# stale cluster. 5,567 px of that shadow sits over the body and has to move with
-# the fruit; 422 px of it sits over background.
-# The artist's plate answers in 768, so upscaled and thresholded its boundary is a
-# staircase with two-pixel steps and thin slivers crossing the limb — a torn edge
-# waiting to be uncovered. Measured on the boundary itself: median-3 plus a 2 px
-# opening takes the boundary from 1,613 px to 1,049 px for 937 px of area, and
-# 937 px at master resolution is a tenth of a display pixel in the scene.
-_raw = up(_plate768[..., 3] <= 0.5) & FIGURE & (ARM_M | GRAPES_M)
-_BG_SMOOTH = Image.fromarray((_raw * 255).astype(np.uint8)).filter(ImageFilter.MedianFilter(7))
-_BG_SMOOTH = np.asarray(_BG_SMOOTH) > 127
-for _ in range(2):
-    _BG_SMOOTH = np.asarray(Image.fromarray((_BG_SMOOTH * 255).astype(np.uint8))
-                            .filter(ImageFilter.MinFilter(3))) > 127
-for _ in range(2):
-    _BG_SMOOTH = np.asarray(Image.fromarray((_BG_SMOOTH * 255).astype(np.uint8))
-                            .filter(ImageFilter.MaxFilter(3))) > 127
-PLATE_EMPTY = _BG_SMOOTH & FIGURE & (ARM_M | GRAPES_M)
-
-# AND THE APRON — the defect that tore the shoulder.
-# The artist's plate has a second blind spot. It is transparent wherever the
-# LOWERED arm hung in the arm-down state, and that is exactly where the RAISED arm
-# is attached to the body. So "behind the limb = background" came out true across
-# the limb's entire root: the first swing lifted the root away from the robe and
-# left the page showing through the middle of the figure. That is the torn edge
-# the brief names first, and it is visible in
-# docs/evidence/round56/24-shoulder-junction.png.
+#     "The arm-down picture cannot answer this question: it is a different pose,
+#      not a photograph of what was behind the arm. Nothing can, which is why the
+#      answer is not to invent the missing drape."
 #
-# The apron fixes it by construction. Where the limb touches the body it is
-# ATTACHED to the body, so a narrow band inside the limb's own boundary is body —
-# grown from the body-adjacent boundary only, never from the boundary that faces
-# the background, which is why the sky crescent between the arm and the landscape
-# survives untouched. 10 px at master resolution is 1.1 display px in the scene
-# (the artwork is drawn at 172 CSS px), so it cannot misplace a silhouette.
+# Measured, it is worse than merely unhelpful: it is transparent wherever the
+# LOWERED arm hung, which is exactly where the RAISED arm attaches, so it called
+# the whole shoulder root "background" and the first swing tore the figure open.
+# A derived render cannot be the source of truth for hidden art, so it is gone
+# from this decision entirely. What follows is built from the master and nothing
+# else.
 _LIMB = ARM_M | GRAPES_M
-_BODY_VISIBLE = ~_LIMB & (MATTE > 0.5)
-_ring = np.zeros_like(_LIMB)
-_ring[1:, :] |= _BODY_VISIBLE[:-1, :]
-_ring[:-1, :] |= _BODY_VISIBLE[1:, :]
-_ring[:, 1:] |= _BODY_VISIBLE[:, :-1]
-_ring[:, :-1] |= _BODY_VISIBLE[:, 1:]
-_APRON_DEPTH = 10
-_d = np.full(_LIMB.shape, 1 << 20, np.int32)
-_q = deque()
-for _y, _x in zip(*np.where(_LIMB & _ring)):
-    _d[_y, _x] = 0
-    _q.append((_y, _x))
-_H, _W = _LIMB.shape
-while _q:
-    _cy, _cx = _q.popleft()
-    for _dy, _dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-        _ny, _nx = _cy + _dy, _cx + _dx
-        if 0 <= _ny < _H and 0 <= _nx < _W and _LIMB[_ny, _nx] and _d[_ny, _nx] > _d[_cy, _cx] + 1:
-            _d[_ny, _nx] = _d[_cy, _cx] + 1
-            _q.append((_ny, _nx))
-APRON = _LIMB & (_d <= _APRON_DEPTH)
-BG_BEHIND = PLATE_EMPTY & ~APRON
-GENERATED = _LIMB & FIGURE & ~BG_BEHIND
-print(f"  the background boundary, from the artist's 768 plate: {int(_raw.sum()):,} px raw -> "
-      f"{int(PLATE_EMPTY.sum()):,} px smoothed (boundary 1,613 -> 1,049 px; 937 px differ, "
-      f"a tenth of a display pixel)")
-print(f"  behind the group: {int(PLATE_EMPTY.sum()):6d} px of background per the artist's own "
-      f"plate, {int(APRON.sum()):6d} px of it sealed to the body it is attached to "
-      f"({int((APRON & PLATE_EMPTY).sum()):,} px changed), "
-      f"{int(GENERATED.sum()):6d} px of body (to be reconstructed)")
+
+
+def _dil(m, r=1):
+    im = Image.fromarray((m * 255).astype(np.uint8))
+    for _ in range(r):
+        im = im.filter(ImageFilter.MaxFilter(3))
+    return np.asarray(im) > 127
+
+
+def _ero(m, r=1):
+    im = Image.fromarray((m * 255).astype(np.uint8))
+    for _ in range(r):
+        im = im.filter(ImageFilter.MinFilter(3))
+    return np.asarray(im) > 127
+
+
+def _rotated(mask, deg, pivot):
+    """`mask` turned about `pivot` by `deg`, the way the browser turns it."""
+    im = Image.fromarray((mask * 255).astype(np.uint8))
+    out = im.rotate(deg, resample=Image.NEAREST, center=(float(pivot[0]), float(pivot[1])))
+    return np.asarray(out) > 127
+
+
+def _kept(mask, angles, pivot):
+    """The coverage a part keeps through the whole gesture: the intersection of
+    its own poses. Both signs of every angle are taken, so the rotation
+    direction cannot matter, and the result is therefore a superset of whichever
+    convention the renderer uses."""
+    keep = mask.copy()
+    for a in angles:
+        keep &= _rotated(mask, a, pivot) & _rotated(mask, -a, pivot)
+    return keep
+
+
+# (a) WHICH HIDDEN PIXELS ARE EVER SEEN. The intended gesture is the CSS's own
+#     keyframes: the arm runs from 0 to -15 degrees (with a +6 on the way in) and
+#     the fruit sways about 5 degrees on its stem, independently. A pixel needs
+#     art painted behind it only if one of those motions exposes it — that is the
+#     set below, and it is measured, not assumed. The margin covers the mesh,
+#     which bends rather than rotating rigidly.
+_ARM_PIVOT = np.asarray(PIVOT, np.float64)
+_GRAPE_PIVOT = np.array([740.0, 90.0])       # `.mascot-grapes`: 48.18% 8.79%
+_ARM_ANGLES = (3.0, 6.0, 7.0, 15.0)
+_GRAPE_ANGLES = (1.5, 4.0, 4.5, 5.0)
+_KEEP = _kept(ARM_M, _ARM_ANGLES, _ARM_PIVOT) | _kept(GRAPES_M, _GRAPE_ANGLES, _GRAPE_PIVOT)
+UNCOVERED = _dil(_LIMB & ~_KEEP, 6) & _LIMB
+print(f"  the limb covers {int(_LIMB.sum()):,} px at rest; the intended gesture (arm to 15 "
+      f"deg, fruit to 5 deg, both signs) exposes {int(UNCOVERED.sum()):,} px of it")
 
 # ── 4. the machinery (carried over from the previous build, unchanged) ──────
 def _shift(a, dy, dx):
@@ -329,12 +319,16 @@ def harmonic(d, free, factor=4, iters=900):
     inner = f & ~(_shift(f, 1, 0) & _shift(f, -1, 0) & _shift(f, 0, 1) & _shift(f, 0, -1))
     c = np.where(inner, _fit(d, (w, h)), 0.0)
     upd = f & ~inner
+    # `iters` is run in full, deliberately. A max-change test would stop this
+    # early and wrongly: relaxation carries information one cell per sweep, so
+    # while the field is still spreading the largest change per sweep is tiny —
+    # the interior has not been reached yet, it is not converged. Testing the
+    # change instead of the result stops the solve before it has travelled, and
+    # the membrane comes back as a thin film around the rim. Counted sweeps at
+    # this size are cheap; a wrong fixed point is not.
     for _ in range(iters):
         nxt = (_shift(c, 1, 0) + _shift(c, -1, 0) + _shift(c, 0, 1) + _shift(c, 0, -1)) / 4.0
-        delta = np.where(upd, nxt - c, 0.0)
         c = np.where(upd, nxt, c)
-        if np.abs(delta).max() < 0.02:
-            break
     return _fit(c, (W, H))
 
 
@@ -347,11 +341,42 @@ def harmonic_exact(d, free, ring, init, iters=240):
     c[ring] = d[ring]
     for _ in range(iters):
         nxt = (_shift(c, 1, 0) + _shift(c, -1, 0) + _shift(c, 0, 1) + _shift(c, 0, -1)) / 4.0
-        delta = np.where(upd, nxt - c, 0.0)
         c = np.where(upd, nxt, c)
-        if np.abs(delta).max() < 0.05:
-            break
     return c
+
+
+def membrane(d, unknown, levels=(32, 16, 8, 4, 2, 1), iters=(2000, 400, 250, 200, 120, 60)):
+    """`d`, known everywhere outside `unknown`, extended across it: the harmonic
+    field with the known pixels as its boundary — the smoothest surface that
+    matches the artwork's own edge.
+
+    By CASCADE, and that is the whole point of the function. Plain Jacobi carries
+    information one cell per sweep, so on a 1,500-px figure full convergence is
+    millions of sweeps. The earlier two-level version stopped at a fixed count
+    and the interior kept whatever it was seeded with: measured, the field read
+    0.85 only two pixels from an open sky edge that has to be 0, which classified
+    sky as body all along the arm's own outline. Solving the low frequencies on a
+    grid small enough to relax in full, then seeding each finer level with the
+    level above, converges where the flat version cannot.
+
+    Returns (field, residual) — the residual is the largest change the last sweep
+    made, so it can be checked rather than believed."""
+    H, W = unknown.shape
+    c = None
+    for lev, it in zip(levels, iters):
+        h, w = max(H // lev, 8), max(W // lev, 8)
+        u = _fit(unknown.astype(np.float32), (w, h)) > 0.5
+        data = _fit(d, (w, h))
+        c = data if c is None else _fit(c, (w, h))
+        c = np.where(u, c, data)
+        for _ in range(it):
+            nxt = (_shift(c, 1, 0) + _shift(c, -1, 0) + _shift(c, 0, 1) + _shift(c, 0, -1)) / 4.0
+            c = np.where(u, nxt, c)
+    # the last sweep again, for the residual
+    nxt = (_shift(c, 1, 0) + _shift(c, -1, 0) + _shift(c, 0, 1) + _shift(c, 0, -1)) / 4.0
+    u = unknown
+    res = float(np.abs((nxt - c)[u]).max()) if u.any() else 0.0
+    return c, res
 
 
 def lum(rgb):
@@ -434,6 +459,36 @@ def exemplar_fill(rgb, known, target, patch=7, search=64, stride=3,
     return out, written
 
 
+# ── 4b. THE HIDDEN SILHOUETTE, solved from the master's own contour ─────────
+# With the derived plate gone, the question "was there body or background behind
+# this pixel?" is answered from the one source the brief allows: the master's own
+# visible art. The master's silhouette is a contour; the hidden part of that
+# contour is what continues it. So the alpha is extended across the limb's
+# footprint as a MEMBRANE — Dirichlet data taken from the master's own visible
+# pixels around the limb's edge, solved inward. The 0.5 level of that field is
+# the smoothest contour that joins the master's own edges, which is the same
+# principle as the exemplar fill: continue what is there, invent nothing.
+# The Dirichlet data is the master's own alpha everywhere the limb does not
+# cover: inside the figure it is 1, in the sky and in the open gaps it is 0.
+_solved, _res = membrane(MATTE.astype(np.float32), _LIMB)
+_HID_FIG = _solved > 0.5
+_edge_check = _dil(~(MATTE > 0.5), 2) & _LIMB & _HID_FIG
+print(f"  the membrane: residual {_res:.4f} levels after the last sweep; "
+      f"{int(_edge_check.sum()):,} px of it within 2 px of open sky (a converged field is ~0 there)")
+# A gold-favouring margin: a pixel wrongly called body costs one pixel of
+# invented gold, a pixel wrongly called background is a hole in the figure, and
+# the two are not equally bad.
+FIGURE_HIDDEN = (_HID_FIG | _dil(_HID_FIG, 2)) & _LIMB
+SKY_HIDDEN = _LIMB & ~FIGURE_HIDDEN
+GENERATED = UNCOVERED & FIGURE_HIDDEN
+print(f"  the hidden silhouette, solved from the master's own contour: "
+      f"{int(FIGURE_HIDDEN.sum()):,} px of body, {int(SKY_HIDDEN.sum()):,} px of background "
+      f"behind the limb")
+print(f"  of the {int(UNCOVERED.sum()):,} px the gesture exposes: {int(GENERATED.sum()):,} px are "
+      f"body and will be painted from the master's own gold; "
+      f"{int((UNCOVERED & SKY_HIDDEN).sum()):,} px are background and stay transparent — the "
+      f"page belongs there, exactly as it does around the raised arm")
+
 # ── 5. the plate: the master itself, rebuilt only where the limb hid it ─────
 plate_rgb = rgb_m.copy()          # the plate starts AS the master, untouched
 filled_mask = np.zeros(GENERATED.shape, bool)
@@ -441,7 +496,10 @@ filled_mask = np.zeros(GENERATED.shape, bool)
 if GENERATED.any() and "--skip-inpaint" not in sys.argv:
     print("   reconstructing under the limb, from the master's own gold …")
     L0 = lum(plate_rgb)
-    LIGHT_HINT = harmonic(L0, GENERATED)
+    # The guide is the light around the hole, extended inward. `membrane` takes
+    # its boundary from the master's own visible pixels, so the hole's contents —
+    # at rest the limb's pixels — cannot leak into the solve.
+    LIGHT_HINT, _lres = membrane(L0, GENERATED)
     # The source pool excludes the limb itself: filling the hole with the limb's
     # own pixels leaves a ghost of the raised arm in the plate.
     # The source pool excludes the whole group: filling the hole with the limb's
@@ -508,8 +566,8 @@ else:
 # under the layers that cover it — the body behind an arm is solid, and a second
 # edge under an edge blends the outline twice. One edge per pixel: on the top
 # layer where there is one, on the plate where there is not.
-plate_a = np.where(BG_BEHIND, 0.0,
-                   np.where(ARM_M | GRAPES_M, 1.0, MATTE)).astype(np.float32)
+plate_a = np.where(SKY_HIDDEN, 0.0,
+                   np.where(_LIMB, 1.0, MATTE)).astype(np.float32)
 print(f"   the silhouette's own edge: the master is flat RGB, so the drawn 768 ramp is an "
       f"estimate; over the page the rim light measures "
       f"+14.1 levels as drawn against -7.9 for any soft edge, so the alpha ships opaque "
@@ -522,22 +580,19 @@ _diff = np.abs(plate_rgb - rgb_m).max(axis=2)
 claimed = int((_diff[~GENERATED] > 4).sum())
 print(f"   outside the limb, the plate is the master: {claimed} px differ by more than 4 levels")
 assert claimed == 0, "the plate must never repaint what the master shows"
-_COVER = ARM_M | GRAPES_M
+_COVER = _LIMB
 _da = float(np.abs(plate_a - MATTE)[~_COVER].max())
 print(f"   outside the layers, the plate's alpha is the master's: max difference {_da * 255:.1f}/255")
 assert _da < 1e-6, "the plate's alpha outside the layers must be the master's"
-_body_behind = _COVER & ~BG_BEHIND
-_hidden = plate_a[_body_behind]
-print(f"   under the layers the plate follows what is behind: opaque over the body "
-      f"({_hidden.size:,} px, min alpha {_hidden.min() * 255:.0f}/255), transparent over the "
-      f"background ({int(BG_BEHIND.sum()):,} px)")
-print(f"   the apron: {int(APRON.sum()):,} px grown from the body-adjacent boundary to a depth "
-      f"of {_APRON_DEPTH} px — the limb is attached to the body there, so the plate is body")
+_hidden = plate_a[FIGURE_HIDDEN]
+print(f"   under the layers the plate is opaque over the hidden body "
+      f"({int(FIGURE_HIDDEN.sum()):,} px, min alpha {_hidden.min() * 255:.0f}/255) and "
+      f"transparent over the hidden background ({int(SKY_HIDDEN.sum()):,} px)")
 assert float(_hidden.min()) >= 1.0 - 1e-6, "the plate must be opaque where the body is behind"
-assert float(plate_a[BG_BEHIND].max()) <= 1e-6, \
-    "the plate must be transparent where the artist's own plate shows background"
-assert float(plate_a[APRON].min()) >= 1.0 - 1e-6, \
-    "the apron seals the limb to the body: the plate must be opaque across it"
+assert float(plate_a[SKY_HIDDEN].max()) <= 1e-6, \
+    "the plate must be transparent where the master's own contour says background"
+_no_paint = int((GENERATED & ~UNCOVERED).sum())
+assert _no_paint == 0, "nothing may be painted outside the set the gesture exposes"
 
 # ── 8. the layers ───────────────────────────────────────────────────────────
 def layer(mask):

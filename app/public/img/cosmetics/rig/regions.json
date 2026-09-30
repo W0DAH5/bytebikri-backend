@@ -11,20 +11,20 @@
   "never": "a render -> a new master -> a new extraction -> a new generation",
   "space": "master pixels, 1536x1024",
   "generated": {
-    "exemplar_fill_pixels": 20287,
+    "exemplar_fill_pixels": 33015,
     "source": "the master's own pixels only"
   },
   "light": {
-    "seam_step_before": 15.34,
-    "seam_step_after": 0.48,
-    "seam_step_master_control": 4.99,
+    "seam_step_before": 14.69,
+    "seam_step_after": 0.35,
+    "seam_step_master_control": 5.23,
     "correction_levels": {
-      "mean": 5.81,
-      "max": 173.77
+      "mean": 4.61,
+      "max": 162.39
     },
     "detail_kept": {
-      "mean_abs_dLdx_before": 10.3,
-      "mean_abs_dLdx_after": 10.23
+      "mean_abs_dLdx_before": 9.18,
+      "mean_abs_dLdx_after": 9.18
     }
   },
   "separation": {
@@ -71,11 +71,67 @@
         835,
         309
       ],
-      "reconstructed_generated": 20092,
+      "reconstructed_generated": 31433,
       "provenance": "RECONSTRUCTED from the master's own gold; no photo, no model, no other pose",
       "centroid": [
         658,
         160
+      ]
+    },
+    "the chin and neck behind the fruit (2)": {
+      "box": [
+        715,
+        23,
+        751,
+        71
+      ],
+      "reconstructed_generated": 615,
+      "provenance": "RECONSTRUCTED from the master's own gold; no photo, no model, no other pose",
+      "centroid": [
+        733,
+        47
+      ]
+    },
+    "the chin and neck behind the fruit (3)": {
+      "box": [
+        766,
+        129,
+        783,
+        181
+      ],
+      "reconstructed_generated": 521,
+      "provenance": "RECONSTRUCTED from the master's own gold; no photo, no model, no other pose",
+      "centroid": [
+        774,
+        155
+      ]
+    },
+    "the chin and neck behind the fruit (4)": {
+      "box": [
+        760,
+        112,
+        769,
+        124
+      ],
+      "reconstructed_generated": 79,
+      "provenance": "RECONSTRUCTED from the master's own gold; no photo, no model, no other pose",
+      "centroid": [
+        764,
+        118
+      ]
+    },
+    "chest and shoulder socket behind the raised arm": {
+      "box": [
+        491,
+        217,
+        497,
+        226
+      ],
+      "reconstructed_generated": 59,
+      "provenance": "RECONSTRUCTED from the master's own gold; no photo, no model, no other pose",
+      "centroid": [
+        494,
+        221
       ]
     }
   },
