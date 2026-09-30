@@ -1,0 +1,72 @@
+{
+ "gesture": {
+  "arm_visits": [
+   -15.0,
+   -7.0,
+   -3.0,
+   0.0,
+   6.0
+  ],
+  "grape_visits": [
+   -4.5,
+   0.0,
+   4.0
+  ],
+  "mesh_margin_px": 6
+ },
+ "exposed_total": 21350,
+ "body": 3389,
+ "sky": 5517,
+ "undetermined": 12444,
+ "plate_opaque_on_exposed": 11053,
+ "regions": [
+  {
+   "structure": "shoulder / root",
+   "exposed": 2833,
+   "body": 8,
+   "sky": 896,
+   "undetermined": 1929,
+   "verdict": "UNDETERMINED \u2014 the master does not show what is behind: needs a PAINTED KEYFORM"
+  },
+  {
+   "structure": "chest (skin)",
+   "exposed": 956,
+   "body": 956,
+   "sky": 0,
+   "undetermined": 0,
+   "verdict": "sufficient: body continues (351 px of visible gold/drape surround it)"
+  },
+  {
+   "structure": "robe / drape",
+   "exposed": 2834,
+   "body": 8,
+   "sky": 900,
+   "undetermined": 1926,
+   "verdict": "UNDETERMINED \u2014 the master does not show what is behind: needs a PAINTED KEYFORM"
+  },
+  {
+   "structure": "necklace",
+   "exposed": 0,
+   "body": 0,
+   "sky": 0,
+   "undetermined": 0,
+   "verdict": "not exposed by this gesture"
+  },
+  {
+   "structure": "chin / neck",
+   "exposed": 1771,
+   "body": 1771,
+   "sky": 0,
+   "undetermined": 0,
+   "verdict": "sufficient: body continues (561 px of visible gold/drape surround it)"
+  },
+  {
+   "structure": "hand / grape openings",
+   "exposed": 5923,
+   "body": 63,
+   "sky": 3958,
+   "undetermined": 1902,
+   "verdict": "the silhouette's own openings \u2014 the page belongs"
+  }
+ ]
+}

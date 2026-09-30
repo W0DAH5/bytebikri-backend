@@ -1,0 +1,97 @@
+{
+ "exposed_total": 10130,
+ "body": 0,
+ "page": 10130,
+ "regions": [
+  {
+   "structure": "shoulder root",
+   "exposed_px": 1585,
+   "page_px": 1585,
+   "body_px": 0,
+   "contact_px": 373,
+   "contact_arcs": [
+    373
+   ],
+   "creases_entering": 16,
+   "verdict": "partial: continues from 1 side(s), 16 crease px"
+  },
+  {
+   "structure": "chest (skin)",
+   "exposed_px": 0,
+   "verdict": "nothing exposed"
+  },
+  {
+   "structure": "robe / drape",
+   "exposed_px": 1592,
+   "page_px": 1592,
+   "body_px": 0,
+   "contact_px": 383,
+   "contact_arcs": [
+    383
+   ],
+   "creases_entering": 2,
+   "verdict": "INSUFFICIENT \u2014 flag as painted keyform"
+  },
+  {
+   "structure": "necklace",
+   "exposed_px": 0,
+   "verdict": "nothing exposed"
+  },
+  {
+   "structure": "chin / neck",
+   "exposed_px": 0,
+   "verdict": "nothing exposed"
+  },
+  {
+   "structure": "gold folds / highlights",
+   "exposed_px": 2209,
+   "page_px": 2209,
+   "body_px": 0,
+   "contact_px": 642,
+   "contact_arcs": [
+    175,
+    101,
+    82,
+    52,
+    37,
+    34
+   ],
+   "creases_entering": 51,
+   "verdict": "sufficient: art continues from 17 sides, 51 crease px enter"
+  },
+  {
+   "structure": "backdrop gaps",
+   "exposed_px": 10130,
+   "page_px": 10130,
+   "body_px": 0,
+   "contact_px": 1393,
+   "contact_arcs": [
+    778,
+    484,
+    82,
+    32,
+    12,
+    5
+   ],
+   "creases_entering": 64,
+   "verdict": "the page belongs there \u2014 nothing to paint"
+  },
+  {
+   "structure": "hand / grape openings",
+   "exposed_px": 4614,
+   "page_px": 4614,
+   "body_px": 0,
+   "contact_px": 629,
+   "contact_arcs": [
+    161,
+    129,
+    111,
+    82,
+    58,
+    37
+   ],
+   "creases_entering": 16,
+   "verdict": "the page belongs there \u2014 nothing to paint"
+  }
+ ]
+}

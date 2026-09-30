@@ -1,0 +1,96 @@
+[
+ {
+  "rank": 1,
+  "px": 9512,
+  "bbox": [
+   663,
+   15,
+   832,
+   231
+  ],
+  "centroid": [
+   725,
+   137
+  ],
+  "surrounded_by": [
+   "dark/shadow",
+   "gold",
+   "sky"
+  ]
+ },
+ {
+  "rank": 2,
+  "px": 2239,
+  "bbox": [
+   482,
+   121,
+   543,
+   301
+  ],
+  "centroid": [
+   509,
+   214
+  ],
+  "surrounded_by": [
+   "dark/shadow",
+   "gold",
+   "sky"
+  ]
+ },
+ {
+  "rank": 3,
+  "px": 347,
+  "bbox": [
+   665,
+   76,
+   683,
+   94
+  ],
+  "centroid": [
+   673,
+   85
+  ],
+  "surrounded_by": [
+   "dark/shadow",
+   "gold"
+  ]
+ },
+ {
+  "rank": 4,
+  "px": 299,
+  "bbox": [
+   604,
+   43,
+   630,
+   75
+  ],
+  "centroid": [
+   620,
+   63
+  ],
+  "surrounded_by": [
+   "dark/shadow",
+   "gold",
+   "sky"
+  ]
+ },
+ {
+  "rank": 5,
+  "px": 42,
+  "bbox": [
+   823,
+   136,
+   830,
+   147
+  ],
+  "centroid": [
+   826,
+   141
+  ],
+  "surrounded_by": [
+   "dark/shadow",
+   "gold",
+   "sky"
+  ]
+ }
+]
