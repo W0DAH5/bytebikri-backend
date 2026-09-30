@@ -1,0 +1,80 @@
+{
+  "master": "public/img/cosmetics/mascot-gold-buddha-base.png",
+  "figure_px": 987980,
+  "composite_vs_master": {
+    "outside_layers_px_over_tol": 0,
+    "under_layers_px_over_tol": 0,
+    "tolerance_levels": 4,
+    "mean_levels": 0.0,
+    "max_levels": 0,
+    "partial_alpha_px": 0,
+    "partial_alpha_over_tol": 0
+  },
+  "detail": {
+    "hand": {
+      "box": [
+        650,
+        5,
+        800,
+        110
+      ],
+      "master": 21.237,
+      "rig": 21.237,
+      "verdict": "ok"
+    },
+    "grapes": {
+      "box": [
+        640,
+        70,
+        790,
+        210
+      ],
+      "master": 23.312,
+      "rig": 23.312,
+      "verdict": "ok"
+    },
+    "arm (forearm)": {
+      "box": [
+        470,
+        10,
+        680,
+        200
+      ],
+      "master": 8.378,
+      "rig": 8.378,
+      "verdict": "ok"
+    },
+    "shoulder": {
+      "box": [
+        460,
+        100,
+        610,
+        250
+      ],
+      "master": 6.267,
+      "rig": 6.267,
+      "verdict": "ok"
+    },
+    "face": {
+      "box": [
+        830,
+        60,
+        1030,
+        260
+      ],
+      "master": 15.794,
+      "rig": 15.794,
+      "verdict": "ok"
+    }
+  },
+  "detail_failures": [],
+  "stage_wash": {
+    "what": "a baked transparency checkerboard (254/241, ~43 px period), not a wash",
+    "pixels": 312038,
+    "levels_off_white_mean": 13.32,
+    "levels_off_white_max": 53,
+    "drawn_asset_alpha_there": 0.0,
+    "excluded_because": "the master is flat RGB \u2014 no alpha \u2014 over a baked transparency checkerboard; the artist's own RGBA asset marks exactly these pixels transparent, so it is the backdrop, not the character. Painting it back would draw a grey checkerboard behind the Buddha."
+  },
+  "sheet": "round56/14-gate-a-artwork.png"
+}
