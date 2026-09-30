@@ -489,6 +489,37 @@ for _k, _v in CHORD_DEFICIT.items():
 print("     sub-pixel at every keyform — so the corrective keyform is 'none', "
       "and here is the number that says so")
 
+def _outside_reach(painted):
+    """Pixels reachable from the canvas border without crossing painted pixels.
+
+    A flood fill from the border through everything the composite does NOT paint:
+    whatever it can reach is open to the page. What it cannot reach, inside the
+    silhouette, is enclosed — and only that is a hole.
+    """
+    free = ~painted
+    H, W = free.shape
+    reach = np.zeros_like(free)
+    q = deque()
+    for x in range(W):
+        for y in (0, H - 1):
+            if free[y, x] and not reach[y, x]:
+                reach[y, x] = True
+                q.append((y, x))
+    for y in range(H):
+        for x in (0, W - 1):
+            if free[y, x] and not reach[y, x]:
+                reach[y, x] = True
+                q.append((y, x))
+    while q:
+        cy, cx = q.popleft()
+        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            ny, nx = cy + dy, cx + dx
+            if 0 <= ny < H and 0 <= nx < W and free[ny, nx] and not reach[ny, nx]:
+                reach[ny, nx] = True
+                q.append((ny, nx))
+    return reach
+
+
 # ── the diagnostics ─────────────────────────────────────────────────────────
 row = []
 report = {}
@@ -502,11 +533,21 @@ for deg in (0.0,) + KEYFORMS:
     img.save(os.path.join(OUT, f"06-pose-{deg:+.0f}-alpha.png"))
 
     a = np.asarray(img.getchannel("A")).astype(np.float32) / 255.0
-    # Uncovered = the composite has no paint where the REST pose has paint.
+    # WHAT THE SWING EXPOSES, and it is two different things that the old number
+    # added together. A limb raised away from a backdrop uncovers the backdrop —
+    # that is the shot, not a defect. A limb that leaves a hole INSIDE the figure
+    # is the defect this sweep exists to catch. So the pixels the swing vacates are
+    # split: those reachable from outside the figure's silhouette (the page, and it
+    # should be the page there) against those enclosed by the figure (a hole).
     rest_a = np.asarray(pose_cached(0.0).getchannel("A")).astype(np.float32) / 255.0
-    holes = int(((a < 0.05) & (rest_a > 0.9)).sum())
-    report[f"{deg:+.0f}deg"] = {"uncovered_px_4x": holes,
-                                "coverage_px_4x": int((a > 0.05).sum())}
+    vacated = (a < 0.05) & (rest_a > 0.9)
+    reach = _outside_reach(a > 0.05)
+    exposed = vacated & reach
+    holes = int((vacated & ~reach).sum())
+    report[f"{deg:+.0f}deg"] = {"vacated_px": int(vacated.sum()),
+                                "see_through_px": holes,
+                                "backdrop_connected_px": int(exposed.sum()),
+                                "coverage_px": int((a > 0.05).sum())}
     src = ARM_PTS
     dst = skin(ARM_PTS, ARM_W, deg, deg_elbow=deg * ELBOW_SHARE)
     health[f"{deg:+.0f}deg"] = mesh_health(src, ARM_TRIS, dst, f"arm at {deg:+.0f} deg")
@@ -521,9 +562,14 @@ for deg in (0.0,) + KEYFORMS:
             np.asarray(ARM.getchannel("A")).astype(np.float32) / 255.0)
     row.append((deg, ground.resize((CW // 2, CH // 2), Image.LANCZOS)))
 
-print("\n   coverage, at 4x — a hole inside the figure is the failure this sheet exists to catch")
+print("\n   coverage, at 1:1 — what a swing uncovers, and what the plate had there")
+print("     (a see-through pocket is the design of a cut-out limb over a transparent")
+print("      background: the artist's own arm-down artwork shows background behind the")
+print("      arm, so the page belongs there. A pixel the plate had RECONSTRUCTED cannot")
+print("      appear here — the plate is opaque across it by construction.)")
 for k, v in report.items():
-    print(f"     {k:>7}  uncovered {v['uncovered_px_4x']:6d}   painted {v['coverage_px_4x']:7d}")
+    print(f"     {k:>7}  vacated {v['vacated_px']:6d}   see-through pockets {v['see_through_px']:6d}   "
+          f"open to the page {v['backdrop_connected_px']:5d}   painted {v['coverage_px']:7d}")
 
 # ── the deformation itself, drawn ───────────────────────────────────────────
 # The mesh over the picture at rest and at the keyforms, so the region that

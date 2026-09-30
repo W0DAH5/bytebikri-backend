@@ -11,20 +11,20 @@
   "never": "a render -> a new master -> a new extraction -> a new generation",
   "space": "master pixels, 1536x1024",
   "generated": {
-    "exemplar_fill_pixels": 10114,
+    "exemplar_fill_pixels": 20287,
     "source": "the master's own pixels only"
   },
   "light": {
-    "seam_step_before": 12.96,
-    "seam_step_after": 0.25,
-    "seam_step_master_control": 6.13,
+    "seam_step_before": 15.34,
+    "seam_step_after": 0.48,
+    "seam_step_master_control": 4.99,
     "correction_levels": {
-      "mean": 3.13,
-      "max": 109.61
+      "mean": 5.81,
+      "max": 173.77
     },
     "detail_kept": {
-      "mean_abs_dLdx_before": 8.74,
-      "mean_abs_dLdx_after": 8.74
+      "mean_abs_dLdx_before": 10.3,
+      "mean_abs_dLdx_after": 10.23
     }
   },
   "separation": {
@@ -66,16 +66,16 @@
   "regions": {
     "the chin and neck behind the fruit": {
       "box": [
-        686,
-        152,
+        482,
+        11,
         835,
-        287
+        309
       ],
-      "reconstructed_generated": 10111,
+      "reconstructed_generated": 20092,
       "provenance": "RECONSTRUCTED from the master's own gold; no photo, no model, no other pose",
       "centroid": [
-        760,
-        219
+        658,
+        160
       ]
     }
   },

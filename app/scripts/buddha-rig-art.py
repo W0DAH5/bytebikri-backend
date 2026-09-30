@@ -230,10 +230,68 @@ ARM_M = (ARM_M | SOCKET) & ~GRAPES_M
 # stale smudge, which is the same class of defect as the old build's 698 px of
 # stale cluster. 5,567 px of that shadow sits over the body and has to move with
 # the fruit; 422 px of it sits over background.
-BG_BEHIND = up(_plate768[..., 3] <= 0.5) & FIGURE & (ARM_M | GRAPES_M)
-GENERATED = (ARM_M | GRAPES_M) & FIGURE & ~BG_BEHIND
-print(f"  behind the group: {int(BG_BEHIND.sum()):6d} px of background (the plate will be "
-      f"transparent there) and {int(GENERATED.sum()):6d} px of body (it will be reconstructed)")
+# The artist's plate answers in 768, so upscaled and thresholded its boundary is a
+# staircase with two-pixel steps and thin slivers crossing the limb — a torn edge
+# waiting to be uncovered. Measured on the boundary itself: median-3 plus a 2 px
+# opening takes the boundary from 1,613 px to 1,049 px for 937 px of area, and
+# 937 px at master resolution is a tenth of a display pixel in the scene.
+_raw = up(_plate768[..., 3] <= 0.5) & FIGURE & (ARM_M | GRAPES_M)
+_BG_SMOOTH = Image.fromarray((_raw * 255).astype(np.uint8)).filter(ImageFilter.MedianFilter(7))
+_BG_SMOOTH = np.asarray(_BG_SMOOTH) > 127
+for _ in range(2):
+    _BG_SMOOTH = np.asarray(Image.fromarray((_BG_SMOOTH * 255).astype(np.uint8))
+                            .filter(ImageFilter.MinFilter(3))) > 127
+for _ in range(2):
+    _BG_SMOOTH = np.asarray(Image.fromarray((_BG_SMOOTH * 255).astype(np.uint8))
+                            .filter(ImageFilter.MaxFilter(3))) > 127
+PLATE_EMPTY = _BG_SMOOTH & FIGURE & (ARM_M | GRAPES_M)
+
+# AND THE APRON — the defect that tore the shoulder.
+# The artist's plate has a second blind spot. It is transparent wherever the
+# LOWERED arm hung in the arm-down state, and that is exactly where the RAISED arm
+# is attached to the body. So "behind the limb = background" came out true across
+# the limb's entire root: the first swing lifted the root away from the robe and
+# left the page showing through the middle of the figure. That is the torn edge
+# the brief names first, and it is visible in
+# docs/evidence/round56/24-shoulder-junction.png.
+#
+# The apron fixes it by construction. Where the limb touches the body it is
+# ATTACHED to the body, so a narrow band inside the limb's own boundary is body —
+# grown from the body-adjacent boundary only, never from the boundary that faces
+# the background, which is why the sky crescent between the arm and the landscape
+# survives untouched. 10 px at master resolution is 1.1 display px in the scene
+# (the artwork is drawn at 172 CSS px), so it cannot misplace a silhouette.
+_LIMB = ARM_M | GRAPES_M
+_BODY_VISIBLE = ~_LIMB & (MATTE > 0.5)
+_ring = np.zeros_like(_LIMB)
+_ring[1:, :] |= _BODY_VISIBLE[:-1, :]
+_ring[:-1, :] |= _BODY_VISIBLE[1:, :]
+_ring[:, 1:] |= _BODY_VISIBLE[:, :-1]
+_ring[:, :-1] |= _BODY_VISIBLE[:, 1:]
+_APRON_DEPTH = 10
+_d = np.full(_LIMB.shape, 1 << 20, np.int32)
+_q = deque()
+for _y, _x in zip(*np.where(_LIMB & _ring)):
+    _d[_y, _x] = 0
+    _q.append((_y, _x))
+_H, _W = _LIMB.shape
+while _q:
+    _cy, _cx = _q.popleft()
+    for _dy, _dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        _ny, _nx = _cy + _dy, _cx + _dx
+        if 0 <= _ny < _H and 0 <= _nx < _W and _LIMB[_ny, _nx] and _d[_ny, _nx] > _d[_cy, _cx] + 1:
+            _d[_ny, _nx] = _d[_cy, _cx] + 1
+            _q.append((_ny, _nx))
+APRON = _LIMB & (_d <= _APRON_DEPTH)
+BG_BEHIND = PLATE_EMPTY & ~APRON
+GENERATED = _LIMB & FIGURE & ~BG_BEHIND
+print(f"  the background boundary, from the artist's 768 plate: {int(_raw.sum()):,} px raw -> "
+      f"{int(PLATE_EMPTY.sum()):,} px smoothed (boundary 1,613 -> 1,049 px; 937 px differ, "
+      f"a tenth of a display pixel)")
+print(f"  behind the group: {int(PLATE_EMPTY.sum()):6d} px of background per the artist's own "
+      f"plate, {int(APRON.sum()):6d} px of it sealed to the body it is attached to "
+      f"({int((APRON & PLATE_EMPTY).sum()):,} px changed), "
+      f"{int(GENERATED.sum()):6d} px of body (to be reconstructed)")
 
 # ── 4. the machinery (carried over from the previous build, unchanged) ──────
 def _shift(a, dy, dx):
@@ -473,9 +531,13 @@ _hidden = plate_a[_body_behind]
 print(f"   under the layers the plate follows what is behind: opaque over the body "
       f"({_hidden.size:,} px, min alpha {_hidden.min() * 255:.0f}/255), transparent over the "
       f"background ({int(BG_BEHIND.sum()):,} px)")
+print(f"   the apron: {int(APRON.sum()):,} px grown from the body-adjacent boundary to a depth "
+      f"of {_APRON_DEPTH} px — the limb is attached to the body there, so the plate is body")
 assert float(_hidden.min()) >= 1.0 - 1e-6, "the plate must be opaque where the body is behind"
 assert float(plate_a[BG_BEHIND].max()) <= 1e-6, \
     "the plate must be transparent where the artist's own plate shows background"
+assert float(plate_a[APRON].min()) >= 1.0 - 1e-6, \
+    "the apron seals the limb to the body: the plate must be opaque across it"
 
 # ── 8. the layers ───────────────────────────────────────────────────────────
 def layer(mask):

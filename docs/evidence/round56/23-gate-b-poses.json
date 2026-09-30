@@ -8,19 +8,27 @@
   "coverage": {
     "+0deg": {
       "uncovered_px_4x": 0,
+      "exposed_backdrop_px_4x": 0,
+      "enclosed_hole_px_4x": 0,
       "coverage_px_4x": 987980
     },
     "-15deg": {
-      "uncovered_px_4x": 32490,
-      "coverage_px_4x": 955490
+      "uncovered_px_4x": 23554,
+      "exposed_backdrop_px_4x": 0,
+      "enclosed_hole_px_4x": 23554,
+      "coverage_px_4x": 964426
     },
     "-7deg": {
-      "uncovered_px_4x": 24411,
-      "coverage_px_4x": 963758
+      "uncovered_px_4x": 16279,
+      "exposed_backdrop_px_4x": 0,
+      "enclosed_hole_px_4x": 16279,
+      "coverage_px_4x": 971890
     },
     "+6deg": {
-      "uncovered_px_4x": 17851,
-      "coverage_px_4x": 970171
+      "uncovered_px_4x": 9764,
+      "exposed_backdrop_px_4x": 0,
+      "enclosed_hole_px_4x": 9764,
+      "coverage_px_4x": 978258
     }
   },
   "elbow": {
@@ -83,6 +91,6 @@
       "over3_px": 28
     }
   },
-  "reconstructed_pixels_owed": 10114,
+  "reconstructed_pixels_owed": 20287,
   "sheet": "23-gate-b-poses.png"
 }
