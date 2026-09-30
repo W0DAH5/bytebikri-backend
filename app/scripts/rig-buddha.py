@@ -38,18 +38,28 @@ RIG = os.path.join(DIR, "rig")
 OUT = os.path.normpath(os.path.join(HERE, "..", "..", "docs", "evidence", "round56"))
 os.makedirs(OUT, exist_ok=True)
 
+# LAYOUT space: the 768x512 scene the artwork's own states are drawn in, and the
+# space every geometry number below is expressed in. It stays 768 because those
+# numbers were measured there and re-expressing them is how mistakes get in.
+#
+# K = 2 puts the diagnostic canvas at 1536x1024 — MASTER RESOLUTION, pixel for
+# pixel, because the layers are 1536x1024 and the whole point of the rebuild is
+# that nothing resamples the artwork to author it. (It used to be 172/768*4 = 4x
+# the display size, which at master resolution is 8.9x and buys nothing.)
 ART = (768, 512)
-# The card draws the scene 172x114.67 CSS px; every geometry number below is in
-# ART pixels and is scaled by K into the diagnostic canvas, which is the same
-# layout at 4x, so the sheet is what a retina screen resolves.
-K = 172.0 / ART[0] * 4.0
+K = 2.0
 CW, CH = int(ART[0] * K), int(ART[1] * K)
+assert (CW, CH) == (1536, 1024), "the canvas is the master's resolution"
 
 PIVOT = np.array([268.0, 146.0])          # the glenoid: 34.90% 28.52% of the scene
 FIST = np.array([372.0, 44.0])            # the hand, for the bone axis
 AXIS = (FIST - PIVOT) / np.linalg.norm(FIST - PIVOT)
 LIMB_LEN = float(np.linalg.norm(FIST - PIVOT))
-STEM = np.array([370.0, 46.0])            # the grape cluster's stem pivot
+# The fruit's hinge is the TRACED grip (buddha-rig-art.py traced the stem from
+# the master's own dark ridge to (740, 30) in master px = (370, 15) here), not the
+# centre of the old stamped rectangle. The cluster swings about the point it
+# actually hangs from.
+STEM = np.array([370.0, 15.0])
 
 # ── THE ELBOW ───────────────────────────────────────────────────────────────
 # Measured from the drawing, not guessed: the limb's centreline is the centroid
@@ -93,10 +103,13 @@ def build_arm_mesh():
     angles. Only triangles whose centre is on the limb are kept, so the mesh is
     the limb's own shape rather than a box drawn round it.
     """
-    limb = np.asarray(Image.open(os.path.join(RIG, "arm.webp"))
-                      .convert("RGBA").getchannel("A")).astype(np.float32) / 255.0 > 0.35
-    limb = np.asarray(Image.fromarray((limb * 255).astype(np.uint8))
-                      .filter(ImageFilter.MinFilter(3))).astype(np.float32) > 128
+    limb_full = np.asarray(Image.open(os.path.join(RIG, "arm.webp"))
+                           .convert("RGBA").getchannel("A")).astype(np.float32) / 255.0 > 0.35
+    limb_full = np.asarray(Image.fromarray((limb_full * 255).astype(np.uint8))
+                           .filter(ImageFilter.MinFilter(3))).astype(np.float32) > 128
+    # The mask is at CANVAS resolution; this function's coordinates are LAYOUT
+    # space, so it is sampled at the same scale K everything else is.
+    limb = limb_full[::int(K), ::int(K)] if K >= 1 else limb_full
     # The extent comes from the LIMB, not from a guess. (A guess is how the
     # first polar mesh ended up wrapped round the belly: measured from +x, the
     # arm is at -44 degrees, not at 180.)
@@ -110,9 +123,12 @@ def build_arm_mesh():
     ang0, ang1 = np.percentile(ang[far], 0.5), np.percentile(ang[far], 99.5)
     rmax = np.percentile(rad, 99.0)
     print(f"   limb extent about the pivot: {ang0:.1f}..{ang1:.1f} deg, r <= {rmax:.0f} art px")
-    radii = [6, 12, 19, 27, 36, 46, 58, 72, 88, 106, 126, 148, 172]
+    # Radii in LAYOUT px, same shape of distribution as before — dense at the
+    # joint where the bend is, sparse out at the hand — but the list now reaches
+    # the limb's full length at this resolution.
+    radii = [6, 12, 19, 27, 36, 46, 58, 72, 88, 106, 126, 148, 172, 196, 220]
     radii = [r for r in radii if r <= rmax] + [rmax]
-    ncol = 15
+    ncol = 18
 
     pts, grid = [], []
     for ri, r in enumerate(radii):
@@ -135,7 +151,7 @@ def build_arm_mesh():
             for tri in ((a, c, b), (b, c, d)):
                 ctr = pts[list(tri)].mean(axis=0)
                 x, y = int(round(ctr[0])), int(round(ctr[1]))
-                if 0 <= x < ART[0] and 0 <= y < ART[1] and limb[y, x]:
+                if 0 <= x < ART[0] and 0 <= y < ART[1] and limb[y, x]:  # layout space
                     tris.append(tri)
     return pts, tris
 
@@ -286,15 +302,25 @@ def socket_bend(pts, w, deg):
 
 # ── mesh warp, at diagnostic resolution ─────────────────────────────────────
 def warp(img, src_pts, dst_pts, tris):
-    """Affine per triangle, at 4x. Not a shader — but the mathematics is
-    identical to PixiJS's Mesh with per-vertex positions, which is what the
-    runtime will do on the GPU."""
+    """Affine per triangle, at canvas resolution. Not a shader — but the
+    mathematics is identical to PixiJS's Mesh with per-vertex positions, which is
+    what the runtime will do on the GPU."""
     src = Image.fromarray(np.asarray(img)) if isinstance(img, np.ndarray) else img
     src = src.convert("RGBA")
     out = Image.new("RGBA", (CW, CH), (0, 0, 0, 0))
-    big = src.resize((CW, CH), Image.LANCZOS)
+    # The layers are authored at canvas resolution, so this is a no-op — and it is
+    # written as a guard rather than a resize because resampling the artwork to
+    # author it is exactly what the rebuild exists to avoid.
+    if src.size != (CW, CH):
+        raise SystemExit(f"{src.size} is not the canvas {CW, CH}: the layers are "
+                         f"master-resolution and must not be resampled")
     S = src_pts * K
     D = dst_pts * K
+    # AT REST THE PIXELS ARE THE MASTER'S. An identity affine still goes through
+    # PIL's resampler, which is a copy of a copy: small, but it is the kind of
+    # quiet degradation this pipeline exists to prevent, and Gate A can see it.
+    if float(np.abs(D - S).max()) < 1e-6:
+        return src
     for tri in tris:
         i0, i1, i2 = tri
         s = S[[i0, i1, i2]]
@@ -308,14 +334,28 @@ def warp(img, src_pts, dst_pts, tris):
                         [d[1, 1] - d[0, 1], d[2, 1] - d[0, 1]]])
         A = rhs @ Minv
         t = d[0] - A @ s[0]
-        data = (A[0, 0], A[0, 1], t[0], A[1, 0], A[1, 1], t[1])
-        piece = big.transform((CW, CH), Image.AFFINE, data, resample=Image.BILINEAR)
-        mask = Image.new("L", (CW, CH), 0)
-        ImageDraw.Draw(mask).polygon([tuple(p) for p in d], fill=255)
-        # A one-pixel grow on the mask: neighbouring triangles share an edge and
-        # a hairline of background between them is a seam nobody asked for.
+        # ONLY THE TRIANGLE'S OWN BOX. Transforming the whole canvas per triangle
+        # is O(triangles x canvas): at 768 that was seconds, at 1536 the run went
+        # past half an hour and was killed. The box is the same pixels — a triangle
+        # can only write inside its own destination — and the offset folds into
+        # the translation through the matrix's linear part (PIL's transform data
+        # maps output to input, so the shift is +A @ offset; verified against the
+        # whole-canvas transform, pixel for pixel, before it was trusted).
+        bx0 = max(0, int(np.floor(d[:, 0].min())) - 2)
+        by0 = max(0, int(np.floor(d[:, 1].min())) - 2)
+        bx1 = min(CW, int(np.ceil(d[:, 0].max())) + 3)
+        by1 = min(CH, int(np.ceil(d[:, 1].max())) + 3)
+        if bx1 <= bx0 or by1 <= by0:
+            continue
+        data = (A[0, 0], A[0, 1], t[0] + A[0, 0] * bx0 + A[0, 1] * by0,
+                A[1, 0], A[1, 1], t[1] + A[1, 0] * bx0 + A[1, 1] * by0)
+        piece = src.transform((bx1 - bx0, by1 - by0), Image.AFFINE, data, resample=Image.BILINEAR)
+        mask = Image.new("L", (bx1 - bx0, by1 - by0), 0)
+        ImageDraw.Draw(mask).polygon([(px - bx0, py - by0) for px, py in d], fill=255)
+        # A one-pixel grow on the mask: neighbouring triangles share an edge and a
+        # hairline of background between them is a seam nobody asked for.
         mask = mask.filter(ImageFilter.MaxFilter(3))
-        out.paste(piece, (0, 0), mask)
+        out.paste(piece, (bx0, by0), mask)
     return out
 
 
@@ -338,6 +378,9 @@ GRAPES = layer("grapes.webp")
 # artwork; see `corrective_keyforms` in the rig data.
 
 
+_POSE_CACHE = {}
+
+
 def pose(deg, grape_deg=0.0):
     """Draw order: plate → arm → grapes.
 
@@ -348,8 +391,8 @@ def pose(deg, grape_deg=0.0):
     the surface bends instead of being covered. Nothing is faded, blurred or
     feathered anywhere in this function."""
     canvas = Image.new("RGBA", (CW, CH), (0, 0, 0, 0))
-    plate_up = PLATE.resize((CW, CH), Image.LANCZOS)
-    canvas.alpha_composite(plate_up)
+    canvas.alpha_composite(PLATE if PLATE.size == (CW, CH) else
+                           PLATE.resize((CW, CH), Image.LANCZOS))
 
     arm_dst = skin(ARM_PTS, ARM_W, deg, deg_elbow=deg * ELBOW_SHARE,
                    extra=lambda p, w, d: socket_bend(p, w, d))
@@ -366,6 +409,16 @@ def pose(deg, grape_deg=0.0):
     else:
         canvas.alpha_composite(warp(GRAPES, ARM_PTS, arm_dst, ARM_TRIS))
     return canvas
+
+
+def pose_cached(deg, grape_deg=0.0):
+    """pose() memoised. The diagnostics ask for the same pose several times — the
+    grid, the closeups, the joint review and the shadow sheet each render it again
+    — and a repeat render at master resolution is a minute."""
+    key = (round(float(deg), 4), round(float(grape_deg), 4))
+    if key not in _POSE_CACHE:
+        _POSE_CACHE[key] = pose(deg, grape_deg)
+    return _POSE_CACHE[key]
 
 
 # ── sanity: no inverted triangles, nothing teleporting ──────────────────────
@@ -442,7 +495,7 @@ report = {}
 health = {}
 edge_report = {}
 for deg in (0.0,) + KEYFORMS:
-    img = pose(deg)
+    img = pose_cached(deg)
     ground = Image.new("RGBA", (CW, CH), (255, 0, 255, 255))
     ground.alpha_composite(img)
     ground.convert("RGB").save(os.path.join(OUT, f"06-pose-{deg:+.0f}.png"))
@@ -450,7 +503,7 @@ for deg in (0.0,) + KEYFORMS:
 
     a = np.asarray(img.getchannel("A")).astype(np.float32) / 255.0
     # Uncovered = the composite has no paint where the REST pose has paint.
-    rest_a = np.asarray(pose(0.0).getchannel("A")).astype(np.float32) / 255.0
+    rest_a = np.asarray(pose_cached(0.0).getchannel("A")).astype(np.float32) / 255.0
     holes = int(((a < 0.05) & (rest_a > 0.9)).sum())
     report[f"{deg:+.0f}deg"] = {"uncovered_px_4x": holes,
                                 "coverage_px_4x": int((a > 0.05).sum())}
@@ -479,7 +532,7 @@ wire = Image.new("RGB", (row[0][1].width * len(row) + 10 * (len(row) + 1),
                          row[0][1].height + 30), (24, 24, 28))
 wd = ImageDraw.Draw(wire)
 for i, deg in enumerate((0.0,) + KEYFORMS):
-    img = pose(deg).resize((CW // 2, CH // 2), Image.LANCZOS)
+    img = pose_cached(deg).resize((CW // 2, CH // 2), Image.LANCZOS)
     g = Image.new("RGBA", img.size, (24, 24, 28, 255))
     g.alpha_composite(img)
     g = g.convert("RGB")
@@ -513,30 +566,35 @@ for i, deg in enumerate((0.0,) + KEYFORMS):
             fill=(255, 220, 80))
 wire.save(os.path.join(OUT, "06-mesh-wireframe.png"))
 
-# THE REST POSE IS THE ARTWORK. Same test scene-parts.py runs, on the rig's own
-# assets: composite at 0 deg against the drawing, over white.
-_base = Image.open(os.path.join(DIR, "mascot-gold-buddha-base.webp")).convert("RGBA")
-_rest = pose(0.0)
-_bg = Image.new("RGBA", (CW, CH), (255, 255, 255, 255))
-_bg.alpha_composite(_rest.resize((CW, CH), Image.LANCZOS) if _rest.size != (CW, CH) else _rest)
-_ref = Image.new("RGB", (CW, CH), (255, 255, 255))
-_ref.paste(_base.resize((CW, CH), Image.LANCZOS), (0, 0), _base.resize((CW, CH), Image.LANCZOS))
-_d = np.abs(np.asarray(_bg.convert("RGB"), np.int16) - np.asarray(_ref, np.int16)).max(axis=2)
-# ON THE FIGURE means the drawing's own silhouette: everywhere outside it both
-# images are the same white, which would flatter the average.
-_fig_mask = np.asarray(_base.resize((CW, CH), Image.LANCZOS))[..., 3] > 24
-rest_report = {"mean": round(float(_d.mean()), 3), "p99": round(float(np.percentile(_d, 99)), 1),
-               "max": int(_d.max()), "over32": int((_d > 32).sum()),
-               "of": int(_d.size)}
-print(f"\n   rest pose vs the artwork it was cut from")
+# THE REST POSE IS THE ARTWORK — and the artwork is the MASTER.
+# This test used to composite the rig against `mascot-gold-buddha-base.webp`, the
+# 768 state, and upscale THAT to compare. It reported 18.19% of the figure over 32
+# levels and read like a rig defect; almost all of it was the 768 state's own
+# softness — the comparison punishing the master-resolution build for being
+# sharper than a half-resolution derivation. That inversion is the reason for the
+# source-of-truth reset. The baseline is the master, drawn on itself.
+_master = Image.open(os.path.join(DIR, "mascot-gold-buddha-base.png")).convert("RGBA")
+_rest = pose_cached(0.0)
+_bg = Image.alpha_composite(_master, _rest)          # the rig, drawn ON the master
+_d = np.abs(np.asarray(_bg.convert("RGB"), np.int16)
+            - np.asarray(_master.convert("RGB"), np.int16)).max(axis=2)
+_a_full = np.asarray(Image.open(os.path.join(DIR, "master-alpha.png")))
+_fig_mask = (_a_full > 127) if _a_full.max() > 1 else (_a_full > 0.5)
+_fig_px = int(_fig_mask.sum())
+rest_report = {
+    "mean": round(float(_d.mean()), 3), "p99": round(float(np.percentile(_d, 99)), 1),
+    "max": int(_d.max()), "over32": int((_d > 32).sum()), "of": int(_d.size),
+    "on_figure_mean": round(float(_d[_fig_mask].mean()), 3),
+    "on_figure_p99": round(float(np.percentile(_d[_fig_mask], 99)), 1),
+    "on_figure_over32": int((_d[_fig_mask] > 32).sum()), "on_figure_of": _fig_px,
+    "reference": "mascot-gold-buddha-base.png (the master), drawn on itself",
+}
+print(f"\n   rest pose vs the master it was cut from")
 print(f"     whole canvas   mean {rest_report['mean']:6.3f}  p99 {rest_report['p99']:5.1f}  "
       f"max {rest_report['max']:3d}  >32: {rest_report['over32']:6d} of {rest_report['of']}")
-_rf = {"mean": round(float(_d[_fig_mask].mean()), 3),
-       "p99": round(float(np.percentile(_d[_fig_mask], 99)), 1),
-       "over32": int((_d[_fig_mask] > 32).sum()), "of": int(_fig_mask.sum())}
-print(f"     on the figure  mean {_rf['mean']:6.3f}  p99 {_rf['p99']:5.1f}  "
-      f"           >32: {_rf['over32']:6d} of {_rf['of']}  "
-      f"({100.0 * _rf['over32'] / max(_rf['of'], 1):.2f}%)")
+print(f"     on the figure  mean {rest_report['on_figure_mean']:6.3f}  p99 "
+      f"{rest_report['on_figure_p99']:5.1f}  >32: {rest_report['on_figure_over32']:6d} "
+      f"of {_fig_px}  ({100.0 * rest_report['on_figure_over32'] / max(_fig_px, 1):.2f}%)")
 
 # the same difference, drawn: white = the rig put back what the drawing had,
 # black = where it differs, so the debt has a location and not just a number.
@@ -565,8 +623,8 @@ for deg in (0.0,) + KEYFORMS:
         "elbow_driver_deg": round(deg * ELBOW_SHARE, 2),
     }
     # A closeup of the joint, at the canvas's own resolution, for the eye.
-    g = Image.new("RGBA", pose(deg).size, (24, 24, 28, 255))
-    g.alpha_composite(pose(deg))
+    g = Image.new("RGBA", pose_cached(deg).size, (24, 24, 28, 255))
+    g.alpha_composite(pose_cached(deg))
     cx, cy = ELBOW * K
     r = 100
     x0 = max(0, min(int(cx) - r, CW - 2 * r))
@@ -626,7 +684,7 @@ for ci, (cname, cdeg) in enumerate(_cols):
         if cdeg is None:
             src = _artc
         else:
-            src = Image.new("RGBA", (CW, CH), (0, 0, 0, 0)); src.alpha_composite(pose(cdeg))
+            src = Image.new("RGBA", (CW, CH), (0, 0, 0, 0)); src.alpha_composite(pose_cached(cdeg))
             over = Image.new("RGBA", (CW, CH), (255, 0, 255, 255)); over.alpha_composite(src); src = over
         cx, cy = ax * K, ay * K
         r = half * K
@@ -648,8 +706,13 @@ def _rejected_shadow():
     a = np.clip((a - 0.25) / 0.75, 0, 1) * 0.55
     # built at the ART's own resolution, like the asset it replaces; the renderer
     # scales it, exactly as it scaled shadow.webp
-    rgb = np.clip(np.asarray(PLATE).astype(np.float32)[..., :3] * 0.62
-                  + np.asarray(BASE).astype(np.float32)[..., :3] * 0.38, 0, 255)
+    # the rejected shadow's own formula, rebuilt against the MASTER: its whole
+    # fault was that its colour blended the plate toward the base picture instead
+    # of darkening it, so this reproduces that blend at the canvas's resolution
+    _m_rgb = np.asarray(Image.open(os.path.join(DIR, "mascot-gold-buddha-base.png"))
+                        .convert("RGB")).astype(np.float32)
+    rgb = np.clip(np.asarray(PLATE.convert("RGB")).astype(np.float32) * 0.62
+                  + _m_rgb[:CH, :CW] * 0.38, 0, 255)
     return Image.merge("RGBA", (*[Image.fromarray(rgb[..., c].astype(np.uint8)) for c in range(3)],
                                 Image.fromarray((a * 255).round().astype(np.uint8))))
 
@@ -781,7 +844,10 @@ json.dump({
     "elbow": elbow_report,
     "exposed_cut_edge": edge_report,
     "rest_vs_artwork": rest_report,
-    "rest_vs_artwork_on_figure": _rf,
+    "rest_vs_artwork_on_figure": {
+        "mean": rest_report["on_figure_mean"], "p99": rest_report["on_figure_p99"],
+        "over32": rest_report["on_figure_over32"], "of": rest_report["on_figure_of"],
+    },
     "contact_shadow": {
         "present": False,
         "owed": "a painted cast shadow at each keyform — artwork, not generated",

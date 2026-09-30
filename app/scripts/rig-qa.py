@@ -51,6 +51,13 @@ print(f"{'pose':>7} {'limb width (art px)':>22} {'area change med/p99':>22} {'gr
 rest_rgb = np.asarray(Image.open(os.path.join(RIG, "clean-plate.webp")).convert("L")).astype(np.float32)
 arm_img = np.asarray(Image.open(os.path.join(RIG, "arm.webp")).convert("L")).astype(np.float32)
 arm_lum = arm_img                    # luminance field of the limb at rest
+# The mesh this file measures is in LAYOUT space (768x512) — it is read straight
+# out of the rig data, which is authored there — while the layers are at master
+# resolution. Indexing one with the other's coordinates silently samples nothing,
+# which is exactly what happened: every station landed outside the bounds and the
+# gradient-energy column read a flat 0.0, looking like a perfect result. The
+# scale is taken from the image itself rather than assumed.
+SCALE = arm_lum.shape[1] / 768.0
 
 
 def rot(deg):
@@ -202,8 +209,8 @@ def grad_energy(lum, pts, tris):
             for j in range(1, 5 - i):
                 u, v = i / 5.0, j / 5.0
                 p = pts[a] * (1 - u - v) + pts[b] * u + pts[c] * v
-                x, y = int(round(p[0])), int(round(p[1]))
-                if 0 <= x < 768 and 0 <= y < 512:
+                x, y = int(round(p[0] * SCALE)), int(round(p[1] * SCALE))
+                if 0 <= x < gx.shape[1] and 0 <= y < gx.shape[0]:
                     acc += gx[y, x]
                     n += 1
     return acc / max(n, 1)
@@ -251,7 +258,11 @@ print("   a flat reconstruction reads as a patch; these are the numbers to beat 
 for name, r in er.items():
     b = r["box"]
     box = g[b[1]:b[3], b[0]:b[2]]
-    print(f"     {name:28s} needs {r['needs']:14s} gradient mean {box.mean():6.2f}")
+    print(f"     {name:44s} {r['reconstructed_generated']:7d} px   gradient mean {box.mean():6.2f}")
 
-print("\n   the reference is untouched: mascot-gold-buddha-base.webp is the master")
-print("   and the diagnostic poses are judged against it, never against a render.")
+print("\n   the reference is untouched: mascot-gold-buddha-base.PNG is the master "
+      "(1536x1024, frozen)")
+print("   — never the 768 .webp states, which are DERIVED from it. Grading a")
+print("   master-resolution build against a half-resolution derivation reports the")
+print("   derivation's own softness as a rig defect: it did, at 18.19% of the figure.")
+print("   The diagnostic poses are judged against the master, never against a render.")
