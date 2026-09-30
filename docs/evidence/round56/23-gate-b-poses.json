@@ -1,0 +1,88 @@
+{
+  "elbow_art_px": [
+    300.5,
+    94.6
+  ],
+  "elbow_rest_interior_deg": 157.6,
+  "elbow_share_of_shoulder": -0.35,
+  "coverage": {
+    "+0deg": {
+      "uncovered_px_4x": 0,
+      "coverage_px_4x": 987980
+    },
+    "-15deg": {
+      "uncovered_px_4x": 32490,
+      "coverage_px_4x": 955490
+    },
+    "-7deg": {
+      "uncovered_px_4x": 24411,
+      "coverage_px_4x": 963758
+    },
+    "+6deg": {
+      "uncovered_px_4x": 17851,
+      "coverage_px_4x": 970171
+    }
+  },
+  "elbow": {
+    "+0deg": {
+      "elbow_interior_deg": 157.59,
+      "elbow_mesh_interior_deg": 153.14,
+      "elbow_bend_vs_rest_deg": 0.0,
+      "hand_travel_art_px": 0.0,
+      "hand_travel_if_rigid_art_px": 0.0,
+      "elbow_driver_deg": -0.0
+    },
+    "-15deg": {
+      "elbow_interior_deg": 152.34,
+      "elbow_mesh_interior_deg": 146.25,
+      "elbow_bend_vs_rest_deg": -5.25,
+      "hand_travel_art_px": 30.35,
+      "hand_travel_if_rigid_art_px": 38.03,
+      "elbow_driver_deg": 5.25
+    },
+    "-7deg": {
+      "elbow_interior_deg": 155.14,
+      "elbow_mesh_interior_deg": 149.9,
+      "elbow_bend_vs_rest_deg": -2.45,
+      "hand_travel_art_px": 14.23,
+      "hand_travel_if_rigid_art_px": 17.79,
+      "elbow_driver_deg": 2.45
+    },
+    "+6deg": {
+      "elbow_interior_deg": 159.69,
+      "elbow_mesh_interior_deg": 155.93,
+      "elbow_bend_vs_rest_deg": 2.1,
+      "hand_travel_art_px": 12.26,
+      "hand_travel_if_rigid_art_px": 15.25,
+      "elbow_driver_deg": -2.1
+    }
+  },
+  "exposed_cut_edge": {
+    "+0deg": {
+      "px": 0
+    },
+    "the drawing's own edge": {
+      "px": 0
+    },
+    "-15deg": {
+      "px": 384,
+      "median_px": 1.9,
+      "p95_px": 2.75,
+      "over3_px": 9
+    },
+    "-7deg": {
+      "px": 519,
+      "median_px": 1.95,
+      "p95_px": 3.07,
+      "over3_px": 29
+    },
+    "+6deg": {
+      "px": 585,
+      "median_px": 1.98,
+      "p95_px": 2.95,
+      "over3_px": 28
+    }
+  },
+  "reconstructed_pixels_owed": 10114,
+  "sheet": "23-gate-b-poses.png"
+}

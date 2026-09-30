@@ -217,10 +217,23 @@ r_piv = np.hypot(xx - PIVOT[0], yy - PIVOT[1])
 SOCKET = GROUP & (r_piv < 90.0) & FIGURE
 ARM_M = (ARM_M | SOCKET) & ~GRAPES_M
 
-# The ONLY pixels the plate may reconstruct: what the limb hides at rest.
-GENERATED = ARM_M & FIGURE
-print(f"  hidden under the limb at rest: {int(GENERATED.sum()):6d} px — the only pixels "
-      f"the plate may reconstruct")
+# ── 4. WHAT IS BEHIND THE GROUP ─────────────────────────────────────────────
+# When the limb swings it uncovers whatever was behind it, so the plate has to
+# know which of two things that is — and the artist's own armless plate says:
+# transparent behind means the page showed through there, opaque-and-different
+# means the body was behind.
+#
+# This matters most at the fruit, where the cluster hangs half over the
+# background and half over the chin it throws a shadow onto. Treating all of it
+# as "hidden body" would reconstruct gold into empty air; treating none of it
+# would leave the chin's painted shadow behind when the fruit swings away — a
+# stale smudge, which is the same class of defect as the old build's 698 px of
+# stale cluster. 5,567 px of that shadow sits over the body and has to move with
+# the fruit; 422 px of it sits over background.
+BG_BEHIND = up(_plate768[..., 3] <= 0.5) & FIGURE & (ARM_M | GRAPES_M)
+GENERATED = (ARM_M | GRAPES_M) & FIGURE & ~BG_BEHIND
+print(f"  behind the group: {int(BG_BEHIND.sum()):6d} px of background (the plate will be "
+      f"transparent there) and {int(GENERATED.sum()):6d} px of body (it will be reconstructed)")
 
 # ── 4. the machinery (carried over from the previous build, unchanged) ──────
 def _shift(a, dy, dx):
@@ -302,13 +315,23 @@ def exemplar_fill(rgb, known, target, patch=7, search=64, stride=3,
     todo = target.copy()
     r = patch // 2
 
+    # ONION ORDER — from the boundary inward. The first version of this loop took
+    # the target pixels NOT touching anything known, i.e. the interior, which is
+    # the wrong end: a patch is matched against what is already there, so filling
+    # the interior first means matching against the hole's own pixels. It went
+    # unnoticed while the hole was one big blob (the interior is most of a blob,
+    # and the result was still gold); the moment the target became a thin band
+    # hugging the limb's outline — which is what the body behind the fruit is —
+    # every target pixel touched something known, the "shell" came out empty, and
+    # the fill silently wrote 0 px. Found by that number, not by reading it.
     order = []
     while todo.any():
-        shell = todo & ~np.asarray(
+        grown = np.asarray(
             Image.fromarray((filled * 255).astype(np.uint8))
-            .filter(ImageFilter.MaxFilter(3))).astype(np.float32).astype(bool)
+            .filter(ImageFilter.MaxFilter(3))).astype(np.float32) > 0
+        shell = todo & grown
         if not shell.any():
-            break
+            shell = todo            # nothing touches known: take the rest as one pass
         ys, xs = np.nonzero(shell)
         order.append((ys, xs))
         filled[shell] = True
@@ -363,6 +386,10 @@ if GENERATED.any() and "--skip-inpaint" not in sys.argv:
     LIGHT_HINT = harmonic(L0, GENERATED)
     # The source pool excludes the limb itself: filling the hole with the limb's
     # own pixels leaves a ghost of the raised arm in the plate.
+    # The source pool excludes the whole group: filling the hole with the limb's
+    # own pixels leaves a ghost of the raised arm in the plate, and the first
+    # diagnostic sheet showed exactly that — a second arm behind the one the rig
+    # draws. Gold, robe, necklace and pile are all legitimate sources.
     usable = FIGURE & ~GROUP
     plate_rgb, filled_mask = exemplar_fill(
         plate_rgb, usable, GENERATED,
@@ -423,7 +450,8 @@ else:
 # under the layers that cover it — the body behind an arm is solid, and a second
 # edge under an edge blends the outline twice. One edge per pixel: on the top
 # layer where there is one, on the plate where there is not.
-plate_a = np.where(ARM_M | GRAPES_M, 1.0, MATTE).astype(np.float32)
+plate_a = np.where(BG_BEHIND, 0.0,
+                   np.where(ARM_M | GRAPES_M, 1.0, MATTE)).astype(np.float32)
 print(f"   the silhouette's own edge: the master is flat RGB, so the drawn 768 ramp is an "
       f"estimate; over the page the rim light measures "
       f"+14.1 levels as drawn against -7.9 for any soft edge, so the alpha ships opaque "
@@ -440,10 +468,14 @@ _COVER = ARM_M | GRAPES_M
 _da = float(np.abs(plate_a - MATTE)[~_COVER].max())
 print(f"   outside the layers, the plate's alpha is the master's: max difference {_da * 255:.1f}/255")
 assert _da < 1e-6, "the plate's alpha outside the layers must be the master's"
-_hidden = plate_a[_COVER]
-print(f"   under the layers, the plate is opaque: min alpha {_hidden.min() * 255:.0f}/255 "
-      f"({_hidden.size:,} px)")
-assert float(_hidden.min()) >= 1.0 - 1e-6, "the plate must be opaque under the layers"
+_body_behind = _COVER & ~BG_BEHIND
+_hidden = plate_a[_body_behind]
+print(f"   under the layers the plate follows what is behind: opaque over the body "
+      f"({_hidden.size:,} px, min alpha {_hidden.min() * 255:.0f}/255), transparent over the "
+      f"background ({int(BG_BEHIND.sum()):,} px)")
+assert float(_hidden.min()) >= 1.0 - 1e-6, "the plate must be opaque where the body is behind"
+assert float(plate_a[BG_BEHIND].max()) <= 1e-6, \
+    "the plate must be transparent where the artist's own plate shows background"
 
 # ── 8. the layers ───────────────────────────────────────────────────────────
 def layer(mask):
@@ -523,9 +555,11 @@ def _components(mask, minpx=40):
 
 
 def _name(cx_, cy_):
-    if cy_ < 420 and cx_ < 700:
+    if cy_ < 340 and 620 <= cx_ <= 900:
+        return "the chin and neck behind the fruit"
+    if cy_ < 420 and cx_ < 620:
         return "chest and shoulder socket behind the raised arm"
-    if cy_ < 420 and cx_ < 900:
+    if cy_ < 420:
         return "the bare neck where the necklace runs"
     if cy_ >= 420:
         return "the pile under the limb"
