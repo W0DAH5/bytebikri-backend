@@ -7,28 +7,28 @@
   "elbow_share_of_shoulder": -0.35,
   "coverage": {
     "+0deg": {
-      "uncovered_px_4x": 0,
-      "exposed_backdrop_px_4x": 0,
-      "enclosed_hole_px_4x": 0,
-      "coverage_px_4x": 987980
+      "vacated_px": 0,
+      "see_through_px": 0,
+      "backdrop_connected_px": 0,
+      "coverage_px": 987980
     },
     "-15deg": {
-      "uncovered_px_4x": 23554,
-      "exposed_backdrop_px_4x": 0,
-      "enclosed_hole_px_4x": 23554,
-      "coverage_px_4x": 964426
+      "vacated_px": 23554,
+      "see_through_px": 23554,
+      "backdrop_connected_px": 0,
+      "coverage_px": 964426
     },
     "-7deg": {
-      "uncovered_px_4x": 16279,
-      "exposed_backdrop_px_4x": 0,
-      "enclosed_hole_px_4x": 16279,
-      "coverage_px_4x": 971890
+      "vacated_px": 16279,
+      "see_through_px": 16279,
+      "backdrop_connected_px": 0,
+      "coverage_px": 971890
     },
     "+6deg": {
-      "uncovered_px_4x": 9764,
-      "exposed_backdrop_px_4x": 0,
-      "enclosed_hole_px_4x": 9764,
-      "coverage_px_4x": 978258
+      "vacated_px": 9764,
+      "see_through_px": 9764,
+      "backdrop_connected_px": 0,
+      "coverage_px": 978258
     }
   },
   "elbow": {

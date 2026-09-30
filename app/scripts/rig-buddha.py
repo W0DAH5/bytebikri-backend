@@ -77,7 +77,9 @@ ELBOW_REST_DEG = float(np.degrees(np.arccos(np.clip(
     ((PIVOT - ELBOW) @ (FIST - ELBOW)) /
     (np.linalg.norm(PIVOT - ELBOW) * FOREARM_LEN), -1, 1))))
 
-KEYFORMS = (-15.0, -7.0, 6.0)
+# The keyforms the diagnostics render. Overridable with RIG_KEYFORMS=-3,-6 so the
+# range the artwork can honestly carry can be swept instead of guessed.
+KEYFORMS = tuple(float(v) for v in os.environ.get("RIG_KEYFORMS", "-15,-7,6").split(","))
 # How much of the shoulder's turn the elbow takes. PLACEHOLDER — this is the
 # value a corrective keyform will replace with a painted one, chosen to stay
 # inside the drawn elbow's budget at every keyform (0.35 x 15 = 5.3 deg against

@@ -94,6 +94,43 @@ the print explains what each means instead of asserting a verdict.
 * **Nothing is wired into production animation.** By the user's ordering: the
   source comes first.
 
+## How far can this arm honestly rotate? (swept, not guessed)
+
+`RIG_KEYFORMS=-15,-7,6` overrides the diagnostic angles, so the envelope was
+swept rather than argued. Vacated pixels are what the swing uncovers; CSS px is
+that area at production scale (the scene is drawn 172 px wide, so one master
+pixel is 0.112 CSS px — 12,400 master px to the CSS pixel²); *deepest reach* is
+how far the far side of the largest pocket is from any artwork, measured with a
+chamfer distance:
+
+| angle | vacated | CSS px¹ | largest pocket | deepest reach |
+|---|---|---|---|---|
+| 0° | 0 | 0.0 | 0 | 0.0 px |
+| −3° | 12,064 | 151 | 11,200 | 43.0 px |
+| −5° | 14,010 | 176 | 12,339 | 44.7 px |
+| −8° | 17,416 | 218 | 15,098 | 47.0 px |
+| −11° | 20,290 | 254 | 19,297 | 50.6 px |
+| −15° | 23,574 | 296 | 22,445 | 52.6 px |
+
+The pocket is 84–95% of the vacated area at every angle and is **established by
+−3°**: the artwork's hidden region has a hard edge, not a gradient, so this is not
+a tearing rig that fails at −15° — it is a finite illustration that runs out of
+hidden art almost immediately, and the rest of the sweep only deepens it by 10 px.
+`40-angle-sweep.png` shows the same sweep at the card's real size (drawn 172 px,
+shown at 2×), where the poses read as a natural lift.
+
+**What that means, plainly: at production scale this passes the eye; at 1:1 it is
+a hole of 296 CSS px² and I am not going to call it seamless.** The alternatives
+are all worse or forbidden — inventing backdrop (the brief forbids it), keeping
+the arm's rest gold under the raised arm (the stale-cluster defect, one limb
+over), or narrowing the motion to roughly −3°, which costs the gesture its
+expressive range. The real fix is artwork: the artist would paint what the raised
+arm exposes, exactly as Live2D's own guide instructs for this situation ("draw the
+back of the elbow, which is currently hidden"). That is a decision for the user,
+not for this script to make silently.
+
+¹ rounded; the column is CSS px².
+
 ## One thing worth knowing before the next pass
 
 The arm's pivot is the glenoid at (536,292) in master pixels and −15° swings the
