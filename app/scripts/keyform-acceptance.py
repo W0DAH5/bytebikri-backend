@@ -53,6 +53,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--paint", help="directory with R01..R05-paint.png (delivery mode)")
     ap.add_argument("--baseline", action="store_true", help="self-test with the current plate's interim fill")
+    ap.add_argument("--unresolved-ok", action="store_true",
+                    help="delivery may defer pixels: R0X-unresolved.npy/png next to the paints; "
+                         "deferred px are counted, shown GREEN-ON-MAGENTA on the sheets and never hidden. "
+                         "An opaque fabricated pixel is a failure; a declared unresolved pixel is not.")
     args = ap.parse_args()
     if not (args.paint or args.baseline):
         sys.exit("give --paint <dir> or --baseline")
@@ -106,6 +110,24 @@ def main():
         checks["hole_px"] = int(mm.sum())
         checks["hole_px_to_paint"] = int(non_sky.sum())
         checks["hole_px_painted_opaque"] = int((paint[..., 3][non_sky] == 255).sum())
+        # artist-declared unresolved (only meaningful with --unresolved-ok)
+        declared = 0
+        if args.unresolved_ok:
+            unres = np.zeros(mm.shape, bool)
+            for cand in (os.path.join(args.paint, rid + "-unresolved.npy"),
+                         os.path.join(args.paint, rid + "-unresolved.png")):
+                if os.path.exists(cand):
+                    unres = (np.load(cand) > 0) if cand.endswith(".npy") else \
+                            (np.asarray(Image.open(cand).convert("L")) > 127)
+                    unres = unres[oy:oy + tpl.shape[0], ox:ox + tpl.shape[1]]
+                    break
+            unres = unres & mm & ~sky
+            declared = int(unres.sum())
+            if declared:
+                full = np.zeros(master.shape[:2], bool)
+                full[oy:oy + tpl.shape[0], ox:ox + tpl.shape[1]] = unres
+                np.save(os.path.join(SCRATCH, f"unres-{rid}.npy"), full)
+        checks["unresolved_declared"] = declared
         checks["sky_px_in_hole"] = int((mm & sky).sum())
         checks["sky_px_in_crop"] = int(sky.sum())
         checks["crop_sky_left_transparent"] = int((paint[..., 3][sky] == 0).sum())
@@ -214,6 +236,21 @@ def main():
                 sh.paste(row[i][1].crop(box).resize((cw, ch), Image.NEAREST), (x, 26 + ch + 22))
                 dd.text((x + 2, 26 + ch + 4), label, fill=(255, 220, 80))
             sh.save(os.path.join(EV, f"67-acceptance-{rid.lower()}-{ztag}-{tag}.png"))
+    # deferred px shown GREEN-ON-MAGENTA on the acceptance sheets (never hidden)
+    if args.unresolved_ok:
+        import glob
+        unres_total = np.zeros(master.shape[:2], bool)
+        for f in glob.glob(os.path.join(SCRATCH, "unres-R0*.npy")):
+            unres_total |= np.load(f)
+        verdict["unresolved_px_total"] = int(unres_total.sum())
+        if unres_total.any():
+            tiled = Image.new("RGB", (master.shape[1], master.shape[0]), (255, 0, 255))
+            tiled.paste(Image.open(f"{SCRATCH}/06-pose-+0.png").convert("RGB"), (0, 0))
+            ta = np.asarray(tiled).copy()
+            ta[unres_total] = [0, 255, 0]
+            Image.fromarray(ta).save(os.path.join(EV, "67-acceptance-unresolved-green.png"))
+            verdict.setdefault("sheets", {})["unresolved_green"] = "67-acceptance-unresolved-green.png"
+
     verdict["sheets"] = {"pose_row": os.path.relpath(p1, ROOT),
                          "region_closeups": [f"67-acceptance-{r['id'].lower()}-{{2x,4x}}-{tag}.png" for r in manifest]}
     machinery_ok = (verdict["rest_alpha_diff_px"] == 0 and verdict["rig_restored_clean"]
@@ -232,14 +269,42 @@ def main():
         # master outside the hole is opaque by definition, so a crop-wide
         # transparency demand would contradict "non-hole = master". The holes
         # contain no sky px today; the check stays as a guard.
-        ok = machinery_ok and all(v["hole_px_painted_opaque"] == v["hole_px_to_paint"]
-                                  and v["sky_px_in_hole"] == 0
-                                  for v in verdict["regions"].values())
+        #
+        # --unresolved-ok: a delivery may DEFER pixels to the artist, declared
+        # in R0X-unresolved files. Deferred px must be transparent, must not
+        # overlap painted px, and are shown green-on-magenta on the sheets.
+        # The verdict names them; the 1x/2x/4x inspection judges them.
+        def deferred_ok(v):
+            if not args.unresolved_ok:
+                return v["hole_px_painted_opaque"] == v["hole_px_to_paint"] and v["sky_px_in_hole"] == 0
+            return (v["hole_px_painted_opaque"] + v["unresolved_declared"] == v["hole_px_to_paint"]
+                    and v["sky_px_in_hole"] == 0)
+        ok = machinery_ok and all(deferred_ok(v) for v in verdict["regions"].values())
+        if args.unresolved_ok:
+            tot = sum(v["unresolved_declared"] for v in verdict["regions"].values())
+            verdict["note"] = (f"{tot} px artist-deferred and shown green-on-magenta; "
+                               "the human inspection decides them — a declared pixel is honest, "
+                               "a fabricated one is a failure")
     verdict["verdict"] = "PASS (pending the 1x/2x/4x visual inspection)" if ok else "FAIL"
     json.dump(verdict, open(os.path.join(EV, "67-acceptance.json"), "w"), indent=1)
     print(json.dumps({k: v for k, v in verdict.items() if k != "regions"}, indent=1))
     for rid, v in verdict["regions"].items():
         print(f"   {rid}: {v}")
+
+def add_unresolved(state, path, rid, mask, note=""):
+    """Record an artist's unresolved declaration: npy + png beside the state
+    file, updated summary json. Call from any tool; the acceptance reads it."""
+    os.makedirs(path, exist_ok=True)
+    np.save(os.path.join(path, f"{rid}-unresolved.npy"), mask)
+    img = Image.new("L", (mask.shape[1], mask.shape[0]), 0)
+    img.paste(Image.fromarray((mask * 255).astype(np.uint8)), (0, 0))
+    img.save(os.path.join(path, f"{rid}-unresolved.png"))
+    jf = os.path.join(path, "unresolved.json")
+    j = json.load(open(jf)) if os.path.exists(jf) else {}
+    j[rid] = {"px": int(mask.sum()), "note": note}
+    json.dump(j, open(jf, "w"), indent=1)
+    return j[rid]
+
 
 if __name__ == "__main__":
     main()
