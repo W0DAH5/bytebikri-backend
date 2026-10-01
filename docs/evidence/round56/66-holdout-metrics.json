@@ -1,0 +1,170 @@
+{
+ "robe fold (creases)": {
+  "folds_master_px": 784,
+  "folds_recon_px": 853,
+  "fold_strength_master": 35.39,
+  "fold_strength_recon": 31.01,
+  "gradient_err_mean": 1.7,
+  "gradient_err_max": 10.0,
+  "gradient_range_master": [
+   74.0,
+   213.0
+  ],
+  "gradient_range_recon": [
+   75.0,
+   215.0
+  ],
+  "highlight_px_master": 50,
+  "highlight_px_recon": 56,
+  "highlight_lum_master": 254.9,
+  "highlight_lum_recon": 254.5,
+  "texture_grad": [
+   6.59,
+   6.46
+  ],
+  "texture_highfreq": [
+   10.14,
+   10.42
+  ]
+ },
+ "belly (smooth gradient)": {
+  "folds_master_px": 784,
+  "folds_recon_px": 400,
+  "fold_strength_master": 69.3,
+  "fold_strength_recon": 63.26,
+  "gradient_err_mean": 3.49,
+  "gradient_err_max": 11.0,
+  "gradient_range_master": [
+   92.0,
+   249.0
+  ],
+  "gradient_range_recon": [
+   98.0,
+   247.0
+  ],
+  "highlight_px_master": 51,
+  "highlight_px_recon": 8,
+  "highlight_lum_master": 255.0,
+  "highlight_lum_recon": 254.8,
+  "texture_grad": [
+   14.97,
+   12.29
+  ],
+  "texture_highfreq": [
+   21.27,
+   19.22
+  ]
+ },
+ "necklace (bead specular)": {
+  "folds_master_px": 784,
+  "folds_recon_px": 346,
+  "fold_strength_master": 69.07,
+  "fold_strength_recon": 62.35,
+  "gradient_err_mean": 4.05,
+  "gradient_err_max": 12.0,
+  "gradient_range_master": [
+   92.0,
+   244.0
+  ],
+  "gradient_range_recon": [
+   98.0,
+   244.0
+  ],
+  "highlight_px_master": 50,
+  "highlight_px_recon": 48,
+  "highlight_lum_master": 255.0,
+  "highlight_lum_recon": 255.0,
+  "texture_grad": [
+   15.65,
+   12.7
+  ],
+  "texture_highfreq": [
+   22.53,
+   20.05
+  ]
+ },
+ "chest highlight": {
+  "folds_master_px": 784,
+  "folds_recon_px": 627,
+  "fold_strength_master": 93.42,
+  "fold_strength_recon": 93.42,
+  "gradient_err_mean": 2.16,
+  "gradient_err_max": 10.0,
+  "gradient_range_master": [
+   56.0,
+   249.0
+  ],
+  "gradient_range_recon": [
+   65.0,
+   249.0
+  ],
+  "highlight_px_master": 50,
+  "highlight_px_recon": 4,
+  "highlight_lum_master": 255.0,
+  "highlight_lum_recon": 255.0,
+  "texture_grad": [
+   21.59,
+   19.77
+  ],
+  "texture_highfreq": [
+   34.27,
+   32.55
+  ]
+ },
+ "drape (dark fold)": {
+  "folds_master_px": 784,
+  "folds_recon_px": 676,
+  "fold_strength_master": 101.17,
+  "fold_strength_recon": 100.8,
+  "gradient_err_mean": 2.17,
+  "gradient_err_max": 10.0,
+  "gradient_range_master": [
+   45.0,
+   251.0
+  ],
+  "gradient_range_recon": [
+   45.0,
+   251.0
+  ],
+  "highlight_px_master": 57,
+  "highlight_px_recon": 31,
+  "highlight_lum_master": 255.0,
+  "highlight_lum_recon": 254.4,
+  "texture_grad": [
+   19.62,
+   18.72
+  ],
+  "texture_highfreq": [
+   32.25,
+   31.93
+  ]
+ },
+ "coin pile (texture)": {
+  "folds_master_px": 784,
+  "folds_recon_px": 297,
+  "fold_strength_master": 93.82,
+  "fold_strength_recon": 96.58,
+  "gradient_err_mean": 2.62,
+  "gradient_err_max": 13.0,
+  "gradient_range_master": [
+   59.0,
+   227.0
+  ],
+  "gradient_range_recon": [
+   59.0,
+   223.0
+  ],
+  "highlight_px_master": 50,
+  "highlight_px_recon": 23,
+  "highlight_lum_master": 255.0,
+  "highlight_lum_recon": 255.0,
+  "texture_grad": [
+   26.16,
+   18.46
+  ],
+  "texture_highfreq": [
+   40.2,
+   30.07
+  ]
+ }
+}
