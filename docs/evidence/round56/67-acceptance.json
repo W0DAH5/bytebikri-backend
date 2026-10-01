@@ -15,8 +15,8 @@
    "nonhole_px_changed": 0,
    "hole_px": 2724,
    "hole_px_to_paint": 2724,
-   "hole_px_painted_opaque": 2715,
-   "unresolved_declared": 9,
+   "hole_px_painted_opaque": 2724,
+   "unresolved_declared": 0,
    "sky_px_in_hole": 0,
    "sky_px_in_crop": 527,
    "crop_sky_left_transparent": 0
@@ -35,8 +35,8 @@
    "nonhole_px_changed": 0,
    "hole_px": 302,
    "hole_px_to_paint": 302,
-   "hole_px_painted_opaque": 268,
-   "unresolved_declared": 34,
+   "hole_px_painted_opaque": 302,
+   "unresolved_declared": 0,
    "sky_px_in_hole": 0,
    "sky_px_in_crop": 54,
    "crop_sky_left_transparent": 0
@@ -59,7 +59,6 @@
  "rest_alpha_diff_px": 0,
  "rest_vs_master_on_figure_diff_px": 0,
  "figure_px_compared": 968982,
- "unresolved_px_total": 43,
  "sheets": {
   "pose_row": "docs/evidence/round56/67-acceptance-poses-painted.png",
   "region_closeups": [
@@ -70,6 +69,5 @@
    "67-acceptance-r05-{2x,4x}-painted.png"
   ]
  },
- "note": "43 px artist-deferred and shown green-on-magenta; the human inspection decides them \u2014 a declared pixel is honest, a fabricated one is a failure",
  "verdict": "PASS (pending the 1x/2x/4x visual inspection)"
 }

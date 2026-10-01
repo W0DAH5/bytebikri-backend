@@ -1,0 +1,13 @@
+{
+ "artist_pass": "revision 6 (app/scripts/artist-final.py)",
+ "corrections": [
+  "R01 wedge: 134 px deepened to just under the rim shade (crevice rule)",
+  "R01 grain: brush tooth sigma ~8.5 tone-scaled, correlated 1.2px (no mirrored structure)",
+  "R02 tip: 9 px continued from the row above, deepened 6% (the seam runs to the drape)",
+  "R04 sky rows: 34 px continued vertically from the passage above/below",
+  "declarations rewritten: nothing left deferred; every hole px now carries artwork evidence",
+  "R02 gap (revision 7): plateau re-anchored to the traced 45-80 band with a floor of 40 \u2014 the first scaling inherited the dark arm-edge px and read as a black cut line",
+  "R02 gap (revision 8): rebuilt with the master's own visible gap colour (sampled warm dark-gold hue, n=2548) at the traced per-row luminance; 2px rim blend like the master's own fall"
+ ],
+ "principle": "every correction continues named adjacent master evidence; grain is tooth at the master's measured amplitude, not mirrored structure"
+}
