@@ -1,0 +1,104 @@
+{
+ "robe fold (creases)": {
+  "bbox": [
+   500,
+   180,
+   600,
+   280
+  ],
+  "hole_px": 10000,
+  "mean_abs_err": 5.65,
+  "p90": 12.0,
+  "max": 93,
+  "grad_master": 8.67,
+  "grad_recon": 8.49,
+  "grad_ratio": 0.979,
+  "luma_std_master": 33.41,
+  "luma_std_recon": 32.81
+ },
+ "belly (smooth gradient)": {
+  "bbox": [
+   620,
+   300,
+   720,
+   400
+  ],
+  "hole_px": 10000,
+  "mean_abs_err": 15.81,
+  "p90": 39.0,
+  "max": 176,
+  "grad_master": 18.87,
+  "grad_recon": 15.66,
+  "grad_ratio": 0.83,
+  "luma_std_master": 54.64,
+  "luma_std_recon": 48.9
+ },
+ "necklace (bead specular)": {
+  "bbox": [
+   660,
+   300,
+   760,
+   400
+  ],
+  "hole_px": 10000,
+  "mean_abs_err": 15.78,
+  "p90": 40.0,
+  "max": 194,
+  "grad_master": 19.71,
+  "grad_recon": 16.1,
+  "grad_ratio": 0.817,
+  "luma_std_master": 50.31,
+  "luma_std_recon": 44.98
+ },
+ "chest highlight": {
+  "bbox": [
+   560,
+   240,
+   660,
+   340
+  ],
+  "hole_px": 10000,
+  "mean_abs_err": 15.09,
+  "p90": 35.0,
+  "max": 141,
+  "grad_master": 29.19,
+  "grad_recon": 26.32,
+  "grad_ratio": 0.902,
+  "luma_std_master": 60.39,
+  "luma_std_recon": 58.2
+ },
+ "drape (dark fold)": {
+  "bbox": [
+   520,
+   300,
+   620,
+   400
+  ],
+  "hole_px": 10000,
+  "mean_abs_err": 13.77,
+  "p90": 34.0,
+  "max": 178,
+  "grad_master": 26.18,
+  "grad_recon": 24.68,
+  "grad_ratio": 0.943,
+  "luma_std_master": 72.89,
+  "luma_std_recon": 70.45
+ },
+ "coin pile (texture)": {
+  "bbox": [
+   300,
+   600,
+   400,
+   700
+  ],
+  "hole_px": 10000,
+  "mean_abs_err": 21.14,
+  "p90": 51.0,
+  "max": 172,
+  "grad_master": 33.06,
+  "grad_recon": 23.33,
+  "grad_ratio": 0.706,
+  "luma_std_master": 58.41,
+  "luma_std_recon": 53.52
+ }
+}
