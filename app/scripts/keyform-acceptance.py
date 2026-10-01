@@ -46,7 +46,7 @@ PKG = os.path.join(ROOT, "docs", "evidence", "round56", "keyform-package")
 EV = os.path.join(ROOT, "docs", "evidence", "round56")
 SCRATCH = "/tmp/keyform-acceptance"
 REGIONS = ["R01", "R02", "R03", "R04", "R05"]
-POSES = [("+0", "REST"), ("-3", "-3\u00b0"), ("-7", "-7\u00b0"), ("-15", "-15\u00b0")]
+POSES = [("+0", "REST"), ("+6", "+6\u00b0"), ("-3", "-3\u00b0"), ("-7", "-7\u00b0"), ("-15", "-15\u00b0")]
 LUMA = np.array([0.2126, 0.7152, 0.0722], np.float32)
 
 def main():
@@ -138,7 +138,7 @@ def main():
     src = src.replace(out_line, f"OUT = {SCRATCH!r}")
     src = src.replace(plate_line, f'PLATE = Image.open({SCRATCH + "/composed-plate.png"!r}).convert("RGBA")')
     open(copy, "w").write(src)
-    env = dict(os.environ, RIG_KEYFORMS="-3,-7,-15")
+    env = dict(os.environ, RIG_KEYFORMS="-3,-7,-15,6")   # +6 is part of the gesture (the reach overshoots to +6 before swinging back)
     try:
         proc = subprocess.run([sys.executable, copy], cwd=ROOT, env=env,
                               capture_output=True, text=True, timeout=1500)

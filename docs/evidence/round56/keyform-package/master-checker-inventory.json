@@ -10,5 +10,12 @@
  },
  "relation_to_package": "433 px fall inside the paint regions and the keyform repaint replaces them; the rest is outside \u2014 visible at rest (the artist's shipped look), and its in-motion amplification rides on LIMB rim px, which the frozen phase forbids touching",
  "would_fix": "(a) include the affected crevice pixels in the painted keyform scope (region #6, grape-bunch gaps + vine passage, ~5,800 px outside current holes) \u2014 needs a decision; (b) limb-rim corrective keyforms at the keyforms \u2014 a rig-side remedy, forbidden this phase. Both recorded, not applied.",
- "evidence": "68-master-checker-defect.png"
+ "evidence": "68-master-checker-defect.png",
+ "evidence_chain": {
+  "1_levels": "the interior pale px sit at the page's exact two levels (241.5 / 253.5, \u00b13)",
+  "2_structure": "run-length analysis: page checker runs median 21.0 px (IQR 21-22, n=792); grape-bunch interior runs median 18.0 px (IQR 13-25, n=230) \u2014 checker-structured at the page's scale; alpha-edge noise would give 2-8 px runs",
+  "3_visual": "the 4x master crop shows square patches indistinguishable from the backdrop pattern (68-master-checker-defect.png)",
+  "4_verdict": "HIGH-CONFIDENCE baked page pattern, partially overpainted by the master's own art (which explains the run-length spread). A naive lattice-phase test was attempted and abandoned as inconclusive: the backdrop grid is not captured by an axis-aligned integer model (page self-fit 0.386; same-x page runs vary 21-31 px).",
+  "5_detector_caveat": "296 two-level px also occur in the chest-sheen area (genuine specular), so detector counts mix a little real sheen in; counts remain labelled estimates."
+ }
 }
