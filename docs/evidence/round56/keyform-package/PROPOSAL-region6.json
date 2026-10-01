@@ -1,0 +1,285 @@
+{
+ "status": "PROPOSAL \u2014 requires an explicit decision; painting these changes the SHIPPED REST LOOK",
+ "total_outside_regions": 5848,
+ "rest_visible": 4146,
+ "latent_under_limb": 1702,
+ "components": [
+  {
+   "id": "P6-1",
+   "px": 634,
+   "bbox": [
+    625,
+    150,
+    659,
+    198
+   ],
+   "rest_visible": 0,
+   "latent": 634
+  },
+  {
+   "id": "P6-2",
+   "px": 602,
+   "bbox": [
+    658,
+    108,
+    682,
+    208
+   ],
+   "rest_visible": 0,
+   "latent": 602
+  },
+  {
+   "id": "P6-3",
+   "px": 536,
+   "bbox": [
+    541,
+    90,
+    604,
+    151
+   ],
+   "rest_visible": 536,
+   "latent": 0
+  },
+  {
+   "id": "P6-4",
+   "px": 270,
+   "bbox": [
+    349,
+    439,
+    376,
+    475
+   ],
+   "rest_visible": 270,
+   "latent": 0
+  },
+  {
+   "id": "P6-5",
+   "px": 201,
+   "bbox": [
+    627,
+    632,
+    655,
+    649
+   ],
+   "rest_visible": 201,
+   "latent": 0
+  },
+  {
+   "id": "P6-6",
+   "px": 164,
+   "bbox": [
+    641,
+    118,
+    659,
+    149
+   ],
+   "rest_visible": 0,
+   "latent": 164
+  },
+  {
+   "id": "P6-7",
+   "px": 154,
+   "bbox": [
+    639,
+    38,
+    657,
+    62
+   ],
+   "rest_visible": 154,
+   "latent": 0
+  },
+  {
+   "id": "P6-8",
+   "px": 150,
+   "bbox": [
+    755,
+    338,
+    779,
+    351
+   ],
+   "rest_visible": 150,
+   "latent": 0
+  },
+  {
+   "id": "P6-9",
+   "px": 120,
+   "bbox": [
+    638,
+    317,
+    657,
+    330
+   ],
+   "rest_visible": 120,
+   "latent": 0
+  },
+  {
+   "id": "P6-10",
+   "px": 114,
+   "bbox": [
+    570,
+    722,
+    605,
+    730
+   ],
+   "rest_visible": 114,
+   "latent": 0
+  },
+  {
+   "id": "P6-11",
+   "px": 103,
+   "bbox": [
+    885,
+    92,
+    903,
+    102
+   ],
+   "rest_visible": 103,
+   "latent": 0
+  },
+  {
+   "id": "P6-12",
+   "px": 84,
+   "bbox": [
+    886,
+    119,
+    902,
+    127
+   ],
+   "rest_visible": 84,
+   "latent": 0
+  },
+  {
+   "id": "P6-13",
+   "px": 84,
+   "bbox": [
+    691,
+    214,
+    706,
+    223
+   ],
+   "rest_visible": 0,
+   "latent": 84
+  },
+  {
+   "id": "P6-14",
+   "px": 75,
+   "bbox": [
+    887,
+    242,
+    912,
+    257
+   ],
+   "rest_visible": 75,
+   "latent": 0
+  },
+  {
+   "id": "P6-15",
+   "px": 73,
+   "bbox": [
+    820,
+    248,
+    834,
+    256
+   ],
+   "rest_visible": 73,
+   "latent": 0
+  },
+  {
+   "id": "P6-16",
+   "px": 70,
+   "bbox": [
+    141,
+    677,
+    152,
+    687
+   ],
+   "rest_visible": 70,
+   "latent": 0
+  },
+  {
+   "id": "P6-17",
+   "px": 66,
+   "bbox": [
+    392,
+    442,
+    404,
+    458
+   ],
+   "rest_visible": 66,
+   "latent": 0
+  },
+  {
+   "id": "P6-18",
+   "px": 64,
+   "bbox": [
+    600,
+    422,
+    625,
+    437
+   ],
+   "rest_visible": 64,
+   "latent": 0
+  },
+  {
+   "id": "P6-19",
+   "px": 62,
+   "bbox": [
+    906,
+    174,
+    916,
+    183
+   ],
+   "rest_visible": 62,
+   "latent": 0
+  },
+  {
+   "id": "P6-20",
+   "px": 62,
+   "bbox": [
+    970,
+    771,
+    979,
+    780
+   ],
+   "rest_visible": 62,
+   "latent": 0
+  },
+  {
+   "id": "P6-21",
+   "px": 55,
+   "bbox": [
+    998,
+    288,
+    1007,
+    297
+   ],
+   "rest_visible": 55,
+   "latent": 0
+  },
+  {
+   "id": "P6-22",
+   "px": 47,
+   "bbox": [
+    356,
+    426,
+    370,
+    432
+   ],
+   "rest_visible": 47,
+   "latent": 0
+  },
+  {
+   "id": "P6-23",
+   "px": 40,
+   "bbox": [
+    301,
+    453,
+    311,
+    467
+   ],
+   "rest_visible": 40,
+   "latent": 0
+  }
+ ],
+ "what_they_are": "pale page-blend px (baked page pattern / alpha-edge noise) inside the figure, outside the paint regions; amplified in motion by the mesh stretch (68-master-checker-defect.png)"
+}

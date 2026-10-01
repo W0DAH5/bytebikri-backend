@@ -27,11 +27,15 @@ gradients. Where this file and the master disagree, the master wins.
 |---|---|
 | `00-overview.png` | the whole figure at 1×: **amber** = paint, **blue** = the page belongs (leave transparent), numbers = region ids |
 | `R01..R05-template.png` | one per region: the master crop with the hole **cut out (transparent)** and the hole's edge outlined in amber; paint inside the hole |
+| `R01..R05-reference-2x.png` | the same surround at 2×, hole dimmed with an amber edge — the fidelity reference: every fold, gradient and highlight to continue is visible here |
+| `manifest.json` → `ramp_master_measured` | each region's measured 5-stop luminance ramp sampled from the rim (shadow → highlight), e.g. R01: 39 → 77 → 107 → 184 → 249 |
 | `R01..R05-mask.npy` | full-frame boolean masks (1536×1024), `True` = pixel to paint |
 | `manifest.json` | per-region sizes, bboxes, per-pose exposure, rim colours, anchors |
 | `SKY-page-belongs.npy` | 2,350 px where the master's own silhouette field says **sky continues** — nothing is painted; the page shows through |
 | `BODY-determined.npy` | 4,319 px where the master *does* determine skin — paint these to continue the neighbouring shading exactly (they are inside the regions) |
 | `scripts/` | the exact build provenance (see provenance note at the end) |
+| `pre-paint-defects.json` | what the interim plate holds inside each region today: gold copies, baked pattern, and 7,993 px of pure void — counted per pose |
+| `PROPOSAL-region6*.json/png`, `PROPOSAL-P6-*-mask.npy` | **a proposal, not scope**: ~5,848 page-blend px outside the regions; painting them would change the shipped rest look, so they wait for a decision |
 
 ## The regions
 
