@@ -1,0 +1,351 @@
+{
+ "declaration": "ALL pixels in R01-R05 (18,998 px) are UNRESOLVED by automated methods and await manual artist painting",
+ "rule": "paint from the master's own adjacent evidence only; where evidence is insufficient, leave explicitly unresolved; never fabricate",
+ "references": {
+  "per_region_sheet": "R0X-reference-2x.png",
+  "ramps": "manifest.json -> ramp_master_measured",
+  "control_rows": "DELIVERY/AUTHORED-STROKES.json (traced rim colours per row)",
+  "traced_structures": "REJECTION-RECORD.md + the session record (jaw shadow, gap seam profiles)"
+ },
+ "total_px": 18998,
+ "regions": {
+  "R01": {
+   "px": 15580,
+   "bbox": [
+    663,
+    14,
+    836,
+    288
+   ],
+   "exposed_at": {
+    "arm +6": 3591,
+    "arm -3": 4852,
+    "arm -7": 5182,
+    "arm -15": 6115,
+    "grapes -4.5": 1625,
+    "grapes +4.0": 1572
+   },
+   "ramp": [
+    {
+     "stop": "shadow",
+     "rgb": [
+      87,
+      30,
+      0
+     ],
+     "luma": 39.0
+    },
+    {
+     "stop": "dark-mid",
+     "rgb": [
+      134,
+      90,
+      7
+     ],
+     "luma": 77.0
+    },
+    {
+     "stop": "mid",
+     "rgb": [
+      190,
+      115,
+      15
+     ],
+     "luma": 106.7
+    },
+    {
+     "stop": "light-mid",
+     "rgb": [
+      232,
+      210,
+      111
+     ],
+     "luma": 184.3
+    },
+    {
+     "stop": "highlight",
+     "rgb": [
+      253,
+      254,
+      239
+     ],
+     "luma": 248.7
+    }
+   ],
+   "role": "the main reveal: tall crescent behind forearm, hand and fruit bunch",
+   "must_continue": [
+    "the jaw/chin contact shadow (traced: double-dip core lum 56->34, warm hue ~1:0.55:0.02, ~8px falloff, bounced-light shoulder ~79 lum)",
+    "the chest/chin skin gradient (rim anchors in AUTHORED-STROKES.json)",
+    "the cheek/jaw specular band where it enters from the right rim",
+    "the berry shades hugging the grape rim (left side)"
+   ],
+   "evidence_rows": 31,
+   "artist_notes": "both rims are figure gold on every control row; the right rim is face, the left is grapes/skin depending on height \u2014 check each row's rim kind in AUTHORED-STROKES.json"
+  },
+  "R02": {
+   "px": 2724,
+   "bbox": [
+    483,
+    121,
+    544,
+    302
+   ],
+   "exposed_at": {
+    "arm +6": 1164,
+    "arm -3": 669,
+    "arm -7": 823,
+    "arm -15": 1096
+   },
+   "ramp": [
+    {
+     "stop": "shadow",
+     "rgb": [
+      120,
+      58,
+      1
+     ],
+     "luma": 59.7
+    },
+    {
+     "stop": "dark-mid",
+     "rgb": [
+      182,
+      116,
+      24
+     ],
+     "luma": 107.3
+    },
+    {
+     "stop": "mid",
+     "rgb": [
+      238,
+      179,
+      66
+     ],
+     "luma": 161.0
+    },
+    {
+     "stop": "light-mid",
+     "rgb": [
+      252,
+      219,
+      137
+     ],
+     "luma": 202.7
+    },
+    {
+     "stop": "highlight",
+     "rgb": [
+      253,
+      241,
+      178
+     ],
+     "luma": 224.0
+    }
+   ],
+   "role": "the arm's trailing seam sliver",
+   "must_continue": [
+    "the dark gap shadow behind the arm's back edge (traced at y=320: plateau lum ~45-80 hugging the arm edge ~40% of the width, then rise to the torso rim)"
+   ],
+   "evidence_rows": 31,
+   "artist_notes": "left rim = arm back edge (bright), right rim = torso side (mid-dark); almost entirely undetermined territory \u2014 the master never showed behind this arm"
+  },
+  "R03": {
+   "px": 347,
+   "bbox": [
+    665,
+    76,
+    684,
+    95
+   ],
+   "exposed_at": {
+    "grapes -4.5": 26,
+    "grapes +4.0": 26
+   },
+   "ramp": [
+    {
+     "stop": "shadow",
+     "rgb": [
+      94,
+      44,
+      1
+     ],
+     "luma": 46.3
+    },
+    {
+     "stop": "dark-mid",
+     "rgb": [
+      149,
+      87,
+      8
+     ],
+     "luma": 81.3
+    },
+    {
+     "stop": "mid",
+     "rgb": [
+      172,
+      102,
+      8
+     ],
+     "luma": 94.0
+    },
+    {
+     "stop": "light-mid",
+     "rgb": [
+      202,
+      121,
+      2
+     ],
+     "luma": 108.3
+    },
+    {
+     "stop": "highlight",
+     "rgb": [
+      248,
+      165,
+      6
+     ],
+     "luma": 139.7
+    }
+   ],
+   "role": "shadow lens between stem, wrist and cheek",
+   "must_continue": [
+    "the dark lens: both rims dark gold, no highlights anywhere near (traced rim luma 32-200, 0 spec px on a 368 px rim)"
+   ],
+   "evidence_rows": 5,
+   "artist_notes": "small; visible only during the grape sway; keep it darker than both rims at the centre"
+  },
+  "R04": {
+   "px": 302,
+   "bbox": [
+    604,
+    43,
+    631,
+    76
+   ],
+   "exposed_at": {
+    "arm +6": 24,
+    "arm -3": 24,
+    "arm -7": 24,
+    "arm -15": 24
+   },
+   "ramp": [
+    {
+     "stop": "shadow",
+     "rgb": [
+      248,
+      197,
+      89
+     ],
+     "luma": 178.0
+    },
+    {
+     "stop": "dark-mid",
+     "rgb": [
+      252,
+      222,
+      140
+     ],
+     "luma": 204.7
+    },
+    {
+     "stop": "mid",
+     "rgb": [
+      251,
+      234,
+      163
+     ],
+     "luma": 216.0
+    },
+    {
+     "stop": "light-mid",
+     "rgb": [
+      251,
+      241,
+      190
+     ],
+     "luma": 227.3
+    },
+    {
+     "stop": "highlight",
+     "rgb": [
+      243,
+      241,
+      232
+     ],
+     "luma": 238.7
+    }
+   ],
+   "role": "lit skin continuation on the forearm's bright side",
+   "must_continue": [
+    "the bright skin gradient (rim luma 178-239, no strong edges)"
+   ],
+   "evidence_rows": 9,
+   "artist_notes": "2 rows (y72-73) are genuinely sky-bounded \u2014 no left rim exists; decide from the rows above/below"
+  },
+  "R05": {
+   "px": 45,
+   "bbox": [
+    823,
+    136,
+    831,
+    148
+   ],
+   "exposed_at": {},
+   "ramp": [
+    {
+     "stop": "shadow",
+     "rgb": [
+      247,
+      206,
+      125
+     ],
+     "luma": 192.7
+    },
+    {
+     "stop": "dark-mid",
+     "rgb": [
+      253,
+      232,
+      166
+     ],
+     "luma": 217.0
+    },
+    {
+     "stop": "mid",
+     "rgb": [
+      254,
+      246,
+      189
+     ],
+     "luma": 229.7
+    },
+    {
+     "stop": "light-mid",
+     "rgb": [
+      244,
+      244,
+      240
+     ],
+     "luma": 242.7
+    },
+    {
+     "stop": "highlight",
+     "rgb": [
+      254,
+      253,
+      246
+     ],
+     "luma": 251.0
+    }
+   ],
+   "role": "margin sliver near the face edge",
+   "must_continue": [
+    "bright gold continuation (rim luma 193-251)"
+   ],
+   "evidence_rows": 3,
+   "artist_notes": "trivial but not skippable \u2014 a 45px gold-less slit reads as a crack at -15 deg"
+  }
+ }
+}
