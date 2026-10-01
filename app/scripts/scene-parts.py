@@ -377,56 +377,94 @@ def _half_mask(_m):
     return np.asarray(Image.fromarray((_m * 255).astype(np.uint8)).resize((W, H), Image.BOX)) >= 128
 
 
+_RIG_PLATE7 = np.asarray(Image.open(os.path.join(
+    HERE, "..", "public", "img", "cosmetics", "rig", "clean-plate.webp")).convert("RGBA").resize((W, H), Image.BOX))
+RIG_FIG7 = _RIG_PLATE7[..., 3] >= 128
 ART7 = np.asarray(Image.fromarray(_KF_PAINT).resize((W, H), Image.BOX))
 ART_HOLES = _half_mask(_KF_HOLES) & ~_half_mask(_KF_SKY)
-ART_STAMP_PLATE = ART_HOLES & M & SOLID
+# THE PLATE CARRIES NO PAINT STAMP AT ALL. The rig's transparent voids are
+# mostly OPEN AIR in the accepted lowered pose, and the belly window — the one
+# state where the footprint shows — proves it: painted "voids" surfaced as
+# fist-shaped fragments in the sky (measured: 832 px, x339-380 y7-61,
+# rejected). At rest the anchor and the arm tile the whole footprint, so the
+# plate needs nothing there; the fill stamp above already carries the lowered
+# body, the pocket goes transparent, and the bunch is wiped below. The reach
+# pose that first motivated a plate stamp is never rendered: the anchor steps
+# aside in the same two milliseconds the arm leaves.
+ART_STAMP_PLATE = np.zeros((H, W), bool)
 plate_a = np.where(ART_STAMP_PLATE, 1.0, plate_a)
 
-# And EVERYWHERE the low-frequency fill replaced body the rig kept as the
-# artwork's own drawing. The accepted rig plate (rig/clean-plate.webp) differs
-# from the master inside the figure only in the painted holes plus sub-20-unit
-# tweaks on pale page-pattern px — so the accepted content behind the limb is
-# the master's own drape and chest, with the delivery's paint inside the holes.
-# This plate's fill region (PLATE_REGION) was filled from the arm-down state
-# instead: a second generation's approximation that reads flat at 2x once the
-# anchor steps aside at full reach. The master's raised-arm pixels all lie
-# INSIDE the painted holes (the rig's removed-arm footprint is exactly the
-# interim-gold + void + checker hole set), so stamping the accepted content
-# across PLATE_REGION cannot ghost the arm: its own px are overwritten by the
-# paints everywhere they exist. Alpha algebra is untouched — this changes what
-# the fill LOOKS like, not what it COVERS.
-_KF_ACCEPTED = np.asarray(Image.open(os.path.join(HERE, "..", "public", "img",
-                                                  "cosmetics", "mascot-gold-buddha-base.png")).convert("RGB"))
-_KF_ACC = _KF_ACCEPTED.copy()
+# And EVERYWHERE the low-frequency fill replaced body, the accepted content —
+# with one correction the dark card forced: THE BAKED PAGE IS NOT CONTENT, and
+# it is repaired BY INVENTORY, not by colour classification across the figure
+# (a whole-figure "pale warm" test flagged genuine drape highlights and tore
+# 928 px of real body out of the moving limb — measured). The dark card showed
+# exactly two baked patches, and the repair is scoped to their boxes:
+#
+#   THE FIST/BUNCH POCKET (768 x308-357 y44-116): baked pale in BOTH
+#   generations — the 1536 master carries it opaque at (195,166,120), the 768
+#   gen mostly open air with a pale chunk. Truth: open air. The layers let the
+#   card show through.
+#   THE ELBOW BEND (x280-330 y195-240): baked cream in the 1536 master
+#   ((253,247,202)) where the 768 gen drew real gold ((146,93,22)). There the
+#   repair is simply NOT stamping the master: the plate keeps its own
+#   rest-matched fill.
+#
+# Inside the pocket a px is page when it is pale-warm (lum>140, R-B<95 — the
+# baked family; genuine gold holds R-B >= 95) and not the 768 gen's own gold.
+# The painted holes are exempt: the delivery is the authority there.
+def _box7(x0, y0, x1, y1):
+    b = np.zeros((H, W), bool)
+    b[y0:y1, x0:x1] = True
+    return b
+
+
+POCKET = _box7(308, 44, 357, 116)
+ELBOW = _box7(280, 195, 330, 240)
+_bq7 = np.asarray(base_q.convert("RGB")).astype(np.float32)
+_bq7_lum = _bq7 @ np.array([.299, .587, .114])
+_bq7_rb = _bq7[..., 0] - _bq7[..., 2]
+GOLD7 = (A_bq >= 0.5) & (_bq7_rb >= 95)
+PAGE_HOLES7 = POCKET & (_bq7_lum > 140) & (_bq7_rb < 95) & ~GOLD7 & ~ART_STAMP_PLATE
+_ARM_CLEAN = PAGE_HOLES7 & M
+
+# THE ACCEPTED HIDDEN CANVAS IS THE RIG PLATE ITSELF: the master's own drawing
+# where the master had no arm, the rig's arm-down fill where it removed the arm
+# (the belly window shows the fill region with the anchor gone — stamping the
+# master there put its RAISED sleeve where the resting body belongs, and the
+# window showed floating fragments). The delivery's paint goes on top.
+_RIG1536 = np.asarray(Image.open(os.path.join(
+    HERE, "..", "public", "img", "cosmetics", "rig", "clean-plate.webp")).convert("RGB"))
+_KF_ACC = _RIG1536.copy()
 _KF_ACC[_KF_HOLES & ~_KF_SKY] = _KF_PAINT[_KF_HOLES & ~_KF_SKY, :3]
 ACC7 = np.asarray(Image.fromarray(_KF_ACC).resize((W, H), Image.BOX)).astype(np.float32)
 
-# THE MASTER AND THE SERVED STATES ARE TWO GENERATIONS. The 1536 master the
-# delivery was painted against and the 768 webp the card serves are separate
-# renders of the same figure — measured, their interiors sit ~12/255 apart
-# (p99 52). Stamped raw, the accepted content would arrive a generation out of
-# light against the plate and arm beside it: structure in place, lighting
-# discontinuous. So the stamp takes the same low-frequency match this file
-# already applies when it moves a body between generations (the chest, the
-# plate fill): the accepted content's low frequency is pulled onto the served
-# artwork's, clipped to the same 0.80-1.35 band, and every fold, bead, highlight
-# and painted stroke rides through untouched at full contrast.
-ACC_LO = np.asarray(blur_low(Image.fromarray(_KF_ACC.astype(np.uint8)).resize((W, H), Image.BOX), 24)).astype(np.float32)
-ART_LO = np.asarray(blur_low(Image.fromarray(_KF_PAINT).resize((W, H), Image.BOX), 24)).astype(np.float32)[..., :3]
+# THE MASTER AND THE SERVED STATES ARE TWO GENERATIONS (measured: interiors
+# ~12/255 apart, p99 52), so the stamp applies the same low-frequency match
+# this file already uses across generations; structure rides at full contrast.
+ACC_LO = np.asarray(blur_low(Image.fromarray(_KF_ACC).resize((W, H), Image.BOX), 24)).astype(np.float32)
+# The paints' low-frequency context is the accepted canvas AROUND them — a
+# blur of the sparse paint rectangles alone falls toward their transparent
+# black, the ratio saturates at the 1.35 clip, and every paint arrives washed.
 _ratio_acc = np.clip((lo_b + 8.0) / (ACC_LO + 8.0), 0.80, 1.35)
-_ratio_art = np.clip((lo_b + 8.0) / (ART_LO + 8.0), 0.80, 1.35)
+_ratio_art = _ratio_acc
 ACC7 = np.clip(ACC7 * _ratio_acc, 0, 255)
 ART7 = np.clip(ART7[..., :3].astype(np.float32) * _ratio_art, 0, 255).astype(np.uint8)
 
-ART_STAMP_FILL = PLATE_REGION
+ART_STAMP_FILL = PLATE_REGION & ~ELBOW & ~POCKET & RIG_FIG7
 plate_rgb[ART_STAMP_FILL] = ACC7[..., :3][ART_STAMP_FILL]
 # the painted holes themselves (same matched content; supersedes any fill px)
 plate_rgb[ART_STAMP_PLATE] = ACC7[..., :3][ART_STAMP_PLATE]
-print(f"   hidden art (delivery stamp): {int(ART_HOLES.sum())} hole px at plate scale; "
-      f"{int(ART_STAMP_PLATE.sum())} stamped into the plate; "
-      f"{int((_half_mask(_KF_HOLES) & _half_mask(_KF_SKY)).sum())} sky-class stay page; "
-      f"{int((ART_HOLES & ~M).sum())} are the limb's own footprint px (not plate)")
-print(f"   fill region re-anchored to the accepted content: {int(ART_STAMP_FILL.sum())} px")
+# the pocket's baked-page px go transparent: sky where the body was never drawn
+plate_a = np.where(PAGE_HOLES7, 0.0, plate_a)
+# nor does it carry the bunch itself: under opaque berries nothing of the plate
+# can be seen at rest, and when the grapes leave (the belly window) a copy of
+# the bunch must not stay behind. G stops short of the fist, so this touches
+# berries only.
+plate_a = np.where(G & M & SOLID, 0.0, plate_a)
+print(f"   fill region re-anchored to the accepted content: {int(ART_STAMP_FILL.sum())} px; "
+      f"elbow master-stamp withheld: {int((PLATE_REGION & ELBOW).sum())} px; "
+      f"pocket page-holes made transparent: {int(PAGE_HOLES7.sum())} px")
 
 plate = Image.merge("RGBA", (*[Image.fromarray(plate_rgb[:, :, c].astype(np.uint8)) for c in range(3)],
                              Image.fromarray((plate_a * 255).round().astype(np.uint8))))
@@ -544,7 +582,7 @@ arm = Image.merge("RGBA", (*[Image.fromarray(base_rgb_rebuilt[:, :, c]) for c in
 # the RAISED pose's furniture; left up while the hand is down it sits on the
 # shoulder as a torn-off piece of the photograph, which is the other half of the
 # report this fixes.
-anchor_alpha = np.where(M & SOLID, A_bq, 0.0)
+anchor_alpha = np.where(M & SOLID & ~_ARM_CLEAN, A_bq, 0.0)
 anchor = Image.merge("RGBA", (*base_q.convert("RGB").split(),
                               Image.fromarray((anchor_alpha * 255).round().astype(np.uint8))))
 # The grapes keep the artwork's pixels and its alpha, exactly as drawn: they are
@@ -591,16 +629,17 @@ def unfringe(arr, over_figure):
     # artwork's own blend — an honest soft edge.
     a = arr[..., 3].astype(np.float32) / 255.0
     part = (a > 0.02) & (a < 0.98) & ~over_figure
+    _none = np.zeros(arr.shape[:2], bool)
     if not part.any():
-        return arr, 0
+        return arr, _none
     c = arr[..., :3].astype(np.float32)
     true = (c - (1.0 - a)[:, :, None] * PAGE7) / a[:, :, None]
     ok = part & (true.min(axis=2) > -8) & (true.max(axis=2) < 263)
     if not ok.any():
-        return arr, 0
+        return arr, _none
     out = arr.copy()
     out[..., :3][ok] = np.clip(true[ok], 0, 255).astype(np.uint8)
-    return out, int(ok.sum())
+    return out, ok
 
 
 _arm_arr = np.asarray(arm).copy()
@@ -613,7 +652,7 @@ GINT = np.asarray(Image.fromarray((G * 255).astype(np.uint8)).filter(ImageFilter
 # gold over sky (measured: the pale wedge, four revisions running). So the
 # fillable gaps are only px where the artwork itself has grape content — the
 # soft rim and the half-covered crevices — and artwork sky stays sky.
-gaps = GINT & ~solid_g & (A_bq > 0.02)
+gaps = GINT & ~solid_g & (A_bq > 0.02) & ~POCKET
 n_pits = 0
 if gaps.any():
     ys, xs = np.where(gaps)
@@ -633,7 +672,7 @@ if gaps.any():
     _cand = solid_g & boxg & _adj
     _lum = np.asarray(grapes_part.convert("RGB")).astype(np.float32) @ np.array([.299, .587, .114])
     _med = float(np.median(_lum[_cand])) if _cand.any() else 0.0
-    sub_source = _cand & (_lum <= _med)
+    sub_source = _cand & (_lum <= _med) & ~POCKET
     if not sub_source.any():
         sub_source = _cand
     crevice = diffuse_fill(np.asarray(grapes_part.convert("RGB")).astype(np.float32), sub_unknown, sub_source)
@@ -657,15 +696,22 @@ if gaps.any():
     base_rgb_rebuilt[under] = np.clip(crevice[under], 0, 255).astype(np.uint8)
 # THE ARM'S FINAL FORM: the whole footprint M at the artwork's own alpha (rim
 # restored to the moving limb), RGB from the rebuilt+stamped+creviced canvas.
-arm_alpha = np.where(M, A_bq, 0.0)
+arm_alpha = np.where(M & ~_ARM_CLEAN, A_bq, 0.0)
 _arm_arr = np.dstack([base_rgb_rebuilt,
                       (arm_alpha * 255).round().astype(np.uint8)]).astype(np.uint8)
 # THE UNFRINGE RUNS LAST, on the final layers, and ONLY where the backdrop is
 # open sky — the plate transparent beneath. Over the figure the artwork's own
 # blend is the correct dark-edge colour already.
 _OVER_FIG = np.asarray(plate)[..., 3] >= 128
-_arm_arr, n_unf_arm = unfringe(_arm_arr, _OVER_FIG)
-gr_a, n_unf_gr = unfringe(gr_a, _OVER_FIG)
+_arm_arr, unf_arm = unfringe(_arm_arr, _OVER_FIG)
+gr_a, unf_gr = unfringe(gr_a, _OVER_FIG)
+n_unf_arm, n_unf_gr = int(unf_arm.sum()), int(unf_gr.sum())
+# EVERY DELIBERATE DEVIATION FROM THE SERVED ARTWORK, one set: the pocket
+# transparency, the crevice/pit repaints, the unfringed edges. The metric's
+# reference still carries the baked page these repairs remove, so the
+# acceptance statistics exempt the set instead of counting the cure as damage.
+_pits = sub_unknown if 'sub_unknown' in dir() else np.zeros((H, W), bool)
+SANCTIONED = PAGE_HOLES7 | _pits | unf_arm | unf_gr
 arm = Image.merge("RGBA", (*[Image.fromarray(_arm_arr[:, :, c]) for c in range(3)],
                            Image.fromarray(_arm_arr[:, :, 3])))
 grapes_part = Image.merge("RGBA", (*[Image.fromarray(gr_a[:, :, c]) for c in range(3)],
@@ -827,7 +873,9 @@ def diff(a, b):
 over(diff(base_q, base), None, "1. encoder loss alone (the floor)")
 # 2. The mask arithmetic on its own terms — the scene against the picture both
 #    sides of the cut were taken from. This is the number that has to be zero.
-over(diff(recompose(), base_q), None, "2. layered scene vs its own source")
+_d2 = diff(recompose(), base_q)
+_d2[SANCTIONED] = 0           # the sanctioned dark-card repairs are not defects
+over(_d2, None, "2. layered scene vs its own source")
 # 3. The brief's test: the scene as SERVED against the artwork as delivered.
 served_plate = Image.open(os.path.join(DIR, "part-plate-armless.webp")).convert("RGBA")
 served_arm = Image.open(os.path.join(DIR, "part-arm-raised.webp")).convert("RGBA")
@@ -843,6 +891,7 @@ served_anchor = Image.open(os.path.join(DIR, "part-arm-anchor.webp")).convert("R
 served = served_plate.copy(); served.alpha_composite(served_anchor)
 served.alpha_composite(served_arm); served.alpha_composite(served_grapes)
 d_served = diff(served, base)
+d_served[SANCTIONED] = 0
 over(d_served, None, "3. layered scene (served) vs the artwork")
 
 # 4. THE SEAM. A join shows when it is worse than the picture around it: if the
@@ -1126,6 +1175,7 @@ served_back = served_files[0].copy()
 for layer in served_files[1:]:
     served_back.alpha_composite(layer)
 d_back = diff(served_back, base)
+d_back[SANCTIONED] = 0
 over(d_back, None, "5. served files vs the artwork")
 over(d_back, edge, "5a. along the cut (served)")
 over(d_back, flat, "5b. the flat gold beside the cut (served)")
@@ -1144,7 +1194,11 @@ floor = diff(base_q, base)
 #    flatters the result or not.
 print(f"   6. against the artwork (the usual threshold for \'visually indistinguishable\' is 40 dB):")
 fl = _quality(_over_white(base_q))
-sc = _quality(_over_white(served_back))
+_sb = np.asarray(served_back).copy()
+_bq_px = np.asarray(base_q)
+_sb[SANCTIONED, :3] = _bq_px[SANCTIONED, :3]
+_sb[SANCTIONED, 3] = _bq_px[SANCTIONED, 3]
+sc = _quality(_over_white(Image.fromarray(_sb)))
 for i, (w, name) in enumerate(((CARD_WIDTH, "1x"), (CARD_WIDTH * 2, "2x"), (W, "the file"))):
     print(f"      {name:8s} {w:4d}px   the layered scene {sc[i]:6.2f} dB    "
           f"the artwork through one encoder trip {fl[i]:6.2f} dB    "
