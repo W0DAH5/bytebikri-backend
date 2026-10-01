@@ -1,0 +1,41 @@
+{
+ "executor": "app/scripts/paint-keyforms-manual.py (draws only authored artwork)",
+ "authored": "DELIVERY/AUTHORED-STROKES.json + the hand-set specs in this file",
+ "regions": {
+  "R01": {
+   "px": 15580,
+   "resolved_px": 15580,
+   "unresolved_px": 0,
+   "unresolved_pct": 0.0,
+   "overlays": []
+  },
+  "R02": {
+   "px": 2724,
+   "resolved_px": 2715,
+   "unresolved_px": 9,
+   "unresolved_pct": 0.3,
+   "overlays": []
+  },
+  "R03": {
+   "px": 347,
+   "resolved_px": 347,
+   "unresolved_px": 0,
+   "unresolved_pct": 0.0,
+   "overlays": []
+  },
+  "R04": {
+   "px": 302,
+   "resolved_px": 268,
+   "unresolved_px": 34,
+   "unresolved_pct": 11.3,
+   "overlays": []
+  },
+  "R05": {
+   "px": 45,
+   "resolved_px": 45,
+   "unresolved_px": 0,
+   "unresolved_pct": 0.0,
+   "overlays": []
+  }
+ }
+}

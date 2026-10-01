@@ -1,23 +1,23 @@
 {
- "mode": "baseline",
+ "mode": "delivery",
  "regions": {
   "R01": {
    "nonhole_px_changed": 0,
    "hole_px": 15580,
    "hole_px_to_paint": 15580,
-   "hole_px_painted_opaque": 8951,
+   "hole_px_painted_opaque": 15580,
    "sky_px_in_hole": 0,
    "sky_px_in_crop": 1769,
-   "crop_sky_left_transparent": 1769
+   "crop_sky_left_transparent": 0
   },
   "R02": {
    "nonhole_px_changed": 0,
    "hole_px": 2724,
    "hole_px_to_paint": 2724,
-   "hole_px_painted_opaque": 1384,
+   "hole_px_painted_opaque": 2715,
    "sky_px_in_hole": 0,
    "sky_px_in_crop": 527,
-   "crop_sky_left_transparent": 527
+   "crop_sky_left_transparent": 0
   },
   "R03": {
    "nonhole_px_changed": 0,
@@ -32,10 +32,10 @@
    "nonhole_px_changed": 0,
    "hole_px": 302,
    "hole_px_to_paint": 302,
-   "hole_px_painted_opaque": 278,
+   "hole_px_painted_opaque": 268,
    "sky_px_in_hole": 0,
    "sky_px_in_crop": 54,
-   "crop_sky_left_transparent": 54
+   "crop_sky_left_transparent": 0
   },
   "R05": {
    "nonhole_px_changed": 0,
@@ -44,7 +44,7 @@
    "hole_px_painted_opaque": 45,
    "sky_px_in_hole": 0,
    "sky_px_in_crop": 95,
-   "crop_sky_left_transparent": 95
+   "crop_sky_left_transparent": 0
   }
  },
  "plate_vs_master_outside_holes_diff_px": 604984,
@@ -55,15 +55,14 @@
  "rest_vs_master_on_figure_diff_px": 0,
  "figure_px_compared": 968982,
  "sheets": {
-  "pose_row": "docs/evidence/round56/67-acceptance-poses-baseline.png",
+  "pose_row": "docs/evidence/round56/67-acceptance-poses-painted.png",
   "region_closeups": [
-   "67-acceptance-r01-{2x,4x}-baseline.png",
-   "67-acceptance-r02-{2x,4x}-baseline.png",
-   "67-acceptance-r03-{2x,4x}-baseline.png",
-   "67-acceptance-r04-{2x,4x}-baseline.png",
-   "67-acceptance-r05-{2x,4x}-baseline.png"
+   "67-acceptance-r01-{2x,4x}-painted.png",
+   "67-acceptance-r02-{2x,4x}-painted.png",
+   "67-acceptance-r03-{2x,4x}-painted.png",
+   "67-acceptance-r04-{2x,4x}-painted.png",
+   "67-acceptance-r05-{2x,4x}-painted.png"
   ]
  },
- "note": "baseline: the interim plate's fill is not a delivery; hole_px_painted_opaque < hole_px_to_paint is the deficit the paint must close",
- "verdict": "PASS (pending the 1x/2x/4x visual inspection)"
+ "verdict": "FAIL"
 }
