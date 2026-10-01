@@ -1,0 +1,69 @@
+{
+ "mode": "baseline",
+ "regions": {
+  "R01": {
+   "nonhole_px_changed": 0,
+   "hole_px": 15580,
+   "hole_px_to_paint": 15580,
+   "hole_px_painted_opaque": 8951,
+   "sky_px_in_hole": 0,
+   "sky_px_in_crop": 1769,
+   "crop_sky_left_transparent": 1769
+  },
+  "R02": {
+   "nonhole_px_changed": 0,
+   "hole_px": 2724,
+   "hole_px_to_paint": 2724,
+   "hole_px_painted_opaque": 1384,
+   "sky_px_in_hole": 0,
+   "sky_px_in_crop": 527,
+   "crop_sky_left_transparent": 527
+  },
+  "R03": {
+   "nonhole_px_changed": 0,
+   "hole_px": 347,
+   "hole_px_to_paint": 347,
+   "hole_px_painted_opaque": 347,
+   "sky_px_in_hole": 0,
+   "sky_px_in_crop": 0,
+   "crop_sky_left_transparent": 0
+  },
+  "R04": {
+   "nonhole_px_changed": 0,
+   "hole_px": 302,
+   "hole_px_to_paint": 302,
+   "hole_px_painted_opaque": 278,
+   "sky_px_in_hole": 0,
+   "sky_px_in_crop": 54,
+   "crop_sky_left_transparent": 54
+  },
+  "R05": {
+   "nonhole_px_changed": 0,
+   "hole_px": 45,
+   "hole_px_to_paint": 45,
+   "hole_px_painted_opaque": 45,
+   "sky_px_in_hole": 0,
+   "sky_px_in_crop": 95,
+   "crop_sky_left_transparent": 95
+  }
+ },
+ "plate_vs_master_outside_holes_diff_px": 604984,
+ "paint_px_not_limb_covered": 0,
+ "paint_px_not_rest_covered": 0,
+ "rig_restored_clean": true,
+ "rest_alpha_diff_px": 0,
+ "rest_vs_master_on_figure_diff_px": 0,
+ "figure_px_compared": 968982,
+ "sheets": {
+  "pose_row": "docs/evidence/round56/67-acceptance-poses-baseline.png",
+  "region_closeups": [
+   "67-acceptance-r01-{2x,4x}-baseline.png",
+   "67-acceptance-r02-{2x,4x}-baseline.png",
+   "67-acceptance-r03-{2x,4x}-baseline.png",
+   "67-acceptance-r04-{2x,4x}-baseline.png",
+   "67-acceptance-r05-{2x,4x}-baseline.png"
+  ]
+ },
+ "note": "baseline: the interim plate's fill is not a delivery; hole_px_painted_opaque < hole_px_to_paint is the deficit the paint must close",
+ "verdict": "PASS (pending the 1x/2x/4x visual inspection)"
+}

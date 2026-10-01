@@ -92,9 +92,16 @@ These are the same tests the machine path failed; the paint is judged by them
 
 - Deliver each region as a **full-size PNG the same dimensions as its template,
   same offset** (recorded per region in `manifest.json` as `template_offset`),
-  with **every hole pixel painted and every non-hole pixel identical to the
-  template's**. The hole must be fully opaque; `SKY-page-belongs` areas must
-  remain transparent.
+  with **every non-hole pixel identical to the MASTER's** (the template is a
+  viewing aid; its amber outline is guidance, not content to reproduce).
+  Every hole pixel must be **painted, fully opaque**. (The `SKY-page-belongs`
+  arcs — blue in `00-overview.png` — sit just OUTSIDE the region components;
+  leave anything blue untouched.) Do not reproduce the master's baked
+  checkerboard anywhere: the acceptance renders ground the page in magenta, and
+  a painted checker square reads as a hole in the figure. The interim plate's
+  guesses visibly contain copied checkerboard — that is one of the defects the
+  paint replaces. The acceptance harness
+  (`app/scripts/keyform-acceptance.py --paint <dir>`) enforces all of this.
 - Acceptance composites the paint into the master, re-renders the four poses
   through the frozen rig, and compares: composed REST must equal the master
   exactly outside the holes; each pose is inspected at 1×/2×/4× for the five
