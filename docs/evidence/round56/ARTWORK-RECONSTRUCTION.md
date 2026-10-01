@@ -137,4 +137,18 @@ is the next phase's job.
   determined, amber = undetermined).
 - Flag list produced for the painted corrective artwork.
 - Validation harness built and the method's weakness measured.
-- **No production wiring**, per the brief, until the artwork passes inspection.
+- **Hold-out verdict (see `HOLDOUT-VALIDATION.md`): the machine reconstruction
+  path FAILS the five named comparisons** — the seam is invisible everywhere and
+  the interior content fails (specular peaks collapse, fold creases halve,
+  texture drops). Nothing in the exposed set can be faithfully recovered by it.
+  Stopped, per the brief, rather than invent.
+- **Painter package delivered: `keyform-package/`** (`PAINTER-BRIEF.md`) — 5
+  regions, 19,000 px to paint, 2,350 px left to the page, with per-pose exposure,
+  rim anchors, cut-out templates and an overview sheet. Its exposure construction
+  reproduces this document's recorded set exactly (raw 12,893/12,892, grown
+  21,350 exact, plate-opaque 11,053 exact); its classes use the FIXED solver with
+  a stated rule, because the recorded class counts came from the pre-fix solver
+  whose border-touching mask inhaled allocator garbage (see §6's neighbour,
+  `HOLDOUT-VALIDATION.md` §1).
+- **No production wiring**, per the brief, until the painted artwork passes
+  inspection at 1×/2×/4× across REST, −3°, −7°, −15°.
