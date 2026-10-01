@@ -1,0 +1,14 @@
+{
+ "what": "page-blend pixels inside the master's silhouette: pale, two-level flat-gray areas at the backdrop's 241.5/253.5 luminance that the master's own figure area contains \u2014 page pattern baked into crevices (grape-bunch gaps, the vine/wrist/face passage) and/or recovered-alpha edge noise along the bunch. The master alone cannot distinguish baked pattern from alpha error; both look identical and both copy into the plate.",
+ "detector_estimate_px": 6281,
+ "confidence": "PHENOMENON PROVEN (visible in the master crop, in the REST render, and amplified in every keyform render); the exact pixel count is detector-based and mixes baked gaps with alpha-edge noise",
+ "in_package_holes": 433,
+ "outside_holes": 5848,
+ "manifestations": {
+  "at_rest": "faint pale patches around the vine and bunch gaps \u2014 part of the shipped look",
+  "in_motion": "AMPLIFIED: the mesh stretch widens the limb's sky-tinted rim band (the same px family as the recorded cut-edge staircase), so the wrist/vine/face passage shows ~1,700 changed pale px at every keyform (-3/-7/-15 alike)"
+ },
+ "relation_to_package": "433 px fall inside the paint regions and the keyform repaint replaces them; the rest is outside \u2014 visible at rest (the artist's shipped look), and its in-motion amplification rides on LIMB rim px, which the frozen phase forbids touching",
+ "would_fix": "(a) include the affected crevice pixels in the painted keyform scope (region #6, grape-bunch gaps + vine passage, ~5,800 px outside current holes) \u2014 needs a decision; (b) limb-rim corrective keyforms at the keyforms \u2014 a rig-side remedy, forbidden this phase. Both recorded, not applied.",
+ "evidence": "68-master-checker-defect.png"
+}

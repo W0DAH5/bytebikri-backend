@@ -45,6 +45,13 @@ gradients. Where this file and the master disagree, the master wins.
 
 Region-by-region painting notes:
 
+- **A third defect the paint should normalise where it crosses it:** the
+  master's own crevices (grape-bunch gaps, the vine/wrist/face passage) contain
+  pale page-blend pixels — page pattern baked into the master (or alpha-edge
+  noise; the master cannot tell us which). Faint at rest, amplified by the mesh
+  stretch in motion (`../68-master-checker-defect.png`,
+  `master-checker-inventory.json`). 433 px of it fall inside the regions: paint
+  gold there, not pale page.
 - **R01 — the main reveal.** A tall crescent behind the raised forearm, the hand
   and the fruit bunch, from the top of the frame down to the cheek. What it must
   become, top to bottom: **sky** (nothing — see the blue arc in `00-overview`:

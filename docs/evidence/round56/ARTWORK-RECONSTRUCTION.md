@@ -152,3 +152,29 @@ is the next phase's job.
   `HOLDOUT-VALIDATION.md` §1).
 - **No production wiring**, per the brief, until the painted artwork passes
   inspection at 1×/2×/4× across REST, −3°, −7°, −15°.
+
+## 9. Pre-paint defect specification (this window, rig untouched)
+
+Measured so the painter knows exactly what the paint replaces, and so the plate's
+defects are counted rather than guessed:
+
+- **Inside the 18,998 paint px** (`keyform-package/pre-paint-defects.json`):
+  10,280 px carry the interim plate's copied gold, 182 px carry baked page
+  pattern, and **7,993 px are transparent voids — nothing at all**. Every arm
+  keyform opens pure voids (−3°: 5,545 px, −7°: 6,029, −15°: 7,235; all void);
+  the grape sway opens 501 void + 39 checker + 2,404 interim-gold px.
+- **A third defect, in the master itself** (`68-master-checker-defect.png`,
+  `master-checker-inventory.json`): pale page-blend pixels inside the figure's
+  crevices — page pattern baked into the grape-bunch gaps and the vine/wrist/face
+  passage (or recovered-alpha edge noise; the master cannot distinguish). Faint
+  at rest, **amplified in motion**: the mesh stretch widens the limb's sky-tinted
+  rim band (the same pixel family as §6's cut-edge staircase), so ~1,700 changed
+  pale px show in the R01 opening at every keyform. 433 px fall inside the paint
+  regions (the keyform repaints them); the rest is outside and its amplification
+  rides on limb-rim pixels — **rig-side remedies are forbidden this phase;
+  recorded for the decision.**
+- Detector honesty: a loose near-gray test produced 12,483 px but also matched
+  the master's own specular flats (8,291 px control hits); the recorded number
+  uses the strict two-level flat test (6,281 px), and even that mixes baked gaps
+  with alpha-edge noise. The phenomenon is proven visually; the count is an
+  estimate.

@@ -1,0 +1,89 @@
+{
+ "holes": 18998,
+ "plate_gold": 10280,
+ "plate_checker": 182,
+ "plate_void": 7993,
+ "classes": {
+  "body": 4319,
+  "undetermined": 14679
+ },
+ "recorded_classes": {
+  "body": 3389,
+  "sky": 5517,
+  "undetermined": 12444
+ },
+ "per_region": {
+  "R01": {
+   "px": 15580,
+   "gold": 8227,
+   "checker": 181,
+   "void": 6629,
+   "body": 4203,
+   "undet": 11377
+  },
+  "R02": {
+   "px": 2724,
+   "gold": 1384,
+   "checker": 0,
+   "void": 1340,
+   "body": 89,
+   "undet": 2635
+  },
+  "R03": {
+   "px": 347,
+   "gold": 347,
+   "checker": 0,
+   "void": 0,
+   "body": 0,
+   "undet": 347
+  },
+  "R04": {
+   "px": 302,
+   "gold": 278,
+   "checker": 0,
+   "void": 24,
+   "body": 19,
+   "undet": 283
+  },
+  "R05": {
+   "px": 45,
+   "gold": 44,
+   "checker": 1,
+   "void": 0,
+   "body": 8,
+   "undet": 37
+  }
+ },
+ "per_pose": {
+  "REST": {
+   "exposed_in_holes": 0,
+   "void_revealed": 0,
+   "checker_revealed": 0,
+   "gold_ok_revealed": 0
+  },
+  "-3": {
+   "exposed_in_holes": 5545,
+   "void_revealed": 5545,
+   "checker_revealed": 0,
+   "gold_ok_revealed": 0
+  },
+  "-7": {
+   "exposed_in_holes": 6029,
+   "void_revealed": 6029,
+   "checker_revealed": 0,
+   "gold_ok_revealed": 0
+  },
+  "-15": {
+   "exposed_in_holes": 7235,
+   "void_revealed": 7235,
+   "checker_revealed": 0,
+   "gold_ok_revealed": 0
+  },
+  "grapes sway": {
+   "exposed_in_holes": 3121,
+   "void_revealed": 501,
+   "checker_revealed": 39,
+   "gold_ok_revealed": 2404
+  }
+ }
+}
