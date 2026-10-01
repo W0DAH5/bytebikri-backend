@@ -334,6 +334,100 @@ plate_rgb = np.clip(np.asarray(base_q.convert("RGB")).astype(np.float32) * (~(M 
 # softness.
 plate_a = np.where(M & SOLID, A_rq, np.where(M, 0.0, A_bq))
 
+# ── 2.5 THE HIDDEN RECONSTRUCTION, FROM THE ACCEPTED DELIVERY ───────────────
+# The fill above answers "what is behind the arm?" with the arm-down state — a
+# second generation's body, low-frequency matched. The keyform package
+# (docs/evidence/round56/keyform-package) holds the accepted answer painted
+# from the artwork itself: DELIVERY/R0X-paint.png at manifest template
+# geometry, 1536x1024 — one painted reconstruction for every pixel the limb's
+# gestures can uncover, accepted by the numeric gate AND the 1x/2x/4x eye
+# (see DELIVERY/STATUS.md). This stamps that artwork into the plate, so the
+# served scene shows the same hidden art the evidence shows. The rules it
+# keeps:
+#
+#   * ONLY THE HOLES. `R0X-mask.npy` minus `SKY-page-belongs.npy` is the exact
+#     accepted set (18,998 px at 1536); not one pixel outside it is touched.
+#   * THE PAGE STAYS THE PAGE. Sky-class pixels are excluded: where the
+#     artwork says open air, the plate stays transparent.
+#   * SOLID ONLY. Stamps land on `M & SOLID` — pixels the resting limb covers
+#     opaquely — so the resting composite's algebra (a + p(1-a) = a) is
+#     untouched and the stamp is invisible at rest by construction. The soft
+#     rim stays thin: an opaque plate pixel under a partial limb alpha would
+#     hard the limb's own antialiased edge.
+#   * MAJORITY GEOMETRY. The 1536 masks come down to the plate's 768x512 by
+#     box average cut at half — the same MATTE convention every mask in this
+#     file uses.
+#
+# What shows at rest is unchanged; what shows when the limb turns is now the
+# accepted reconstruction instead of a second generation's approximation.
+import json as _json
+_KF = os.path.join(HERE, "..", "..", "docs", "evidence", "round56", "keyform-package")
+_KF_MANIFEST = _json.load(open(os.path.join(_KF, "manifest.json")))
+_KF_SKY = np.load(os.path.join(_KF, "SKY-page-belongs.npy")) > 0
+_KF_HOLES = np.zeros((1024, 1536), bool)
+_KF_PAINT = np.zeros((1024, 1536, 4), np.uint8)
+for _r in _KF_MANIFEST:
+    _KF_HOLES |= np.load(os.path.join(_KF, _r["id"] + "-mask.npy")) > 0
+    _p = np.asarray(Image.open(os.path.join(_KF, "DELIVERY", _r["id"] + "-paint.png")).convert("RGBA"))
+    _ox, _oy = _r["template_offset"]
+    _KF_PAINT[_oy:_oy + _p.shape[0], _ox:_ox + _p.shape[1]] = _p
+
+
+def _half_mask(_m):
+    return np.asarray(Image.fromarray((_m * 255).astype(np.uint8)).resize((W, H), Image.BOX)) >= 128
+
+
+ART7 = np.asarray(Image.fromarray(_KF_PAINT).resize((W, H), Image.BOX))
+ART_HOLES = _half_mask(_KF_HOLES) & ~_half_mask(_KF_SKY)
+ART_STAMP_PLATE = ART_HOLES & M & SOLID
+plate_a = np.where(ART_STAMP_PLATE, 1.0, plate_a)
+
+# And EVERYWHERE the low-frequency fill replaced body the rig kept as the
+# artwork's own drawing. The accepted rig plate (rig/clean-plate.webp) differs
+# from the master inside the figure only in the painted holes plus sub-20-unit
+# tweaks on pale page-pattern px — so the accepted content behind the limb is
+# the master's own drape and chest, with the delivery's paint inside the holes.
+# This plate's fill region (PLATE_REGION) was filled from the arm-down state
+# instead: a second generation's approximation that reads flat at 2x once the
+# anchor steps aside at full reach. The master's raised-arm pixels all lie
+# INSIDE the painted holes (the rig's removed-arm footprint is exactly the
+# interim-gold + void + checker hole set), so stamping the accepted content
+# across PLATE_REGION cannot ghost the arm: its own px are overwritten by the
+# paints everywhere they exist. Alpha algebra is untouched — this changes what
+# the fill LOOKS like, not what it COVERS.
+_KF_ACCEPTED = np.asarray(Image.open(os.path.join(HERE, "..", "public", "img",
+                                                  "cosmetics", "mascot-gold-buddha-base.png")).convert("RGB"))
+_KF_ACC = _KF_ACCEPTED.copy()
+_KF_ACC[_KF_HOLES & ~_KF_SKY] = _KF_PAINT[_KF_HOLES & ~_KF_SKY, :3]
+ACC7 = np.asarray(Image.fromarray(_KF_ACC).resize((W, H), Image.BOX)).astype(np.float32)
+
+# THE MASTER AND THE SERVED STATES ARE TWO GENERATIONS. The 1536 master the
+# delivery was painted against and the 768 webp the card serves are separate
+# renders of the same figure — measured, their interiors sit ~12/255 apart
+# (p99 52). Stamped raw, the accepted content would arrive a generation out of
+# light against the plate and arm beside it: structure in place, lighting
+# discontinuous. So the stamp takes the same low-frequency match this file
+# already applies when it moves a body between generations (the chest, the
+# plate fill): the accepted content's low frequency is pulled onto the served
+# artwork's, clipped to the same 0.80-1.35 band, and every fold, bead, highlight
+# and painted stroke rides through untouched at full contrast.
+ACC_LO = np.asarray(blur_low(Image.fromarray(_KF_ACC.astype(np.uint8)).resize((W, H), Image.BOX), 24)).astype(np.float32)
+ART_LO = np.asarray(blur_low(Image.fromarray(_KF_PAINT).resize((W, H), Image.BOX), 24)).astype(np.float32)[..., :3]
+_ratio_acc = np.clip((lo_b + 8.0) / (ACC_LO + 8.0), 0.80, 1.35)
+_ratio_art = np.clip((lo_b + 8.0) / (ART_LO + 8.0), 0.80, 1.35)
+ACC7 = np.clip(ACC7 * _ratio_acc, 0, 255)
+ART7 = np.clip(ART7[..., :3].astype(np.float32) * _ratio_art, 0, 255).astype(np.uint8)
+
+ART_STAMP_FILL = PLATE_REGION
+plate_rgb[ART_STAMP_FILL] = ACC7[..., :3][ART_STAMP_FILL]
+# the painted holes themselves (same matched content; supersedes any fill px)
+plate_rgb[ART_STAMP_PLATE] = ACC7[..., :3][ART_STAMP_PLATE]
+print(f"   hidden art (delivery stamp): {int(ART_HOLES.sum())} hole px at plate scale; "
+      f"{int(ART_STAMP_PLATE.sum())} stamped into the plate; "
+      f"{int((_half_mask(_KF_HOLES) & _half_mask(_KF_SKY)).sum())} sky-class stay page; "
+      f"{int((ART_HOLES & ~M).sum())} are the limb's own footprint px (not plate)")
+print(f"   fill region re-anchored to the accepted content: {int(ART_STAMP_FILL.sum())} px")
+
 plate = Image.merge("RGBA", (*[Image.fromarray(plate_rgb[:, :, c].astype(np.uint8)) for c in range(3)],
                              Image.fromarray((plate_a * 255).round().astype(np.uint8))))
 
@@ -407,6 +501,16 @@ else:
 
 # The arm keeps the artwork's OWN alpha where the artwork shows it — the whole
 # footprint EXCEPT the cluster's soft rim.
+
+# The same delivery stamp where the arm itself was rebuilt: under the grape
+# cluster the hidden pixels are a Jacobi diffusion (the one sanctioned
+# invention above); the accepted delivery painted those same pixels from the
+# artwork's own continuation, so where its holes reach the rebuilt patch the
+# diffusion gives way to the delivery. At rest the cluster covers every one of
+# these pixels opaquely, so this stamp is also invisible in the resting pose.
+ART_STAMP_ARM = ART_HOLES & hidden & SOLID
+base_rgb_rebuilt[ART_STAMP_ARM] = ART7[..., :3][ART_STAMP_ARM]
+print(f"   hidden art under the grapes: {int(ART_STAMP_ARM.sum())} px of the rebuilt hand")
 #
 # That exception is the whole subtlety, and getting it wrong cost a measured
 # regression (max 42 -> 66, pixels over 32 more than doubled) before the test

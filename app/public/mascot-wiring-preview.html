@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Buddha wiring preview — accepted reconstruction, served parts</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+  /* HARNESS ONLY: freeze the animation at the pose each panel names. The card
+     itself animates; this page pins keyframe moments so they can be inspected. */
+  .mascot-layer * { animation: none !important; }
+  .panel { display: inline-block; vertical-align: top; margin: 14px; }
+  .panel h2 { font: 600 13px/1.4 system-ui, sans-serif; margin: 0 0 6px; }
+  .cardish { position: relative; width: 230px; height: 172px; border-radius: 12px;
+             background: linear-gradient(160deg, #2b2118, #17120c); overflow: hidden; }
+  /* THE REACH POSE = keyframe 62.5% of buddha-reach, verbatim from styles.css:
+     the arm at -15deg about the shoulder and the anchor stepped aside. */
+  .pose-reach .mascot-arm { transform: rotate(-15deg); }
+  .pose-reach .mascot-part--anchor { opacity: 0; }
+  .pose-swing .mascot-grapes { transform: rotate(5deg); }
+</style>
+</head>
+<body style="margin:20px;background:#101010;color:#eee;font-family:system-ui,sans-serif">
+<h1 style="font-size:16px">Golden Buddha — layered scene with the accepted hidden reconstruction
+(served files, this directory's <code>img/cosmetics/</code>)</h1>
+<p style="max-width:760px;font-size:13px;color:#bbb">Rest must read as one continuous artwork with no
+seam at the shoulder; reach (−15°, anchor stepped aside) must show the painted chest, drape and
+necklace behind the arm — no flat patch, no tear; grape swing must not open holes in the hand.</p>
+
+<div class="panel">
+  <h2>REST — 172px (the card's drawn size)</h2>
+  <div class="cardish"><span class="mascot-layer" data-motif="buddha-gold" aria-hidden="true">
+    <span class="mascot-world">
+      <img class="mascot-part mascot-part--plate" src="img/cosmetics/part-plate-armless.webp" alt="">
+      <img class="mascot-part mascot-part--chest" src="img/cosmetics/part-chest-breath.webp" alt="">
+      <img class="mascot-part mascot-part--belly" src="img/cosmetics/part-arm-lowered.webp" alt="">
+      <img class="mascot-part mascot-part--blink" src="img/cosmetics/part-eye-blink.webp" alt="">
+      <img class="mascot-part mascot-part--anchor" src="img/cosmetics/part-arm-anchor.webp" alt="">
+      <span class="mascot-arm">
+        <img class="mascot-part mascot-part--arm" src="img/cosmetics/part-arm-raised.webp" alt="">
+        <span class="mascot-grapes">
+          <img class="mascot-part mascot-part--berries" src="img/cosmetics/part-grapes-raised.webp" alt="">
+        </span>
+      </span>
+      <span class="mascot-shimmer"></span>
+    </span>
+  </span></div>
+</div>
+
+<div class="panel">
+  <h2>REST — 344px (2×, for the seam check)</h2>
+  <div class="cardish" style="width:460px;height:344px"><span class="mascot-layer" data-motif="buddha-gold" aria-hidden="true">
+    <span class="mascot-world" style="width:344px;height:228px">
+      <img class="mascot-part mascot-part--plate" src="img/cosmetics/part-plate-armless.webp" alt="">
+      <img class="mascot-part mascot-part--chest" src="img/cosmetics/part-chest-breath.webp" alt="">
+      <img class="mascot-part mascot-part--belly" src="img/cosmetics/part-arm-lowered.webp" alt="">
+      <img class="mascot-part mascot-part--blink" src="img/cosmetics/part-eye-blink.webp" alt="">
+      <img class="mascot-part mascot-part--anchor" src="img/cosmetics/part-arm-anchor.webp" alt="">
+      <span class="mascot-arm">
+        <img class="mascot-part mascot-part--arm" src="img/cosmetics/part-arm-raised.webp" alt="">
+        <span class="mascot-grapes">
+          <img class="mascot-part mascot-part--berries" src="img/cosmetics/part-grapes-raised.webp" alt="">
+        </span>
+      </span>
+      <span class="mascot-shimmer"></span>
+    </span>
+  </span></div>
+</div>
+
+<div class="panel">
+  <h2>REACH −15°, anchor stepped aside (keyframe 62.5%) — 344px</h2>
+  <div class="cardish pose-reach" style="width:460px;height:344px"><span class="mascot-layer" data-motif="buddha-gold" aria-hidden="true">
+    <span class="mascot-world" style="width:344px;height:228px">
+      <img class="mascot-part mascot-part--plate" src="img/cosmetics/part-plate-armless.webp" alt="">
+      <img class="mascot-part mascot-part--chest" src="img/cosmetics/part-chest-breath.webp" alt="">
+      <img class="mascot-part mascot-part--belly" src="img/cosmetics/part-arm-lowered.webp" alt="">
+      <img class="mascot-part mascot-part--blink" src="img/cosmetics/part-eye-blink.webp" alt="">
+      <img class="mascot-part mascot-part--anchor" src="img/cosmetics/part-arm-anchor.webp" alt="">
+      <span class="mascot-arm">
+        <img class="mascot-part mascot-part--arm" src="img/cosmetics/part-arm-raised.webp" alt="">
+        <span class="mascot-grapes">
+          <img class="mascot-part mascot-part--berries" src="img/cosmetics/part-grapes-raised.webp" alt="">
+        </span>
+      </span>
+      <span class="mascot-shimmer"></span>
+    </span>
+  </span></div>
+</div>
+
+<div class="panel">
+  <h2>GRAPE SWING +5° (keyframe 34%) — 344px</h2>
+  <div class="cardish pose-swing" style="width:460px;height:344px"><span class="mascot-layer" data-motif="buddha-gold" aria-hidden="true">
+    <span class="mascot-world" style="width:344px;height:228px">
+      <img class="mascot-part mascot-part--plate" src="img/cosmetics/part-plate-armless.webp" alt="">
+      <img class="mascot-part mascot-part--chest" src="img/cosmetics/part-chest-breath.webp" alt="">
+      <img class="mascot-part mascot-part--belly" src="img/cosmetics/part-arm-lowered.webp" alt="">
+      <img class="mascot-part mascot-part--blink" src="img/cosmetics/part-eye-blink.webp" alt="">
+      <img class="mascot-part mascot-part--anchor" src="img/cosmetics/part-arm-anchor.webp" alt="">
+      <span class="mascot-arm">
+        <img class="mascot-part mascot-part--arm" src="img/cosmetics/part-arm-raised.webp" alt="">
+        <span class="mascot-grapes">
+          <img class="mascot-part mascot-part--berries" src="img/cosmetics/part-grapes-raised.webp" alt="">
+        </span>
+      </span>
+      <span class="mascot-shimmer"></span>
+    </span>
+  </span></div>
+</div>
+
+</body>
+</html>
