@@ -523,8 +523,15 @@ test('paying early extends the period instead of throwing the days away', async 
   });
   const two = await store.matchCustomerPlanPayment({ paymentId: second.payment.id, actorId: null });
   const end2 = new Date(two.subscription.period_end).getTime();
-  const grew = Math.round((end2 - end1) / 86400000);
-  assert.equal(grew, 31, `paying early moved the end date by ${grew} days instead of adding a month`);
+  // A renewal adds ONE CALENDAR month (`setMonth(+1)`, the product's own rule),
+  // and calendar months are 28-31 days — hardcoding 31 fails every month whose
+  // successor is shorter (paid 1 Oct: Nov 1 -> Dec 1 is 30 days). What "added a
+  // month" means, exactly, is that the end date is the old end date moved one
+  // month by the same arithmetic the product uses.
+  const expectedEnd = new Date(end1);
+  expectedEnd.setMonth(expectedEnd.getMonth() + 1);
+  assert.equal(end2, expectedEnd.getTime(),
+    'paying early did not move the end date by exactly one calendar month');
 
   // And the row now says which period was matched, so a year bought after a month is
   // not carried under a row that still says `plus`.
