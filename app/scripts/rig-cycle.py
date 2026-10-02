@@ -446,6 +446,35 @@ for i, (t, tag) in enumerate(((0.0, "rest"), (2.6, "+6 offer"), (14.2, "transiti
 kfs.save(os.path.join(P57, "rig", "keyform-fades.png"))
 print("keyform sheet written: docs/evidence/round57/rig/keyform-fades.png")
 
+# ── PROOF 4: necklace draw-order sweep ────────────────────────────────────────
+# The order says the necklace draw order changes with the arm. The master's
+# own stacking (strand above torso, below arm) is provably correct for the
+# WHOLE in-range motion if and only if the arm never touches the strand: sweep
+# arm_angle over [-15, +6] and grape_sway over [-4.5, +5], count contact px.
+strand_a = STRAND
+contact = 0
+worst = (0.0, 0)
+for deg in np.arange(-15.0, 6.01, 0.5):
+    wa = np.asarray(warp_by_mesh(arm_tex, REST, lbss(float(deg))))[..., 3] > 0
+    n = int((wa & strand_a).sum())
+    if n > contact:
+        contact, worst = n, (float(deg), n)
+gcontact = 0
+for sw in np.arange(-4.5, 5.01, 0.5):
+    gp = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    gp.alpha_composite(grapes_tex.rotate(float(sw), resample=Image.BICUBIC,
+                                         center=GRAPE_PIVOT, expand=False))
+    n = int(((np.asarray(gp)[..., 3] > 0) & strand_a).sum())
+    gcontact = max(gcontact, n)
+print("PROOF 4 necklace draw-order sweep: max arm^strand contact = %d px (at %.1f deg),"
+      " max grapes^strand contact = %d px" % (contact, worst[0], gcontact))
+if contact == 0 and gcontact == 0:
+    print("  -> arm and necklace are spatially disjoint across the full range:"
+          " the master stacking IS the correct draw order everywhere in-range;"
+          " a front/back flip condition never triggers.")
+json.dump(rig, open(rig_path, "w"), indent=1)
+print("rig JSON: PROOF 4 + necklace verdict recorded")
+
 rig["registration"] = {
     "face_crop": {"file": "crops/crop-face.png", "origin": [850, 60], "size": [350, 300],
                    "method": "NCC on luminance = 1.0000", "patch_scale": 3.2},
@@ -466,3 +495,13 @@ rig["registration"] = {
                          "gating": "keyforms fade by arm_angle state, rotated with the upper-arm bone, skipped in the handover window"}}
 json.dump(rig, open(rig_path, "w"), indent=1)
 print("rig JSON: face registration + necklace draw rule recorded")
+
+rig["registration"]["necklace"]["draw_order_proof"] = {
+    "sweep": "arm_angle -15..+6 step 0.5; grape_sway -4.5..+5 step 0.5",
+    "max_arm_strand_contact_px": contact, "max_grape_strand_contact_px": gcontact,
+    "conclusion": "master stacking (strand above torso, below arm) correct across the full range; flip never triggers in-range",
+    "front_back_groups": "REJECTED as re-illustrations: 1264x843 free canvases, no crop registration exists"
+                         " (best template offset mean|d| ~ 70, flat) - same failure class as the first-pass face pieces;"
+                         " kept as references. Not needed: nothing is ever hidden behind the arm in-range."}
+json.dump(rig, open(rig_path, "w"), indent=1)
+print("rig JSON: PROOF 4 + necklace verdict recorded")

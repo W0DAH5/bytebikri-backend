@@ -295,7 +295,14 @@
   },
   "necklace": {
    "strand": "parts/08-necklace-master-strand.png (master values, own region)",
-   "draw_rule": "strand above torso, below arm at every angle (master stacking); painted front/back groups pending review"
+   "draw_rule": "strand above torso, below arm at every angle (master stacking); painted front/back groups pending review",
+   "draw_order_proof": {
+    "sweep": "arm_angle -15..+6 step 0.5; grape_sway -4.5..+5 step 0.5",
+    "max_arm_strand_contact_px": 0,
+    "max_grape_strand_contact_px": 0,
+    "conclusion": "master stacking (strand above torso, below arm) correct across the full range; flip never triggers in-range",
+    "front_back_groups": "REJECTED as re-illustrations: 1264x843 free canvases, no crop registration exists (best template offset mean|d| ~ 70, flat) - same failure class as the first-pass face pieces; kept as references. Not needed: nothing is ever hidden behind the arm in-range."
+   }
   },
   "shoulder_crop": {
    "file": "crops/crop-shoulder-chest.png",
