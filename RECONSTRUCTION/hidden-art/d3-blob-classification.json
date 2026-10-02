@@ -1,0 +1,28 @@
+{
+ "subject": "the pale blob visible at -15deg (poses-4x-c / poses-2x-b sheets)",
+ "q1_footprint": {
+  "px": 889,
+  "bbox_768_xyxy": [
+   300,
+   30,
+   439,
+   199
+  ],
+  "method": "the standing pale-page family test (lum>140, 40<=R-B<95) over the -15 composite, in the sheet-evident corridor zone; no new detector"
+ },
+ "q2_classification": "FIGURE/BODY ARTWORK CARRYING THE D3 BAKED PALE WASH",
+ "q2_evidence": {
+  "body_in_both_poses": 703,
+  "sky_in_both_poses": 12,
+  "mixed(raised-figure/lowered-sky)": 174,
+  "figure_in_the_raised_REST_authoritative_pose": 877,
+  "drawn_by": "torso (static, REST-identical content); arm/grapes merely pass over it at -15deg"
+ },
+ "q3_visible_in_master_at_rest": true,
+ "q3_evidence": "647 of the 889 px are pale in the REST composite itself (no pose); the immutable master carries pale values at these px (301/889 strictly inside the family threshold, the rest inside the same wash's gradient); visually: 92-d3-classification.png middle/right panels - the patch is already in the master, same place, same shape",
+ "q4_would_removal_alter_REST": true,
+ "q4_evidence": "877/889 are figure px at REST; removing/replacing them repaints authoritative REST artwork",
+ "decision": "D3 baked body/page-blend defect - LEFT UNTOUCHED, recorded per the standing rule; no repair (evidence is unambiguous that these are NOT removable page/background px: only 12/889 are sky-in-both, already transparent)",
+ "note": "the checker-pattern fringe at -15 was separately identified and removed in-session without REST change; that edit was lost in workspace reset #28 before it was committed - its class (exposed near-sky px at the pocket edge) is distinct from this blob and its removal remains valid to re-apply under the same evidence",
+ "visual": "92-d3-classification.png"
+}
