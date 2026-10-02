@@ -15,17 +15,18 @@
   },
   "arm.png": {
    "source": "master webp (solid limb only)",
-   "owns": "solid limb px",
+   "owns": "solid limb px (berry rims excluded - ownership follows movement)",
    "reconstructed": 0,
    "unresolved": 0
   },
   "grapes.png": {
    "source": "master webp + crevice repaint from the berries' dark rims",
-   "owns": "the bunch incl. its soft rim",
+   "owns": "the bunch incl. its soft rim AND its outer berry rim (partial-alpha berry edge px outside the G ellipse - they swing with the bunch; verified: 0 static-rim px left at +5/-4.5 deg)",
    "reconstructed": "crevices 174 px",
    "unresolved": 0
   }
  },
  "abandoned_methods": "harmonic fill, mirrored texture, patch-copy, row interpolation, synthetic fill, pose-specific paintings - none used",
- "image_generation": "evaluated, not applicable at build time (no hidden px lacked master evidence); re-evaluated after pose inspection"
+ "image_generation": "evaluated, not applicable at build time (no hidden px lacked master evidence); re-evaluated after pose inspection",
+ "ownership_fix": "v3: BERRY_RIM (13px-dilated G ring, partial alpha) re-owned from the static arm to the grapes after independent verification caught arm.png drawing partial px at x383-416 y58-99 - a swing would have left a static rim ghost"
 }

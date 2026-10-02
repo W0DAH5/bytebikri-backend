@@ -186,6 +186,13 @@ own[M & ~SOLID & ~G] = 2        # THE RIM RIDES THE LIMB (v2): a static rim
 own[~M] = 1
 own[(A_b <= 0.02) & ~M] = 0
 RIM_BAND = M & ~SOLID & ~G
+# THE BUNCH'S OUTER RIM: the G ellipse under-covers the berries' soft right
+# edge (measured: partial-alpha px at x383-416 y58-99 sit outside G). They
+# are BERRY content - when the bunch swings they must swing WITH it, or the
+# swing leaves a static rim ghost behind. Boundaries follow movement: these
+# px are the grapes layer's, never the arm's.
+BERRY_RIM = (np.asarray(Image.fromarray((G * 255).astype(np.uint8))
+                        .filter(ImageFilter.MaxFilter(13))) > 128) & (A_b > 0.02) & (A_b < 0.98)
 
 # ── STEP 4: hidden artwork — master evidence only ───────────────────────────
 manifest = json.load(open(os.path.join(PKG, "manifest.json")))
@@ -227,7 +234,7 @@ POCKET_BODY = _pp & (A_r > 0.5)
 gaps = g_dil & ~SOLID & (A_b > 0.02) & ~_pp
 CREVICE = np.zeros((H, W), bool)
 grapes_rgb = B_rgb.copy()
-grapes_a = np.where(G, A_b, 0.0)
+grapes_a = np.where(G | BERRY_RIM, A_b, 0.0)   # the bunch, complete: ellipse + its outer soft rim
 if gaps.any():
     ys, xs = np.where(gaps)
     y0, y1 = max(0, ys.min() - 24), min(H, ys.max() + 25)
@@ -276,16 +283,16 @@ torso_rgb = np.where((M & SOLID)[..., None], BACKDROP, B_rgb)
 torso_rgb = np.where(POCKET_BODY[..., None], fill_rgb, torso_rgb)
 torso_a = np.where(M & SOLID, 1.0, A_b)          # backdrop opaque; body keeps its alpha
 torso_a = np.where(M & ~SOLID, 0.0, torso_a)     # the rim rides the arm (v2)
-torso_a = np.where(G & ~SOLID, 0.0, torso_a)     # the grapes own their soft rim
+torso_a = np.where((G | BERRY_RIM) & ~SOLID, 0.0, torso_a)  # the grapes own their soft rim (ellipse + outer berry rim)
 torso_a = np.where(POCKET_SKY, 0.0, torso_a)     # the sky pocket: the card
 
 # ARM (solid limb; its px under the grapes stay with the torso's backing)
 PAGE7 = np.array([250.0, 250.0, 247.0])
 arm_rgb = np.where(M[..., None], B_rgb, B_rgb)
-arm_a = np.where(M & SOLID & ~G & ~_pp, A_b, 0.0)
-arm_a = np.where(RIM_BAND & ~G & ~_pp, A_b, arm_a)     # the rim travels
+arm_a = np.where(M & SOLID & ~G & ~BERRY_RIM & ~_pp, A_b, 0.0)
+arm_a = np.where(RIM_BAND & ~G & ~BERRY_RIM & ~_pp, A_b, arm_a)     # the rim travels (the limb's rim - berry rims are the grapes')
 _rim_a = np.asarray(arm_a)
-_part = RIM_BAND & ~G & ~_pp & (A_b > 0.02) & (A_b < 0.98)
+_part = RIM_BAND & ~G & ~BERRY_RIM & ~_pp & (A_b > 0.02) & (A_b < 0.98)
 if _part.any():
     c = arm_rgb[_part]
     a = A_b[_part][..., None]
@@ -516,7 +523,7 @@ json.dump({
         "arm.png": {"source": "master webp (solid limb only)",
                     "owns": "solid limb px", "reconstructed": 0, "unresolved": 0},
         "grapes.png": {"source": "master webp + crevice repaint from the berries' dark rims",
-                       "owns": "the bunch incl. its soft rim", "reconstructed": f"crevices {int(CREVICE.sum())} px",
+                       "owns": "the bunch incl. its soft rim and outer berry rim (ownership follows movement)", "reconstructed": f"crevices {int(CREVICE.sum())} px",
                        "unresolved": 0},
     },
     "abandoned_methods": "harmonic fill, mirrored texture, patch-copy, row interpolation, synthetic fill, "
