@@ -8967,57 +8967,6 @@ async function seed({ force = false } = {}) {
     });
   }
 
-  // ── THE THIRD STORE, and the premium look on its owner's card ──────────────
-  // This demo state used to exist only as live data — walked through the
-  // product's own flows while the premium-cosmetics rounds were built and
-  // screenshotted — and the seed never encoded it. The dev database lives in
-  // `app/.data/pg`, which an environment reset wipes, so every reset lost the
-  // third store and its Plus-wearing owner, and a fresh boot resurrected only
-  // two stores and a buyer. Seeded here, then, exactly as those flows would
-  // have left it: carol is a creator with her own store, an active Plus
-  // subscriber wearing the mascot she chose, and a publicly listed member of
-  // Alice's studio — so the roster's member card carries the tier chip and
-  // the mascot scene where the product actually draws them. Dev-only by the
-  // production guard at the top of this function; idempotent by the upserts.
-  const carolStore = await store.createChannel({
-    ownerId: carolUser.id, slug: 'carol', name: 'Carol Ceramics',
-    tagline: 'Glaze tests and wheel-thrown series.', listingMode: 'storefront',
-  });
-  await store.query(
-    `insert into customer_subscriptions
-       (profile_id, plan_code, status, period_start, period_end, updated_at)
-     values ($1, 'plus', 'active', now(), now() + interval '1 year', now())
-     on conflict (profile_id) do update
-       set status = 'active',
-           period_start = coalesce(customer_subscriptions.period_start, now()),
-           period_end = greatest(customer_subscriptions.period_end, now() + interval '1 year'),
-           cancelled_at = null,
-           updated_at = now()`,
-    [carolUser.id],
-  );
-  await store.query(
-    'update profiles set plus_motif = $2 where id = $1',
-    [carolUser.id, 'buddha-gold'],
-  );
-  // Alice's studio defines the tier carol then joins — the same two steps the
-  // product's own flows perform (the creator publishes a tier; the member
-  // takes it), so the roster card is a card the UI can actually produce.
-  await store.saveMembershipTier({
-    channelId: alice.id, tierNo: 1, actorId: aliceUser.id,
-    value: { name: 'Friend', duesNpr: 150, periodMonths: 1, perks: 'The monthly notes and the sample archive.', accent: 'teal' },
-  });
-  await store.query(
-    `insert into memberships
-       (profile_id, channel_id, tier_no, status, join_method, confirmed_at, period_end, publicly_listed)
-     values ($1, $2, 1, 'active', 'dues', now(), now() + interval '1 month', true)
-     on conflict (profile_id, channel_id) do update
-       set status = 'active',
-           period_end = greatest(memberships.period_end, now() + interval '1 month'),
-           publicly_listed = true`,
-    [carolUser.id, alice.id],
-  );
-  void carolStore;
-
   return { seeded: true, alice: alice.slug, bob: bob.slug };
 }
 
