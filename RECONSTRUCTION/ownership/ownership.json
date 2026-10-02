@@ -1,0 +1,17 @@
+{
+ "code": {
+  "1": "torso-visible (master body px)",
+  "2": "arm (solid limb)",
+  "3": "grapes (complete incl. rim)",
+  "4": "torso-backdrop (hidden art + the limb's rest rim)",
+  "0": "sky"
+ },
+ "rule": "each rest-visible px is drawn by exactly ONE layer; partial-alpha px are never drawn twice",
+ "counts": {
+  "torso-visible": 222158,
+  "arm": 21537,
+  "grapes": 5686,
+  "torso-backdrop": 0,
+  "sky": 143835
+ }
+}

@@ -1,0 +1,52 @@
+{
+ "arm": {
+  "visible_bounds_768_xyxy": [
+   173,
+   6,
+   423,
+   207
+  ],
+  "anchor_768": [
+   268.0,
+   146.0
+  ],
+  "movement": "rotate -15..+6 deg (frozen rig buddha-reach)",
+  "notes": "hand/forearm rigid with arm (no independent DOF in rig or CSS)"
+ },
+ "grapes": {
+  "visible_bounds_768_xyxy": [
+   337,
+   55,
+   417,
+   143
+  ],
+  "anchor_768": [
+   370.0,
+   45.0
+  ],
+  "movement": "rotate -4.5..+5 deg (buddha-grapes), nested in the arm's span"
+ },
+ "torso": {
+  "visible_bounds_768_xyxy": [
+   3,
+   5,
+   763,
+   506
+  ],
+  "anchor_768": null,
+  "movement": "none (static)",
+  "notes": "carries the limb's rest rim + all hidden art. If ever promoted, production maps torso.png onto part-plate-armless + part-arm-anchor (the split exists for the belly-window fade; this reconstruction keeps one layer)."
+ },
+ "face": {
+  "layer": "none",
+  "why": "no transform in the frozen rig (blink/breath are crossfades)"
+ },
+ "hand": {
+  "layer": "none",
+  "why": "no independent DOF; part of arm.png"
+ },
+ "details_necklace": {
+  "layer": "none",
+  "why": "travels with the torso; no independent movement"
+ }
+}

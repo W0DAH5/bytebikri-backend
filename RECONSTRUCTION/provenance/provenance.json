@@ -1,0 +1,31 @@
+{
+ "master": {
+  "path": "app/public/img/cosmetics/mascot-gold-buddha-base.png",
+  "sha256": "2a986d1fdaee52d1054a81c3eb0b8a527ecd59e41929ab5388114677e49414c6",
+  "alpha_sha256": "4518cd6db0c400b35e029df41bcf82417b37d67ea28abefb35f6bba707487136",
+  "modified": false
+ },
+ "rest_authority": "mascot-gold-buddha-base.webp (the served rig-space render; the 1536 master differs by the recorded cross-generation offset, interiors ~12/255 - measured, documented)",
+ "layers": {
+  "torso.png": {
+   "source": "master webp + rest webp (lowered body, light-match 0.80-1.35) + DELIVERY paint in gesture holes",
+   "owns": "body outside the footprint; opaque backdrop under the solid footprint; the limb's rest rim; pocket-body px",
+   "reconstructed": "hidden art 4681 px (evidence-backed), lowered fill, sky pocket 205 px",
+   "unresolved": 0
+  },
+  "arm.png": {
+   "source": "master webp (solid limb only)",
+   "owns": "solid limb px",
+   "reconstructed": 0,
+   "unresolved": 0
+  },
+  "grapes.png": {
+   "source": "master webp + crevice repaint from the berries' dark rims",
+   "owns": "the bunch incl. its soft rim",
+   "reconstructed": "crevices 174 px",
+   "unresolved": 0
+  }
+ },
+ "abandoned_methods": "harmonic fill, mirrored texture, patch-copy, row interpolation, synthetic fill, pose-specific paintings - none used",
+ "image_generation": "evaluated, not applicable at build time (no hidden px lacked master evidence); re-evaluated after pose inspection"
+}

@@ -1,0 +1,20 @@
+{
+ "gesture-holes": {
+  "px": 4783,
+  "source": "keyform-package DELIVERY (accepted 2026-10-01; painted from the master's ramps/folds/beads; EVIDENCE, not authority - the REST test judges)",
+  "evidence": "docs/evidence/round56/keyform-package (AUTHORED-STROKES.json, REJECTION-RECORD.md)"
+ },
+ "bunch-crevices": {
+  "px": 174,
+  "source": "diffusion from the berries' DARK rim px (the bunch's own crevice shading); opaque where the lowered pose has no body beneath",
+  "evidence": "master berry rims; dark-card defect #1 (user-confirmed)"
+ },
+ "sky-pocket": {
+  "px": 205,
+  "source": "transparent - the baked page-pattern patch is sky in BOTH poses (A_r<=0.5, measured)",
+  "evidence": "both generations' alpha"
+ },
+ "unresolved": [],
+ "unresolved-note": "no unresolved gesture px: every movement-exposed px carries master-evidence art. The corridor wash (body in both poses, baked pale in both) is the recorded D3 master-asset defect - VISIBLE at rest, therefore master-authoritative; repairing it would invent artwork. Documented, not painted.",
+ "image-generation": "evaluated: NOT applicable so far - zero hidden px lacked master evidence; inventing texture where evidence exists would violate the no-invention rule. Re-evaluated after the pose inspection."
+}

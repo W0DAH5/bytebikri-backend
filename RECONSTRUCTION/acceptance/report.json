@@ -1,0 +1,24 @@
+{
+ "rest": {
+  "px_over_32": 0,
+  "px_over_8": 0,
+  "max": 4,
+  "classification": {
+   "ownership_or_compositing": 0,
+   "alpha_edge_sanctioned_page_unmix": 680,
+   "intentional_pocket_sky": 205,
+   "intentional_crevice": 174,
+   "over_white_px_over_8": 649
+  }
+ },
+ "pose_voids": {
+  "REST": 0,
+  "+6": 0,
+  "-3": 0,
+  "-7": 0,
+  "-15": 0,
+  "arm-2.4 g+5.0": 0,
+  "arm-2.4 g-4.5": 0
+ },
+ "note": "numbers locate; THE EYE DECIDES (sheets in this directory)"
+}
