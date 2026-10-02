@@ -50,6 +50,13 @@
     754.0,
     56.0
    ]
+  },
+  "wrist": {
+   "parent": "forearm",
+   "pivot": [
+    702.4,
+    119.2
+   ]
   }
  },
  "parts": {
@@ -98,7 +105,9 @@
    "smile": "parts/14-face-smile.png",
    "blink": "parts/15-face-blink.png",
    "brow": "parts/16-face-brow.png"
-  }
+  },
+  "wrist_hand": "parts/06-wrist-hand.png",
+  "forearm": "parts/05-forearm.png"
  },
  "keyforms": {
   "shoulder_compression": {
@@ -115,5 +124,143 @@
     "parts/09c-keyform-plus6.png"
    ]
   }
- }
+ },
+ "curves": {
+  "arm_angle": {
+   "period": 24.0,
+   "keys": [
+    [
+     0,
+     0
+    ],
+    [
+     2.0,
+     6
+    ],
+    [
+     4.5,
+     5.4
+    ],
+    [
+     6.5,
+     0
+    ],
+    [
+     11.5,
+     -2.4
+    ],
+    [
+     15.0,
+     -15
+    ],
+    [
+     18.0,
+     -15
+    ],
+    [
+     21.5,
+     -2
+    ],
+    [
+     24,
+     0
+    ]
+   ],
+   "easing": "smoothstep"
+  },
+  "grape_sway": {
+   "period": 9.5,
+   "keys": [
+    [
+     0,
+     -4.5
+    ],
+    [
+     3.23,
+     4
+    ],
+    [
+     4.845,
+     1.5
+    ],
+    [
+     6.365,
+     5
+    ],
+    [
+     7.885,
+     -1.5
+    ],
+    [
+     9.5,
+     -4.5
+    ]
+   ],
+   "easing": "smoothstep"
+  },
+  "breath": {
+   "period": 5.6,
+   "keys": [
+    [
+     0,
+     0
+    ],
+    [
+     1.68,
+     1
+    ],
+    [
+     3.248,
+     1
+    ],
+    [
+     4.704,
+     0
+    ],
+    [
+     5.6,
+     0
+    ]
+   ],
+   "easing": "smoothstep"
+  },
+  "blink": {
+   "period": 9.7,
+   "keys": [
+    [
+     0,
+     0
+    ],
+    [
+     8.439,
+     0
+    ],
+    [
+     8.633,
+     1
+    ],
+    [
+     8.924,
+     1
+    ],
+    [
+     9.118,
+     0
+    ],
+    [
+     9.7,
+     0
+    ]
+   ],
+   "easing": "linear"
+  },
+  "handover": {
+   "period": 24.0,
+   "window": [
+    14.5,
+    18.24
+   ]
+  }
+ },
+ "breath_mechanism": "torso mesh warp on the master-extracted texture (zero drift); generated breath states pending review"
 }
