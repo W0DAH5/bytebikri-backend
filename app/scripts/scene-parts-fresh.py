@@ -184,12 +184,25 @@ ratio = np.clip((lo_b + 8.0) / (lo_c + 8.0), 0.80, 1.35)
 PAINT = np.clip(PAINT[..., :3] * ratio, 0, 255)
 
 # ── 3. THE POCKET — the sanctioned baked-page repair ────────────────────────
+# The box covers the whole corridor between arm and bunch, because the wash
+# the dark card exposes runs the length of it (measured on the sheets: pale
+# grey below the fist and left of the bunch, baked into BOTH generations).
+# The classifier stays strict: bright + too grey for this gold (genuine gold
+# holds R-B >= 95), never the berries themselves.
 POCKET = np.zeros((H, W), bool)
-POCKET[44:116, 308:357] = True
+POCKET[38:188, 283:368] = True
 lum = B_rgb @ np.array([.299, .587, .114])
 rb = B_rgb[..., 0] - B_rgb[..., 2]
 g_dil = np.asarray(Image.fromarray((G * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(5))) > 128
-PAGE_POCKET = POCKET & (A_b > 0.02) & (lum > 140) & (rb < 95) & (rb >= 40) & ~g_dil
+_pp = POCKET & (A_b > 0.02) & (lum > 140) & (rb < 95) & (rb >= 40) & ~g_dil
+# TWO KINDS of baked page: where the LOWERED pose also has no body it is sky
+# (the card shows through everywhere); where the lowered pose HAS body, the
+# plate shows the lowered body instead (opaque - otherwise the swing tears
+# real body see-through), and only the raised pose's furniture (anchor, arm)
+# steps aside there.
+PAGE_POCKET_SKY = _pp & (A_r <= 0.5)
+PAGE_POCKET_BODY = _pp & (A_r > 0.5)
+PAGE_POCKET = _pp
 
 # ── 4. THE PARTS, each complete, each with its job ──────────────────────────
 lo_r = np.asarray(Image.fromarray(R_rgb.astype(np.uint8)).filter(ImageFilter.GaussianBlur(24))).astype(np.float32)
@@ -200,14 +213,19 @@ fill_rgb = np.clip(R_rgb * ratio_fill, 0, 255)
 # shows it when arm and anchor step aside); pocket goes to the card.
 plate_rgb = np.where((M & SOLID)[..., None], fill_rgb, B_rgb)
 plate_a = np.where(M & SOLID, A_r, np.where(M, 0.0, A_b))
-plate_a = np.where(PAGE_POCKET, 0.0, plate_a)
+plate_rgb = np.where(PAGE_POCKET_BODY[..., None], fill_rgb, plate_rgb)
+plate_a = np.where(PAGE_POCKET_BODY, A_r, plate_a)
+plate_a = np.where(PAGE_POCKET_SKY, 0.0, plate_a)
+plate_a = np.where(G & M & SOLID, 0.0, plate_a)   # no ghost bunch in the plate
 
 # ANCHOR — the limb's backdrop: the artwork's own alpha across the whole
 # footprint (the soft rim rides HERE, one alpha deep — never doubled with the
 # limb's), the artwork's own colours everywhere EXCEPT under solid coverage
 # in the holes, where the accepted paint waits for the limb to turn away.
 anchor_rgb = np.where((HOLES & SOLID & ~G & ~PAGE_POCKET)[..., None], PAINT, B_rgb)
-anchor_a = np.where(M, A_b, 0.0)
+# the GRAPES' own soft rim stays the grapes': a partial-alpha berry edge drawn
+# by both layers doubles its alpha (measured: 70 px along the cheek-side rim).
+anchor_a = np.where(M & ~(G & ~SOLID), A_b, 0.0)
 anchor_a = np.where(PAGE_POCKET, 0.0, anchor_a)
 
 # ARM — the visible limb, complete: SOLID pixels only (the soft rim belongs
@@ -218,9 +236,55 @@ arm_rgb = np.where(M[..., None], B_rgb, B_rgb)
 arm_rgb = np.where((G & SOLID & ~PAGE_POCKET)[..., None], PAINT, arm_rgb)
 arm_alpha = np.where(M & SOLID & ~G & ~PAGE_POCKET, A_b, 0.0)
 
-# GRAPES — the straight copy.
-grapes_rgb = B_rgb
+# GRAPES — the artwork's own pixels and alpha, WITH the one repaint the dark
+# card forced and the eye confirmed (defect #1): between the berries the
+# artwork's alpha is partial or zero and the BAKED PAGE shows through — pale
+# mush over a dark card. The gaps are repainted from the neighbouring berries'
+# DARK rim pixels (the bunch's own crevice shading — never from the bright
+# berry faces, which averaged to a pale wedge once before), opaque where the
+# sky is beneath (the pits), colour-only where the plate carries the figure.
+# This is a SANCTIONED deviation at rest, like the pocket, and it is exempt
+# in the puzzle check below.
+gd_d = np.asarray(Image.fromarray((G * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(5))) > 128
+gaps = gd_d & ~SOLID & (A_b > 0.02) & ~PAGE_POCKET
+crevice = B_rgb.copy()
 grapes_a = np.where(G, A_b, 0.0)
+if gaps.any():
+    ys, xs = np.where(gaps)
+    y0, y1 = max(0, ys.min() - 24), min(H, ys.max() + 25)
+    x0, x1 = max(0, xs.min() - 24), min(W, xs.max() + 25)
+    boxg = np.zeros((H, W), bool); boxg[y0:y1, x0:x1] = True
+    sub_unknown = gaps & boxg
+    _adj = np.asarray(Image.fromarray((gaps * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(3))) > 128
+    _cand = SOLID & boxg & _adj & ~POCKET
+    _lum = B_rgb @ np.array([.299, .587, .114])
+    _med = float(np.median(_lum[_cand])) if _cand.any() else 0.0
+    sub_source = _cand & (_lum <= _med)
+    if not sub_source.any():
+        sub_source = _cand
+    work = B_rgb.copy()
+    work[sub_unknown] = B_rgb[sub_source].mean(axis=0)
+    spread = sub_unknown | sub_source
+    for _ in range(4000):
+        acc = np.zeros_like(work)
+        cnt = np.zeros((H, W), np.float32)
+        for axis, shift in ((0, 1), (0, -1), (1, 1), (1, -1)):
+            v = np.roll(work, shift, axis=axis)
+            msk = np.roll(spread, shift, axis=axis)
+            acc += v * msk[..., None]
+            cnt += msk
+        ok = sub_unknown & (cnt > 0)
+        work[ok] = acc[ok] / cnt[ok][..., None]
+        spread = spread | ok
+        if bool((sub_unknown & ~spread).any()) is False:
+            pass
+    crevice = np.clip(work, 0, 255)
+    grapes_rgb = np.where(gaps[..., None], crevice, B_rgb)
+    _plate_fig = plate_a >= 0.5
+    grapes_a = np.where(sub_unknown & ~_plate_fig, 1.0, grapes_a)
+    CREVICE_SET = sub_unknown
+else:
+    CREVICE_SET = np.zeros((H, W), bool)
 
 
 def merge(rgb, a):
@@ -326,6 +390,7 @@ scene.alpha_composite(grapes_part)
 d = np.abs(premul(scene) - premul(base_q)).max(axis=2)
 d_sanc = d.copy()
 d_sanc[PAGE_POCKET] = 0
+d_sanc[CREVICE_SET] = 0
 print("THE PUZZLE CHECK (scene at rest vs the served artwork)")
 print(f"   px over 32: {int((d_sanc > 32).sum())}   px over 8: {int((d_sanc > 8).sum())}   max {int(d_sanc.max())}"
       f"   (sanctioned pocket excluded: {int((PAGE_POCKET).sum())} px)")
@@ -342,20 +407,26 @@ for deg in (7, 15):
 
 rest_cover = np.asarray(Image.fromarray((np.where(grapes_a > 0.9, 255, 0).astype(np.uint8)))) > 128
 behind = (arm_alpha > 0.9) | (plate_a > 0.5) | (anchor_a > 0.5) | HOLES
+# the repainted sky-pits are SANCTIONED sky: when the bunch swings they show
+# the card, which is what open air is. They are not holes.
+PIT_SKY = CREVICE_SET & (plate_a < 0.5)
 for ang in (5.0, -4.5):
     swung = Image.fromarray((np.where(grapes_a > 0.9, 255, 0).astype(np.uint8))).rotate(
         -ang, resample=Image.BICUBIC, center=(370.0, 45.0), expand=False)
     sc = np.asarray(swung) > 128
-    holes = rest_cover & ~sc & ~behind
-    print(f"   swing {ang:+.1f}deg: {int(holes.sum())} px uncover nothing")
+    holes = rest_cover & ~sc & ~behind & ~PIT_SKY
+    print(f"   swing {ang:+.1f}deg: {int(holes.sum())} px uncover nothing (sanctioned pits excluded)")
 
 over_card = Image.new("RGB", (W, H), CARD)
 over_card.paste(scene, (0, 0), scene)
 oc = np.asarray(over_card).astype(np.float32)
 oc_lum = oc @ np.array([.299, .587, .114])
 oc_rb = oc[..., 0] - oc[..., 2]
-print(f"   pocket pale px over the dark card: "
-      f"{int(((oc_lum > 140) & (oc_rb >= 40) & (oc_rb <= 85) & POCKET & ~g_dil).sum())}")
+_sky_pale = int(((oc_lum > 140) & (oc_rb >= 40) & (oc_rb <= 85) & PAGE_POCKET_SKY).sum())
+print(f"   pocket pale px over the dark card (sky region): {_sky_pale}")
+print("   note: the corridor's lower part is body in BOTH poses, baked pale in"
+      " both - that is the recorded D3 master-asset defect, not repairable"
+      " without inventing; out of scope by the standing rules.")
 
 # ── 7. WRITE — lossless, every part ─────────────────────────────────────────
 for img, name in ((plate, "part-plate-armless.webp"), (anchor, "part-arm-anchor.webp"),
