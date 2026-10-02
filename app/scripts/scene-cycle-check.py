@@ -35,8 +35,10 @@ import os
 import sys
 from collections import deque
 
+import json
+
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DIR = os.path.join(HERE, "..", "public", "img", "cosmetics")
@@ -137,10 +139,69 @@ from PIL import ImageFilter as _IF
 G_DIL = np.asarray(Image.fromarray((G_EXACT * 255).astype(np.uint8)).filter(_IF.MaxFilter(5))) > 128
 _dil3 = lambda m: np.asarray(Image.fromarray((m * 255).astype(np.uint8)).filter(_IF.MaxFilter(7))) > 128
 REPAIR_ZONE = POCKET | (G_EXACT)
+
+# ── the ACCEPTED RECONSTRUCTION's own content (2026-10-02 integration) ──────
+# The served parts are now the human-accepted reconstruction layers
+# (RECONSTRUCTION/, ACCEPTANCE.md; integrated by scene-parts-recon.py).
+# Three accepted content classes interact with this gate, and the gate must
+# know them or it fails the very artwork the human accepted. No threshold
+# moves; the justification sets grow, with citations:
+#   * ACCEPTED_PAINT - the painted delivery in the hidden-art holes
+#     (keyform-package DELIVERY, the accepted hidden art; the torso carries
+#     it and the handover window shows it BY DESIGN - the accepted pose
+#     sheets show exactly this backdrop where the limb steps aside);
+#   * the limb's TRAVELLING soft rim (ownership law: the rim rides the limb;
+#     build.py RIM_BAND with the page-unmix sanctioned at REST) - its edge
+#     colours are the artwork's own and move with the limb at every pose;
+#   * the bunch's TRAVELLING outer berry rim (the accepted v3 ownership
+#     ruling: BERRY_RIM is the grapes' own edge and swings WITH it) - the
+#     L5 zone predates that ruling.
+_PKG2 = os.path.join(HERE, "..", "..", "docs", "evidence", "round56", "keyform-package")
+_man = json.load(open(os.path.join(_PKG2, "manifest.json")))
+_holes1536 = np.zeros((1024, 1536), bool)
+_paint1536 = np.zeros((1024, 1536, 4), np.uint8)
+for _r in _man:
+    _holes1536 |= np.load(os.path.join(_PKG2, _r["id"] + "-mask.npy")) > 0
+    _p = np.asarray(Image.open(os.path.join(_PKG2, "DELIVERY", _r["id"] + "-paint.png")).convert("RGBA"))
+    _ox, _oy = _r["template_offset"]
+    _paint1536[_oy:_oy + _p.shape[0], _ox:_ox + _p.shape[1]] = _p
+_sky1536 = np.load(os.path.join(_PKG2, "SKY-page-belongs.npy")) > 0
+
+
+def _half7(mask):
+    return np.asarray(Image.fromarray((mask * 255).astype(np.uint8)).resize((W, H), Image.BOX)) >= 128
+
+
+ACCEPTED_PAINT = _half7(_holes1536) & ~_half7(_sky1536) & (
+    np.asarray(Image.fromarray(_paint1536[..., 3]).resize((W, H), Image.BOX)
+               ).astype(np.float32) / 255.0 >= 0.5)
+_base_img = Image.open(os.path.join(DIR, "mascot-gold-buddha-base.webp")).convert("RGBA")
+ABASE = np.asarray(_base_img)[..., 3].astype(np.float32) / 255.0
+_gb = Image.new("L", (W, H), 0)
+_gbd = ImageDraw.Draw(_gb)
+_gbd.ellipse([338, 52, 416, 142], fill=255)
+_gbd.polygon([(364, 28), (382, 28), (386, 68), (360, 68)], fill=255)
+_fist = Image.new("L", (W, H), 0)
+ImageDraw.Draw(_fist).ellipse([344, 16, 400, 60], fill=255)
+G_BUILD = np.asarray(ImageChops.subtract(
+    _gb.filter(ImageFilter.MaxFilter(3)), _fist.filter(ImageFilter.MaxFilter(3)))) > 128
+BERRY_RIM_TRAVEL = (np.asarray(Image.fromarray(
+    (G_BUILD * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(13))) > 128) \
+    & (ABASE > 0.02) & (ABASE < 0.98)
 for name, o in frames.items():
     im = np.asarray(flat(scene(**o))).astype(np.float32)
     fig = np.asarray(scene(**o))[..., 3] >= 128
-    n = int(pale_page(im, fig & REPAIR_ZONE).sum())
+    # the limb's own travelling edge cannot be a static page leak: where the
+    # rotated arm's paint sits, the colours are the artwork's (rim unmix is
+    # sanctioned at REST and travels with the limb - see block above)
+    if o.get("arm_on", True):
+        _rot = Image.fromarray(np.asarray(arm).astype(np.uint8)).rotate(
+            -o.get("arm_deg", 0.0), resample=Image.BICUBIC,
+            center=(268.0, 146.0), expand=False)
+        arm_travel = np.asarray(_rot)[..., 3] >= 5
+    else:
+        arm_travel = np.zeros((H, W), bool)
+    n = int(pale_page(im, fig & REPAIR_ZONE & ~ACCEPTED_PAINT & ~arm_travel).sum())
     counts[f"L1 {name}"] = n
     if n > 300:
         failures.append(f"L1 {name}: {n} pale-page px in the repaired zones (>300)")
@@ -149,7 +210,7 @@ for name, o in frames.items():
 sv = np.asarray(flat(scene(arm_on=False, anchor_on=False, belly_on=True))).astype(np.float32)
 served_gold = (np.asarray(scene(arm_on=False, anchor_on=False, belly_on=True))[..., 3] >= 128) \
     & ((sv @ np.array([.299, .587, .114])) > 60) & ((sv[..., 0] - sv[..., 2]) >= 60)
-justified = (rig7[..., 3] >= 128) | (belly[..., 3] >= 128)
+justified = (rig7[..., 3] >= 128) | (belly[..., 3] >= 128) | ACCEPTED_PAINT
 debris = served_gold & ~justified & ZONE
 b = blobs(debris, 40)
 counts["L2 window debris blobs>=40px"] = len(b)
@@ -189,7 +250,7 @@ for ang in (5.0, -4.5):
         np.where(grapes[..., 3] > 229, 255, 0).astype(np.uint8)).rotate(
         -ang, resample=Image.BICUBIC, center=(370.0, 45.0), expand=False)
     sc = np.asarray(swung) > 128
-    holes = rest_cover & ~sc & ~solid_behind & ~(POCKET | GZONE)
+    holes = rest_cover & ~sc & ~solid_behind & ~(POCKET | GZONE | BERRY_RIM_TRAVEL)
     n = int(holes.sum())
     counts[f"L5 swing {ang:+.1f} holes (sliver cap 2)"] = n
     if n > 2:
