@@ -1,0 +1,119 @@
+{
+ "master": "app/public/img/cosmetics/mascot-gold-buddha-base.png",
+ "space": [
+  1536,
+  1024
+ ],
+ "parameters": {
+  "arm_angle": {
+   "min": -15.0,
+   "max": 6.0
+  },
+  "grape_sway": {
+   "min": -4.5,
+   "max": 5.0
+  },
+  "breath": {
+   "min": 0.0,
+   "max": 1.0
+  },
+  "blink": {
+   "min": 0.0,
+   "max": 1.0
+  },
+  "necklace_order": {
+   "values": [
+    "back",
+    "front"
+   ],
+   "note": "draw order flips with the arm"
+  }
+ },
+ "bones": {
+  "shoulder": {
+   "parent": "torso",
+   "pivot": [
+    536.0,
+    292.0
+   ]
+  },
+  "forearm": {
+   "parent": "shoulder",
+   "pivot": [
+    648.3,
+    175.4
+   ]
+  },
+  "grapes": {
+   "parent": "forearm",
+   "pivot": [
+    754.0,
+    56.0
+   ]
+  }
+ },
+ "parts": {
+  "torso": {
+   "texture": "parts/10-torso-master-visible.png"
+  },
+  "clean_plate": {
+   "texture": "parts/01-torso-clean-plate.png",
+   "role": "backing under the arm; generated, pending paint review"
+  },
+  "arm": {
+   "texture": "parts/02-arm-full.png",
+   "bbox": [
+    345,
+    9,
+    849,
+    417
+   ],
+   "mesh": [
+    26,
+    12
+   ],
+   "split_t": 0.54,
+   "blend": 0.09
+  },
+  "upper_arm_paint": "parts/03-upper-arm.png",
+  "forearm_hand_paint": "parts/05-forearm-hand.png",
+  "elbow_back": "parts/04-elbow-back.png",
+  "shoulder_socket": "parts/02-shoulder-socket.png",
+  "grapes": {
+   "texture": "parts/07-grapes-master.png",
+   "long_stem": "parts/07-grapes-long-stem.png",
+   "bone": "grapes"
+  },
+  "necklace": {
+   "front": "parts/08-necklace-front-group.png",
+   "back": "parts/08b-necklace-back-group.png"
+  },
+  "breath": {
+   "inhale": "parts/11-torso-breath-inhale.png",
+   "exhale": "parts/12-torso-breath-exhale.png",
+   "note": "v2: torso warp keyed on breath; art states are the reference"
+  },
+  "face": {
+   "neutral": "parts/13-face-neutral-master.png",
+   "smile": "parts/14-face-smile.png",
+   "blink": "parts/15-face-blink.png",
+   "brow": "parts/16-face-brow.png"
+  }
+ },
+ "keyforms": {
+  "shoulder_compression": {
+   "driven_by": "arm_angle",
+   "values": {
+    "0": 0.0,
+    "-7": 0.5,
+    "-15": 1.0,
+    "6": -0.35
+   },
+   "painted": [
+    "parts/09b-keyform-minus7.png",
+    "parts/09-keyform-minus15.png",
+    "parts/09c-keyform-plus6.png"
+   ]
+  }
+ }
+}
