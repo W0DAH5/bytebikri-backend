@@ -278,10 +278,10 @@
    "patch_scale": 3.2
   },
   "face_fades": {
-   "status": "gated_off - generated pieces are full-crop re-illustrations, not local patches; overlay ghosts (rig/face-fades.png evidence)",
-   "blink": "15-face-blink by blink curve (when re-cut as a tight patch)",
-   "smile": "14-face-smile when arm_angle > +3 (when re-cut)",
-   "brow": "16-face-brow when arm_angle < -10 (when re-cut)"
+   "status": "ACTIVE - tight edit-mode patches (14c/15c/16c), cut where the edit changed the feature band; first-pass full-crop pieces documented in rig/face-fades.png",
+   "blink": "15c-blink-tight by blink curve",
+   "smile": "14c-smile-tight when arm_angle > +3 (offer peak)",
+   "brow": "16c-brow-tight when arm_angle < -10 (deep-raise hold)"
   },
   "necklace": {
    "strand": "parts/08-necklace-master-strand.png (master values, own region)",

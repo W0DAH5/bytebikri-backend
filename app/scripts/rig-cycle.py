@@ -265,13 +265,12 @@ _fig_dil = np.asarray(Image.fromarray(
 
 
 def face_overlay(name):
-    p = Image.open(os.path.join(P57, "parts", name)).convert("RGB").resize(FACE_SIZE, Image.LANCZOS)
-    a = np.asarray(p).astype(np.float32)
-    lum = a @ np.array([.299, .587, .114])
-    chroma = a.max(axis=2) - a.min(axis=2)
-    keep = ~((chroma < 25) & (lum > 170))          # drop baked checkerboard/white
+    """Tight patches (values already keyed by the diff cut): place the
+    350x300 RGBA at the registered origin, clipped to the master figure."""
+    p = Image.open(os.path.join(P57, "parts", name)).convert("RGBA")
+    a = np.asarray(p)
     ox, oy = int(FACE_ORIGIN[0]), int(FACE_ORIGIN[1])
-    keep &= _fig_dil[oy:oy + FACE_SIZE[1], ox:ox + FACE_SIZE[0]]
+    keep = (a[..., 3] > 8) & _fig_dil[oy:oy + FACE_SIZE[1], ox:ox + FACE_SIZE[0]]
     canvas = np.zeros((H, W, 4), np.uint8)
     reg = canvas[oy:oy + FACE_SIZE[1], ox:ox + FACE_SIZE[0]]
     for c in range(3):
@@ -281,17 +280,17 @@ def face_overlay(name):
     return Image.fromarray(canvas)
 
 
-ov_blink = face_overlay("15-face-blink.png")
-ov_smile = face_overlay("14-face-smile.png")
-ov_brow = face_overlay("16-face-brow.png")
+ov_blink = face_overlay("15c-blink-tight.png")
+ov_smile = face_overlay("14c-smile-tight.png")
+ov_brow = face_overlay("16c-brow-tight.png")
 
-# REGISTRATION VERDICT (face-fades.png is the evidence): the generated face
-# pieces are FULL-CROP re-illustrations - a second complete face with shifted
-# features - not local expression patches. Cross-fading them onto the master
-# face ghosts (double face, doubled ear, keyed speckle). Per the acceptance
-# criteria (no artifacts) the fades are gated OFF in the cycle; the pieces
-# remain as expression references for review / tight-patch regeneration.
-FACE_FADES = False
+# RE-CUT VERDICT: edit-mode regeneration conditioned on the registered crop
+# produced LOCAL changes (2.6-5.8% of px, NCC 0.999 on unchanged area), cut
+# into tight patches where the edit actually changed (58-83% of the change in
+# the feature band). Cross-fades are ACTIVE in the cycle. Values remain
+# AI-generated reviewable first pass. The failed full-crop pieces (14/15/16)
+# stay on record as the documented first-pass attempt.
+FACE_FADES = True
 
 
 def fade(canvas, overlay, k):
@@ -370,13 +369,11 @@ for f in range(FR):
 sheet.save(os.path.join(P57, "rig", "cycle-strip.png"))
 print("cycle strip written: docs/evidence/round57/rig/cycle-strip.png")
 
-# face closeups: EVIDENCE MODE - fades forced on to document why the
-# generated face pieces are rejected as overlays (the ghost double-face)
+# face closeups: the ACTIVE cross-fades at their peaks
 FC = (850, 60, 1200, 360)
-FACE_FADES = True
-faces = Image.new("RGB", (350 * 2 * 2 + 24, 300 * 2 + 44), (8, 8, 10))
+faces = Image.new("RGB", (2 * 712 + 6, 2 * 616 + 26), (8, 8, 10))
 df = ImageDraw.Draw(faces)
-df.text((6, 4), "FACE registration EVIDENCE - rest | blink overlay t=8.6 (ghost: full-crop re-illustration) | smile t=2.6 | brow t=16.5 - 2x. Fades gated OFF in the cycle.", fill=(255, 226, 138))
+df.text((6, 4), "FACE cross-fades (tight edit-mode patches): rest | blink peak t=8.6 | smile peak t=2.6 (offer +6) | brow hold t=16.5 (deep raise) - 2x", fill=(255, 226, 138))
 for i, (t, tag) in enumerate(((0.0, "rest"), (8.633, "blink"), (2.6, "smile"), (16.5, "brow"))):
     im = compose(t, backing=plate_backing).crop(FC).resize((700, 600), Image.LANCZOS)
     x = (i % 2) * 712 + 6
@@ -389,11 +386,12 @@ print("face sheet written: docs/evidence/round57/rig/face-fades.png")
 rig["registration"] = {
     "face_crop": {"file": "crops/crop-face.png", "origin": [850, 60], "size": [350, 300],
                    "method": "NCC on luminance = 1.0000", "patch_scale": 3.2},
-    "face_fades": {"status": "gated_off - generated pieces are full-crop re-illustrations,"
-                              " not local patches; overlay ghosts (rig/face-fades.png evidence)",
-                   "blink": "15-face-blink by blink curve (when re-cut as a tight patch)",
-                   "smile": "14-face-smile when arm_angle > +3 (when re-cut)",
-                   "brow": "16-face-brow when arm_angle < -10 (when re-cut)"},
+    "face_fades": {"status": "ACTIVE - tight edit-mode patches (14c/15c/16c),"
+                              " cut where the edit changed the feature band;"
+                              " first-pass full-crop pieces documented in rig/face-fades.png",
+                   "blink": "15c-blink-tight by blink curve",
+                   "smile": "14c-smile-tight when arm_angle > +3 (offer peak)",
+                   "brow": "16c-brow-tight when arm_angle < -10 (deep-raise hold)"},
     "necklace": {"strand": "parts/08-necklace-master-strand.png (master values, own region)",
                  "draw_rule": "strand above torso, below arm at every angle (master stacking); painted front/back groups pending review"}}
 json.dump(rig, open(rig_path, "w"), indent=1)
