@@ -65,7 +65,8 @@
   },
   "clean_plate": {
    "texture": "parts/01-torso-clean-plate.png",
-   "role": "backing under the arm; generated, pending paint review"
+   "role": "backing under the arm; generated, pending paint review",
+   "repaint_attempt": "01b-torso-clean-plate-repaint.png FAILED: hole-region pale/bg 48.9% vs 49.1% before - edit did not repaint (kept on disk as the failed attempt); plate still flagged for paint review"
   },
   "arm": {
    "texture": "parts/02-arm-full.png",
@@ -105,7 +106,8 @@
    "smile": "parts/14-face-smile.png",
    "blink": "parts/15-face-blink.png",
    "brow": "parts/16-face-brow.png",
-   "mouth_cheek_17": "17-mouth-cheek.png REJECTED with evidence (same sheet): p50 delta 113, 71% gt40 - full re-illustration. Edit-mode retry on crop-face.png."
+   "mouth_cheek_17": "17-mouth-cheek.png REJECTED with evidence (same sheet): p50 delta 113, 71% gt40 - full re-illustration. Edit-mode retry on crop-face.png.",
+   "mouth_cheek": "parts/17b-mouth-cheek-tight.png (edit-mode tight cut, laugh accent with 14c at the offer peak)"
   },
   "wrist_hand": "parts/06-wrist-hand.png",
   "forearm": "parts/05-forearm.png"
@@ -124,7 +126,13 @@
     "parts/09-keyform-minus15.png",
     "parts/09c-keyform-plus6.png"
    ],
-   "first_pass_verdict": "REJECTED with evidence (rig/keyform-verdict.png): 09/09b p50 delta 68-102, 64-74% of px gt40; 09c has no registration (NCC 0.22). Full-crop re-illustrations, not local patches. Edit-mode retry conditioned on the registered 360x340 crop (the 14c/15c/16c recipe)."
+   "first_pass_verdict": "REJECTED with evidence (rig/keyform-verdict.png): 09/09b p50 delta 68-102, 64-74% of px gt40; 09c has no registration (NCC 0.22). Full-crop re-illustrations, not local patches. Edit-mode retry conditioned on the registered 360x340 crop (the 14c/15c/16c recipe).",
+   "painted_edit_mode": {
+    "minus15": "parts/09d-keyform-minus15-tight.png",
+    "minus7": "parts/09e-keyform-minus7-tight.png",
+    "plus6": "parts/09f-keyform-plus6-tight.png",
+    "note": "edit-mode retry accepted as local (NCC 0.996-0.997 unchanged); tight component cuts; reviewable first pass"
+   }
   }
  },
  "curves": {
@@ -301,6 +309,45 @@
    ],
    "method": "NCC on luminance = 1.0000",
    "patch_scale": 2.963888888888889
+  },
+  "shoulder_patches": {
+   "minus15": {
+    "patch": "parts/09d-keyform-minus15-tight.png",
+    "band_master_bbox": [
+     530,
+     209,
+     636,
+     304
+    ]
+   },
+   "minus7": {
+    "patch": "parts/09e-keyform-minus7-tight.png",
+    "band_master_bbox": [
+     484,
+     192,
+     504,
+     258
+    ]
+   },
+   "plus6": {
+    "patch": "parts/09f-keyform-plus6-tight.png",
+    "band_master_bbox": [
+     534,
+     205,
+     716,
+     325
+    ]
+   },
+   "mouth_cheek": {
+    "patch": "parts/17b-mouth-cheek-tight.png",
+    "band_master_bbox": [
+     850,
+     186,
+     953,
+     293
+    ]
+   },
+   "gating": "keyforms fade by arm_angle state, rotated with the upper-arm bone, skipped in the handover window"
   }
  }
 }

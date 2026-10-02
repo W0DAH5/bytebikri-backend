@@ -74,20 +74,22 @@ lowered = Image.fromarray(np.asarray(lowered7).repeat(2, 0).repeat(2, 1)[:, :W, 
 
 plate_backing = Image.new("RGBA", (W, H), (0, 0, 0, 0))
 # The plate's ONE purpose (the Clip Studio "draw in the background behind
-# them" pass): backing the ARM+GRAPES footprint with plausible painted body,
-# so small rotations reveal continuation instead of holes, and the stepped
-# handover reveals an inpainted torso. Rulings: only the figure's INTERIOR
-# (a ~12px band at the outer contour is sky-truth -> card, same boundary the
-# production swap exposes), and only the plate's GOLD paint — the generator
-# baked literal checkerboard squares / pale studio background into parts of
-# the hole; those are not artwork and fall to the card (sky ruling).
+# them" pass): continuing the body across BOUNDARIES - the torso cut the arm
+# made, and the sliver band at the arm footprint's edge that small rotations
+# expose. The DEEP hole is former sky: production's own swap shows card there
+# (the lowered art + page background), so the plate may not fill it. And only
+# the plate's GOLD paint: saturated warm gold passes; the generator's baked
+# beige checkerboard (R-B ~50) and pale studio background do not.
 from PIL import ImageFilter as _IF
-_interior = np.asarray(Image.fromarray(
-    ((A_master > 0.02) * 255).astype(np.uint8)).filter(_IF.MinFilter(25))) > 128
-_hole = (ARM | GRA) & (A_master > 0.02) & _interior
+AG = ARM | GRA
+_ag_in = np.asarray(Image.fromarray((AG * 255).astype(np.uint8)).filter(_IF.MinFilter(101))) > 128
+_slivers = AG & ~_ag_in                                   # inner 50px edge band of the old footprint
+_tor_dil = np.asarray(Image.fromarray((TOR * 255).astype(np.uint8)).filter(_IF.MaxFilter(51))) > 128
+_cutband = _tor_dil & ~TOR & AG & (A_master > 0.02)       # 25px continuation at the torso cut
 _pm = np.asarray(plate_tex)
-_gold = (_pm[..., 0].astype(np.int32) - _pm[..., 2].astype(np.int32) > 30) & (_pm[..., 0] > 110)
-_rim = _hole & _gold
+_gold = (_pm[..., 0].astype(np.int32) - _pm[..., 2] > 55) & \
+        (_pm[..., 0].astype(np.int32) - _pm[..., 1] > 15) & (_pm[..., 0] > 120)
+_rim = (_slivers | _cutband) & _gold & (A_master > 0.02)
 _pa = np.zeros((H, W, 4), np.uint8)
 for c in range(3):
     _pa[..., c] = np.where(_rim, _pm[..., c], 0).astype(np.uint8)
@@ -283,6 +285,32 @@ def face_overlay(name):
 ov_blink = face_overlay("15c-blink-tight.png")
 ov_smile = face_overlay("14c-smile-tight.png")
 ov_brow = face_overlay("16c-brow-tight.png")
+ov_mouth = face_overlay("17b-mouth-cheek-tight.png")   # laugh accent (edit-mode tight cut)
+
+# shoulder keyform patches: the painted compression/stretch states, registered
+# on the shoulder crop (origin 420,160, 360x340, NCC 1.0000), tight component
+# cuts over the master. Gates follow arm_angle; all zero at rest.
+SHOULDER_ORIGIN = (420, 160)
+SHOULDER_SIZE = (360, 340)
+
+
+def box_overlay(name, origin, size):
+    p = Image.open(os.path.join(P57, "parts", name)).convert("RGBA")
+    a = np.asarray(p)
+    ox, oy = int(origin[0]), int(origin[1])
+    keep = (a[..., 3] > 8) & _fig_dil[oy:oy + size[1], ox:ox + size[0]]
+    canvas = np.zeros((H, W, 4), np.uint8)
+    reg = canvas[oy:oy + size[1], ox:ox + size[0]]
+    for c in range(3):
+        reg[..., c] = np.where(keep, a[..., c], 0).astype(np.uint8)
+    reg[..., 3] = np.where(keep, 255, 0).astype(np.uint8)
+    canvas[oy:oy + size[1], ox:ox + size[0]] = reg
+    return Image.fromarray(canvas)
+
+
+ov_k_m15 = box_overlay("09d-keyform-minus15-tight.png", SHOULDER_ORIGIN, SHOULDER_SIZE)
+ov_k_m7 = box_overlay("09e-keyform-minus7-tight.png", SHOULDER_ORIGIN, SHOULDER_SIZE)
+ov_k_p6 = box_overlay("09f-keyform-plus6-tight.png", SHOULDER_ORIGIN, SHOULDER_SIZE)
 
 # RE-CUT VERDICT: edit-mode regeneration conditioned on the registered crop
 # produced LOCAL changes (2.6-5.8% of px, NCC 0.999 on unchanged area), cut
@@ -293,11 +321,22 @@ ov_brow = face_overlay("16c-brow-tight.png")
 FACE_FADES = True
 
 
-def fade(canvas, overlay, k):
+_figalpha = np.zeros((H, W), bool)   # compose() refreshes this before the fades
+
+
+def fade(canvas, overlay, k, rot_about=None, rot_deg=0.0):
+    """Cross-fade an overlay in, clipped to the figure already composed (no
+    floating art over sky), optionally rotated to follow a bone.
+    PIL rotate(arm_deg, center=SH) is exactly the mesh's upper-arm map."""
     if k <= 0.004:
         return
-    tmp = np.asarray(overlay).copy()
-    tmp[..., 3] = (tmp[..., 3].astype(np.float32) * min(k, 1.0)).astype(np.uint8)
+    ov = overlay
+    if rot_deg != 0.0 and rot_about is not None:
+        ov = ov.rotate(rot_deg, resample=Image.BICUBIC, center=rot_about)
+    tmp = np.asarray(ov).copy()
+    al = tmp[..., 3].astype(np.float32) * min(k, 1.0)
+    al = np.where(_figalpha, al, 0.0)
+    tmp[..., 3] = al.astype(np.uint8)
     canvas.alpha_composite(Image.fromarray(tmp))
 
 
@@ -330,9 +369,19 @@ def compose(t, backing=None):
     # generated pieces are full-crop re-illustrations, not local patches
     # (see the REGISTRATION VERDICT above and rig/face-fades.png)
     if FACE_FADES:
+        global _figalpha
+        _figalpha = np.asarray(out)[..., 3] > 0   # clip every fade to the composed figure
         fade(out, ov_blink, eval_curve(CURVES["blink"], t))
-        fade(out, ov_smile, sstep((arm_deg - 3.0) / 3.0))
-        fade(out, ov_brow, sstep((-arm_deg - 10.0) / 4.0))
+        k_offer = sstep((arm_deg - 3.0) / 3.0)
+        fade(out, ov_smile, k_offer)
+        fade(out, ov_mouth, k_offer)          # laugh accent rides the offer peak
+        k_deep = sstep((-arm_deg - 10.0) / 4.0)
+        k_mid = sstep((-arm_deg - 1.5) / 3.0) * (1.0 - k_deep)
+        if not window:                        # the arm (and its shoulder keyforms) is out during the handover
+            fade(out, ov_k_p6, k_offer, rot_about=SH, rot_deg=arm_deg)   # painted stretch at the +6 offer
+            fade(out, ov_k_m7, k_mid, rot_about=SH, rot_deg=arm_deg)     # mild compression on the way down
+            fade(out, ov_k_m15, k_deep, rot_about=SH, rot_deg=arm_deg)   # deep compression into the -15 hold
+        fade(out, ov_brow, k_deep)
     under = Image.new("RGBA", (W, H), CARD)
     under.alpha_composite(out)
     return under
@@ -383,6 +432,20 @@ for i, (t, tag) in enumerate(((0.0, "rest"), (8.633, "blink"), (2.6, "smile"), (
 faces.save(os.path.join(P57, "rig", "face-fades.png"))
 print("face sheet written: docs/evidence/round57/rig/face-fades.png")
 
+# keyform closeups: the painted compression/stretch states at their peaks
+SC = (420, 160, 780, 500)
+kfs = Image.new("RGB", (2 * 712 + 6, 2 * 616 + 26), (8, 8, 10))
+dk = ImageDraw.Draw(kfs)
+dk.text((6, 4), "SHOULDER keyform fades (painted tight cuts): rest | +6 offer t=2.6 (stretch) | transition t=14.2 (mild) | -15 hold t=16.5 (deep, window) - 2x", fill=(255, 226, 138))
+for i, (t, tag) in enumerate(((0.0, "rest"), (2.6, "+6 offer"), (14.2, "transition"), (16.5, "-15 hold"))):
+    im = compose(t, backing=plate_backing).crop(SC).resize((700, 600), Image.LANCZOS)
+    x = (i % 2) * 712 + 6
+    y = (i // 2) * 616 + 22
+    kfs.paste(im, (x, y))
+    dk.text((x, y - 12), "t=%s (%s)" % (t, tag), fill=(255, 226, 138))
+kfs.save(os.path.join(P57, "rig", "keyform-fades.png"))
+print("keyform sheet written: docs/evidence/round57/rig/keyform-fades.png")
+
 rig["registration"] = {
     "face_crop": {"file": "crops/crop-face.png", "origin": [850, 60], "size": [350, 300],
                    "method": "NCC on luminance = 1.0000", "patch_scale": 3.2},
@@ -393,6 +456,13 @@ rig["registration"] = {
                    "smile": "14c-smile-tight when arm_angle > +3 (offer peak)",
                    "brow": "16c-brow-tight when arm_angle < -10 (deep-raise hold)"},
     "necklace": {"strand": "parts/08-necklace-master-strand.png (master values, own region)",
-                 "draw_rule": "strand above torso, below arm at every angle (master stacking); painted front/back groups pending review"}}
+                 "draw_rule": "strand above torso, below arm at every angle (master stacking); painted front/back groups pending review"},
+    "shoulder_crop": {"file": "crops/crop-shoulder-chest.png", "origin": [420, 160], "size": [360, 340],
+                      "method": "NCC on luminance = 1.0000", "patch_scale": 1067 / 360},
+    "shoulder_patches": {"minus15": {"patch": "parts/09d-keyform-minus15-tight.png", "band_master_bbox": [530, 209, 636, 304]},
+                         "minus7": {"patch": "parts/09e-keyform-minus7-tight.png", "band_master_bbox": [484, 192, 504, 258]},
+                         "plus6": {"patch": "parts/09f-keyform-plus6-tight.png", "band_master_bbox": [534, 205, 716, 325]},
+                         "mouth_cheek": {"patch": "parts/17b-mouth-cheek-tight.png", "band_master_bbox": [850, 186, 953, 293]},
+                         "gating": "keyforms fade by arm_angle state, rotated with the upper-arm bone, skipped in the handover window"}}
 json.dump(rig, open(rig_path, "w"), indent=1)
 print("rig JSON: face registration + necklace draw rule recorded")
