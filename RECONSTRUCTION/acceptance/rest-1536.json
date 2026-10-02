@@ -1,0 +1,8 @@
+{
+ "baseline_mean": 20.21,
+ "reconstruction_mean": 21.33,
+ "deviation_beyond_baseline_mean": 2.42,
+ "deviation_beyond_baseline_p99": 12.0,
+ "deviation_beyond_baseline_px_over_32": 1264,
+ "note": "the 1536 master and the 768 rig-space render are separate generations (recorded offset: baseline mean 20.2, p99 102). The reconstruction is 768-native because the frozen rig is. Deviation-beyond-baseline isolates what the reconstruction itself introduces; it is confined to the sanctioned sets' neighbourhoods (pocket, crevices, rim-unmix) and resampling wiggle."
+}
