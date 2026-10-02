@@ -104,7 +104,8 @@
    "neutral": "parts/13-face-neutral-master.png",
    "smile": "parts/14-face-smile.png",
    "blink": "parts/15-face-blink.png",
-   "brow": "parts/16-face-brow.png"
+   "brow": "parts/16-face-brow.png",
+   "mouth_cheek_17": "17-mouth-cheek.png REJECTED with evidence (same sheet): p50 delta 113, 71% gt40 - full re-illustration. Edit-mode retry on crop-face.png."
   },
   "wrist_hand": "parts/06-wrist-hand.png",
   "forearm": "parts/05-forearm.png"
@@ -122,7 +123,8 @@
     "parts/09b-keyform-minus7.png",
     "parts/09-keyform-minus15.png",
     "parts/09c-keyform-plus6.png"
-   ]
+   ],
+   "first_pass_verdict": "REJECTED with evidence (rig/keyform-verdict.png): 09/09b p50 delta 68-102, 64-74% of px gt40; 09c has no registration (NCC 0.22). Full-crop re-illustrations, not local patches. Edit-mode retry conditioned on the registered 360x340 crop (the 14c/15c/16c recipe)."
   }
  },
  "curves": {
@@ -286,6 +288,19 @@
   "necklace": {
    "strand": "parts/08-necklace-master-strand.png (master values, own region)",
    "draw_rule": "strand above torso, below arm at every angle (master stacking); painted front/back groups pending review"
+  },
+  "shoulder_crop": {
+   "file": "crops/crop-shoulder-chest.png",
+   "origin": [
+    420,
+    160
+   ],
+   "size": [
+    360,
+    340
+   ],
+   "method": "NCC on luminance = 1.0000",
+   "patch_scale": 2.963888888888889
   }
  }
 }
