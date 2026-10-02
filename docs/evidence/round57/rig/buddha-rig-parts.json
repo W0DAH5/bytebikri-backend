@@ -262,5 +262,30 @@
    ]
   }
  },
- "breath_mechanism": "torso mesh warp on the master-extracted texture (zero drift); generated breath states pending review"
+ "breath_mechanism": "torso mesh warp on the master-extracted texture (zero drift); generated breath states pending review",
+ "registration": {
+  "face_crop": {
+   "file": "crops/crop-face.png",
+   "origin": [
+    850,
+    60
+   ],
+   "size": [
+    350,
+    300
+   ],
+   "method": "NCC on luminance = 1.0000",
+   "patch_scale": 3.2
+  },
+  "face_fades": {
+   "status": "gated_off - generated pieces are full-crop re-illustrations, not local patches; overlay ghosts (rig/face-fades.png evidence)",
+   "blink": "15-face-blink by blink curve (when re-cut as a tight patch)",
+   "smile": "14-face-smile when arm_angle > +3 (when re-cut)",
+   "brow": "16-face-brow when arm_angle < -10 (when re-cut)"
+  },
+  "necklace": {
+   "strand": "parts/08-necklace-master-strand.png (master values, own region)",
+   "draw_rule": "strand above torso, below arm at every angle (master stacking); painted front/back groups pending review"
+  }
+ }
 }

@@ -50,7 +50,10 @@ gra7 = np.asarray(Image.open(os.path.join(ROOT, "RECONSTRUCTION/layers/grapes/gr
 A_arm, A_gra = up2(arm7), up2(gra7)
 ARM = (A_arm > 0.02) & (A_gra <= 0.02)
 GRA = A_gra > 0.02
-TOR = (A_master > 0.02) & ~ARM & ~GRA
+# necklace: the master-value strand extraction is a fourth owner region
+STRAND = np.asarray(Image.open(os.path.join(P57, "parts", "08-necklace-master-strand.png")).convert("RGBA"))[..., 3] > 8
+STRAND &= A_master > 0.02
+TOR = (A_master > 0.02) & ~ARM & ~GRA & ~STRAND
 
 
 def cut(mask, name):
@@ -62,6 +65,7 @@ def cut(mask, name):
 
 
 torso_tex = cut(TOR, "t")
+strand_tex = cut(STRAND, "n")   # master's own strand px; drawn between torso and arm
 arm_tex = Image.open(os.path.join(P57, "parts", "02-arm-full.png")).convert("RGBA")
 grapes_tex = Image.open(os.path.join(P57, "parts", "07-grapes-master.png")).convert("RGBA")
 plate_tex = Image.open(os.path.join(P57, "parts", "01-torso-clean-plate.png")).convert("RGB").resize((W, H), Image.LANCZOS)
@@ -248,6 +252,61 @@ def torso_warped(breath):
     return Image.fromarray(base)
 
 
+# ── face patch registration (the swap/cross-fade the order specifies) ────────
+# crop-face.png registered against the master at NCC 1.0000, origin (850,60);
+# the generated patches are the crop at 3.2x (1120x960). Key the baked
+# checkerboard/white background (neutral, bright), clip to the master figure,
+# and cross-fade by the rig curves. At rest every fade is 0 -> REST untouched.
+FACE_ORIGIN = (850.0, 60.0)
+FACE_SIZE = (350, 300)
+PATCH_SCALE = 3.2
+_fig_dil = np.asarray(Image.fromarray(
+    ((A_master > 0.02) * 255).astype(np.uint8)).filter(_IF.MaxFilter(13))) > 128
+
+
+def face_overlay(name):
+    p = Image.open(os.path.join(P57, "parts", name)).convert("RGB").resize(FACE_SIZE, Image.LANCZOS)
+    a = np.asarray(p).astype(np.float32)
+    lum = a @ np.array([.299, .587, .114])
+    chroma = a.max(axis=2) - a.min(axis=2)
+    keep = ~((chroma < 25) & (lum > 170))          # drop baked checkerboard/white
+    ox, oy = int(FACE_ORIGIN[0]), int(FACE_ORIGIN[1])
+    keep &= _fig_dil[oy:oy + FACE_SIZE[1], ox:ox + FACE_SIZE[0]]
+    canvas = np.zeros((H, W, 4), np.uint8)
+    reg = canvas[oy:oy + FACE_SIZE[1], ox:ox + FACE_SIZE[0]]
+    for c in range(3):
+        reg[..., c] = np.where(keep, a[..., c], 0).astype(np.uint8)
+    reg[..., 3] = np.where(keep, 255, 0).astype(np.uint8)
+    canvas[oy:oy + FACE_SIZE[1], ox:ox + FACE_SIZE[0]] = reg
+    return Image.fromarray(canvas)
+
+
+ov_blink = face_overlay("15-face-blink.png")
+ov_smile = face_overlay("14-face-smile.png")
+ov_brow = face_overlay("16-face-brow.png")
+
+# REGISTRATION VERDICT (face-fades.png is the evidence): the generated face
+# pieces are FULL-CROP re-illustrations - a second complete face with shifted
+# features - not local expression patches. Cross-fading them onto the master
+# face ghosts (double face, doubled ear, keyed speckle). Per the acceptance
+# criteria (no artifacts) the fades are gated OFF in the cycle; the pieces
+# remain as expression references for review / tight-patch regeneration.
+FACE_FADES = False
+
+
+def fade(canvas, overlay, k):
+    if k <= 0.004:
+        return
+    tmp = np.asarray(overlay).copy()
+    tmp[..., 3] = (tmp[..., 3].astype(np.float32) * min(k, 1.0)).astype(np.uint8)
+    canvas.alpha_composite(Image.fromarray(tmp))
+
+
+def sstep(x):
+    x = max(0.0, min(1.0, x))
+    return x * x * (3 - 2 * x)
+
+
 def compose(t, backing=None):
     arm_deg = eval_curve(CURVES["arm_angle"], t)
     sway = eval_curve(CURVES["grape_sway"], t)
@@ -259,6 +318,7 @@ def compose(t, backing=None):
     if backing is not None:
         out.alpha_composite(backing)
     out.alpha_composite(torso_warped(breath))
+    out.alpha_composite(strand_tex)   # necklace: master stacking, under the arm
     if window:
         out.alpha_composite(lowered)   # the drawn-behind lowered pose (hand + grapes + sleeve)
     else:
@@ -267,24 +327,32 @@ def compose(t, backing=None):
         gp.alpha_composite(grapes_tex.rotate(sway, resample=Image.BICUBIC,
                                              center=GRAPE_PIVOT, expand=False))
         out.alpha_composite(gp)
+    # face cross-fades (swap/cross-fade per the order): gated off - the
+    # generated pieces are full-crop re-illustrations, not local patches
+    # (see the REGISTRATION VERDICT above and rig/face-fades.png)
+    if FACE_FADES:
+        fade(out, ov_blink, eval_curve(CURVES["blink"], t))
+        fade(out, ov_smile, sstep((arm_deg - 3.0) / 3.0))
+        fade(out, ov_brow, sstep((-arm_deg - 10.0) / 4.0))
     under = Image.new("RGBA", (W, H), CARD)
     under.alpha_composite(out)
     return under
 
 
-# sanity: at t=0 the ARM mesh path must be master-exact; the grapes are swayed
+# sanity: at t=0 every layer must be master-exact; the grapes are swayed
 # (-4.5 deg is the cycle's own start value, exactly as production CSS starts),
-# so the only legitimate diffs are inside the grapes' sway band.
+# so the only legitimate diffs are inside the grapes' sway band. This is now a
+# FULL-FIGURE check: torso, necklace strand, arm mesh and face (all fades 0).
 from PIL import ImageFilter
 r0 = np.asarray(compose(0.0)).astype(np.int16)
-foot = a[..., 3] > 8
 dd = np.abs(r0 - Mr.astype(np.int16)).max(axis=2)
 sway_band = np.asarray(Image.fromarray(
     ((A_gra > 0.02) * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(49))) > 128
-bad = (dd > 0) & foot & ~sway_band
-print("REST check at t=0: arm-footprint diffs outside the grape sway band:",
+fig = A_master > 0.02
+bad = (dd > 0) & fig & ~sway_band
+print("REST check at t=0: FULL-FIGURE diffs outside the grape sway band:",
       int(bad.sum()), "| inside the band (the cycle's own sway):",
-      int(((dd > 0) & foot & sway_band).sum()))
+      int(((dd > 0) & fig & sway_band).sum()))
 
 # ── the strip: 24s at 2fps ────────────────────────────────────────────────────
 FR = 48
@@ -301,3 +369,32 @@ for f in range(FR):
     d.text((x, y - 11), f"t={t:04.1f}s", fill=(255, 226, 138))
 sheet.save(os.path.join(P57, "rig", "cycle-strip.png"))
 print("cycle strip written: docs/evidence/round57/rig/cycle-strip.png")
+
+# face closeups: EVIDENCE MODE - fades forced on to document why the
+# generated face pieces are rejected as overlays (the ghost double-face)
+FC = (850, 60, 1200, 360)
+FACE_FADES = True
+faces = Image.new("RGB", (350 * 2 * 2 + 24, 300 * 2 + 44), (8, 8, 10))
+df = ImageDraw.Draw(faces)
+df.text((6, 4), "FACE registration EVIDENCE - rest | blink overlay t=8.6 (ghost: full-crop re-illustration) | smile t=2.6 | brow t=16.5 - 2x. Fades gated OFF in the cycle.", fill=(255, 226, 138))
+for i, (t, tag) in enumerate(((0.0, "rest"), (8.633, "blink"), (2.6, "smile"), (16.5, "brow"))):
+    im = compose(t, backing=plate_backing).crop(FC).resize((700, 600), Image.LANCZOS)
+    x = (i % 2) * 712 + 6
+    y = (i // 2) * 616 + 22
+    faces.paste(im, (x, y))
+    df.text((x, y - 12), "t=%s (%s)" % (t, tag), fill=(255, 226, 138))
+faces.save(os.path.join(P57, "rig", "face-fades.png"))
+print("face sheet written: docs/evidence/round57/rig/face-fades.png")
+
+rig["registration"] = {
+    "face_crop": {"file": "crops/crop-face.png", "origin": [850, 60], "size": [350, 300],
+                   "method": "NCC on luminance = 1.0000", "patch_scale": 3.2},
+    "face_fades": {"status": "gated_off - generated pieces are full-crop re-illustrations,"
+                              " not local patches; overlay ghosts (rig/face-fades.png evidence)",
+                   "blink": "15-face-blink by blink curve (when re-cut as a tight patch)",
+                   "smile": "14-face-smile when arm_angle > +3 (when re-cut)",
+                   "brow": "16-face-brow when arm_angle < -10 (when re-cut)"},
+    "necklace": {"strand": "parts/08-necklace-master-strand.png (master values, own region)",
+                 "draw_rule": "strand above torso, below arm at every angle (master stacking); painted front/back groups pending review"}}
+json.dump(rig, open(rig_path, "w"), indent=1)
+print("rig JSON: face registration + necklace draw rule recorded")
