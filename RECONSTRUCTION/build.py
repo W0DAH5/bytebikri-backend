@@ -305,6 +305,24 @@ if _part.any():
 RIM_UNMIXED = _part
 SANCTION = POCKET_SKY | CREVICE | (RIM_UNMIXED & (A_b < 0.98))
 
+# ── THE POCKET FRINGE (post-acceptance re-apply, authorized 2026-10-02) ─────
+# Every opaque-backdrop px where the LOWERED artwork has only sky draws the
+# lowered webp's premultiplied-black placeholder (R_rgb is (0,0,0) at alpha
+# 0, so fill_rgb is black at full torso opacity). The solid limb hides all
+# of them at REST; each pose sweep (+6/-3/-7/-15) uncovers a band and the
+# black dots, next to the pale delivery paint, read as a checker mosaic at
+# the pocket. The zero-out: where the REST composite covers such a px (the
+# solid limb, or the opaque bunch after the CREVICE repair), its premulti-
+# plied contribution is 0 before and after, so REST is untouched - and sky
+# is page: the card shows, the same ruling as POCKET_SKY. Residue px under
+# the limb's own semi-edge (arm alpha in [0.98, 0.999)) keep their drawn
+# colour; they are documented, single-digit scattered, and bit-irrelevant.
+_FRNGE = (M & SOLID) & ~HOLES & (A_r <= 0.5)
+_FRNGE_COVERED = _FRNGE & ((arm_a >= 0.999) | (grapes_a >= 0.999))
+_FRNGE_LEFT = _FRNGE & ~_FRNGE_COVERED
+torso_a = np.where(_FRNGE_COVERED, 0.0, torso_a)
+print(f"          pocket-fringe zero-out: class {int(_FRNGE.sum())}, zeroed {int(_FRNGE_COVERED.sum())}, residue kept {int(_FRNGE_LEFT.sum())}")
+
 grapes = merge(grapes_rgb, grapes_a)
 arm = merge(arm_rgb, arm_a)
 torso = merge(torso_rgb, torso_a)
