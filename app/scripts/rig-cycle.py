@@ -89,7 +89,32 @@ _cutband = _tor_dil & ~TOR & AG & (A_master > 0.02)       # 25px continuation at
 _pm = np.asarray(plate_tex)
 _gold = (_pm[..., 0].astype(np.int32) - _pm[..., 2] > 55) & \
         (_pm[..., 0].astype(np.int32) - _pm[..., 1] > 15) & (_pm[..., 0] > 120)
-_rim = (_slivers | _cutband) & _gold & (A_master > 0.02)
+# MATERIAL MATCH (round 57 milestone 11): the surviving paint must sit inside
+# the master torso's own gold envelope - its (R-G, R-B, luminance) percentiles
+# - so pale sheen / studio-background remnants that beat the coarse RGB rule
+# still fall to the card. The master's own highlights are inside the envelope,
+# so true gold survives: no style drift, no invention.
+_tor_rgb = Mr[TOR][:, :3].astype(np.float32)
+_tor_rg = _tor_rgb[:, 0] - _tor_rgb[:, 1]
+_tor_rb = _tor_rgb[:, 0] - _tor_rgb[:, 2]
+_tor_lum = _tor_rgb @ np.array([.299, .587, .114], np.float32)
+_prg = _pm[..., 0].astype(np.float32) - _pm[..., 1]
+_prb = _pm[..., 0].astype(np.float32) - _pm[..., 2]
+_plum = _pm[..., :3].astype(np.float32) @ np.array([.299, .587, .114], np.float32)
+_inmat = (_prg >= np.percentile(_tor_rg, 1) - 10) & (_prg <= np.percentile(_tor_rg, 99) + 10) & \
+         (_prb >= np.percentile(_tor_rb, 1) - 10) & (_prb <= np.percentile(_tor_rb, 99) + 10) & \
+         (_plum <= np.percentile(_tor_lum, 99.5) + 10)
+print("plate material filter: evicting %d of %d candidate px (outside master envelope)" %
+      (int(((_slivers | _cutband) & _gold & ~_inmat).sum()), int(((_slivers | _cutband) & _gold).sum())))
+_rim = (_slivers | _cutband) & _gold & _inmat & (A_master > 0.02)
+# FILAMENT OPENING (milestone 11): 1px paint filaments read as edge crawl
+# (an explicit non-acceptance); an erosion+dilation opening keeps solid
+# regions and evicts thin chains, including the beige boundary remnants that
+# sit inside the material envelope but form crawl lines.
+_open = np.asarray(Image.fromarray((_rim * 255).astype(np.uint8)).filter(
+    _IF.MinFilter(3)).filter(_IF.MaxFilter(3))) > 128
+print("plate filament opening: evicting %d filament px" % int((_rim & ~_open).sum()))
+_rim &= _open
 _pa = np.zeros((H, W, 4), np.uint8)
 for c in range(3):
     _pa[..., c] = np.where(_rim, _pm[..., c], 0).astype(np.uint8)
@@ -357,6 +382,13 @@ def compose(t, backing=None):
         out.alpha_composite(backing)
     out.alpha_composite(torso_warped(breath))
     out.alpha_composite(strand_tex)   # necklace: master stacking, under the arm
+    if FACE_FADES:
+        global _figalpha
+        # DRAW ORDER (milestone 11, literal): the face/keyform fades clip to
+        # torso+strand(+backing) ONLY - computed BEFORE the arm/lowered are
+        # composited - so a patch can never paint over the arm or the lowered
+        # pose even where their footprints approach the face/shoulder bands.
+        _figalpha = np.asarray(out)[..., 3] > 0
     if window:
         out.alpha_composite(lowered)   # the drawn-behind lowered pose (hand + grapes + sleeve)
     else:
@@ -365,12 +397,9 @@ def compose(t, backing=None):
         gp.alpha_composite(grapes_tex.rotate(sway, resample=Image.BICUBIC,
                                              center=GRAPE_PIVOT, expand=False))
         out.alpha_composite(gp)
-    # face cross-fades (swap/cross-fade per the order): gated off - the
-    # generated pieces are full-crop re-illustrations, not local patches
-    # (see the REGISTRATION VERDICT above and rig/face-fades.png)
+    # face cross-fades (swap/cross-fade per the order); the clip mask was
+    # taken above, before the arm/lowered - draw order: face under the arm
     if FACE_FADES:
-        global _figalpha
-        _figalpha = np.asarray(out)[..., 3] > 0   # clip every fade to the composed figure
         fade(out, ov_blink, eval_curve(CURVES["blink"], t))
         k_offer = sstep((arm_deg - 3.0) / 3.0)
         fade(out, ov_smile, k_offer)
@@ -418,15 +447,17 @@ for f in range(FR):
 sheet.save(os.path.join(P57, "rig", "cycle-strip.png"))
 print("cycle strip written: docs/evidence/round57/rig/cycle-strip.png")
 
-# face closeups: the ACTIVE cross-fades at their peaks
+# face closeups: the ACTIVE cross-fades at their peaks + the SOFT blink
+# (a mid-fall frame: the eyelid gradient is the cross-fade itself)
 FC = (850, 60, 1200, 360)
-faces = Image.new("RGB", (2 * 712 + 6, 2 * 616 + 26), (8, 8, 10))
+faces = Image.new("RGB", (3 * 712 + 12, 2 * 616 + 26), (8, 8, 10))
 df = ImageDraw.Draw(faces)
-df.text((6, 4), "FACE cross-fades (tight edit-mode patches): rest | blink peak t=8.6 | smile peak t=2.6 (offer +6) | brow hold t=16.5 (deep raise) - 2x", fill=(255, 226, 138))
-for i, (t, tag) in enumerate(((0.0, "rest"), (8.633, "blink"), (2.6, "smile"), (16.5, "brow"))):
+df.text((6, 4), "FACE in the cycle (tight patches, above torso, UNDER the arm): rest | blink mid-fall t=9.02 (soft) | blink peak t=8.8 | smile+mouth t=2.6 (offer +6) | brow t=16.5 (deep) | open again t=10.5 - 2x", fill=(255, 226, 138))
+for i, (t, tag) in enumerate(((0.0, "rest"), (9.02, "blink MID-FALL (soft)"), (8.8, "blink closed"),
+                              (2.6, "smile+mouth"), (16.5, "brow"), (10.5, "blink open again"))):
     im = compose(t, backing=plate_backing).crop(FC).resize((700, 600), Image.LANCZOS)
-    x = (i % 2) * 712 + 6
-    y = (i // 2) * 616 + 22
+    x = (i % 3) * 712 + 6
+    y = (i // 3) * 616 + 22
     faces.paste(im, (x, y))
     df.text((x, y - 12), "t=%s (%s)" % (t, tag), fill=(255, 226, 138))
 faces.save(os.path.join(P57, "rig", "face-fades.png"))

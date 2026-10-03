@@ -81,7 +81,26 @@ _cutband = _tor_dil & ~TOR & AG & (A_master > 0.02)
 _pm = np.asarray(plate_tex)
 _gold = (_pm[..., 0].astype(np.int32) - _pm[..., 2] > 55) & \
         (_pm[..., 0].astype(np.int32) - _pm[..., 1] > 15) & (_pm[..., 0] > 120)
-_rim = (_slivers | _cutband) & _gold & (A_master > 0.02)
+# MATERIAL MATCH (milestone 11): keep only px inside the master torso's own
+# gold envelope ((R-G, R-B, luminance) percentiles +/-10) - pale sheen and
+# studio-background remnants fall to the card; the master's own highlights
+# are inside the envelope so true gold survives.
+_tor_rgb = Mr[TOR][:, :3].astype(np.float32)
+_tor_rg = _tor_rgb[:, 0] - _tor_rgb[:, 1]
+_tor_rb = _tor_rgb[:, 0] - _tor_rgb[:, 2]
+_tor_lum = _tor_rgb @ np.array([.299, .587, .114], np.float32)
+_prg = _pm[..., 0].astype(np.float32) - _pm[..., 1]
+_prb = _pm[..., 0].astype(np.float32) - _pm[..., 2]
+_plum = _pm[..., :3].astype(np.float32) @ np.array([.299, .587, .114], np.float32)
+_inmat = (_prg >= np.percentile(_tor_rg, 1) - 10) & (_prg <= np.percentile(_tor_rg, 99) + 10) & \
+         (_prb >= np.percentile(_tor_rb, 1) - 10) & (_prb <= np.percentile(_tor_rb, 99) + 10) & \
+         (_plum <= np.percentile(_tor_lum, 99.5) + 10)
+_rim = (_slivers | _cutband) & _gold & _inmat & (A_master > 0.02)
+# FILAMENT OPENING: evict 1px paint filaments (edge crawl, an explicit
+# non-acceptance); solid regions survive erosion+dilation.
+_open = np.asarray(Image.fromarray((_rim * 255).astype(np.uint8)).filter(
+    ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(3))) > 128
+_rim &= _open
 _pa = np.zeros((H, W, 4), np.uint8)
 for c in range(3):
     _pa[..., c] = np.where(_rim, _pm[..., c], 0).astype(np.uint8)
