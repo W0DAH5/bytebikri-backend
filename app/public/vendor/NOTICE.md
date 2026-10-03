@@ -27,3 +27,20 @@ Three things about this file are deliberate:
   file changing, if the version here and the version in the bundle disagree, or if the
   CSP grows an external script host. Upgrading hls.js is therefore a commit with a
   reason and a hash, not a `curl` somebody ran once.
+
+---
+
+`pixi.min.js` is **pixi.js 7.4.2**, unmodified, from
+`https://registry.npmjs.org/pixi.js/-/pixi.js-7.4.2.tgz` (`dist/pixi.min.js`).
+
+    sha256  9ddba9cd78bc8610a1d445ec939393888be83925c78e40d66d9a17e98450228d
+    bytes   456133
+
+It is here because the rigged Buddha renders through PixiJS `MeshGeometry`
+(`CHARACTER_ANIMATION.md` §7): CSS cannot deform a raster, Canvas 2D seams, and
+the other mesh runtimes are paid or proprietary. The rig itself is our data
+(`img/cosmetics/buddha-rig/buddha-rig.json`, authored by
+`app/scripts/rig-export.py`); Pixi is only the free renderer. Same rules as
+hls.js: byte-identical to the published build, licence beside it
+(`pixi.min.js.LICENSE`, MIT), used today only by the `buddha-rig-preview.html`
+harness — not referenced by the production page.
