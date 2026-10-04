@@ -190,10 +190,10 @@ def place(name, origin, size):
 FACE_ORIGIN, FACE_SIZE = (850, 60), (350, 300)
 SHOULDER_ORIGIN, SHOULDER_SIZE = (420, 160), (360, 340)
 patches = {
-    "face-blink": place("15c-blink-tight.png", FACE_ORIGIN, FACE_SIZE),
-    "face-smile": place("14c-smile-tight.png", FACE_ORIGIN, FACE_SIZE),
-    "face-brow": place("16c-brow-tight.png", FACE_ORIGIN, FACE_SIZE),
-    "face-mouth": place("17b-mouth-cheek-tight.png", FACE_ORIGIN, FACE_SIZE),
+    "face-blink": place("15c2-blink-tight.png", FACE_ORIGIN, FACE_SIZE),
+    "face-smile": place("14c2-smile-tight.png", FACE_ORIGIN, FACE_SIZE),
+    "face-brow": place("16c2-brow-tight.png", FACE_ORIGIN, FACE_SIZE),
+    "face-mouth": place("17c2-mouth-cheek-tight.png", FACE_ORIGIN, FACE_SIZE),
     "kf-m15": place("09d-keyform-minus15-tight.png", SHOULDER_ORIGIN, SHOULDER_SIZE),
     "kf-m7": place("09e-keyform-minus7-tight.png", SHOULDER_ORIGIN, SHOULDER_SIZE),
     "kf-p6": place("09f-keyform-plus6-tight.png", SHOULDER_ORIGIN, SHOULDER_SIZE),

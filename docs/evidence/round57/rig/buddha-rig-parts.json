@@ -289,9 +289,9 @@
   },
   "face_fades": {
    "status": "ACTIVE - tight edit-mode patches (14c/15c/16c), cut where the edit changed the feature band; first-pass full-crop pieces documented in rig/face-fades.png",
-   "blink": "15c-blink-tight by blink curve",
-   "smile": "14c-smile-tight when arm_angle > +3 (offer peak)",
-   "brow": "16c-brow-tight when arm_angle < -10 (deep-raise hold)"
+   "blink": "15c2-blink-tight (law re-cut) by blink curve",
+   "smile": "14c2-smile-tight (law re-cut) when arm_angle > +3 (offer peak)",
+   "brow": "16c2-brow-tight (law re-cut) when arm_angle < -10 (deep-raise hold)"
   },
   "necklace": {
    "strand": "parts/08-necklace-master-strand.png (master values, own region)",

@@ -307,10 +307,10 @@ def face_overlay(name):
     return Image.fromarray(canvas)
 
 
-ov_blink = face_overlay("15c-blink-tight.png")
-ov_smile = face_overlay("14c-smile-tight.png")
-ov_brow = face_overlay("16c-brow-tight.png")
-ov_mouth = face_overlay("17b-mouth-cheek-tight.png")   # laugh accent (edit-mode tight cut)
+ov_blink = face_overlay("15c2-blink-tight.png")
+ov_smile = face_overlay("14c2-smile-tight.png")
+ov_brow = face_overlay("16c2-brow-tight.png")
+ov_mouth = face_overlay("17c2-mouth-cheek-tight.png")   # laugh accent (edit-mode tight cut)
 
 # shoulder keyform patches: the painted compression/stretch states, registered
 # on the shoulder crop (origin 420,160, 360x340, NCC 1.0000), tight component
@@ -512,9 +512,9 @@ rig["registration"] = {
     "face_fades": {"status": "ACTIVE - tight edit-mode patches (14c/15c/16c),"
                               " cut where the edit changed the feature band;"
                               " first-pass full-crop pieces documented in rig/face-fades.png",
-                   "blink": "15c-blink-tight by blink curve",
-                   "smile": "14c-smile-tight when arm_angle > +3 (offer peak)",
-                   "brow": "16c-brow-tight when arm_angle < -10 (deep-raise hold)"},
+                   "blink": "15c2-blink-tight (law re-cut) by blink curve",
+                   "smile": "14c2-smile-tight (law re-cut) when arm_angle > +3 (offer peak)",
+                   "brow": "16c2-brow-tight (law re-cut) when arm_angle < -10 (deep-raise hold)"},
     "necklace": {"strand": "parts/08-necklace-master-strand.png (master values, own region)",
                  "draw_rule": "strand above torso, below arm at every angle (master stacking); painted front/back groups pending review"},
     "shoulder_crop": {"file": "crops/crop-shoulder-chest.png", "origin": [420, 160], "size": [360, 340],
