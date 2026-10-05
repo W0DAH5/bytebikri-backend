@@ -7,7 +7,7 @@
 <style>
   body { margin: 20px; background: #101010; color: #eee; font-family: system-ui, sans-serif; }
   h1 { font-size: 16px; } p { max-width: 860px; font-size: 13px; color: #bbb; }
-  .row { white-space: nowrap; }
+  .row { white-space: nowrap; overflow-x: auto; max-width: 100%; }   /* scrollable, never blows the document out */
   .panel { display: inline-block; vertical-align: top; margin: 14px 14px 0 0; }
   .panel h2 { font: 600 13px/1.4 system-ui, sans-serif; margin: 0 0 6px; }
   .cardish { position: relative; width: 460px; height: 306px; border-radius: 12px;
@@ -59,6 +59,7 @@ production card only. This harness is <b>not</b> wired into the app.</p>
     await BuddhaRig.mount(document.getElementById(id), { fixedTime: t });
   }
   const live = await BuddhaRig.mount(document.getElementById("live"));
+  window.__live = live;   // harness readback (rig-live-smoke)
   const st = document.getElementById("live-status");
   setInterval(() => {
     const s = live.lastState;

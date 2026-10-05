@@ -283,6 +283,11 @@
     return {
       rig,
       apply,
+      // harness: synchronous pixel readback of the composed character
+      snapshot() {
+        const c = app.renderer.extract.canvas(layers);
+        return c.toDataURL("image/png");
+      },
       setTime(t) { t0 = performance.now() - t * 1000; },
       destroy() { cancelAnimationFrame(raf); app.destroy(false, { children: true, texture: false }); },
       get lastState() { return last; },
