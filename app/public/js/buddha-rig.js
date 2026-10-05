@@ -122,9 +122,11 @@
     const geo = new PIXI.MeshGeometry(
       new Float32Array(spec.rest.slice()),
       new Float32Array(spec.uv.flat()),
-      spec.nx !== undefined ? new Uint16Array(spec.triangles) : new Uint16Array(spec.triangles)
+      new Uint16Array(spec.triangles)
     );
-    return new PIXI.Mesh(geo, tex);
+    // v7.4 does NOT wrap a raw Texture into a shader (the ci/eyes browser
+    // proof caught this): an explicit MeshMaterial is required.
+    return new PIXI.Mesh(geo, new PIXI.MeshMaterial(tex));
   }
 
   function makeQuad(rig, texByPath, texName) {
@@ -135,7 +137,7 @@
       new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]),
       new Uint16Array([0, 1, 2, 0, 2, 3])
     );
-    return new PIXI.Mesh(geo, tex);
+    return new PIXI.Mesh(geo, new PIXI.MeshMaterial(tex));
   }
 
   async function load(baseDir) {
@@ -156,6 +158,12 @@
     opts = opts || {};
     const { rig, texByPath } = await load(opts.baseDir);
     const { w, h } = rig.canvas;
+    // section 8 "the reduced-motion still": a reduced-motion preference pins
+    // the character at REST instead of running the cycle.
+    if (opts.fixedTime === undefined &&
+        window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      opts.fixedTime = 0;
+    }
 
     const app = new PIXI.Application({
       view: canvas, width: w, height: h, backgroundAlpha: 0, antialias: false, autoDensity: false,
@@ -165,7 +173,7 @@
     // shared geometries, two Mesh instances each (scene + figure mask)
     const armMeshScene = makeMesh(rig, texByPath, rig.arm_mesh, "arm");
     const chestMeshScene = makeMesh(rig, texByPath, rig.breath_mesh, "torso");
-    function twin(m) { return new PIXI.Mesh(m.geometry, m.texture); }
+    function twin(m) { return new PIXI.Mesh(m.geometry, m.shader); }   // shares the material; uniforms are set per render
 
     const layers = new PIXI.Container();
     const backingQ = makeQuad(rig, texByPath, "plate-backing");
@@ -215,11 +223,12 @@
     const armPose = new Float32Array(rig.arm_mesh.rest.length);
     const chestPose = new Float32Array(rig.breath_mesh.rest.length);
 
-    function apply(t) {
+    function apply(t, ov) {
+      ov = ov || {};
       const deg = evalCurve(rig.curves.arm_angle, t);
       const sway = evalCurve(rig.curves.grape_sway, t);
       const breath = evalCurve(rig.curves.breath, t);
-      const blink = evalCurve(rig.curves.blink, t);
+      const blink = ov.blink !== undefined ? ov.blink : evalCurve(rig.curves.blink, t);
       const tt = ((t % 24) + 24) % 24;
       const window = tt >= hand0 && tt <= hand1;
 
@@ -268,7 +277,8 @@
       last = apply(t);
       raf = requestAnimationFrame(frame);
     }
-    raf = requestAnimationFrame(frame);
+    if (!opts.paused) raf = requestAnimationFrame(frame);   // harness: paused mounts are driven by apply()
+    else apply(opts.fixedTime !== undefined ? opts.fixedTime : 0);   // paused mounts still render their initial pose once
 
     return {
       rig,

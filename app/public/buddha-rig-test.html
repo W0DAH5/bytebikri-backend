@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Buddha rig — deterministic test mount (paused; driven by ci/eyes)</title>
+<style>
+  body { margin: 0; background: #101010; }
+  canvas { width: 1536px; height: 1024px; display: block; }
+</style>
+</head>
+<body>
+<canvas id="test" width="1536" height="1024"></canvas>
+<script src="vendor/pixi.min.js"></script>
+<script src="js/buddha-rig.js"></script>
+<script>
+  BuddhaRig.mount(document.getElementById("test"), { paused: true })
+    .then((c) => { window.__rig = c; document.title = "rig-ready"; })
+    .catch((e) => { document.title = "rig-failed: " + e.message; console.error(e); });
+</script>
+</body>
+</html>
