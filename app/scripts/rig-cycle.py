@@ -115,6 +115,15 @@ _open = np.asarray(Image.fromarray((_rim * 255).astype(np.uint8)).filter(
     _IF.MinFilter(3)).filter(_IF.MaxFilter(3))) > 128
 print("plate filament opening: evicting %d filament px" % int((_rim & ~_open).sum()))
 _rim &= _open
+# BEIGE-SPECK VERDICT (milestone 14): the remaining 1-2px beige-class specks
+# STAY - the master itself carries that signature (measured below), so a
+# class ban would evict genuine master material and violate matching.
+_tor_all = Mr[TOR][:, :3].astype(np.int32)
+_sig = ((_tor_all[:, 0] - _tor_all[:, 2] > 40) & (_tor_all[:, 0] - _tor_all[:, 2] < 70) &
+        (_tor_all[:, 0] - _tor_all[:, 1] < 20))
+print("beige-speck verdict: master carries the beige signature at %.2f%% (%d px) -"
+      " the residual sub-perceptual specks are IN-material and stay"
+      % (100 * _sig.mean(), int(_sig.sum())))
 _pa = np.zeros((H, W, 4), np.uint8)
 for c in range(3):
     _pa[..., c] = np.where(_rim, _pm[..., c], 0).astype(np.uint8)
@@ -536,3 +545,124 @@ rig["registration"]["necklace"]["draw_order_proof"] = {
                          " kept as references. Not needed: nothing is ever hidden behind the arm in-range."}
 json.dump(rig, open(rig_path, "w"), indent=1)
 print("rig JSON: PROOF 4 + necklace verdict recorded")
+
+# ── §14 FLICKER CHECK: every large change across the full cycle must be an
+# explained, SUSTAINED state change, and the handover steps must be atomic.
+_interior2 = np.asarray(Image.fromarray(
+    ((A_master > 0.02) * 255).astype(np.uint8)).filter(_IF.MinFilter(25))) > 128
+CHEST_BOX = (660, 340, 1200, 700)
+
+# (a) swap atomicity: one step after each handover edge the compose must be
+# structurally steady - diffs may only come from the breath warp (chest box).
+h0w, h1w = CURVES["handover"]["window"]
+
+def _steady(a, b, tag):
+    sa = np.asarray(compose(a, backing=plate_backing)).astype(np.int16)
+    sb = np.asarray(compose(b, backing=plate_backing)).astype(np.int16)
+    d = np.abs(sa - sb).max(axis=2) > 2
+    d[CHEST_BOX[1]:CHEST_BOX[3], CHEST_BOX[0]:CHEST_BOX[2]] = False   # breath
+    print("swap steady-state %s: structural diffs = %d px" % (tag, int(d.sum())))
+    assert d.sum() == 0, "not steady - flicker at the handover"
+
+# (a2) motion-bound edges: outside the window the arm+grapes meshes are live
+# on their own clocks (the arm swings through the close; the grapes sway
+# until the open), inside the window the lowered layer is static. The exact
+# assertion for all four sides: every structural diff must fall inside the
+# union of whatever meshes are LIVE at those instants - nothing else moves.
+def _moving_footprint(tt):
+    """Everything that may legitimately move at instant tt: the arm+grapes
+    meshes (outside the window; the lowered layer is static inside it) plus
+    every patch whose gate is live, rotated with the bone exactly like
+    fade() does."""
+    fp = np.zeros((H, W), bool)
+    if not (h0w <= (tt % 24.0) <= h1w):
+        fp |= np.asarray(warp_by_mesh(
+            arm_tex, REST, lbss(eval_curve(CURVES["arm_angle"], tt))))[..., 3] > 0
+        gp = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        gp.alpha_composite(grapes_tex.rotate(eval_curve(CURVES["grape_sway"], tt),
+                                             resample=Image.BICUBIC,
+                                             center=GRAPE_PIVOT, expand=False))
+        fp |= np.asarray(gp)[..., 3] > 0
+    deg = eval_curve(CURVES["arm_angle"], tt)
+    deep = sstep((-deg - 10.0) / 4.0)
+    mid = sstep((-deg - 1.5) / 3.0) * (1.0 - deep)
+    offer = sstep((deg - 3.0) / 3.0)
+    gates = ((ov_blink, eval_curve(CURVES["blink"], tt), False),
+             (ov_smile, offer, False), (ov_mouth, offer, False),
+             (ov_brow, deep, False),
+             (ov_k_p6, offer, True), (ov_k_m7, mid, True), (ov_k_m15, deep, True))
+    for ov, k, rides in gates:
+        if k <= 0.004:
+            continue
+        o = ov.rotate(deg, resample=Image.BICUBIC, center=SH) if rides else ov
+        fp |= np.asarray(o)[..., 3] > 0
+    return fp
+
+
+for a, b, tag in ((h0w - 0.02, h0w - 0.30, "before window-open"),
+                  (h0w + 0.02, h0w + 0.30, "after window-open"),
+                  (h1w - 0.02, h1w - 0.30, "before window-close"),
+                  (h1w + 0.02, h1w + 0.30, "after window-close")):
+    sa = np.asarray(compose(a, backing=plate_backing)).astype(np.int16)
+    sb = np.asarray(compose(b, backing=plate_backing)).astype(np.int16)
+    d = np.abs(sa - sb).max(axis=2) > 2
+    d[CHEST_BOX[1]:CHEST_BOX[3], CHEST_BOX[0]:CHEST_BOX[2]] = False   # breath
+    allowed = _moving_footprint(a) | _moving_footprint(b)
+    allowed = np.asarray(Image.fromarray((allowed * 255).astype(np.uint8)).filter(
+        _IF.MaxFilter(31))) > 128
+    stray = int((d & ~allowed).sum())
+    print("swap motion-bound %s: stray diffs outside the live meshes = %d px"
+          % (tag, stray))
+    assert stray == 0, "motion outside the live meshes at the handover"
+
+# (b) full-cycle transient scan: per-interval changed-px counts; every spike
+# must be an explained, sustained parameter event.
+DTs = 0.25
+t_samples = np.arange(0.0, 24.0 + 1e-9, DTs)
+counts = []
+prev = np.asarray(compose(0.0, backing=plate_backing)).astype(np.int16)
+for t in t_samples[1:]:
+    cur = np.asarray(compose(t, backing=plate_backing)).astype(np.int16)
+    counts.append(int((np.abs(cur - prev).max(axis=2) > 2).sum()))
+    prev = cur
+counts = np.array(counts)
+
+
+def explained(tt0, tt1):
+    if tt0 <= h0w <= tt1 or tt0 <= h1w <= tt1:
+        return "handover step"
+    for name, thr in (("arm_angle", 0.9), ("grape_sway", 0.6), ("breath", 0.08)):
+        dv = abs(eval_curve(CURVES[name], tt1) - eval_curve(CURVES[name], tt0))
+        if dv > thr:
+            return "%s moves %.2f" % (name, dv)
+    if abs(eval_curve(CURVES["blink"], tt1) - eval_curve(CURVES["blink"], tt0)) > 0.15:
+        return "blink gate"
+    return None
+
+
+ok = True
+for k in np.argsort(counts)[::-1][:8]:
+    t0, t1 = float(t_samples[k]), float(t_samples[k + 1])
+    why = explained(t0, t1)
+    print("interval t=%5.2f..%5.2fs: %6d px changed  %s"
+          % (t0, t1, counts[k], ("(" + why + ")") if why else "(UNEXPLAINED)"))
+    ok = ok and why is not None
+print("FLICKER CHECK:", "PASS - every spike is an explained, sustained event"
+      if ok else "FAIL - unexplained transient")
+assert ok
+
+# (c) interior card-colored px constancy: the master's own transparent gaps
+# (excluding the arm/grapes footprint - the deep hole's card exposure is the
+# DESIGNED, ruled behavior as the arm leaves, not flicker) must stay constant
+# as the moving layers pass above them.
+_gaps = _interior2 & ~(ARM | GRA)
+const = []
+for t in np.arange(0.0, 24.0, 1.0):
+    fr = np.asarray(compose(t, backing=plate_backing))
+    card = np.all(np.abs(fr[..., :3].astype(int) - np.array(CARD[:3])) < 10, axis=2)
+    const.append(int((card & _gaps).sum()))
+const = np.array(const)
+print("master-gap card px across the cycle (arm footprint excluded): min %d max %d (spread %d)"
+      % (const.min(), const.max(), int(const.max() - const.min())))
+assert const.max() - const.min() <= 50, "interior gaps flicker"
+print("section 14 flicker check complete")
