@@ -164,6 +164,8 @@ CURVES = {
                "easing": "smoothstep"},
     "blink": {"period": 9.7, "keys": [[0, 0], [8.439, 0], [8.633, 1], [8.924, 1],
                                       [9.118, 0], [9.7, 0]], "easing": "linear"},
+    "head_tilt": {"period": 12.4, "keys": [[0, 0], [3.1, 1], [6.2, 0], [9.3, -1], [12.4, 0]],
+                  "easing": "smoothstep"},   # degrees, the section 4 tiny z-tilt
     "handover": {"period": 24.0, "window": [14.50, 18.24]},
 }
 
@@ -265,6 +267,44 @@ def warp_by_mesh(tex, rest, moved):
                 m = (vals[..., 3] > 0) & inside
                 out[gy.ravel()[m], gx.ravel()[m]] = vals[m]
     return Image.fromarray(out)
+
+
+# ── head_tilt (section 4): a tiny z-tilt of the head about the neck pivot ────
+# Soft field: full weight over the head dome, tapering to zero at the neck and
+# the region border, so bg and statue move together and nothing can tear. The
+# master is fully opaque (baked pale-checker background); the border pinning
+# keeps that background continuous. Face overlays are warped by the same field.
+NECK_PIVOT = (1030.0, 380.0)
+
+
+def head_field():
+    xs = np.arange(W)[None, :].astype(np.float32)
+    ys = np.arange(H)[:, None].astype(np.float32)
+    vert = np.clip((390.0 - ys) / 110.0, 0, 1)
+    horz = np.clip((xs - 850.0) / 50.0, 0, 1) * np.clip((1215.0 - xs) / 50.0, 0, 1)
+    return (vert * horz).astype(np.float32)
+
+
+HEAD_W = head_field()
+HEAD_YS, HEAD_XS = np.nonzero(HEAD_W > 0.002)
+HEAD_WV = HEAD_W[HEAD_YS, HEAD_XS]
+
+
+def head_warped(canvas, deg):
+    """Forward-map the canvas's head-region px by the tilt field (canvas is an
+    RGBA PIL image or numpy array; returns the same type)."""
+    if abs(deg) < 1e-4:
+        return canvas
+    arr = np.asarray(canvas)
+    src = arr if isinstance(canvas, np.ndarray) else arr.copy()
+    th = np.radians(deg)
+    dx = (-th * (HEAD_YS - NECK_PIVOT[1]) * HEAD_WV)
+    dy = ( th * (HEAD_XS - NECK_PIVOT[0]) * HEAD_WV)
+    sx = np.clip(HEAD_XS + dx, 0, W - 1).astype(int)
+    sy = np.clip(HEAD_YS + dy, 0, H - 1).astype(int)
+    out = src.copy()
+    out[sy, sx] = src[HEAD_YS, HEAD_XS]
+    return out if isinstance(canvas, np.ndarray) else Image.fromarray(out)
 
 
 def torso_warped(breath):
@@ -386,10 +426,11 @@ def compose(t, backing=None):
     h0, h1 = CURVES["handover"]["window"]
     tt = t % 24.0
     window = h0 <= tt <= h1
+    tilt = eval_curve(CURVES["head_tilt"], t)
     out = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     if backing is not None:
         out.alpha_composite(backing)
-    out.alpha_composite(torso_warped(breath))
+    out.alpha_composite(head_warped(torso_warped(breath), tilt))
     out.alpha_composite(strand_tex)   # necklace: master stacking, under the arm
     if FACE_FADES:
         global _figalpha
@@ -409,17 +450,18 @@ def compose(t, backing=None):
     # face cross-fades (swap/cross-fade per the order); the clip mask was
     # taken above, before the arm/lowered - draw order: face under the arm
     if FACE_FADES:
-        fade(out, ov_blink, eval_curve(CURVES["blink"], t))
+        # face patches ride the head tilt (same field) so they never lag the face
+        fade(out, head_warped(ov_blink, tilt), eval_curve(CURVES["blink"], t))
         k_offer = sstep((arm_deg - 3.0) / 3.0)
-        fade(out, ov_smile, k_offer)
-        fade(out, ov_mouth, k_offer)          # laugh accent rides the offer peak
+        fade(out, head_warped(ov_smile, tilt), k_offer)
+        fade(out, head_warped(ov_mouth, tilt), k_offer)   # laugh accent rides the offer peak
         k_deep = sstep((-arm_deg - 10.0) / 4.0)
         k_mid = sstep((-arm_deg - 1.5) / 3.0) * (1.0 - k_deep)
         if not window:                        # the arm (and its shoulder keyforms) is out during the handover
             fade(out, ov_k_p6, k_offer, rot_about=SH, rot_deg=arm_deg)   # painted stretch at the +6 offer
             fade(out, ov_k_m7, k_mid, rot_about=SH, rot_deg=arm_deg)     # mild compression on the way down
             fade(out, ov_k_m15, k_deep, rot_about=SH, rot_deg=arm_deg)   # deep compression into the -15 hold
-        fade(out, ov_brow, k_deep)
+        fade(out, head_warped(ov_brow, tilt), k_deep)
     under = Image.new("RGBA", (W, H), CARD)
     under.alpha_composite(out)
     return under
@@ -584,6 +626,9 @@ def _moving_footprint(tt):
                                              center=GRAPE_PIVOT, expand=False))
         fp |= np.asarray(gp)[..., 3] > 0
     deg = eval_curve(CURVES["arm_angle"], tt)
+    if abs(eval_curve(CURVES["head_tilt"], tt)) > 1e-4:
+        fp |= np.asarray(Image.fromarray((HEAD_W * 255).astype(np.uint8)).filter(
+            _IF.MaxFilter(31))) > 128
     deep = sstep((-deg - 10.0) / 4.0)
     mid = sstep((-deg - 1.5) / 3.0) * (1.0 - deep)
     offer = sstep((deg - 3.0) / 3.0)
@@ -631,7 +676,8 @@ counts = np.array(counts)
 def explained(tt0, tt1):
     if tt0 <= h0w <= tt1 or tt0 <= h1w <= tt1:
         return "handover step"
-    for name, thr in (("arm_angle", 0.9), ("grape_sway", 0.6), ("breath", 0.08)):
+    for name, thr in (("arm_angle", 0.9), ("grape_sway", 0.6), ("breath", 0.08),
+                      ("head_tilt", 0.05)):
         dv = abs(eval_curve(CURVES[name], tt1) - eval_curve(CURVES[name], tt0))
         if dv > thr:
             return "%s moves %.2f" % (name, dv)

@@ -41,12 +41,13 @@ check("evaluator loads", !!BR);
 // 1. curve parity against the Python probes
 {
   let worst = 0;
-  const { t, arm_angle, grape_sway, breath, blink } = rig.parity;
+  const { t, arm_angle, grape_sway, breath, blink, head_tilt } = rig.parity;
   for (let i = 0; i < t.length; i++) {
     worst = Math.max(worst, Math.abs(BR.evalCurve(rig.curves.arm_angle, t[i]) - arm_angle[i]));
     worst = Math.max(worst, Math.abs(BR.evalCurve(rig.curves.grape_sway, t[i]) - grape_sway[i]));
     worst = Math.max(worst, Math.abs(BR.evalCurve(rig.curves.breath, t[i]) - breath[i]));
     worst = Math.max(worst, Math.abs(BR.evalCurve(rig.curves.blink, t[i]) - blink[i]));
+    worst = Math.max(worst, Math.abs(BR.evalCurve(rig.curves.head_tilt, t[i]) - head_tilt[i]));
   }
   check("curve parity vs Python PARITY probes", worst <= 1e-9, `max|d|=${worst.toExponential(2)}`);
 }

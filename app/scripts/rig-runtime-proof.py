@@ -100,10 +100,12 @@ check("apply() is deterministic at the same t", int((d2 > 0).sum()) == 0,
 # 3. blink locality (the patch isolated at the same instant)
 db = np.abs(F("blink-on").astype(int) - F("blink-off").astype(int)).max(axis=2) > 2
 ys, xs = np.nonzero(db)
-FACE_BOX = (850, 60, 1200, 360)
-in_box = (xs.min() >= FACE_BOX[0] - 2 and xs.max() <= FACE_BOX[2] + 2 and
-          ys.min() >= FACE_BOX[1] - 2 and ys.max() <= FACE_BOX[3] + 2)
-check("blink patch is local to the registered face box", bool(db.sum()) and in_box,
+# the patch rides the head tilt (designed): allow the tilt budget (~4px) on
+# top of the registered face box
+FACE_BOX = (850 - 6, 60 - 6, 1200 + 6, 360 + 6)
+in_box = (xs.min() >= FACE_BOX[0] and xs.max() <= FACE_BOX[2] and
+          ys.min() >= FACE_BOX[1] and ys.max() <= FACE_BOX[3])
+check("blink patch is local to the face box (incl. the head-tilt ride)", bool(db.sum()) and in_box,
       "%d px, bbox x[%d-%d] y[%d-%d]" % (int(db.sum()), xs.min(), xs.max(), ys.min(), ys.max()))
 
 # 4. handover atomicity
@@ -113,10 +115,13 @@ check("window-open produces the structural step", int(step.sum()) > 100000,
       "%d px change across the edge" % int(step.sum()))
 settled = np.abs(F("h0-after").astype(int) - F("h0-settled").astype(int)).max(axis=2) > 2
 CB = (660, 340, 1200, 700)
+HB = (844, 0, 1221, 405)   # the head field: a declared moving region (like breath)
 out = settled.copy()
 out[CB[1]:CB[3], CB[0]:CB[2]] = False
-check("inside the window only the breath moves", int(out.sum()) <= 2000,
-      "%d px outside the chest box" % int(out.sum()))
+out[HB[1]:HB[3], HB[0]:HB[2]] = False
+check("inside the window only the declared moving fields move (breath + head)",
+      int(out.sum()) <= 2000,
+      "%d px outside the chest+head boxes" % int(out.sum()))
 step1 = np.abs(F("h1-before").astype(int) - F("h1-after").astype(int)).max(axis=2) > 2
 check("window-close produces the structural step", int(step1.sum()) > 100000,
       "%d px change across the edge" % int(step1.sum()))
@@ -134,7 +139,8 @@ counts = np.array(counts)
 def explained(t0, t1):
     if t0 % 24 <= h0w <= t1 % 24 or t0 % 24 <= h1w <= t1 % 24:
         return "handover step"
-    for name, thr in (("arm_angle", 0.9), ("grape_sway", 0.6), ("breath", 0.08)):
+    for name, thr in (("arm_angle", 0.9), ("grape_sway", 0.6), ("breath", 0.08),
+                      ("head_tilt", 0.05)):
         if abs(eval_curve(CURVES[name], t1) - eval_curve(CURVES[name], t0)) > thr:
             return "%s moves" % name
     if abs(eval_curve(CURVES["blink"], t1) - eval_curve(CURVES["blink"], t0)) > 0.15:

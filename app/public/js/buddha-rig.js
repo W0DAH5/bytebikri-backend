@@ -99,6 +99,20 @@
 
   // breath displacement at chest-mesh vertices (identity at rest, zero on
   // the mesh border — the exported weights already carry the taper)
+  function headTiltPose(rig, deg, out) {
+    const hm = rig.head_mesh;
+    const n = hm.rest.length / 2;
+    const th = deg * DEG;
+    const [cx, cy] = hm.pivot;
+    for (let i = 0; i < n; i++) {
+      const x = hm.rest[2 * i], y = hm.rest[2 * i + 1];
+      const w = hm.weights[i];
+      out[2 * i] = x - th * (y - cy) * w;
+      out[2 * i + 1] = y + th * (x - cx) * w;
+    }
+    return out;
+  }
+
   function breathPose(rig, breath, out) {
     const bm = rig.breath_mesh;
     const n = bm.rest.length / 2;
@@ -173,6 +187,7 @@
     // shared geometries, two Mesh instances each (scene + figure mask)
     const armMeshScene = makeMesh(rig, texByPath, rig.arm_mesh, "arm");
     const chestMeshScene = makeMesh(rig, texByPath, rig.breath_mesh, "torso");
+    const headMeshScene = makeMesh(rig, texByPath, rig.head_mesh, "head");
     function twin(m) { return new PIXI.Mesh(m.geometry, m.shader); }   // shares the material; uniforms are set per render
 
     const layers = new PIXI.Container();
@@ -183,7 +198,7 @@
     const grapes = new PIXI.Sprite(texByPath[rig.textures.grapes]);
     grapes.pivot.set(rig.bones.grape_pivot[0], rig.bones.grape_pivot[1]);
     grapes.position.set(rig.bones.grape_pivot[0], rig.bones.grape_pivot[1]);
-    layers.addChild(backingQ, torsoQ, chestMeshScene, strandQ, loweredQ, armMeshScene, grapes);
+    layers.addChild(backingQ, torsoQ, headMeshScene, chestMeshScene, strandQ, loweredQ, armMeshScene, grapes);
     stage.addChild(layers);
 
     // patches, masked by the LIVE composed figure (render texture)
@@ -209,11 +224,12 @@
     const maskStage = new PIXI.Container();
     const maskArm = twin(armMeshScene);
     const maskChest = twin(chestMeshScene);
+    const maskHead = twin(headMeshScene);
     const maskGrapes = new PIXI.Sprite(grapes.texture);
     maskGrapes.pivot.copyFrom(grapes.pivot); maskGrapes.position.copyFrom(grapes.position);
     const maskLowered = makeQuad(rig, texByPath, "lowered");
     maskStage.addChild(makeQuad(rig, texByPath, "plate-backing"),
-      makeQuad(rig, texByPath, "torso"), maskChest,
+      makeQuad(rig, texByPath, "torso"), maskHead, maskChest,
       makeQuad(rig, texByPath, "strand"), maskLowered, maskArm, maskGrapes);
     const rt = PIXI.RenderTexture.create({ width: w, height: h, resolution: 1 });
     const maskSprite = new PIXI.Sprite(rt);
@@ -222,6 +238,7 @@
     const hand0 = rig.handover.window[0], hand1 = rig.handover.window[1];
     const armPose = new Float32Array(rig.arm_mesh.rest.length);
     const chestPose = new Float32Array(rig.breath_mesh.rest.length);
+    const headPose = new Float32Array(rig.head_mesh.rest.length);
 
     function apply(t, ov) {
       ov = ov || {};
@@ -229,6 +246,7 @@
       const sway = evalCurve(rig.curves.grape_sway, t);
       const breath = evalCurve(rig.curves.breath, t);
       const blink = ov.blink !== undefined ? ov.blink : evalCurve(rig.curves.blink, t);
+      const tilt = evalCurve(rig.curves.head_tilt, t);
       const tt = ((t % 24) + 24) % 24;
       const window = tt >= hand0 && tt <= hand1;
 
@@ -237,6 +255,11 @@
       breathPose(rig, breath, chestPose);
       setVerts(chestMeshScene.geometry, chestPose);
       chestMeshScene.renderable = breath > 0.001;
+      headTiltPose(rig, tilt, headPose);
+      setVerts(headMeshScene.geometry, headPose);
+      // ALWAYS rendered: the head px live ONLY in head.png (split out of the
+      // torso texture), and at rest the identity pose draws them bit-exactly.
+      headMeshScene.renderable = true;
 
       grapes.rotation = -sway * DEG;          // PIL rotate() is CCW; Pixi y-down is CW
       loweredQ.renderable = window;
@@ -258,6 +281,18 @@
         const s = patches[name];
         s.renderable = k > 0.004;
         if (s.renderable) { s.alpha = k; if (s.pivot.x) s.rotation = rot; }
+        const hw = rig.patch_head_weight ? rig.patch_head_weight[name] : undefined;
+        if (s.renderable && hw !== undefined) {
+          // face patches ride the head tilt rigidly at the band's own weight
+          // (the soft field across a patch varies by <2px; documented approx)
+          if (!s.__headPivot) {
+            s.__headPivot = true;
+            const pv = rig.head_mesh.pivot;
+            s.pivot.set(pv[0], pv[1]);
+            s.position.set(pv[0], pv[1]);
+          }
+          s.rotation = tilt * hw * BuddhaRig.DEG;
+        }
       }
 
       // sync + render the live-figure mask, then let Pixi apply it
@@ -266,6 +301,8 @@
       maskGrapes.rotation = grapes.rotation;
       maskLowered.renderable = window;
       maskChest.renderable = chestMeshScene.renderable;
+      maskHead.renderable = true;
+      setVerts(maskHead.geometry, headPose);
       app.renderer.render(maskStage, { renderTexture: rt });
 
       return { deg, sway, breath, blink, window };
@@ -294,5 +331,5 @@
     };
   }
 
-  window.BuddhaRig = { load, mount, evalCurve, sstep, lbss, breathPose, DEG };
+  window.BuddhaRig = { load, mount, evalCurve, sstep, lbss, breathPose, headTiltPose, DEG };
 })();

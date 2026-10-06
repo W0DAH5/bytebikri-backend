@@ -64,7 +64,22 @@ def cut(mask):
 
 
 # ── textures ─────────────────────────────────────────────────────────────────
-Image.fromarray(cut(TOR)).save(os.path.join(OUT, "torso.png"))
+# head_tilt (section 4): the head region is its own texture so the runtime can
+# displace it; the split is EXACT (binary field boundary, values untouched) so
+# head+torso tile the master with no gap and REST stays bit-exact.
+NECK_PIVOT = (1030.0, 380.0)
+_xs = np.arange(W)[None, :].astype(np.float32)
+_ys = np.arange(H)[:, None].astype(np.float32)
+HEAD_W = (np.clip((390.0 - _ys) / 110.0, 0, 1) *
+          np.clip((_xs - 850.0) / 50.0, 0, 1) *
+          np.clip((1215.0 - _xs) / 50.0, 0, 1)).astype(np.float32)
+HEAD = HEAD_W > 0.002
+_tor_out = cut(TOR & ~HEAD)
+_head_out = cut(TOR & HEAD)
+Image.fromarray(_tor_out).save(os.path.join(OUT, "torso.png"))
+Image.fromarray(_head_out).save(os.path.join(OUT, "head.png"))
+HEAD_YS, HEAD_XS = np.nonzero(HEAD_W > 0.002)
+HEAD_WV = HEAD_W[HEAD_YS, HEAD_XS]
 Image.fromarray(cut(STRAND)).save(os.path.join(OUT, "strand.png"))
 shutil.copyfile(os.path.join(P57, "parts", "02-arm-full.png"), os.path.join(OUT, "arm.png"))
 shutil.copyfile(os.path.join(P57, "parts", "07-grapes-master.png"), os.path.join(OUT, "grapes.png"))
@@ -203,6 +218,8 @@ for name, arr in patches.items():
 
 # ── curves (the production CSS clocks, translated) ───────────────────────────
 CURVES = {
+    "head_tilt": {"period": 12.4, "keys": [[0, 0], [3.1, 1], [6.2, 0], [9.3, -1], [12.4, 0]],
+                  "easing": "smoothstep"},
     "arm_angle": {"period": 24.0, "keys": [[0, 0], [2.0, 6], [4.5, 5.4], [6.5, 0],
                                            [11.5, -2.4], [15.0, -15], [18.0, -15],
                                            [21.5, -2], [24, 0]], "easing": "smoothstep"},
@@ -260,7 +277,34 @@ parity = {"t": probes,
           "arm_angle": [eval_curve(CURVES["arm_angle"], t) for t in probes],
           "grape_sway": [eval_curve(CURVES["grape_sway"], t) for t in probes],
           "breath": [eval_curve(CURVES["breath"], t) for t in probes],
-          "blink": [eval_curve(CURVES["blink"], t) for t in probes]}
+          "blink": [eval_curve(CURVES["blink"], t) for t in probes],
+          "head_tilt": [eval_curve(CURVES["head_tilt"], t) for t in probes]}
+
+# head mesh: grid over the head region, weights = the tilt field at the vertices
+HNX, HNY = 16, 9
+hxs = np.round(np.linspace(850, 1215, HNX)).astype(np.float64)
+hys = np.round(np.linspace(0, 400, HNY)).astype(np.float64)
+HGX, HGY = np.meshgrid(hxs, hys)
+HREST = np.stack([HGX.ravel(), HGY.ravel()], axis=1)
+_hw = HEAD_W[np.clip(HREST[:, 1].astype(int), 0, H - 1), np.clip(HREST[:, 0].astype(int), 0, W - 1)]
+htris = []
+for j in range(HNY - 1):
+    for i in range(HNX - 1):
+        n0 = j * HNX + i
+        htris += [n0, n0 + 1, n0 + HNX, n0 + 1, n0 + HNX + 1, n0 + HNX]
+huvs = HREST / np.array([float(W), float(H)])
+head_mesh = {"nx": HNX, "ny": HNY, "bbox": [850, 0, 1215, 400],
+             "rest": HREST.ravel().astype(int).tolist(),
+             "uv": [[round(float(u), 6), round(float(v), 6)] for u, v in huvs],
+             "triangles": htris, "weights": [round(float(x), 6) for x in _hw],
+             "pivot": list(NECK_PIVOT)}
+# per-patch head weight at each face band's centroid (rigid approximation note)
+FACE_BANDS = {"face-blink": (850, 60, 1200, 360), "face-smile": (850, 60, 1200, 360),
+              "face-mouth": (850, 60, 1200, 360), "face-brow": (850, 60, 1200, 360)}
+patch_head_weight = {}
+for k, (a, b, c, d) in FACE_BANDS.items():
+    cy, cx = (b + d) // 2, (a + c) // 2
+    patch_head_weight[k] = round(float(HEAD_W[min(cy, H - 1), min(cx, W - 1)]), 4)
 
 rig = {
     "meta": {
@@ -273,7 +317,7 @@ rig = {
         "production": "NOT wired into the app - preview harness only, awaiting explicit authorization"},
     "canvas": {"w": W, "h": H, "card": list(CARD)},
     "textures": {n: f"img/cosmetics/buddha-rig/{n}.png" for n in
-                 ("torso", "strand", "arm", "grapes", "plate-backing", "lowered",
+                 ("torso", "head", "strand", "arm", "grapes", "plate-backing", "lowered",
                   "face-blink", "face-smile", "face-brow", "face-mouth",
                   "kf-m15", "kf-m7", "kf-p6")},
     "bones": {"shoulder": list(SH), "elbow": [round(ELBOW[0], 1), round(ELBOW[1], 1)],
@@ -291,7 +335,9 @@ rig = {
                     "triangles": btris, "weights": [round(float(x), 6) for x in bw],
                     "rise": 7.0, "bulge": 2.2, "bulge_cx": 880.0, "bulge_xscale": 260.0,
                     "profile_center": round(cy_c, 1), "profile_half": round(0.5 * (cy1 - cy0), 1)},
-    "draw_order": ["plate-backing", "torso", "breath-mesh", "strand",
+    "head_mesh": head_mesh,
+    "patch_head_weight": patch_head_weight,
+    "draw_order": ["plate-backing", "torso", "head-mesh", "breath-mesh", "strand",
                    "lowered|arm+grapes (stepped handover)", "patches(masked to live figure)"],
     "handover": {"window": [14.50, 18.24],
                  "note": "arm+grapes step out; the accepted drawn-behind lowered pose shows"},
